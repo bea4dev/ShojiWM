@@ -1,0 +1,8 @@
+[package]
+name = "shoji_wm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.11.0"
+smithay = { git = "https://github.com/Smithay/smithay/", rev = "f6d10709db2bb68c46b9c128a4163d035356572c" }
