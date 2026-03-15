@@ -3,6 +3,7 @@ use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_shm,
     reexports::wayland_server::{
+        Resource,
         protocol::{wl_buffer, wl_surface::WlSurface},
         Client,
     },
@@ -14,6 +15,7 @@ use smithay::{
         shm::{ShmHandler, ShmState},
     },
 };
+use tracing::{debug, trace};
 
 use super::xdg_shell;
 
@@ -27,6 +29,7 @@ impl CompositorHandler for ShojiWM {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        trace!(surface = ?surface.id(), "wl_surface commit received");
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -39,11 +42,14 @@ impl CompositorHandler for ShojiWM {
                 .find(|w| w.toplevel().unwrap().wl_surface() == &root)
             {
                 window.on_commit();
+                debug!(surface = ?root.id(), "toplevel commit matched mapped window");
             }
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
         resize_grab::handle_commit(&mut self.space, surface);
+
+        self.schedule_redraw();
     }
 }
 

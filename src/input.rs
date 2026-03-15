@@ -1,10 +1,10 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -13,6 +13,11 @@ use smithay::{
 
 use crate::state::ShojiWM;
 
+enum KeyboardAction {
+    Forward,
+    Quit,
+}
+
 impl ShojiWM {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
@@ -20,16 +25,64 @@ impl ShojiWM {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
 
-                self.seat.get_keyboard().unwrap().input::<(), _>(
-                    self,
-                    event.key_code(),
-                    event.state(),
-                    serial,
-                    time,
-                    |_, _, _| FilterResult::Forward,
-                );
+                let action = self
+                    .seat
+                    .get_keyboard()
+                    .unwrap()
+                    .input(
+                        self,
+                        event.key_code(),
+                        event.state(),
+                        serial,
+                        time,
+                        |_, modifiers, handle| {
+                            let keysym = handle.modified_sym();
+
+                            if modifiers.logo && keysym.raw() == keysyms::KEY_q {
+                                FilterResult::Intercept(KeyboardAction::Quit)
+                            } else {
+                                FilterResult::Forward
+                            }
+                        },
+                    )
+                    .unwrap_or(KeyboardAction::Forward);
+
+                if let KeyboardAction::Quit = action {
+                    self.shutdown();
+                }
             }
-            InputEvent::PointerMotion { .. } => {}
+            InputEvent::PointerMotion { event, .. } => {
+                let output = self.space.outputs().next().unwrap();
+                let output_geo = self.space.output_geometry(output).unwrap();
+
+                let pointer = self.seat.get_pointer().unwrap();
+                let mut pos = pointer.current_location() + event.delta();
+
+                pos.x = pos.x.clamp(
+                    output_geo.loc.x as f64,
+                    (output_geo.loc.x + output_geo.size.w - 1) as f64,
+                );
+                pos.y = pos.y.clamp(
+                    output_geo.loc.y as f64,
+                    (output_geo.loc.y + output_geo.size.h - 1) as f64,
+                );
+
+                let serial = SERIAL_COUNTER.next_serial();
+                let under = self.surface_under(pos);
+
+                pointer.motion(
+                    self,
+                    under,
+                    &MotionEvent {
+                        location: pos,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+
+                self.schedule_redraw();
+            }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
 

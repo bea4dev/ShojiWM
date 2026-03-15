@@ -1,14 +1,15 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
 use smithay::{
+    backend::drm::DrmNode,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, pointer::CursorImageStatus},
     reexports::{
-        calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
+        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
+            Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Display, DisplayHandle,
         },
     },
     utils::{Logical, Point},
@@ -21,6 +22,9 @@ use smithay::{
         socket::ListeningSocketSource,
     },
 };
+
+use crate::{backend::tty::BackendData, cursor::Cursor, drawing::PointerElement};
+use tracing::info;
 
 pub struct ShojiWM {
     pub start_time: std::time::Instant,
@@ -40,6 +44,14 @@ pub struct ShojiWM {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+
+    pub tty_backends: HashMap<DrmNode, BackendData>,
+
+    pub is_running: bool,
+    pub needs_redraw: bool,
+    pub cursor_status: CursorImageStatus,
+    pub cursor_theme: Cursor,
+    pub pointer_element: PointerElement,
 }
 
 impl ShojiWM {
@@ -104,10 +116,21 @@ impl ShojiWM {
             data_device_state,
             popups,
             seat,
+
+            tty_backends: HashMap::new(),
+
+            is_running: true,
+            needs_redraw: true,
+            cursor_status: CursorImageStatus::default_named(),
+            cursor_theme: Cursor::load(),
+            pointer_element: PointerElement::default(),
         }
     }
 
-    fn init_wayland_listener(display: Display<ShojiWM>, event_loop: &mut EventLoop<Self>) -> OsString {
+    fn init_wayland_listener(
+        display: Display<ShojiWM>,
+        event_loop: &mut EventLoop<Self>,
+    ) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
         let listening_socket = ListeningSocketSource::new_auto().unwrap();
 
@@ -119,6 +142,7 @@ impl ShojiWM {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
+                info!("accepted new wayland client connection");
                 // Inside the callback, you should insert the client into the display.
                 //
                 // You may also associate some data with the client when inserting the client.
@@ -146,12 +170,27 @@ impl ShojiWM {
         socket_name
     }
 
-    pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space.element_under(pos).and_then(|(window, location)| {
-            window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + location).to_f64()))
-        })
+    pub fn surface_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.space
+            .element_under(pos)
+            .and_then(|(window, location)| {
+                window
+                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                    .map(|(s, p)| (s, (p + location).to_f64()))
+            })
+    }
+
+    pub fn shutdown(&mut self) {
+        info!("shutdown requested");
+        self.is_running = false;
+        self.loop_signal.stop();
+    }
+
+    pub fn schedule_redraw(&mut self) {
+        self.needs_redraw = true;
     }
 }
 

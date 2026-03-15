@@ -7,10 +7,7 @@ use smithay::{
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
-    },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
-    reexports::calloop::EventLoop,
-    utils::{Rectangle, Transform},
+    }, desktop::{Space, Window}, output::{Mode, Output, PhysicalProperties, Subpixel}, reexports::calloop::EventLoop, utils::{Rectangle, Transform}
 };
 
 use crate::ShojiWM;
@@ -71,11 +68,11 @@ pub fn init_winit(
 
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
-                        smithay::desktop::space::render_output::<
-                            _,
+                        let _ = smithay::desktop::space::render_output::<
+                            GlesRenderer,
                             WaylandSurfaceRenderElement<GlesRenderer>,
-                            _,
-                            _,
+                            Window,
+                            [&Space<Window>; 1],
                         >(
                             &output,
                             renderer,
@@ -86,8 +83,7 @@ pub fn init_winit(
                             &[],
                             &mut damage_tracker,
                             [0.1, 0.1, 0.1, 1.0],
-                        )
-                        .unwrap();
+                        );
                     }
                     backend.submit(Some(&[damage])).unwrap();
 

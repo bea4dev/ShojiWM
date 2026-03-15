@@ -28,6 +28,7 @@ use crate::{
     grabs::{move_grab::MoveSurfaceGrab, resize_grab::ResizeSurfaceGrab},
     state::ShojiWM,
 };
+use tracing::{debug, info};
 
 impl XdgShellHandler for ShojiWM {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -35,13 +36,21 @@ impl XdgShellHandler for ShojiWM {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        info!(
+            surface = ?surface.wl_surface().id(),
+            "new xdg toplevel received"
+        );
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window, (0, 0), false);
+        debug!(window_count = self.space.elements().count(), "mapped new toplevel into space");
+        self.schedule_redraw();
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        debug!(surface = ?surface.wl_surface().id(), "new xdg popup received");
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+        self.schedule_redraw();
     }
 
     fn reposition_request(

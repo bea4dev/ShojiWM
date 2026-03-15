@@ -5,4 +5,16 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
-smithay = { git = "https://github.com/Smithay/smithay/", rev = "f6d10709db2bb68c46b9c128a4163d035356572c" }
+smithay = {
+    git = "https://github.com/Smithay/smithay/",
+    rev = "f6d10709db2bb68c46b9c128a4163d035356572c"
+}
+smithay-drm-extras = {
+    git = "https://github.com/Smithay/smithay.git",
+    rev = "f6d10709db2bb68c46b9c128a4163d035356572c",
+    package = "smithay-drm-extras",
+    default-features = false
+}
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+xcursor = "0.3.10"
