@@ -16,7 +16,8 @@ use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
 use smithay::wayland::selection::SelectionHandler;
-use smithay::{delegate_data_device, delegate_output, delegate_seat};
+use smithay::wayland::tablet_manager::TabletSeatHandler;
+use smithay::{delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat};
 
 use crate::state::ShojiWM;
 
@@ -42,6 +43,18 @@ impl SeatHandler for ShojiWM {
 }
 
 delegate_seat!(ShojiWM);
+delegate_cursor_shape!(ShojiWM);
+
+impl TabletSeatHandler for ShojiWM {
+    fn tablet_tool_image(
+        &mut self,
+        _tool: &smithay::backend::input::TabletToolDescriptor,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
+        self.cursor_status = image;
+        self.schedule_redraw();
+    }
+}
 
 //
 // Wl Data Device

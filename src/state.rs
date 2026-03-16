@@ -15,6 +15,7 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
@@ -38,6 +39,7 @@ pub struct ShojiWM {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
+    pub cursor_shape_manager_state: CursorShapeManagerState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<ShojiWM>,
     pub data_device_state: DataDeviceState,
@@ -69,6 +71,7 @@ impl ShojiWM {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
+        let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
 
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
@@ -111,6 +114,7 @@ impl ShojiWM {
             compositor_state,
             xdg_shell_state,
             shm_state,
+            cursor_shape_manager_state,
             output_manager_state,
             seat_state,
             data_device_state,

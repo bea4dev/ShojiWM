@@ -217,15 +217,7 @@ fn render_surface(
     let backend = tty_backends.get_mut(&node).unwrap();
     let surface = backend.surfaces.get_mut(&crtc).unwrap();
 
-    let mut elements: Vec<TtyRenderElements> = space_render_elements::<_, Window, _>(
-        &mut backend.renderer,
-        [&*space],
-        &output,
-        1.0,
-    )?
-        .into_iter()
-        .map(TtyRenderElements::Space)
-        .collect();
+    let mut elements: Vec<TtyRenderElements> = Vec::new();
 
     let pointer_pos = seat.get_pointer().unwrap().current_location();
     let output_geo = space.output_geometry(&output).unwrap();
@@ -276,6 +268,12 @@ fn render_surface(
         .into_iter()
         .map(TtyRenderElements::Cursor));
     }
+
+    elements.extend(
+        space_render_elements::<_, Window, _>(&mut backend.renderer, [&*space], &output, 1.0)?
+            .into_iter()
+            .map(TtyRenderElements::Space),
+    );
 
     debug!(
         ?node,
