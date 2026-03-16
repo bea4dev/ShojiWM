@@ -8,6 +8,7 @@ use smithay::{
         pointer::{Focus, GrabStartData as PointerGrabStartData},
     },
     reexports::{
+        wayland_protocols::xdg::decoration as xdg_decoration,
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             Resource,
@@ -20,6 +21,7 @@ use smithay::{
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
+            decoration::XdgDecorationHandler,
         },
     },
 };
@@ -29,6 +31,19 @@ use crate::{
     state::ShojiWM,
 };
 use tracing::{debug, info};
+
+fn apply_decoration_mode(state: &mut ShojiWM, toplevel: &ToplevelSurface, mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
+    toplevel.with_pending_state(|pending| {
+        pending.decoration_mode = Some(mode);
+    });
+
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_pending_configure();
+    } else {
+        toplevel.send_configure();
+    }
+    state.schedule_redraw();
+}
 
 impl XdgShellHandler for ShojiWM {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -141,6 +156,31 @@ impl XdgShellHandler for ShojiWM {
 
 // Xdg Shell
 delegate_xdg_shell!(ShojiWM);
+
+impl XdgDecorationHandler for ShojiWM {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
+    }
+
+    fn request_mode(
+        &mut self,
+        toplevel: ToplevelSurface,
+        mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    ) {
+        let negotiated = match mode {
+            xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide => {
+                self.default_decoration_mode
+            }
+            _ => xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide,
+        };
+
+        apply_decoration_mode(self, &toplevel, negotiated);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
+    }
+}
 
 fn check_grab(
     seat: &Seat<ShojiWM>,

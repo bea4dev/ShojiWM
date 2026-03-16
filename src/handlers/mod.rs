@@ -17,7 +17,10 @@ use smithay::wayland::selection::data_device::{
 };
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
-use smithay::{delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat};
+use smithay::{
+    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat,
+    delegate_xdg_decoration,
+};
 
 use crate::state::ShojiWM;
 
@@ -44,6 +47,7 @@ impl SeatHandler for ShojiWM {
 
 delegate_seat!(ShojiWM);
 delegate_cursor_shape!(ShojiWM);
+delegate_xdg_decoration!(ShojiWM);
 
 impl TabletSeatHandler for ShojiWM {
     fn tablet_tool_image(

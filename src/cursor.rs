@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
+use smithay::input::pointer::CursorIcon;
 use tracing::warn;
 use xcursor::{
     parser::Image,
@@ -7,7 +9,8 @@ use xcursor::{
 };
 
 pub struct Cursor {
-    icons: Vec<Image>,
+    theme: CursorTheme,
+    cache: HashMap<CursorIcon, Vec<Image>>,
     size: u32,
 }
 
@@ -22,21 +25,29 @@ impl Cursor {
             .unwrap_or(24);
 
         let theme = CursorTheme::load(&name);
-        let icons = theme
-            .load_icon("default")
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| xcursor::parser::parse_xcursor(&bytes))
-            .unwrap_or_else(|| {
-                warn!("failed to load xcursor theme, using fallback cursor");
+        let mut cache = HashMap::new();
+        cache.insert(
+            CursorIcon::Default,
+            load_icon(&theme, CursorIcon::Default).unwrap_or_else(|| {
+                warn!("failed to load default xcursor theme image, using fallback cursor");
                 vec![fallback_cursor_image()]
-            });
+            }),
+        );
 
-        Self { icons, size }
+        Self { theme, cache, size }
     }
 
-    pub fn get_image(&self, scale: u32, time: Duration) -> Image {
+    pub fn get_image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
         let size = self.size * scale;
-        frame(time.as_millis() as u32, size, &self.icons)
+        let icons = self.cache.entry(icon).or_insert_with(|| {
+            load_icon(&self.theme, icon)
+                .or_else(|| load_icon(&self.theme, CursorIcon::Default))
+                .unwrap_or_else(|| {
+                    warn!(requested = %icon.name(), "failed to load themed cursor image, using fallback");
+                    vec![fallback_cursor_image()]
+                })
+        });
+        frame(time.as_millis() as u32, size, icons)
     }
 }
 
@@ -104,4 +115,11 @@ fn frame(mut millis: u32, size: u32, images: &[Image]) -> Image {
     }
 
     unreachable!("cursor animation frame resolution should always return an image");
+}
+
+fn load_icon(theme: &CursorTheme, icon: CursorIcon) -> Option<Vec<Image>> {
+    theme.load_icon(icon.name())
+        .or_else(|| icon.alt_names().iter().find_map(|name| theme.load_icon(name)))
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| xcursor::parser::parse_xcursor(&bytes))
 }

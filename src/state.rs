@@ -5,6 +5,7 @@ use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, pointer::CursorImageStatus},
     reexports::{
+        wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
             Display, DisplayHandle,
@@ -18,7 +19,7 @@ use smithay::{
         cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -38,6 +39,7 @@ pub struct ShojiWM {
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub output_manager_state: OutputManagerState,
@@ -54,6 +56,7 @@ pub struct ShojiWM {
     pub cursor_status: CursorImageStatus,
     pub cursor_theme: Cursor,
     pub pointer_element: PointerElement,
+    pub default_decoration_mode: DecorationMode,
 }
 
 impl ShojiWM {
@@ -69,6 +72,7 @@ impl ShojiWM {
         // Initialize protocols needed for displaying windows
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
@@ -113,6 +117,7 @@ impl ShojiWM {
 
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             cursor_shape_manager_state,
             output_manager_state,
@@ -128,6 +133,9 @@ impl ShojiWM {
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme: Cursor::load(),
             pointer_element: PointerElement::default(),
+            // Keep client-side as the current default until server-side decorations are drawn.
+            // Flipping this to ServerSide is the single policy change needed when SSD lands.
+            default_decoration_mode: DecorationMode::ClientSide,
         }
     }
 

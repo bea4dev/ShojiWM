@@ -240,7 +240,11 @@ fn render_surface(
                     .hotspot
             })
         } else {
-            let frame = cursor_theme.get_image(1, start_time.elapsed());
+            let icon = match cursor_status {
+                CursorImageStatus::Named(icon) => *icon,
+                _ => smithay::input::pointer::CursorIcon::Default,
+            };
+            let frame = cursor_theme.get_image(icon, 1, start_time.elapsed());
             let buffer = MemoryRenderBuffer::from_slice(
                 &frame.pixels_rgba,
                 Fourcc::Argb8888,
