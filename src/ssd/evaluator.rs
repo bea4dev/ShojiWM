@@ -1,7 +1,9 @@
 use std::{
     ffi::OsString,
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::Command,
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Arc, Mutex},
     time::Instant,
 };
 use tracing::debug;
@@ -128,15 +130,54 @@ pub enum DecorationEvaluationError {
     RuntimeFailed { status: i32, stderr: String },
     #[error("decoration runtime returned invalid utf-8 output")]
     InvalidUtf8,
+    #[error("decoration runtime returned invalid json: {0}")]
+    InvalidResponse(String),
+    #[error("decoration runtime protocol error: {0}")]
+    RuntimeProtocol(String),
 }
 
-#[derive(Debug, Clone)]
 pub struct NodeDecorationEvaluator {
     program: PathBuf,
     base_args: Vec<OsString>,
     script_path: PathBuf,
     config_path: PathBuf,
     working_dir: Option<PathBuf>,
+    runtime: Arc<Mutex<Option<NodeDecorationRuntime>>>,
+}
+
+struct NodeDecorationRuntime {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_request_id: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeRequest<'a> {
+    request_id: u64,
+    snapshot: &'a WaylandWindowSnapshot,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeResponse {
+    request_id: u64,
+    ok: bool,
+    serialized: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+impl std::fmt::Debug for NodeDecorationEvaluator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeDecorationEvaluator")
+            .field("program", &self.program)
+            .field("base_args", &self.base_args)
+            .field("script_path", &self.script_path)
+            .field("config_path", &self.config_path)
+            .field("working_dir", &self.working_dir)
+            .finish()
+    }
 }
 
 impl NodeDecorationEvaluator {
@@ -152,9 +193,10 @@ impl NodeDecorationEvaluator {
         Self {
             program,
             base_args: Vec::new(),
-            script_path: PathBuf::from("tools/evaluate-decoration.ts"),
+            script_path: PathBuf::from("tools/decoration-runtime.ts"),
             config_path,
             working_dir: None,
+            runtime: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -175,6 +217,59 @@ impl NodeDecorationEvaluator {
             script_path: script_path.into(),
             config_path: config_path.into(),
             working_dir: None,
+            runtime: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn ensure_runtime<'a>(
+        &'a self,
+        runtime: &'a mut Option<NodeDecorationRuntime>,
+    ) -> Result<&'a mut NodeDecorationRuntime, DecorationEvaluationError> {
+        if runtime.is_none() {
+            let mut command = Command::new(&self.program);
+            command.args(&self.base_args);
+            command.arg(&self.script_path);
+            command.arg(&self.config_path);
+            if let Some(cwd) = &self.working_dir {
+                command.current_dir(cwd);
+            }
+            command.stdin(Stdio::piped());
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
+
+            let mut child = command.spawn()?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("missing runtime stdin".into()))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("missing runtime stdout".into()))?;
+
+            *runtime = Some(NodeDecorationRuntime {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+                next_request_id: 1,
+            });
+        }
+
+        runtime
+            .as_mut()
+            .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("runtime unavailable".into()))
+    }
+}
+
+impl Clone for NodeDecorationEvaluator {
+    fn clone(&self) -> Self {
+        Self {
+            program: self.program.clone(),
+            base_args: self.base_args.clone(),
+            script_path: self.script_path.clone(),
+            config_path: self.config_path.clone(),
+            working_dir: self.working_dir.clone(),
+            runtime: Arc::clone(&self.runtime),
         }
     }
 }
@@ -185,28 +280,52 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         window: &WaylandWindowSnapshot,
     ) -> Result<DecorationNode, DecorationEvaluationError> {
         let started_at = Instant::now();
-        let snapshot_json = serde_json::to_string(window)
+        let mut runtime_guard = self
+            .runtime
+            .lock()
+            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+
+        let request = serde_json::to_string(&RuntimeRequest { request_id, snapshot: window })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        writeln!(runtime.stdin, "{request}")?;
+        runtime.stdin.flush()?;
 
-        let mut command = Command::new(&self.program);
-        command.args(&self.base_args);
-        command.arg(&self.script_path);
-        command.arg(&self.config_path);
-        command.arg(snapshot_json);
-        if let Some(cwd) = &self.working_dir {
-            command.current_dir(cwd);
+        let mut line = String::new();
+        let bytes = runtime.stdout.read_line(&mut line)?;
+        if bytes == 0 {
+            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let mut stderr = String::new();
+            if let Some(stderr_pipe) = runtime.child.stderr.as_mut() {
+                let _ = std::io::Read::read_to_string(stderr_pipe, &mut stderr);
+            }
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
         }
 
-        let output = command.output()?;
-        if !output.status.success() {
-            return Err(DecorationEvaluationError::RuntimeFailed {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+        let response: RuntimeResponse = serde_json::from_str(line.trim())
+            .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?;
+        if response.request_id != request_id {
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if !response.ok {
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|_| DecorationEvaluationError::InvalidUtf8)?;
+        let serialized = response
+            .serialized
+            .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("missing serialized tree".into()))?;
+        let stdout = serde_json::to_string(&serialized)
+            .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?;
         debug!(
             window_id = window.id,
             title = window.title,
@@ -273,19 +392,9 @@ mod tests {
         fs::write(
             &script_path,
             r##"#!/bin/sh
+read _
 cat <<'JSON'
-{
-  "kind": "WindowBorder",
-  "props": {
-    "style": {
-      "border": { "px": 1, "color": "#ffffff" }
-    }
-  },
-  "children": [
-    { "kind": "Window", "props": {}, "children": [] }
-  ]
-}
-JSON
+{"requestId":1,"ok":true,"serialized":{"kind":"WindowBorder","props":{"style":{"border":{"px":1,"color":"#ffffff"}}},"children":[{"kind":"Window","props":{},"children":[]}]}}
 "##,
         )
         .expect("write mock evaluator");
