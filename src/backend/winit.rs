@@ -4,6 +4,7 @@ use smithay::{
     backend::{
         renderer::{
             damage::OutputDamageTracker,
+            element::solid::SolidColorRenderElement,
             element::memory::MemoryRenderBufferRenderElement,
             element::surface::WaylandSurfaceRenderElement,
             gles::GlesRenderer,
@@ -16,8 +17,10 @@ use smithay::{
 };
 use tracing::{trace, warn};
 
-use crate::{backend::{decoration, window as window_render}, ShojiWM};
-use crate::backend::damage;
+use crate::{
+    backend::{damage, damage_blink, decoration, window as window_render},
+    ShojiWM,
+};
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -52,6 +55,7 @@ pub fn init_winit(
     state.space.map_output(&output, (0, 0));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    let mut blink_damage_tracker = OutputDamageTracker::from_output(&output);
 
     event_loop
         .handle()
@@ -85,12 +89,7 @@ pub fn init_winit(
                         let windows: Vec<_> = state.space.elements_for_output(&output).cloned().collect();
                         let extra_damage = state.pending_decoration_damage.clone();
 
-                        let mut elements: Vec<WinitRenderElements> = Vec::new();
-                        elements.extend(
-                            damage::elements_for_output(&extra_damage, output_geo)
-                                .into_iter()
-                                .map(WinitRenderElements::Damage),
-                        );
+                        let mut scene_elements: Vec<WinitRenderElements> = Vec::new();
                         for window in windows.iter().rev() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
@@ -99,13 +98,13 @@ pub fn init_winit(
                             let physical_location =
                                 (render_location - output_geo.loc).to_physical_precise_round(scale);
 
-                            elements.extend(
+                            scene_elements.extend(
                                 window_render::popup_elements(window, renderer, physical_location, scale, 1.0)
                                     .into_iter()
                                     .map(WinitRenderElements::Window),
                             );
 
-                            elements.extend(
+                            scene_elements.extend(
                                 decoration::text_elements_for_window(
                                     renderer,
                                     &state.space,
@@ -114,11 +113,11 @@ pub fn init_winit(
                                     window,
                                 )
                                 .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Text),
+                                    .into_iter()
+                                    .map(WinitRenderElements::Text),
                             );
 
-                            elements.extend(
+                            scene_elements.extend(
                                 decoration::rounded_elements_for_window(
                                     renderer,
                                     state.window_decorations.get_mut(window).unwrap(),
@@ -127,11 +126,11 @@ pub fn init_winit(
                                     window,
                                 )
                                 .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Decoration),
+                                    .into_iter()
+                                    .map(WinitRenderElements::Decoration),
                             );
 
-                            elements.extend(
+                            scene_elements.extend(
                                 window_render::clipped_surface_elements(
                                     window,
                                     renderer,
@@ -151,6 +150,31 @@ pub fn init_winit(
                                 .map(WinitRenderElements::Clipped),
                             );
                         }
+
+                        if state.damage_blink_enabled {
+                            if let Ok((damage, _)) = blink_damage_tracker.damage_output(1, &scene_elements) {
+                                if let Some(damage) = damage {
+                                    state.record_damage_blink(&output, damage);
+                                }
+                            }
+                        }
+
+                        let mut elements: Vec<WinitRenderElements> = Vec::new();
+                        elements.extend(
+                            damage_blink::elements_for_output(
+                                state.damage_blink_rects_for_output(&output),
+                                output_geo,
+                                scale,
+                            )
+                            .into_iter()
+                            .map(WinitRenderElements::Blink),
+                        );
+                        elements.extend(
+                            damage::elements_for_output(&extra_damage, output_geo)
+                                .into_iter()
+                                .map(WinitRenderElements::Damage),
+                        );
+                        elements.extend(scene_elements);
 
                         trace!(
                             output = %output.name(),
@@ -181,6 +205,7 @@ pub fn init_winit(
                     state.space.refresh();
                     state.popups.cleanup();
                     state.pending_decoration_damage.clear();
+                    state.finish_damage_blink_frame();
                     let _ = state.display_handle.flush_clients();
 
                     // Ask for redraw to schedule new frame.
@@ -202,5 +227,6 @@ smithay::render_elements! {
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
     Damage=crate::backend::damage::DamageOnlyElement,
+    Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
 }

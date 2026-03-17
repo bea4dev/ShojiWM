@@ -11,9 +11,11 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay, context::ContextPriority},
         renderer::{
+            damage::OutputDamageTracker,
             element::{
                 AsRenderElements,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
             },
             gles::GlesRenderer,
@@ -37,6 +39,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     backend::damage,
+    backend::damage_blink,
     backend::decoration,
     backend::window as window_render,
     drawing::PointerRenderElement,
@@ -51,6 +54,7 @@ type GbmDrmOutput =
 struct SurfaceData {
     output: Output,
     drm_output: GbmDrmOutput,
+    blink_damage_tracker: OutputDamageTracker,
 }
 
 pub struct BackendData {
@@ -184,6 +188,7 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
     }
 
     state.pending_decoration_damage.clear();
+    state.finish_damage_blink_frame();
 
     Ok(())
 }
@@ -194,6 +199,7 @@ render_elements! {
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
     Damage=crate::backend::damage::DamageOnlyElement,
+    Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
@@ -210,179 +216,224 @@ fn render_surface(
         .map(|surface| surface.output.clone())
         .unwrap();
 
-    let ShojiWM {
-        space,
-        tty_backends,
-        start_time,
-        cursor_status,
-        cursor_theme,
-        pointer_images,
-        pointer_element,
-        seat,
-        ..
-    } = state;
+    let should_capture_blink = state.damage_blink_enabled;
+    let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
+    let output_geo = state.space.output_geometry(&output).unwrap();
+    let mut extra_damage = state.pending_decoration_damage.clone();
+    if should_capture_blink {
+        extra_damage.push(crate::ssd::LogicalRect::new(
+            output_geo.loc.x,
+            output_geo.loc.y,
+            output_geo.size.w,
+            output_geo.size.h,
+        ));
+    }
+    let captured_blink_damage = {
+        let ShojiWM {
+            space,
+            tty_backends,
+            start_time,
+            cursor_status,
+            cursor_theme,
+            pointer_images,
+            pointer_element,
+            seat,
+            ..
+        } = state;
 
-    let backend = tty_backends.get_mut(&node).unwrap();
-    let surface = backend.surfaces.get_mut(&crtc).unwrap();
+        let backend = tty_backends.get_mut(&node).unwrap();
+        let surface = backend.surfaces.get_mut(&crtc).unwrap();
 
-    let mut elements: Vec<TtyRenderElements> =
-        Vec::new();
+        let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
 
-    let pointer_pos = seat.get_pointer().unwrap().current_location();
-    let output_geo = space.output_geometry(&output).unwrap();
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let windows: Vec<_> = space.elements_for_output(&output).cloned().collect();
-    let extra_damage = state.pending_decoration_damage.clone();
+        let pointer_pos = seat.get_pointer().unwrap().current_location();
+        let output_geo = space.output_geometry(&output).unwrap();
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let windows: Vec<_> = space.elements_for_output(&output).cloned().collect();
+        let all_windows: Vec<_> = space.elements().cloned().collect();
+        let window_count = all_windows.len();
 
-    if output_geo.to_f64().contains(pointer_pos) {
-        let reset = matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
-        if reset {
-            *cursor_status = CursorImageStatus::default_named();
+        if output_geo.to_f64().contains(pointer_pos) {
+            let reset = matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
+            if reset {
+                *cursor_status = CursorImageStatus::default_named();
+            }
+
+            let hotspot = if let CursorImageStatus::Surface(surface) = cursor_status {
+                compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<std::sync::Mutex<CursorImageAttributes>>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .hotspot
+                })
+            } else {
+                let icon = match cursor_status {
+                    CursorImageStatus::Named(icon) => *icon,
+                    _ => smithay::input::pointer::CursorIcon::Default,
+                };
+                let frame = cursor_theme.get_image(icon, 1, start_time.elapsed());
+                let buffer = pointer_images
+                    .iter()
+                    .find_map(|(image, buffer)| (image == &frame).then_some(buffer.clone()))
+                    .unwrap_or_else(|| {
+                        let buffer = MemoryRenderBuffer::from_slice(
+                            &frame.pixels_rgba,
+                            Fourcc::Argb8888,
+                            (frame.width as i32, frame.height as i32),
+                            1,
+                            Transform::Normal,
+                            None,
+                        );
+                        pointer_images.push((frame.clone(), buffer.clone()));
+                        buffer
+                    });
+                pointer_element.set_buffer(buffer);
+                (frame.xhot as i32, frame.yhot as i32).into()
+            };
+
+            pointer_element.set_status(cursor_status.clone());
+
+            let cursor_location = (pointer_pos - output_geo.loc.to_f64() - hotspot.to_f64())
+                .to_physical(scale)
+                .to_i32_round();
+
+            cursor_elements.extend(
+                pointer_element
+                    .render_elements(&mut backend.renderer, cursor_location, scale, 1.0)
+                    .into_iter()
+                    .map(TtyRenderElements::Cursor),
+            );
         }
 
-        let hotspot = if let CursorImageStatus::Surface(surface) = cursor_status {
-            compositor::with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<std::sync::Mutex<CursorImageAttributes>>()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .hotspot
-            })
-        } else {
-            let icon = match cursor_status {
-                CursorImageStatus::Named(icon) => *icon,
-                _ => smithay::input::pointer::CursorIcon::Default,
+        let mut scene_elements: Vec<TtyRenderElements> = Vec::new();
+
+        for window in windows.iter().rev() {
+            let Some(window_location) = space.element_location(window) else {
+                continue;
             };
-            let frame = cursor_theme.get_image(icon, 1, start_time.elapsed());
-            let buffer = pointer_images
-                .iter()
-                .find_map(|(image, buffer)| (image == &frame).then_some(buffer.clone()))
-                .unwrap_or_else(|| {
-                    let buffer = MemoryRenderBuffer::from_slice(
-                        &frame.pixels_rgba,
-                        Fourcc::Argb8888,
-                        (frame.width as i32, frame.height as i32),
-                        1,
-                        Transform::Normal,
-                        None,
-                    );
-                    pointer_images.push((frame.clone(), buffer.clone()));
-                    buffer
-                });
-            pointer_element.set_buffer(buffer);
-            (frame.xhot as i32, frame.yhot as i32).into()
-        };
+            let render_location = window_location - window.geometry().loc;
+            let physical_location =
+                (render_location - output_geo.loc).to_physical_precise_round(scale);
 
-        pointer_element.set_status(cursor_status.clone());
-
-        let cursor_location = (pointer_pos - output_geo.loc.to_f64() - hotspot.to_f64())
-            .to_physical(scale)
-            .to_i32_round();
-
-        elements.extend(pointer_element.render_elements(
-            &mut backend.renderer,
-            cursor_location,
-            scale,
-            1.0,
-        )
-        .into_iter()
-        .map(TtyRenderElements::Cursor));
-    }
-
-    elements.extend(
-        damage::elements_for_output(&extra_damage, output_geo)
-            .into_iter()
-            .map(TtyRenderElements::Damage),
-    );
-
-    for window in windows.iter().rev() {
-        let Some(window_location) = space.element_location(window) else {
-            continue;
-        };
-        let render_location = window_location - window.geometry().loc;
-        let physical_location = (render_location - output_geo.loc).to_physical_precise_round(scale);
-
-        elements.extend(
-            window_render::popup_elements(window, &mut backend.renderer, physical_location, scale, 1.0)
+            scene_elements.extend(
+                window_render::popup_elements(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    scale,
+                    1.0,
+                )
                 .into_iter()
                 .map(TtyRenderElements::Window),
-        );
-
-        elements.extend(
-            decoration::text_elements_for_window(
-                &mut backend.renderer,
-                space,
-                &state.window_decorations,
-                &output,
-                window,
-            )?
-            .into_iter()
-            .map(TtyRenderElements::Text),
-        );
-
-        elements.extend(
-            decoration::rounded_elements_for_window(
-                &mut backend.renderer,
-                state.window_decorations.get_mut(window).unwrap(),
-                output_geo,
-                scale,
-                window,
-            )?
-            .into_iter()
-            .map(TtyRenderElements::Decoration),
-        );
-
-        elements.extend(
-            window_render::clipped_surface_elements(
-                window,
-                &mut backend.renderer,
-                physical_location,
-                scale,
-                1.0,
-                state
-                    .window_decorations
-                    .get(window)
-                    .and_then(|decoration| decoration.content_clip),
-            )
-            .inspect_err(|error| {
-                warn!(?error, "failed to build clipped surface elements");
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(TtyRenderElements::Clipped),
-        );
-    }
-
-    trace!(
-        ?node,
-        ?crtc,
-        output = %output.name(),
-        window_count = space.elements().count(),
-        render_element_count = elements.len(),
-        cursor_status = ?cursor_status,
-        "rendering tty surface"
-    );
-
-    let result = surface
-        .drm_output
-        .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)?;
-
-    if !result.is_empty {
-        trace!(output = %output.name(), "queueing tty frame");
-        surface.drm_output.queue_frame(())?;
-
-        space.elements().for_each(|window| {
-            window.send_frame(
-                &output,
-                start_time.elapsed(),
-                Some(Duration::ZERO),
-                |_, _| Some(output.clone()),
             );
-        });
-    } else {
-        trace!(output = %output.name(), "tty frame had no damage");
+
+            scene_elements.extend(
+                decoration::text_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    &state.window_decorations,
+                    &output,
+                    window,
+                )?
+                .into_iter()
+                .map(TtyRenderElements::Text),
+            );
+
+            scene_elements.extend(
+                decoration::rounded_elements_for_window(
+                    &mut backend.renderer,
+                    state.window_decorations.get_mut(window).unwrap(),
+                    output_geo,
+                    scale,
+                    window,
+                )?
+                .into_iter()
+                .map(TtyRenderElements::Decoration),
+            );
+
+            scene_elements.extend(
+                window_render::clipped_surface_elements(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    scale,
+                    1.0,
+                    state
+                        .window_decorations
+                        .get(window)
+                        .and_then(|decoration| decoration.content_clip),
+                )
+                .inspect_err(|error| {
+                    warn!(?error, "failed to build clipped surface elements");
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(TtyRenderElements::Clipped),
+            );
+        }
+
+        let captured_blink_damage = if should_capture_blink {
+            match surface.blink_damage_tracker.damage_output(1, &scene_elements) {
+                Ok((damage, _)) => damage.cloned(),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        let cursor_status_for_log = cursor_status.clone();
+        let mut elements: Vec<TtyRenderElements> = Vec::new();
+        elements.extend(
+            damage_blink::elements_for_output(&blink_visible, output_geo, scale)
+                .into_iter()
+                .map(TtyRenderElements::Blink),
+        );
+        elements.extend(cursor_elements);
+        elements.extend(
+            damage::elements_for_output(&extra_damage, output_geo)
+                .into_iter()
+                .map(TtyRenderElements::Damage),
+        );
+        elements.extend(scene_elements);
+
+        trace!(
+            ?node,
+            ?crtc,
+            output = %output.name(),
+            window_count,
+            render_element_count = elements.len(),
+            cursor_status = ?cursor_status_for_log,
+            "rendering tty surface"
+        );
+
+        let result = surface
+            .drm_output
+            .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)?;
+
+        if !result.is_empty {
+            trace!(output = %output.name(), "queueing tty frame");
+            surface.drm_output.queue_frame(())?;
+
+            all_windows.iter().for_each(|window| {
+                window.send_frame(
+                    &output,
+                    start_time.elapsed(),
+                    Some(Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            });
+        } else {
+            trace!(output = %output.name(), "tty frame had no damage");
+        }
+
+        captured_blink_damage
+    };
+
+    if let Some(damage) = captured_blink_damage.as_deref() {
+        state.record_damage_blink(&output, damage);
     }
 
     Ok(())
@@ -446,6 +497,7 @@ fn connector_connected(
     let surface = SurfaceData {
         output: output.clone(),
         drm_output,
+        blink_damage_tracker: OutputDamageTracker::from_output(&output),
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");

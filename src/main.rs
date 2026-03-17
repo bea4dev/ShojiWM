@@ -19,11 +19,11 @@ pub mod state;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging()?;
 
-    let backend = std::env::args().nth(1);
-
-    let backend = match backend.as_ref().map(|backend| backend.as_str()) {
-        Some("--tty") => ShojiWMBackend::TTY,
-        _ => ShojiWMBackend::WInit,
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let backend = if args.iter().any(|arg| arg == "--tty") {
+        ShojiWMBackend::TTY
+    } else {
+        ShojiWMBackend::WInit
     };
 
     info!(?backend, "starting shoji_wm");

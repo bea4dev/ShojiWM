@@ -5,6 +5,7 @@ use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, pointer::CursorImageStatus},
+    output::Output,
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
@@ -14,7 +15,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point},
+    utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
@@ -60,6 +61,9 @@ pub struct ShojiWM {
     pub window_decorations: HashMap<Window, WindowDecorationState>,
     pub pending_decoration_damage: Vec<LogicalRect>,
     pub decoration_evaluator: DecorationRuntimeEvaluator,
+    pub damage_blink_enabled: bool,
+    pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
+    pub damage_blink_pending: HashMap<String, Vec<LogicalRect>>,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -127,6 +131,10 @@ impl ShojiWM {
             DecorationRuntimeEvaluator::Static(Default::default())
         };
 
+        let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
+            || std::env::var_os("SHOJI_DAMAGE_BLINK")
+                .is_some_and(|value| value != "0" && !value.is_empty());
+
         Self {
             start_time,
             display_handle: dh,
@@ -150,6 +158,9 @@ impl ShojiWM {
             window_decorations: HashMap::new(),
             pending_decoration_damage: Vec::new(),
             decoration_evaluator,
+            damage_blink_enabled,
+            damage_blink_visible: HashMap::new(),
+            damage_blink_pending: HashMap::new(),
 
             is_running: true,
             needs_redraw: true,
@@ -227,6 +238,73 @@ impl ShojiWM {
 
     pub fn schedule_redraw(&mut self) {
         self.needs_redraw = true;
+    }
+
+    pub fn damage_blink_rects_for_output(&self, output: &Output) -> &[LogicalRect] {
+        self.damage_blink_visible
+            .get(&output.name())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn record_damage_blink(
+        &mut self,
+        output: &Output,
+        damage: &[Rectangle<i32, Physical>],
+    ) {
+        if !self.damage_blink_enabled {
+            return;
+        }
+
+        let Some(output_geo) = self.space.output_geometry(output) else {
+            return;
+        };
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let rects = damage
+            .iter()
+            .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
+            .map(|rect| {
+                let logical = rect.to_f64().to_logical(scale).to_i32_round();
+                LogicalRect::new(
+                    output_geo.loc.x + logical.loc.x,
+                    output_geo.loc.y + logical.loc.y,
+                    logical.size.w,
+                    logical.size.h,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        self.damage_blink_pending
+            .insert(output.name().to_string(), rects);
+    }
+
+    pub fn finish_damage_blink_frame(&mut self) {
+        if !self.damage_blink_enabled {
+            self.damage_blink_visible.clear();
+            self.damage_blink_pending.clear();
+            return;
+        }
+
+        let previous_visible = self
+            .damage_blink_visible
+            .values()
+            .flat_map(|rects| rects.iter().copied())
+            .collect::<Vec<_>>();
+        let had_visible = self.damage_blink_visible.values().any(|rects| !rects.is_empty());
+        self.damage_blink_visible = std::mem::take(&mut self.damage_blink_pending);
+        let next_visible = self
+            .damage_blink_visible
+            .values()
+            .flat_map(|rects| rects.iter().copied())
+            .collect::<Vec<_>>();
+        let has_visible = self.damage_blink_visible.values().any(|rects| !rects.is_empty());
+
+        self.pending_decoration_damage.extend(previous_visible);
+        self.pending_decoration_damage.extend(next_visible);
+
+        if had_visible || has_visible {
+            self.schedule_redraw();
+        }
     }
 }
 

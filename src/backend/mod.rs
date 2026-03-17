@@ -1,5 +1,6 @@
 pub mod clipped_surface;
 pub mod damage;
+pub mod damage_blink;
 pub mod decoration;
 pub mod rounded;
 pub mod text;
