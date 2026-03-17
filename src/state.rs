@@ -26,6 +26,7 @@ use smithay::{
 };
 
 use crate::{backend::tty::BackendData, cursor::Cursor, drawing::PointerElement};
+use crate::ssd::{DecorationRuntimeEvaluator, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::info;
 
 pub struct ShojiWM {
@@ -50,6 +51,8 @@ pub struct ShojiWM {
     pub seat: Seat<Self>,
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
+    pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub decoration_evaluator: DecorationRuntimeEvaluator,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -106,6 +109,14 @@ impl ShojiWM {
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
+        let decoration_evaluator = if std::path::Path::new("node_modules/.bin/tsx").exists() {
+            DecorationRuntimeEvaluator::Node(
+                NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
+                    .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into())),
+            )
+        } else {
+            DecorationRuntimeEvaluator::Static(Default::default())
+        };
 
         Self {
             start_time,
@@ -127,15 +138,16 @@ impl ShojiWM {
             seat,
 
             tty_backends: HashMap::new(),
+            window_decorations: HashMap::new(),
+            decoration_evaluator,
 
             is_running: true,
             needs_redraw: true,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme: Cursor::load(),
             pointer_element: PointerElement::default(),
-            // Keep client-side as the current default until server-side decorations are drawn.
-            // Flipping this to ServerSide is the single policy change needed when SSD lands.
-            default_decoration_mode: DecorationMode::ClientSide,
+            // SSD rendering is available, so prefer compositor-side decorations by default.
+            default_decoration_mode: DecorationMode::ServerSide,
         }
     }
 

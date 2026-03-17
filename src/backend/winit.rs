@@ -3,14 +3,22 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement,
+            damage::OutputDamageTracker,
+            element::{
+                solid::SolidColorRenderElement,
+                surface::WaylandSurfaceRenderElement,
+            },
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
-    }, desktop::{Space, Window}, output::{Mode, Output, PhysicalProperties, Subpixel}, reexports::calloop::EventLoop, utils::{Rectangle, Transform}
+    },
+    output::{Mode, Output, PhysicalProperties, Subpixel},
+    reexports::calloop::EventLoop,
+    utils::{Rectangle, Transform},
 };
+use tracing::{debug, warn};
 
-use crate::ShojiWM;
+use crate::{backend::{decoration, window as window_render}, ShojiWM};
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -63,25 +71,70 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    if let Err(err) = state.refresh_window_decorations() {
+                        warn!(error = ?err, "failed to refresh window decorations for winit");
+                    }
+
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
 
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
-                        let _ = smithay::desktop::space::render_output::<
-                            GlesRenderer,
-                            WaylandSurfaceRenderElement<GlesRenderer>,
-                            Window,
-                            [&Space<Window>; 1],
-                        >(
-                            &output,
+                        let output_geo = state.space.output_geometry(&output).unwrap();
+                        let scale =
+                            smithay::utils::Scale::from(output.current_scale().fractional_scale());
+
+                        let mut elements: Vec<WinitRenderElements> = Vec::new();
+                        for window in state.space.elements_for_output(&output).rev() {
+                            let Some(window_location) = state.space.element_location(window) else {
+                                continue;
+                            };
+                            let render_location = window_location - window.geometry().loc;
+                            let physical_location =
+                                (render_location - output_geo.loc).to_physical_precise_round(scale);
+
+                            elements.extend(
+                                window_render::popup_elements(window, renderer, physical_location, scale, 1.0)
+                                    .into_iter()
+                                    .map(WinitRenderElements::Window),
+                            );
+
+                            elements.extend(
+                                decoration::solid_elements_for_window(
+                                    &state.space,
+                                    &state.window_decorations,
+                                    &output,
+                                    window,
+                                )
+                                .into_iter()
+                                .map(WinitRenderElements::Decoration),
+                            );
+
+                            elements.extend(
+                                window_render::surface_elements(
+                                    window,
+                                    renderer,
+                                    physical_location,
+                                    scale,
+                                    1.0,
+                                )
+                                .into_iter()
+                                .map(WinitRenderElements::Window),
+                            );
+                        }
+
+                        debug!(
+                            output = %output.name(),
+                            window_count = state.space.elements().count(),
+                            render_element_count = elements.len(),
+                            "rendering winit frame"
+                        );
+
+                        let _ = damage_tracker.render_output(
                             renderer,
                             &mut framebuffer,
-                            1.0,
                             0,
-                            [&state.space],
-                            &[],
-                            &mut damage_tracker,
+                            &elements,
                             [0.1, 0.1, 0.1, 1.0],
                         );
                     }
@@ -104,11 +157,17 @@ pub fn init_winit(
                     backend.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {
-                    state.loop_signal.stop();
+                    state.shutdown();
                 }
                 _ => (),
             };
         })?;
 
     Ok(())
+}
+
+smithay::render_elements! {
+    pub WinitRenderElements<=GlesRenderer>;
+    Window=WaylandSurfaceRenderElement<GlesRenderer>,
+    Decoration=SolidColorRenderElement,
 }

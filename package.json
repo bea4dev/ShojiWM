@@ -1,0 +1,16 @@
+{
+  "name": "shoji-wm-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p packages/shoji_wm/tsconfig.json && tsc -p packages/config/tsconfig.json",
+    "ssd:eval": "tsx tools/evaluate-decoration.ts packages/config/src/index.tsx"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

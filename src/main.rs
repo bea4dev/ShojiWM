@@ -13,6 +13,7 @@ pub mod drawing;
 pub mod grabs;
 pub mod handlers;
 pub mod input;
+pub mod ssd;
 pub mod state;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -30,7 +30,7 @@ use crate::{
     grabs::{move_grab::MoveSurfaceGrab, resize_grab::ResizeSurfaceGrab},
     state::ShojiWM,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 fn apply_decoration_mode(state: &mut ShojiWM, toplevel: &ToplevelSurface, mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
     toplevel.with_pending_state(|pending| {
@@ -56,7 +56,22 @@ impl XdgShellHandler for ShojiWM {
             "new xdg toplevel received"
         );
         let window = Window::new_wayland_window(surface);
-        self.space.map_element(window, (0, 0), false);
+        let snapshot = self.snapshot_window(&window);
+        let initial_location = match self.suggested_window_location(&snapshot) {
+            Ok(location) => location,
+            Err(error) => {
+                warn!(
+                    window_id = snapshot.id,
+                    title = snapshot.title,
+                    app_id = snapshot.app_id,
+                    error = ?error,
+                    "failed to compute suggested SSD-aware window location, falling back to origin"
+                );
+                (0, 0)
+            }
+        };
+
+        self.space.map_element(window, initial_location, false);
         debug!(window_count = self.space.elements().count(), "mapped new toplevel into space");
         self.schedule_redraw();
     }

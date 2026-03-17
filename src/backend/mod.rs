@@ -1,5 +1,7 @@
+pub mod decoration;
 pub mod tty;
 pub mod winit;
+pub mod window;
 
 use std::time::Duration;
 

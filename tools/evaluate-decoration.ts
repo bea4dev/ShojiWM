@@ -1,0 +1,85 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import {
+  createReactiveWindow,
+  serializeDecorationTree,
+  type DecorationFunction,
+  type WaylandWindowActions,
+  type WaylandWindowSnapshot,
+} from "shoji_wm";
+
+const DEFAULT_SNAPSHOT: WaylandWindowSnapshot = {
+  id: "demo-window-1",
+  title: "Kitty",
+  appId: "kitty",
+  isFocused: true,
+  isFloating: true,
+  isMaximized: false,
+  isFullscreen: false,
+  isXwayland: false,
+  icon: undefined,
+  interaction: {
+    hoveredIds: [],
+    activeIds: [],
+  },
+};
+
+async function main() {
+  const configPath = process.argv[2];
+  if (!configPath) {
+    throw new Error("usage: npm run ssd:eval -- <config-path> [snapshot-json]");
+  }
+
+  const snapshot = process.argv[3]
+    ? (JSON.parse(process.argv[3]) as WaylandWindowSnapshot)
+    : DEFAULT_SNAPSHOT;
+
+  const moduleUrl = pathToFileURL(resolve(configPath)).href;
+  const loaded = await import(moduleUrl);
+  const decoration = resolveDecoration(loaded);
+
+  const actions: WaylandWindowActions = {
+    close() {
+      console.log("[runtime] close() requested");
+    },
+    maximize() {
+      console.log("[runtime] maximize() requested");
+    },
+    minimize() {
+      console.log("[runtime] minimize() requested");
+    },
+    isXWayland() {
+      return snapshot.isXwayland;
+    },
+  };
+
+  const handle = createReactiveWindow(snapshot, actions);
+  const tree = decoration(handle.window);
+  const serialized = serializeDecorationTree(tree);
+
+  console.log(JSON.stringify(serialized, null, 2));
+}
+
+function resolveDecoration(
+  loaded: Record<string, unknown>,
+): DecorationFunction {
+  const maybeDecoration =
+    (loaded.WINDOW_MANAGER as { decoration?: DecorationFunction } | undefined)
+      ?.decoration ??
+    (loaded.default as { decoration?: DecorationFunction } | undefined)?.decoration ??
+    (loaded.decoration as DecorationFunction | undefined);
+
+  if (!maybeDecoration) {
+    throw new Error(
+      "config module did not export WINDOW_MANAGER.decoration",
+    );
+  }
+
+  return maybeDecoration;
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

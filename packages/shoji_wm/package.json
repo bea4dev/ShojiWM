@@ -1,0 +1,13 @@
+{
+  "name": "shoji_wm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./default-decoration": "./src/default-decoration.tsx",
+    "./jsx-runtime": "./src/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./src/jsx-dev-runtime.ts"
+  },
+  "types": "./src/index.ts"
+}

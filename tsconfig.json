@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "shoji_wm",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "shoji_wm": [
+        "packages/shoji_wm/src/index.ts"
+      ],
+      "shoji_wm/*": [
+        "packages/shoji_wm/src/*"
+      ]
+    }
+  }
+}

@@ -14,15 +14,12 @@ use smithay::{
             element::{
                 AsRenderElements,
                 memory::MemoryRenderBuffer,
+                solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
             },
             gles::GlesRenderer,
         },
         session::{Session, libseat::LibSeatSession},
-    },
-    desktop::{
-        Window,
-        space::{SpaceRenderElements, space_render_elements},
     },
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
@@ -39,7 +36,12 @@ use smithay::{
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
 
-use crate::{drawing::PointerRenderElement, state::ShojiWM};
+use crate::{
+    backend::decoration,
+    backend::window as window_render,
+    drawing::PointerRenderElement,
+    state::ShojiWM,
+};
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 
@@ -156,6 +158,8 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
 
+    state.refresh_window_decorations()?;
+
     debug!(
         backend_count = state.tty_backends.len(),
         window_count = state.space.elements().count(),
@@ -184,10 +188,8 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
 
 render_elements! {
     pub TtyRenderElements<=GlesRenderer>;
-    Space=SpaceRenderElements<
-        GlesRenderer,
-        <Window as AsRenderElements<GlesRenderer>>::RenderElement
-    >,
+    Window=WaylandSurfaceRenderElement<GlesRenderer>,
+    Decoration=SolidColorRenderElement,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
@@ -217,7 +219,8 @@ fn render_surface(
     let backend = tty_backends.get_mut(&node).unwrap();
     let surface = backend.surfaces.get_mut(&crtc).unwrap();
 
-    let mut elements: Vec<TtyRenderElements> = Vec::new();
+    let mut elements: Vec<TtyRenderElements> =
+        Vec::new();
 
     let pointer_pos = seat.get_pointer().unwrap().current_location();
     let output_geo = space.output_geometry(&output).unwrap();
@@ -273,11 +276,37 @@ fn render_surface(
         .map(TtyRenderElements::Cursor));
     }
 
-    elements.extend(
-        space_render_elements::<_, Window, _>(&mut backend.renderer, [&*space], &output, 1.0)?
+    for window in space.elements_for_output(&output).rev() {
+        let Some(window_location) = space.element_location(window) else {
+            continue;
+        };
+        let render_location = window_location - window.geometry().loc;
+        let physical_location = (render_location - output_geo.loc).to_physical_precise_round(scale);
+
+        elements.extend(
+            window_render::popup_elements(window, &mut backend.renderer, physical_location, scale, 1.0)
+                .into_iter()
+                .map(TtyRenderElements::Window),
+        );
+
+        elements.extend(
+            decoration::solid_elements_for_window(space, &state.window_decorations, &output, window)
+                .into_iter()
+                .map(TtyRenderElements::Decoration),
+        );
+
+        elements.extend(
+            window_render::surface_elements(
+                window,
+                &mut backend.renderer,
+                physical_location,
+                scale,
+                1.0,
+            )
             .into_iter()
-            .map(TtyRenderElements::Space),
-    );
+            .map(TtyRenderElements::Window),
+        );
+    }
 
     debug!(
         ?node,
@@ -385,7 +414,7 @@ fn render_now(
     surface: &mut SurfaceData,
     renderer: &mut GlesRenderer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+    let elements: Vec<SolidColorRenderElement> = Vec::new();
 
     debug!(output = %surface.output.name(), "rendering initial tty frame");
     let result =

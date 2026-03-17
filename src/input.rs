@@ -7,11 +7,20 @@ use smithay::{
         keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::SERIAL_COUNTER,
+    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    utils::{SERIAL_COUNTER, Serial},
 };
+use std::time::Instant;
+use tracing::debug;
 
-use crate::state::ShojiWM;
+use crate::{
+    grabs::{
+        move_grab::MoveSurfaceGrab,
+        resize_grab::{ResizeEdge, ResizeSurfaceGrab},
+    },
+    ssd::{DecorationHitTestResult, ResizeEdges, WindowAction},
+    state::ShojiWM,
+};
 
 enum KeyboardAction {
     Forward,
@@ -109,7 +118,6 @@ impl ShojiWM {
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
-                let keyboard = self.seat.get_keyboard().unwrap();
 
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -118,26 +126,93 @@ impl ShojiWM {
                 let button_state = event.state();
 
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-                    if let Some((window, _loc)) = self
+                    let _ = self.refresh_window_decorations();
+
+                    if let Some((window, hit)) = self.decoration_under(pointer.current_location()) {
+                        self.focus_window(&window, serial);
+
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+
+                        match hit {
+                            DecorationHitTestResult::Action(WindowAction::Close) => {
+                                if let Some(toplevel) = window.toplevel() {
+                                    toplevel.send_close();
+                                }
+                            }
+                            DecorationHitTestResult::Action(_) => {}
+                            DecorationHitTestResult::Move => {
+                                if let (Some(start_data), Some(initial_window_location)) = (
+                                    pointer.grab_start_data(),
+                                    self.space.element_location(&window),
+                                ) {
+                                    let grab = MoveSurfaceGrab {
+                                        start_data,
+                                        window,
+                                        initial_window_location,
+                                    };
+                                    pointer.set_grab(
+                                        self,
+                                        grab,
+                                        serial,
+                                        smithay::input::pointer::Focus::Clear,
+                                    );
+                                }
+                            }
+                            DecorationHitTestResult::Resize(edges) => {
+                                if let (Some(start_data), Some(initial_window_location)) = (
+                                    pointer.grab_start_data(),
+                                    self.space.element_location(&window),
+                                ) {
+                                    let initial_window_size = window.geometry().size;
+                                    if let Some(toplevel) = window.toplevel() {
+                                        toplevel.with_pending_state(|state| {
+                                            state.states.set(
+                                                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing,
+                                            );
+                                        });
+                                        toplevel.send_pending_configure();
+                                    }
+
+                                    let grab = ResizeSurfaceGrab::start(
+                                        start_data,
+                                        window,
+                                        resize_edges_to_grab(edges),
+                                        smithay::utils::Rectangle::new(
+                                            initial_window_location,
+                                            initial_window_size,
+                                        ),
+                                    );
+                                    pointer.set_grab(
+                                        self,
+                                        grab,
+                                        serial,
+                                        smithay::input::pointer::Focus::Clear,
+                                    );
+                                }
+                            }
+                            DecorationHitTestResult::ClientArea
+                            | DecorationHitTestResult::Outside => {}
+                        }
+
+                        pointer.frame(self);
+                        self.schedule_redraw();
+                        return;
+                    } else if let Some((window, _loc)) = self
                         .space
                         .element_under(pointer.current_location())
                         .map(|(w, l)| (w.clone(), l))
                     {
-                        self.space.raise_element(&window, true);
-                        keyboard.set_focus(
-                            self,
-                            Some(window.toplevel().unwrap().wl_surface().clone()),
-                            serial,
-                        );
-                        self.space.elements().for_each(|window| {
-                            window.toplevel().unwrap().send_pending_configure();
-                        });
+                        self.focus_window(&window, serial);
                     } else {
-                        self.space.elements().for_each(|window| {
-                            window.set_activated(false);
-                            window.toplevel().unwrap().send_pending_configure();
-                        });
-                        keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                        self.clear_focus(serial);
                     }
                 };
 
@@ -194,4 +269,76 @@ impl ShojiWM {
             _ => {}
         }
     }
+}
+
+impl ShojiWM {
+    fn focus_window(&mut self, window: &smithay::desktop::Window, serial: Serial) {
+        let started_at = Instant::now();
+        self.space.raise_element(window, true);
+
+        for candidate in self.space.elements() {
+            let should_activate = candidate == window;
+            if candidate.set_activated(should_activate) {
+                if let Some(toplevel) = candidate.toplevel() {
+                    let _ = toplevel.send_pending_configure();
+                }
+            }
+        }
+
+        if let Some(toplevel) = window.toplevel() {
+            self.seat
+                .get_keyboard()
+                .unwrap()
+                .set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+        }
+
+        self.schedule_redraw();
+        debug!(
+            window_id = window
+                .toplevel()
+                .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                .unwrap_or_default(),
+            elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+            "focus_window finished"
+        );
+    }
+
+    fn clear_focus(&mut self, serial: Serial) {
+        let started_at = Instant::now();
+        for window in self.space.elements() {
+            if window.set_activated(false) {
+                if let Some(toplevel) = window.toplevel() {
+                    let _ = toplevel.send_pending_configure();
+                }
+            }
+        }
+
+        self.seat
+            .get_keyboard()
+            .unwrap()
+            .set_focus(self, Option::<WlSurface>::None, serial);
+
+        self.schedule_redraw();
+        debug!(
+            elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+            "clear_focus finished"
+        );
+    }
+}
+
+fn resize_edges_to_grab(edges: ResizeEdges) -> ResizeEdge {
+    let mut converted = ResizeEdge::empty();
+    if edges.contains(ResizeEdges::TOP) {
+        converted |= ResizeEdge::TOP;
+    }
+    if edges.contains(ResizeEdges::BOTTOM) {
+        converted |= ResizeEdge::BOTTOM;
+    }
+    if edges.contains(ResizeEdges::LEFT) {
+        converted |= ResizeEdge::LEFT;
+    }
+    if edges.contains(ResizeEdges::RIGHT) {
+        converted |= ResizeEdge::RIGHT;
+    }
+    converted
 }
