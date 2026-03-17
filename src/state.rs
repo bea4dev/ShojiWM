@@ -2,6 +2,7 @@ use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
 use smithay::{
     backend::drm::DrmNode,
+    backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, pointer::CursorImageStatus},
     reexports::{
@@ -24,13 +25,14 @@ use smithay::{
         socket::ListeningSocketSource,
     },
 };
+use xcursor::parser::Image;
 
 use crate::{
     backend::{text::TextRasterizer, tty::BackendData},
     cursor::Cursor,
     drawing::PointerElement,
 };
-use crate::ssd::{DecorationRuntimeEvaluator, NodeDecorationEvaluator, WindowDecorationState};
+use crate::ssd::{DecorationRuntimeEvaluator, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::info;
 
 pub struct ShojiWM {
@@ -56,12 +58,14 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub pending_decoration_damage: Vec<LogicalRect>,
     pub decoration_evaluator: DecorationRuntimeEvaluator,
 
     pub is_running: bool,
     pub needs_redraw: bool,
     pub cursor_status: CursorImageStatus,
     pub cursor_theme: Cursor,
+    pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
     pub pointer_element: PointerElement,
     pub text_rasterizer: TextRasterizer,
     pub default_decoration_mode: DecorationMode,
@@ -144,12 +148,14 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             window_decorations: HashMap::new(),
+            pending_decoration_damage: Vec::new(),
             decoration_evaluator,
 
             is_running: true,
             needs_redraw: true,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme: Cursor::load(),
+            pointer_images: Vec::new(),
             pointer_element: PointerElement::default(),
             text_rasterizer: TextRasterizer::new(),
             // SSD rendering is available, so prefer compositor-side decorations by default.

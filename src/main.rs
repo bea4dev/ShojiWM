@@ -54,7 +54,7 @@ fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,shoji_wm=debug"));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,shoji_wm=info"));
 
     tracing_subscriber::fmt()
         .compact()

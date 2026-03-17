@@ -1,4 +1,5 @@
 pub mod clipped_surface;
+pub mod damage;
 pub mod decoration;
 pub mod rounded;
 pub mod text;
@@ -17,7 +18,7 @@ use smithay::{
     },
     reexports::{calloop::EventLoop, input::Libinput, wayland_server::Display},
 };
-use tracing::{debug, info};
+use tracing::{info, trace};
 
 use crate::{
     backend::tty::{device_added, render_if_needed}, spawn_client, state::ShojiWM
@@ -106,11 +107,16 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if state.needs_redraw {
-            debug!("tty loop observed pending redraw");
+            trace!("tty loop observed pending redraw");
         }
         render_if_needed(&mut state)?;
 
+        let window_count_before_refresh = state.space.elements().count();
         state.space.refresh();
+        let window_count_after_refresh = state.space.elements().count();
+        if window_count_after_refresh != window_count_before_refresh {
+            state.schedule_redraw();
+        }
         state.popups.cleanup();
         let _ = state.display_handle.flush_clients();
     }

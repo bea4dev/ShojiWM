@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use smithay::{
     backend::renderer::{
         element::memory::MemoryRenderBufferRenderElement,
-        gles::{GlesError, GlesRenderer, element::PixelShaderElement},
+        gles::{GlesError, GlesRenderer},
     },
     desktop::{Space, Window},
     output::Output,
@@ -12,7 +12,7 @@ use smithay::{
 use tracing::trace;
 
 use crate::{
-    backend::rounded::{self, RoundedClip, RoundedRectSpec, RoundedShapeKind},
+    backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
     backend::text,
     ssd::{LogicalRect, WindowDecorationState},
 };
@@ -20,9 +20,9 @@ use crate::{
 pub fn rounded_elements_for_output(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
-    decorations: &HashMap<Window, WindowDecorationState>,
+    decorations: &mut HashMap<Window, WindowDecorationState>,
     output: &Output,
-) -> Result<Vec<PixelShaderElement>, GlesError> {
+) -> Result<Vec<StableRoundedElement>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
         return Ok(Vec::new());
     };
@@ -30,12 +30,13 @@ pub fn rounded_elements_for_output(
 
     let mut elements = Vec::new();
     for window in space.elements() {
-        let Some(decoration) = decorations.get(window) else {
+        let Some(decoration) = decorations.get_mut(window) else {
             continue;
         };
 
-        for cached in &decoration.buffers {
-            if let Some(element) = rounded_rect_element(renderer, cached, output_geo, scale)? {
+        let buffers = decoration.buffers.clone();
+        for cached in &buffers {
+            if let Some(element) = rounded_rect_element(renderer, decoration, cached, output_geo, scale)? {
                 elements.push(element);
             }
         }
@@ -53,23 +54,15 @@ pub fn rounded_elements_for_output(
 
 pub fn rounded_elements_for_window(
     renderer: &mut GlesRenderer,
-    space: &Space<Window>,
-    decorations: &HashMap<Window, WindowDecorationState>,
-    output: &Output,
-    window: &Window,
-) -> Result<Vec<PixelShaderElement>, GlesError> {
-    let Some(output_geo) = space.output_geometry(output) else {
-        return Ok(Vec::new());
-    };
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let Some(decoration) = decorations.get(window) else {
-        return Ok(Vec::new());
-    };
-
-    decoration
-        .buffers
+    decoration: &mut WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    _window: &Window,
+) -> Result<Vec<StableRoundedElement>, GlesError> {
+    let buffers = decoration.buffers.clone();
+    buffers
         .iter()
-        .filter_map(|cached| rounded_rect_element(renderer, cached, output_geo, scale).transpose())
+        .filter_map(|cached| rounded_rect_element(renderer, decoration, cached, output_geo, scale).transpose())
         .collect()
 }
 
@@ -85,10 +78,11 @@ pub fn text_elements_for_window(
 
 fn rounded_rect_element(
     renderer: &mut GlesRenderer,
+    decoration: &mut crate::ssd::WindowDecorationState,
     cached: &crate::ssd::CachedDecorationBuffer,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
-) -> Result<Option<PixelShaderElement>, GlesError> {
+) -> Result<Option<StableRoundedElement>, GlesError> {
     if intersect_logical_rect(cached.rect, output_geo).is_none() {
         return Ok(None);
     }
@@ -105,7 +99,11 @@ fn rounded_rect_element(
         radius: cached.clip_radius,
     });
 
-    let element = rounded::element_for_spec(
+    let state = decoration
+        .rounded_cache
+        .entry(cached.stable_key.clone())
+        .or_default();
+    let element = state.element(
         renderer,
         RoundedRectSpec {
             rect: local_rect,

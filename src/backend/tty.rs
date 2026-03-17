@@ -16,7 +16,7 @@ use smithay::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::WaylandSurfaceRenderElement,
             },
-            gles::{GlesRenderer, element::PixelShaderElement},
+            gles::GlesRenderer,
         },
         session::{Session, libseat::LibSeatSession},
     },
@@ -36,6 +36,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
+    backend::damage,
     backend::decoration,
     backend::window as window_render,
     drawing::PointerRenderElement,
@@ -159,7 +160,7 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
 
     state.refresh_window_decorations()?;
 
-    debug!(
+    trace!(
         backend_count = state.tty_backends.len(),
         window_count = state.space.elements().count(),
         "rendering pending redraw"
@@ -182,6 +183,8 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
         }
     }
 
+    state.pending_decoration_damage.clear();
+
     Ok(())
 }
 
@@ -190,7 +193,8 @@ render_elements! {
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Decoration=PixelShaderElement,
+    Damage=crate::backend::damage::DamageOnlyElement,
+    Decoration=crate::backend::rounded::StableRoundedElement,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
@@ -212,6 +216,7 @@ fn render_surface(
         start_time,
         cursor_status,
         cursor_theme,
+        pointer_images,
         pointer_element,
         seat,
         ..
@@ -226,6 +231,8 @@ fn render_surface(
     let pointer_pos = seat.get_pointer().unwrap().current_location();
     let output_geo = space.output_geometry(&output).unwrap();
     let scale = Scale::from(output.current_scale().fractional_scale());
+    let windows: Vec<_> = space.elements_for_output(&output).cloned().collect();
+    let extra_damage = state.pending_decoration_damage.clone();
 
     if output_geo.to_f64().contains(pointer_pos) {
         let reset = matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
@@ -249,14 +256,21 @@ fn render_surface(
                 _ => smithay::input::pointer::CursorIcon::Default,
             };
             let frame = cursor_theme.get_image(icon, 1, start_time.elapsed());
-            let buffer = MemoryRenderBuffer::from_slice(
-                &frame.pixels_rgba,
-                Fourcc::Argb8888,
-                (frame.width as i32, frame.height as i32),
-                1,
-                Transform::Normal,
-                None,
-            );
+            let buffer = pointer_images
+                .iter()
+                .find_map(|(image, buffer)| (image == &frame).then_some(buffer.clone()))
+                .unwrap_or_else(|| {
+                    let buffer = MemoryRenderBuffer::from_slice(
+                        &frame.pixels_rgba,
+                        Fourcc::Argb8888,
+                        (frame.width as i32, frame.height as i32),
+                        1,
+                        Transform::Normal,
+                        None,
+                    );
+                    pointer_images.push((frame.clone(), buffer.clone()));
+                    buffer
+                });
             pointer_element.set_buffer(buffer);
             (frame.xhot as i32, frame.yhot as i32).into()
         };
@@ -277,7 +291,13 @@ fn render_surface(
         .map(TtyRenderElements::Cursor));
     }
 
-    for window in space.elements_for_output(&output).rev() {
+    elements.extend(
+        damage::elements_for_output(&extra_damage, output_geo)
+            .into_iter()
+            .map(TtyRenderElements::Damage),
+    );
+
+    for window in windows.iter().rev() {
         let Some(window_location) = space.element_location(window) else {
             continue;
         };
@@ -305,9 +325,9 @@ fn render_surface(
         elements.extend(
             decoration::rounded_elements_for_window(
                 &mut backend.renderer,
-                space,
-                &state.window_decorations,
-                &output,
+                state.window_decorations.get_mut(window).unwrap(),
+                output_geo,
+                scale,
                 window,
             )?
             .into_iter()
@@ -335,7 +355,7 @@ fn render_surface(
         );
     }
 
-    debug!(
+    trace!(
         ?node,
         ?crtc,
         output = %output.name(),
@@ -350,7 +370,7 @@ fn render_surface(
         .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)?;
 
     if !result.is_empty {
-        debug!(output = %output.name(), "queueing tty frame");
+        trace!(output = %output.name(), "queueing tty frame");
         surface.drm_output.queue_frame(())?;
 
         space.elements().for_each(|window| {
@@ -441,7 +461,7 @@ fn render_now(
     surface: &mut SurfaceData,
     renderer: &mut GlesRenderer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let elements: Vec<PixelShaderElement> = Vec::new();
+    let elements: Vec<crate::backend::rounded::StableRoundedElement> = Vec::new();
 
     debug!(output = %surface.output.name(), "rendering initial tty frame");
     let result =

@@ -8,6 +8,7 @@ use tracing::{debug, trace};
 
 use crate::state::ShojiWM;
 use crate::backend::text::{CachedDecorationLabel, LabelSpec};
+use crate::backend::rounded::RoundedElementState;
 
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluator,
@@ -24,6 +25,7 @@ pub struct WindowDecorationState {
     pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
     pub text_buffers: Vec<CachedDecorationLabel>,
+    pub rounded_cache: std::collections::HashMap<String, RoundedElementState>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +49,7 @@ pub enum DecorationRuntimeEvaluator {
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationBuffer {
+    pub stable_key: String,
     pub rect: LogicalRect,
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
@@ -129,6 +132,13 @@ impl ShojiWM {
         let mut rebuilt = 0usize;
         let mut relayout = 0usize;
 
+        let removed_roots = self
+            .window_decorations
+            .iter()
+            .filter(|(window, _)| !windows.contains(window))
+            .map(|(_, decoration)| decoration.layout.root.rect)
+            .collect::<Vec<_>>();
+        self.pending_decoration_damage.extend(removed_roots);
         self.window_decorations.retain(|window, _| windows.contains(window));
 
         for window in windows {
@@ -146,10 +156,15 @@ impl ShojiWM {
 
             if needs_tree {
                 let started_at = Instant::now();
+                let previous_root = self
+                    .window_decorations
+                    .get(&window)
+                    .map(|cached| cached.layout.root.rect);
                 let tree = evaluate_dynamic_decoration(&self.decoration_evaluator, &snapshot)?;
                 let layout = tree
                     .layout_for_client(client_rect)
                     .map_err(super::DecorationEvaluationError::Layout)?;
+                push_damage_pair(&mut self.pending_decoration_damage, previous_root, layout.root.rect);
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
@@ -162,6 +177,11 @@ impl ShojiWM {
                     "rebuilt window decoration tree"
                 );
                 log_decoration_refresh("rebuild", &snapshot, client_rect, &layout, &buffers);
+                let rounded_cache = self
+                    .window_decorations
+                    .remove(&window)
+                    .map(|cached| cached.rounded_cache)
+                    .unwrap_or_default();
                 self.window_decorations.insert(
                     window,
                     WindowDecorationState {
@@ -172,15 +192,22 @@ impl ShojiWM {
                         content_clip,
                         buffers,
                         text_buffers,
+                        rounded_cache,
                     },
                 );
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
                 if cached.client_rect != client_rect {
                     let started_at = Instant::now();
+                    let previous_root = cached.layout.root.rect;
                     cached.layout = cached
                         .tree
                         .layout_for_client(client_rect)
                         .map_err(super::DecorationEvaluationError::Layout)?;
+                    push_damage_pair(
+                        &mut self.pending_decoration_damage,
+                        Some(previous_root),
+                        cached.layout.root.rect,
+                    );
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
                     cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
@@ -206,7 +233,7 @@ impl ShojiWM {
             }
         }
 
-        debug!(
+        trace!(
             window_count,
             rebuilt,
             relayout,
@@ -349,7 +376,7 @@ impl super::ComputedDecorationNode {
 
 fn build_cached_buffers(layout: &ComputedDecorationTree) -> Vec<CachedDecorationBuffer> {
     let mut buffers = Vec::new();
-    collect_cached_buffers(&layout.root, None, &mut buffers);
+    collect_cached_buffers(&layout.root, "root".to_string(), None, &mut buffers);
     buffers
 }
 
@@ -364,6 +391,7 @@ fn build_text_buffers(
 
 fn collect_cached_buffers(
     node: &super::ComputedDecorationNode,
+    path: String,
     inherited_clip: Option<(LogicalRect, i32)>,
     buffers: &mut Vec<CachedDecorationBuffer>,
 ) {
@@ -397,6 +425,7 @@ fn collect_cached_buffers(
                 let color = border.color.with_opacity(node.style.opacity);
                 if color.a > 0 && border.width > 0 {
                     buffers.push(CachedDecorationBuffer {
+                        stable_key: format!("{path}:border"),
                         rect: node.rect,
                         color,
                         buffer: SolidColorBuffer::new(
@@ -417,8 +446,8 @@ fn collect_cached_buffers(
                 }
             }
 
-            for child in node.children.iter().rev() {
-                collect_cached_buffers(child, child_clip, buffers);
+            for (index, child) in node.children.iter().rev().enumerate() {
+                collect_cached_buffers(child, format!("{path}/child-{index}"), child_clip, buffers);
             }
 
             if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
@@ -427,6 +456,7 @@ fn collect_cached_buffers(
                         if let Some((inner_rect, _)) = child_clip {
                             push_fill_rects_around_hole(
                                 buffers,
+                                &path,
                                 node.rect,
                                 inner_rect,
                                 background,
@@ -435,6 +465,7 @@ fn collect_cached_buffers(
                         } else {
                             push_cached_fill(
                                 buffers,
+                                format!("{path}:fill"),
                                 node.rect,
                                 background,
                                 node_radius,
@@ -446,6 +477,7 @@ fn collect_cached_buffers(
                     } else {
                         push_cached_fill(
                             buffers,
+                            format!("{path}:fill"),
                             node.rect,
                             background,
                             node_radius,
@@ -499,6 +531,7 @@ fn collect_text_buffers(
 
 fn push_fill_rects_around_hole(
     buffers: &mut Vec<CachedDecorationBuffer>,
+    path: &str,
     rect: LogicalRect,
     hole: LogicalRect,
     color: super::Color,
@@ -512,19 +545,20 @@ fn push_fill_rects_around_hole(
     let right_width = (rect.x + rect.width - right_x).max(0);
 
     let candidates = [
-        LogicalRect::new(rect.x, rect.y, rect.width, top_height),
-        LogicalRect::new(rect.x, bottom_y, rect.width, bottom_height),
-        LogicalRect::new(rect.x, hole.y, left_width, hole.height),
-        LogicalRect::new(right_x, hole.y, right_width, hole.height),
+        ("fill-top", LogicalRect::new(rect.x, rect.y, rect.width, top_height)),
+        ("fill-bottom", LogicalRect::new(rect.x, bottom_y, rect.width, bottom_height)),
+        ("fill-left", LogicalRect::new(rect.x, hole.y, left_width, hole.height)),
+        ("fill-right", LogicalRect::new(right_x, hole.y, right_width, hole.height)),
     ];
 
-    for candidate in candidates {
-        push_cached_fill(buffers, candidate, color, radius, 0, None, 0);
+    for (suffix, candidate) in candidates {
+        push_cached_fill(buffers, format!("{path}:{suffix}"), candidate, color, radius, 0, None, 0);
     }
 }
 
 fn push_cached_fill(
     buffers: &mut Vec<CachedDecorationBuffer>,
+    stable_key: String,
     rect: LogicalRect,
     color: super::Color,
     radius: i32,
@@ -537,6 +571,7 @@ fn push_cached_fill(
     }
 
     buffers.push(CachedDecorationBuffer {
+        stable_key,
         rect,
         color,
         buffer: SolidColorBuffer::new(
@@ -624,6 +659,19 @@ fn format_color(color: super::Color) -> String {
         "rgba({}, {}, {}, {})",
         color.r, color.g, color.b, color.a
     )
+}
+
+fn push_damage_pair(
+    damage: &mut Vec<LogicalRect>,
+    old_rect: Option<LogicalRect>,
+    new_rect: LogicalRect,
+) {
+    if let Some(old_rect) = old_rect {
+        if old_rect != new_rect {
+            damage.push(old_rect);
+        }
+    }
+    damage.push(new_rect);
 }
 
 #[cfg(test)]

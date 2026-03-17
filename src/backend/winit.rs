@@ -6,7 +6,7 @@ use smithay::{
             damage::OutputDamageTracker,
             element::memory::MemoryRenderBufferRenderElement,
             element::surface::WaylandSurfaceRenderElement,
-            gles::{GlesRenderer, element::PixelShaderElement},
+            gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
@@ -14,9 +14,10 @@ use smithay::{
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
 };
-use tracing::{debug, warn};
+use tracing::{trace, warn};
 
 use crate::{backend::{decoration, window as window_render}, ShojiWM};
+use crate::backend::damage;
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -81,9 +82,16 @@ pub fn init_winit(
                         let output_geo = state.space.output_geometry(&output).unwrap();
                         let scale =
                             smithay::utils::Scale::from(output.current_scale().fractional_scale());
+                        let windows: Vec<_> = state.space.elements_for_output(&output).cloned().collect();
+                        let extra_damage = state.pending_decoration_damage.clone();
 
                         let mut elements: Vec<WinitRenderElements> = Vec::new();
-                        for window in state.space.elements_for_output(&output).rev() {
+                        elements.extend(
+                            damage::elements_for_output(&extra_damage, output_geo)
+                                .into_iter()
+                                .map(WinitRenderElements::Damage),
+                        );
+                        for window in windows.iter().rev() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
                             };
@@ -113,9 +121,9 @@ pub fn init_winit(
                             elements.extend(
                                 decoration::rounded_elements_for_window(
                                     renderer,
-                                    &state.space,
-                                    &state.window_decorations,
-                                    &output,
+                                    state.window_decorations.get_mut(window).unwrap(),
+                                    output_geo,
+                                    scale,
                                     window,
                                 )
                                 .unwrap_or_default()
@@ -144,7 +152,7 @@ pub fn init_winit(
                             );
                         }
 
-                        debug!(
+                        trace!(
                             output = %output.name(),
                             window_count = state.space.elements().count(),
                             render_element_count = elements.len(),
@@ -172,6 +180,7 @@ pub fn init_winit(
 
                     state.space.refresh();
                     state.popups.cleanup();
+                    state.pending_decoration_damage.clear();
                     let _ = state.display_handle.flush_clients();
 
                     // Ask for redraw to schedule new frame.
@@ -192,5 +201,6 @@ smithay::render_elements! {
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Decoration=PixelShaderElement,
+    Damage=crate::backend::damage::DamageOnlyElement,
+    Decoration=crate::backend::rounded::StableRoundedElement,
 }
