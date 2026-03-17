@@ -1,22 +1,30 @@
 use std::collections::HashMap;
 
 use smithay::{
-    backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement},
+    backend::renderer::{
+        element::memory::MemoryRenderBufferRenderElement,
+        gles::{GlesError, GlesRenderer, element::PixelShaderElement},
+    },
     desktop::{Space, Window},
     output::Output,
     utils::{Logical, Point, Rectangle, Scale},
 };
 use tracing::trace;
 
-use crate::ssd::{LogicalRect, WindowDecorationState};
+use crate::{
+    backend::rounded::{self, RoundedClip, RoundedRectSpec, RoundedShapeKind},
+    backend::text,
+    ssd::{LogicalRect, WindowDecorationState},
+};
 
-pub fn solid_elements_for_output(
+pub fn rounded_elements_for_output(
+    renderer: &mut GlesRenderer,
     space: &Space<Window>,
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
-) -> Vec<SolidColorRenderElement> {
+) -> Result<Vec<PixelShaderElement>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
 
@@ -27,7 +35,7 @@ pub fn solid_elements_for_output(
         };
 
         for cached in &decoration.buffers {
-            if let Some(element) = solid_rect_element(&cached.buffer, cached.rect, output_geo, scale) {
+            if let Some(element) = rounded_rect_element(renderer, cached, output_geo, scale)? {
                 elements.push(element);
             }
         }
@@ -37,50 +45,89 @@ pub fn solid_elements_for_output(
         output = %output.name(),
         output_geometry = ?output_geo,
         element_count = elements.len(),
-        "prepared solid decoration elements for output"
+        "prepared rounded decoration elements for output"
     );
 
-    elements
+    Ok(elements)
 }
 
-pub fn solid_elements_for_window(
+pub fn rounded_elements_for_window(
+    renderer: &mut GlesRenderer,
     space: &Space<Window>,
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
     window: &Window,
-) -> Vec<SolidColorRenderElement> {
+) -> Result<Vec<PixelShaderElement>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let Some(decoration) = decorations.get(window) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     decoration
         .buffers
         .iter()
-        .filter_map(|cached| solid_rect_element(&cached.buffer, cached.rect, output_geo, scale))
+        .filter_map(|cached| rounded_rect_element(renderer, cached, output_geo, scale).transpose())
         .collect()
 }
 
-fn solid_rect_element(
-    buffer: &SolidColorBuffer,
-    rect: LogicalRect,
+pub fn text_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+    text::text_elements_for_window(renderer, space, decorations, output, window)
+}
+
+fn rounded_rect_element(
+    renderer: &mut GlesRenderer,
+    cached: &crate::ssd::CachedDecorationBuffer,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
-) -> Option<SolidColorRenderElement> {
-    intersect_logical_rect(rect, output_geo)?;
-    let local =
-        Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)).to_physical_precise_round(scale);
+) -> Result<Option<PixelShaderElement>, GlesError> {
+    if intersect_logical_rect(cached.rect, output_geo).is_none() {
+        return Ok(None);
+    }
+    let local_rect = Rectangle::new(
+        Point::from((cached.rect.x - output_geo.loc.x, cached.rect.y - output_geo.loc.y)),
+        (cached.rect.width, cached.rect.height).into(),
+    );
 
-    Some(SolidColorRenderElement::from_buffer(
-        buffer,
-        local,
-        scale,
-        1.0,
-        smithay::backend::renderer::element::Kind::Unspecified,
-    ))
+    let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
+        rect: Rectangle::new(
+            Point::from((clip_rect.x - cached.rect.x, clip_rect.y - cached.rect.y)),
+            (clip_rect.width, clip_rect.height).into(),
+        ),
+        radius: cached.clip_radius,
+    });
+
+    let element = rounded::element_for_spec(
+        renderer,
+        RoundedRectSpec {
+            rect: local_rect,
+            color: [
+                cached.color.r as f32 / 255.0,
+                cached.color.g as f32 / 255.0,
+                cached.color.b as f32 / 255.0,
+                cached.color.a as f32 / 255.0,
+            ],
+            radius: cached.radius,
+            shape: if cached.border_width > 0 {
+                RoundedShapeKind::Border {
+                    width: cached.border_width,
+                }
+            } else {
+                RoundedShapeKind::Fill
+            },
+            clip,
+            render_scale: scale.x as f32,
+        },
+    )?;
+    Ok(Some(element))
 }
 
 fn intersect_logical_rect(

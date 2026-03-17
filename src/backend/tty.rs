@@ -13,11 +13,10 @@ use smithay::{
         renderer::{
             element::{
                 AsRenderElements,
-                memory::MemoryRenderBuffer,
-                solid::SolidColorRenderElement,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::WaylandSurfaceRenderElement,
             },
-            gles::GlesRenderer,
+            gles::{GlesRenderer, element::PixelShaderElement},
         },
         session::{Session, libseat::LibSeatSession},
     },
@@ -189,7 +188,9 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
 render_elements! {
     pub TtyRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
-    Decoration=SolidColorRenderElement,
+    Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
+    Text=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Decoration=PixelShaderElement,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
@@ -290,21 +291,47 @@ fn render_surface(
         );
 
         elements.extend(
-            decoration::solid_elements_for_window(space, &state.window_decorations, &output, window)
-                .into_iter()
-                .map(TtyRenderElements::Decoration),
+            decoration::text_elements_for_window(
+                &mut backend.renderer,
+                space,
+                &state.window_decorations,
+                &output,
+                window,
+            )?
+            .into_iter()
+            .map(TtyRenderElements::Text),
         );
 
         elements.extend(
-            window_render::surface_elements(
+            decoration::rounded_elements_for_window(
+                &mut backend.renderer,
+                space,
+                &state.window_decorations,
+                &output,
+                window,
+            )?
+            .into_iter()
+            .map(TtyRenderElements::Decoration),
+        );
+
+        elements.extend(
+            window_render::clipped_surface_elements(
                 window,
                 &mut backend.renderer,
                 physical_location,
                 scale,
                 1.0,
+                state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|decoration| decoration.content_clip),
             )
+            .inspect_err(|error| {
+                warn!(?error, "failed to build clipped surface elements");
+            })
+            .unwrap_or_default()
             .into_iter()
-            .map(TtyRenderElements::Window),
+            .map(TtyRenderElements::Clipped),
         );
     }
 
@@ -414,7 +441,7 @@ fn render_now(
     surface: &mut SurfaceData,
     renderer: &mut GlesRenderer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let elements: Vec<SolidColorRenderElement> = Vec::new();
+    let elements: Vec<PixelShaderElement> = Vec::new();
 
     debug!(output = %surface.output.name(), "rendering initial tty frame");
     let result =

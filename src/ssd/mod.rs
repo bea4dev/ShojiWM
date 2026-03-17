@@ -26,7 +26,9 @@ pub use evaluator::{
     StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use interaction::DecorationInteractionSnapshot;
-pub use integration::{DecorationRuntimeEvaluator, WindowDecorationState};
+pub use integration::{
+    CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
+};
 pub use window_model::{WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot};
 
 /// Top-level decoration tree.
@@ -345,7 +347,7 @@ pub struct DecorationStyle {
     pub cursor: Option<String>,
     pub font_size: Option<i32>,
     pub font_weight: Option<serde_json::Value>,
-    pub font_family: Option<String>,
+    pub font_family: Option<Vec<String>>,
     pub text_align: Option<String>,
     pub line_height: Option<i32>,
 }
@@ -593,10 +595,19 @@ impl DecorationNode {
             LayoutDirection::Column => self.style.height,
         };
 
-        self.style.clamp_main(direction, explicit.unwrap_or_else(|| match self.kind {
-            DecorationNodeKind::WindowSlot => 0,
-            _ => 0,
-        }))
+        let fallback = explicit.unwrap_or_else(|| {
+            self.intrinsic_size()
+                .map(|(width, height)| match direction {
+                    LayoutDirection::Row => width,
+                    LayoutDirection::Column => height,
+                })
+                .unwrap_or_else(|| match self.kind {
+                    DecorationNodeKind::WindowSlot => 0,
+                    _ => 0,
+                })
+        });
+
+        self.style.clamp_main(direction, fallback)
     }
 
     fn preferred_cross_size(&self, direction: LayoutDirection, available_cross: i32) -> i32 {
@@ -605,12 +616,19 @@ impl DecorationNode {
             LayoutDirection::Column => self.style.width,
         };
 
-        let fallback = match self.style.align_items.unwrap_or(AlignItems::Stretch) {
-            AlignItems::Stretch => available_cross,
-            _ => explicit.unwrap_or(available_cross),
-        };
+        let fallback = explicit.unwrap_or_else(|| {
+            self.intrinsic_size()
+                .map(|(width, height)| match direction {
+                    LayoutDirection::Row => height,
+                    LayoutDirection::Column => width,
+                })
+                .unwrap_or_else(|| match self.style.align_items.unwrap_or(AlignItems::Stretch) {
+                    AlignItems::Stretch => available_cross,
+                    _ => available_cross,
+                })
+        });
 
-        self.style.clamp_cross(direction, explicit.unwrap_or(fallback))
+        self.style.clamp_cross(direction, fallback)
     }
 
     fn flex_grow_for_layout(&self) -> f32 {
@@ -621,6 +639,19 @@ impl DecorationNode {
                 0.0
             }
         })
+    }
+
+    fn intrinsic_size(&self) -> Option<(i32, i32)> {
+        match &self.kind {
+            DecorationNodeKind::Label(label) => {
+                let font_size = self.style.font_size.unwrap_or(13).max(1);
+                let line_height = self.style.line_height.unwrap_or(font_size + 4).max(font_size);
+                let char_count = label.text.chars().count() as f32;
+                let estimated_width = (char_count * font_size as f32 * 0.6).ceil() as i32;
+                Some((estimated_width.max(1), line_height.max(1)))
+            }
+            _ => None,
+        }
     }
 }
 

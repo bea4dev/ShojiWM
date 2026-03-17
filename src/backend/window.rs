@@ -5,10 +5,13 @@ use smithay::{
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
         ImportAll, Renderer,
+        gles::GlesRenderer,
     },
     desktop::{PopupManager, Window, WindowSurface},
     utils::{Physical, Point, Scale},
 };
+
+use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
 
 pub fn surface_elements<R>(
     window: &Window,
@@ -67,5 +70,23 @@ where
                 .collect()
         }
         WindowSurface::X11(_) => Vec::new(),
+    }
+}
+
+pub fn clipped_surface_elements(
+    window: &Window,
+    renderer: &mut GlesRenderer,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+    clip: Option<ContentClip>,
+) -> Result<Vec<ClippedSurfaceElement>, smithay::backend::renderer::gles::GlesError> {
+    let elements = surface_elements(window, renderer, location, scale, alpha);
+    match clip {
+        Some(clip) => elements
+            .into_iter()
+            .map(|element| ClippedSurfaceElement::new(renderer, element, scale, clip))
+            .collect(),
+        None => Ok(Vec::new()),
     }
 }

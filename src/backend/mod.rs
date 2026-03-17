@@ -1,4 +1,7 @@
+pub mod clipped_surface;
 pub mod decoration;
+pub mod rounded;
+pub mod text;
 pub mod tty;
 pub mod winit;
 pub mod window;

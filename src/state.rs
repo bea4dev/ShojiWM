@@ -25,7 +25,11 @@ use smithay::{
     },
 };
 
-use crate::{backend::tty::BackendData, cursor::Cursor, drawing::PointerElement};
+use crate::{
+    backend::{text::TextRasterizer, tty::BackendData},
+    cursor::Cursor,
+    drawing::PointerElement,
+};
 use crate::ssd::{DecorationRuntimeEvaluator, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::info;
 
@@ -59,6 +63,7 @@ pub struct ShojiWM {
     pub cursor_status: CursorImageStatus,
     pub cursor_theme: Cursor,
     pub pointer_element: PointerElement,
+    pub text_rasterizer: TextRasterizer,
     pub default_decoration_mode: DecorationMode,
 }
 
@@ -146,6 +151,7 @@ impl ShojiWM {
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme: Cursor::load(),
             pointer_element: PointerElement::default(),
+            text_rasterizer: TextRasterizer::new(),
             // SSD rendering is available, so prefer compositor-side decorations by default.
             default_decoration_mode: DecorationMode::ServerSide,
         }

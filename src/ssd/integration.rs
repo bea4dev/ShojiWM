@@ -1,12 +1,13 @@
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     desktop::Window,
-    utils::{Logical, Point},
+    utils::{Logical, Point, Rectangle},
 };
 use std::time::Instant;
 use tracing::{debug, trace};
 
 use crate::state::ShojiWM;
+use crate::backend::text::{CachedDecorationLabel, LabelSpec};
 
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluator,
@@ -20,7 +21,15 @@ pub struct WindowDecorationState {
     pub tree: DecorationTree,
     pub layout: ComputedDecorationTree,
     pub client_rect: LogicalRect,
+    pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
+    pub text_buffers: Vec<CachedDecorationLabel>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContentClip {
+    pub rect: Rectangle<i32, Logical>,
+    pub radius: i32,
 }
 
 impl WindowDecorationState {
@@ -41,6 +50,11 @@ pub struct CachedDecorationBuffer {
     pub rect: LogicalRect,
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
+    pub radius: i32,
+    pub border_width: i32,
+    pub clip_rect: Option<LogicalRect>,
+    pub clip_radius: i32,
+    pub source_kind: &'static str,
 }
 
 impl Default for DecorationRuntimeEvaluator {
@@ -136,11 +150,14 @@ impl ShojiWM {
                 let layout = tree
                     .layout_for_client(client_rect)
                     .map_err(super::DecorationEvaluationError::Layout)?;
+                let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
+                let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
                 rebuilt += 1;
                 debug!(
                     window_id = snapshot.id,
                     title = snapshot.title,
+                    text_buffer_count = text_buffers.len(),
                     elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
                     "rebuilt window decoration tree"
                 );
@@ -152,7 +169,9 @@ impl ShojiWM {
                         tree,
                         layout,
                         client_rect,
+                        content_clip,
                         buffers,
+                        text_buffers,
                     },
                 );
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
@@ -164,11 +183,15 @@ impl ShojiWM {
                         .map_err(super::DecorationEvaluationError::Layout)?;
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
+                    cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout);
+                    cached.text_buffers =
+                        build_text_buffers(&cached.layout, &mut self.text_rasterizer);
                     relayout += 1;
                     debug!(
                         window_id = cached.snapshot.id,
                         title = cached.snapshot.title,
+                        text_buffer_count = cached.text_buffers.len(),
                         elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
                         "recomputed window decoration layout"
                     );
@@ -219,6 +242,30 @@ impl ShojiWM {
             geometry.size.h,
         ))
     }
+}
+
+fn content_clip_for_layout(
+    tree: &DecorationTree,
+    layout: &ComputedDecorationTree,
+) -> Option<ContentClip> {
+    let border = tree.root.style.border?;
+    if !matches!(tree.root.kind, super::DecorationNodeKind::WindowBorder) {
+        return None;
+    }
+
+    let inner_rect = layout.root.rect.inset(super::Edges {
+        top: border.width.max(0),
+        right: border.width.max(0),
+        bottom: border.width.max(0),
+        left: border.width.max(0),
+    });
+    Some(ContentClip {
+        rect: Rectangle::new(
+            Point::from((inner_rect.x, inner_rect.y)),
+            (inner_rect.width, inner_rect.height).into(),
+        ),
+        radius: (tree.root.style.border_radius.unwrap_or(0) - border.width.max(0)).max(0),
+    })
 }
 
 impl DecorationTree {
@@ -302,60 +349,222 @@ impl super::ComputedDecorationNode {
 
 fn build_cached_buffers(layout: &ComputedDecorationTree) -> Vec<CachedDecorationBuffer> {
     let mut buffers = Vec::new();
-    for primitive in layout.render_primitives() {
-        match primitive {
-            super::DecorationRenderPrimitive::FillRect { rect, color, .. } => {
-                buffers.push(CachedDecorationBuffer {
-                    rect,
-                    color,
-                    buffer: SolidColorBuffer::new(
-                        (rect.width, rect.height),
-                        [
-                            color.r as f32 / 255.0,
-                            color.g as f32 / 255.0,
-                            color.b as f32 / 255.0,
-                            color.a as f32 / 255.0,
-                        ],
-                    ),
-                });
-            }
-            super::DecorationRenderPrimitive::BorderRect { rect, width, color, .. } => {
-                let width = width.max(0);
-                if width == 0 {
-                    continue;
+    collect_cached_buffers(&layout.root, None, &mut buffers);
+    buffers
+}
+
+fn build_text_buffers(
+    layout: &ComputedDecorationTree,
+    rasterizer: &mut crate::backend::text::TextRasterizer,
+) -> Vec<CachedDecorationLabel> {
+    let mut buffers = Vec::new();
+    collect_text_buffers(&layout.root, rasterizer, &mut buffers);
+    buffers
+}
+
+fn collect_cached_buffers(
+    node: &super::ComputedDecorationNode,
+    inherited_clip: Option<(LogicalRect, i32)>,
+    buffers: &mut Vec<CachedDecorationBuffer>,
+) {
+    if node.style.visible == Some(false) {
+        return;
+    }
+
+    let node_radius = node.style.border_radius.unwrap_or(0).max(0);
+    let child_clip = if let Some(border) = node.style.border {
+        if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+            let inner_rect = node.rect.inset(super::Edges {
+                top: border.width.max(0),
+                right: border.width.max(0),
+                bottom: border.width.max(0),
+                left: border.width.max(0),
+            });
+            Some((inner_rect, (node_radius - border.width.max(0)).max(0)))
+        } else {
+            inherited_clip
+        }
+    } else {
+        inherited_clip
+    };
+
+    match &node.kind {
+        super::DecorationNodeKind::Label(_)
+        | super::DecorationNodeKind::AppIcon
+        | super::DecorationNodeKind::WindowSlot => {}
+        _ => {
+            if let Some(border) = node.style.border {
+                let color = border.color.with_opacity(node.style.opacity);
+                if color.a > 0 && border.width > 0 {
+                    buffers.push(CachedDecorationBuffer {
+                        rect: node.rect,
+                        color,
+                        buffer: SolidColorBuffer::new(
+                            (node.rect.width.max(1), node.rect.height.max(1)),
+                            [
+                                color.r as f32 / 255.0,
+                                color.g as f32 / 255.0,
+                                color.b as f32 / 255.0,
+                                color.a as f32 / 255.0,
+                            ],
+                        ),
+                        radius: node_radius,
+                        border_width: border.width.max(0),
+                        clip_rect: inherited_clip.map(|(rect, _)| rect),
+                        clip_radius: inherited_clip.map(|(_, radius)| radius).unwrap_or(0),
+                        source_kind: node_kind_name(&node.kind),
+                    });
                 }
+            }
 
-                let parts = [
-                    LogicalRect::new(rect.x, rect.y, rect.width, width),
-                    LogicalRect::new(rect.x, rect.y + rect.height - width, rect.width, width),
-                    LogicalRect::new(rect.x, rect.y, width, rect.height),
-                    LogicalRect::new(rect.x + rect.width - width, rect.y, width, rect.height),
-                ];
+            for child in node.children.iter().rev() {
+                collect_cached_buffers(child, child_clip, buffers);
+            }
 
-                for part in parts {
-                    if part.width > 0 && part.height > 0 {
-                        buffers.push(CachedDecorationBuffer {
-                            rect: part,
-                            color,
-                            buffer: SolidColorBuffer::new(
-                                (part.width, part.height),
-                                [
-                                    color.r as f32 / 255.0,
-                                    color.g as f32 / 255.0,
-                                    color.b as f32 / 255.0,
-                                    color.a as f32 / 255.0,
-                                ],
-                            ),
-                        });
+            if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
+                if background.a > 0 {
+                    if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+                        if let Some((inner_rect, _)) = child_clip {
+                            push_fill_rects_around_hole(
+                                buffers,
+                                node.rect,
+                                inner_rect,
+                                background,
+                                node_radius,
+                            );
+                        } else {
+                            push_cached_fill(
+                                buffers,
+                                node.rect,
+                                background,
+                                node_radius,
+                                0,
+                                None,
+                                0,
+                            );
+                        }
+                    } else {
+                        push_cached_fill(
+                            buffers,
+                            node.rect,
+                            background,
+                            node_radius,
+                            0,
+                            inherited_clip.map(|(rect, _)| rect),
+                            inherited_clip.map(|(_, radius)| radius).unwrap_or(0),
+                        );
                     }
                 }
             }
-            super::DecorationRenderPrimitive::Label { .. }
-            | super::DecorationRenderPrimitive::AppIcon { .. }
-            | super::DecorationRenderPrimitive::WindowSlot { .. } => {}
         }
     }
-    buffers
+}
+
+fn collect_text_buffers(
+    node: &super::ComputedDecorationNode,
+    rasterizer: &mut crate::backend::text::TextRasterizer,
+    buffers: &mut Vec<CachedDecorationLabel>,
+) {
+    if node.style.visible == Some(false) {
+        return;
+    }
+
+    for child in node.children.iter().rev() {
+        collect_text_buffers(child, rasterizer, buffers);
+    }
+
+    let super::DecorationNodeKind::Label(label) = &node.kind else {
+        return;
+    };
+    let color = node.style.color.unwrap_or(super::Color::WHITE);
+    if color.a == 0 {
+        return;
+    }
+
+    let spec = LabelSpec {
+        rect: node.rect,
+        text: label.text.clone(),
+        color: color.with_opacity(node.style.opacity),
+        font_size: node.style.font_size.unwrap_or(13),
+        font_weight: node.style.font_weight.clone(),
+        font_family: node.style.font_family.clone(),
+        text_align: node.style.text_align.clone(),
+        line_height: node.style.line_height,
+    };
+
+    if let Some(buffer) = rasterizer.render_label(&spec) {
+        buffers.push(buffer);
+    }
+}
+
+fn push_fill_rects_around_hole(
+    buffers: &mut Vec<CachedDecorationBuffer>,
+    rect: LogicalRect,
+    hole: LogicalRect,
+    color: super::Color,
+    radius: i32,
+) {
+    let top_height = (hole.y - rect.y).max(0);
+    let bottom_y = hole.y + hole.height;
+    let bottom_height = (rect.y + rect.height - bottom_y).max(0);
+    let left_width = (hole.x - rect.x).max(0);
+    let right_x = hole.x + hole.width;
+    let right_width = (rect.x + rect.width - right_x).max(0);
+
+    let candidates = [
+        LogicalRect::new(rect.x, rect.y, rect.width, top_height),
+        LogicalRect::new(rect.x, bottom_y, rect.width, bottom_height),
+        LogicalRect::new(rect.x, hole.y, left_width, hole.height),
+        LogicalRect::new(right_x, hole.y, right_width, hole.height),
+    ];
+
+    for candidate in candidates {
+        push_cached_fill(buffers, candidate, color, radius, 0, None, 0);
+    }
+}
+
+fn push_cached_fill(
+    buffers: &mut Vec<CachedDecorationBuffer>,
+    rect: LogicalRect,
+    color: super::Color,
+    radius: i32,
+    border_width: i32,
+    clip_rect: Option<LogicalRect>,
+    clip_radius: i32,
+) {
+    if rect.width <= 0 || rect.height <= 0 || color.a == 0 {
+        return;
+    }
+
+    buffers.push(CachedDecorationBuffer {
+        rect,
+        color,
+        buffer: SolidColorBuffer::new(
+            (rect.width.max(1), rect.height.max(1)),
+            [
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ],
+        ),
+        radius,
+        border_width,
+        clip_rect,
+        clip_radius,
+        source_kind: "fill",
+    });
+}
+
+fn node_kind_name(kind: &super::DecorationNodeKind) -> &'static str {
+    match kind {
+        super::DecorationNodeKind::Box(_) => "box",
+        super::DecorationNodeKind::Label(_) => "label",
+        super::DecorationNodeKind::Button(_) => "button",
+        super::DecorationNodeKind::AppIcon => "app-icon",
+        super::DecorationNodeKind::WindowBorder => "window-border",
+        super::DecorationNodeKind::WindowSlot => "window-slot",
+    }
 }
 
 fn log_decoration_refresh(
@@ -394,6 +603,13 @@ fn log_decoration_refresh(
             index,
             rect = %format_rect(buffer.rect),
             color = %format_color(buffer.color),
+            radius = buffer.radius,
+            border_width = buffer.border_width,
+            clip_rect = buffer
+                .clip_rect
+                .map(format_rect)
+                .unwrap_or_else(|| "<none>".to_string()),
+            source_kind = buffer.source_kind,
             "cached decoration buffer"
         );
     }

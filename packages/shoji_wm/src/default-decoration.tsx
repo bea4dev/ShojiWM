@@ -26,7 +26,7 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
 
   const titlebarStyle: SSDStyle = {
     height: TITLEBAR_HEIGHT,
-    paddingX: 10,
+    paddingX: 20,
     gap: 8,
     alignItems: "center",
     background: titlebarBackground,
@@ -35,8 +35,8 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
   return (
     <WindowBorder
       style={{
-        border: { px: 10, color: borderColor },
-        borderRadius: 6,
+        border: { px: 1, color: borderColor },
+        borderRadius: 20,
         background: "#101319",
       }}
     >

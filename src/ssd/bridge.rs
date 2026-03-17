@@ -74,9 +74,16 @@ pub struct WireStyle {
     pub cursor: Option<String>,
     pub font_size: Option<i32>,
     pub font_weight: Option<serde_json::Value>,
-    pub font_family: Option<String>,
+    pub font_family: Option<WireFontFamily>,
     pub text_align: Option<String>,
     pub line_height: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WireFontFamily {
+    Single(String),
+    Multiple(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -225,7 +232,10 @@ impl TryFrom<WireStyle> for DecorationStyle {
             cursor: value.cursor,
             font_size: value.font_size,
             font_weight: value.font_weight,
-            font_family: value.font_family,
+            font_family: value.font_family.map(|family| match family {
+                WireFontFamily::Single(name) => vec![name],
+                WireFontFamily::Multiple(names) => names,
+            }),
             text_align: value.text_align,
             line_height: value.line_height,
         })

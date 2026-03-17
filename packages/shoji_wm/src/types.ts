@@ -64,6 +64,7 @@ export type Direction = "row" | "column" | "horizontal" | "vertical";
 export type AlignItems = "start" | "center" | "end" | "stretch";
 export type JustifyContent = "start" | "center" | "end" | "space-between";
 export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
+export type FontFamily = string | string[];
 
 export interface BorderValue {
   px: number;
@@ -109,7 +110,7 @@ export interface SSDStyle {
   cursor?: string;
   fontSize?: number;
   fontWeight?: FontWeight;
-  fontFamily?: string;
+  fontFamily?: FontFamily;
   textAlign?: "start" | "center" | "end";
   lineHeight?: number;
 }

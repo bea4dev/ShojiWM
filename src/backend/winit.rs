@@ -4,11 +4,9 @@ use smithay::{
     backend::{
         renderer::{
             damage::OutputDamageTracker,
-            element::{
-                solid::SolidColorRenderElement,
-                surface::WaylandSurfaceRenderElement,
-            },
-            gles::GlesRenderer,
+            element::memory::MemoryRenderBufferRenderElement,
+            element::surface::WaylandSurfaceRenderElement,
+            gles::{GlesRenderer, element::PixelShaderElement},
         },
         winit::{self, WinitEvent},
     },
@@ -100,26 +98,49 @@ pub fn init_winit(
                             );
 
                             elements.extend(
-                                decoration::solid_elements_for_window(
+                                decoration::text_elements_for_window(
+                                    renderer,
                                     &state.space,
                                     &state.window_decorations,
                                     &output,
                                     window,
                                 )
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(WinitRenderElements::Text),
+                            );
+
+                            elements.extend(
+                                decoration::rounded_elements_for_window(
+                                    renderer,
+                                    &state.space,
+                                    &state.window_decorations,
+                                    &output,
+                                    window,
+                                )
+                                .unwrap_or_default()
                                 .into_iter()
                                 .map(WinitRenderElements::Decoration),
                             );
 
                             elements.extend(
-                                window_render::surface_elements(
+                                window_render::clipped_surface_elements(
                                     window,
                                     renderer,
                                     physical_location,
                                     scale,
                                     1.0,
+                                    state
+                                        .window_decorations
+                                        .get(window)
+                                        .and_then(|decoration| decoration.content_clip),
                                 )
+                                .inspect_err(|error| {
+                                    warn!(?error, "failed to build clipped surface elements");
+                                })
+                                .unwrap_or_default()
                                 .into_iter()
-                                .map(WinitRenderElements::Window),
+                                .map(WinitRenderElements::Clipped),
                             );
                         }
 
@@ -169,5 +190,7 @@ pub fn init_winit(
 smithay::render_elements! {
     pub WinitRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
-    Decoration=SolidColorRenderElement,
+    Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
+    Text=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Decoration=PixelShaderElement,
 }
