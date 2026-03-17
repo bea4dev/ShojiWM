@@ -42,6 +42,9 @@ impl CompositorHandler for ShojiWM {
                 .find(|w| w.toplevel().unwrap().wl_surface() == &root)
             {
                 window.on_commit();
+                if let Some(decoration) = self.window_decorations.get(window) {
+                    self.pending_decoration_damage.push(decoration.layout.root.rect);
+                }
                 debug!(surface = ?root.id(), "toplevel commit matched mapped window");
             }
         };

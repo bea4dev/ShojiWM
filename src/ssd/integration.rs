@@ -176,7 +176,13 @@ impl ShojiWM {
                     elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
                     "rebuilt window decoration tree"
                 );
-                log_decoration_refresh("rebuild", &snapshot, client_rect, &layout, &buffers);
+                log_decoration_refresh(
+                    "rebuild",
+                    &snapshot,
+                    client_rect,
+                    &layout,
+                    &buffers,
+                );
                 let rounded_cache = self
                     .window_decorations
                     .remove(&window)

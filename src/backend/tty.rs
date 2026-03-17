@@ -47,6 +47,7 @@ use crate::{
 };
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
+const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
 type GbmDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
@@ -411,7 +412,7 @@ fn render_surface(
 
         let result = surface
             .drm_output
-            .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)?;
+            .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, TTY_FRAME_FLAGS)?;
 
         if !result.is_empty {
             trace!(output = %output.name(), "queueing tty frame");
@@ -519,7 +520,7 @@ fn render_now(
     let result =
         surface
             .drm_output
-            .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)?;
+            .render_frame(renderer, &elements, CLEAR_COLOR, TTY_FRAME_FLAGS)?;
 
     if !result.is_empty {
         surface.drm_output.queue_frame(())?;

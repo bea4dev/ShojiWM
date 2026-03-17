@@ -17,10 +17,10 @@ pub mod ssd;
 pub mod state;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging()?;
+    let args = CliArgs::parse();
+    init_logging(&args)?;
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let backend = if args.iter().any(|arg| arg == "--tty") {
+    let backend = if args.tty {
         ShojiWMBackend::TTY
     } else {
         ShojiWMBackend::WInit
@@ -32,12 +32,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug, Clone)]
+struct CliArgs {
+    tty: bool,
+    log_off: bool,
+    no_log_rotate: bool,
+}
+
+impl CliArgs {
+    fn parse() -> Self {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let env_log_off = std::env::var_os("SHOJI_LOG")
+            .is_some_and(|value| value == "off" || value == "0");
+        let env_no_rotate = std::env::var_os("SHOJI_LOG_ROTATE")
+            .is_some_and(|value| value == "0" || value == "off");
+
+        Self {
+            tty: args.iter().any(|arg| arg == "--tty"),
+            log_off: args.iter().any(|arg| arg == "--log-off") || env_log_off,
+            no_log_rotate: args.iter().any(|arg| arg == "--no-log-rotate") || env_no_rotate,
+        }
+    }
+}
+
+fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {
+    if args.log_off {
+        return Ok(());
+    }
+
     let log_dir = shoji_log_dir();
     fs::create_dir_all(&log_dir)?;
 
     let latest_log = log_dir.join("latest.log");
-    if latest_log.exists() {
+    if !args.no_log_rotate && latest_log.exists() {
         let rolled = log_dir.join(format!("{}.log", startup_timestamp_millis()));
         fs::rename(&latest_log, rolled)?;
     }

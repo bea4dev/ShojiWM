@@ -3,7 +3,7 @@
 //! eg. Usually whenever a user clicks on the app's titlebar and starts dragging, the compositors
 //! enters a MoveSurfaceGrab state.
 
-use crate::state::ShojiWM;
+use crate::{ssd::LogicalRect, state::ShojiWM};
 use smithay::{
     desktop::Window,
     input::pointer::{
@@ -35,8 +35,41 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
-        data.space
-            .map_element(self.window.clone(), new_location.to_i32_round(), true);
+        let new_location = new_location.to_i32_round();
+        let old_location = data
+            .space
+            .element_location(&self.window)
+            .unwrap_or(self.initial_window_location);
+
+        if old_location != new_location {
+            if let Some(decoration) = data.window_decorations.get(&self.window) {
+                let old_root = decoration.layout.root.rect;
+                let delta_x = new_location.x - old_location.x;
+                let delta_y = new_location.y - old_location.y;
+                let new_root = LogicalRect::new(
+                    old_root.x + delta_x,
+                    old_root.y + delta_y,
+                    old_root.width,
+                    old_root.height,
+                );
+                data.pending_decoration_damage.push(old_root);
+                data.pending_decoration_damage.push(new_root);
+            }
+
+            for output in data.space.outputs() {
+                if let Some(output_geo) = data.space.output_geometry(output) {
+                    data.pending_decoration_damage.push(LogicalRect::new(
+                        output_geo.loc.x,
+                        output_geo.loc.y,
+                        output_geo.size.w,
+                        output_geo.size.h,
+                    ));
+                }
+            }
+
+            data.space.map_element(self.window.clone(), new_location, true);
+            data.schedule_redraw();
+        }
     }
 
     fn relative_motion(
