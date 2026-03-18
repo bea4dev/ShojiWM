@@ -2,34 +2,33 @@ use std::{collections::HashMap, path::Path, time::Duration};
 
 use smithay::{
     backend::{
-        allocator::{Fourcc, gbm::GbmAllocator},
+        allocator::{gbm::GbmAllocator, Fourcc},
         drm::{
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
             compositor::FrameFlags,
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
         },
-        egl::{EGLContext, EGLDisplay, context::ContextPriority},
+        egl::{context::ContextPriority, EGLContext, EGLDisplay},
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
+                AsRenderElements,
             },
             gles::GlesRenderer,
-            ImportDma,
-            ImportEgl, ImportMemWl,
+            ImportDma, ImportEgl, ImportMemWl,
         },
-        session::{Session, libseat::LibSeatSession},
+        session::{libseat::LibSeatSession, Session},
     },
-    input::pointer::{CursorImageAttributes, CursorImageStatus},
     desktop::layer_map_for_output,
+    input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::EventLoop,
-        drm::control::{ModeTypeFlags, connector, crtc},
+        drm::control::{connector, crtc, ModeTypeFlags},
         gbm::{BufferObjectFlags, Device, Format},
         rustix::fs::OFlags,
     },
@@ -41,12 +40,8 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    backend::damage,
-    backend::damage_blink,
-    backend::decoration,
-    backend::window as window_render,
-    drawing::PointerRenderElement,
-    state::ShojiWM,
+    backend::damage, backend::damage_blink, backend::decoration, backend::window as window_render,
+    drawing::PointerRenderElement, state::ShojiWM,
 };
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
@@ -95,7 +90,11 @@ pub fn device_added(
     let mut renderer = unsafe { GlesRenderer::new(ctx)? };
     match renderer.bind_wl_display(&state.display_handle) {
         Ok(()) => info!(?node, "bound wl_display for tty EGL clients"),
-        Err(error) => warn!(?node, ?error, "failed to bind wl_display for tty EGL clients"),
+        Err(error) => warn!(
+            ?node,
+            ?error,
+            "failed to bind wl_display for tty EGL clients"
+        ),
     }
     state.shm_state.update_formats(renderer.shm_formats());
     if state.dmabuf_global.is_none() {
@@ -104,7 +103,10 @@ pub fn device_added(
             .unwrap();
         let global = state
             .dmabuf_state
-            .create_global_with_default_feedback::<ShojiWM>(&state.display_handle, &default_feedback);
+            .create_global_with_default_feedback::<ShojiWM>(
+                &state.display_handle,
+                &default_feedback,
+            );
         state.dmabuf_global = Some(global);
         info!(?node, "initialized linux-dmabuf global");
     }
@@ -275,7 +277,8 @@ fn render_surface(
             window_render::layer_elements_for_output(&mut backend.renderer, &output, scale, 1.0);
 
         if output_geo.to_f64().contains(pointer_pos) {
-            let reset = matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
+            let reset =
+                matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
             if reset {
                 *cursor_status = CursorImageStatus::default_named();
             }
@@ -407,7 +410,10 @@ fn render_surface(
         );
 
         let captured_blink_damage = if should_capture_blink {
-            match surface.blink_damage_tracker.damage_output(1, &scene_elements) {
+            match surface
+                .blink_damage_tracker
+                .damage_output(1, &scene_elements)
+            {
                 Ok((damage, _)) => damage.cloned(),
                 Err(_) => None,
             }
@@ -440,9 +446,12 @@ fn render_surface(
             "rendering tty surface"
         );
 
-        let result = surface
-            .drm_output
-            .render_frame(&mut backend.renderer, &elements, CLEAR_COLOR, TTY_FRAME_FLAGS)?;
+        let result = surface.drm_output.render_frame(
+            &mut backend.renderer,
+            &elements,
+            CLEAR_COLOR,
+            TTY_FRAME_FLAGS,
+        )?;
 
         if !result.is_empty {
             trace!(output = %output.name(), "queueing tty frame");

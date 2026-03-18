@@ -36,7 +36,9 @@ pub fn rounded_elements_for_output(
 
         let buffers = decoration.buffers.clone();
         for cached in &buffers {
-            if let Some(element) = rounded_rect_element(renderer, decoration, cached, output_geo, scale)? {
+            if let Some(element) =
+                rounded_rect_element(renderer, decoration, cached, output_geo, scale)?
+            {
                 elements.push(element);
             }
         }
@@ -62,7 +64,9 @@ pub fn rounded_elements_for_window(
     let buffers = decoration.buffers.clone();
     buffers
         .iter()
-        .filter_map(|cached| rounded_rect_element(renderer, decoration, cached, output_geo, scale).transpose())
+        .filter_map(|cached| {
+            rounded_rect_element(renderer, decoration, cached, output_geo, scale).transpose()
+        })
         .collect()
 }
 
@@ -87,7 +91,10 @@ fn rounded_rect_element(
         return Ok(None);
     }
     let local_rect = Rectangle::new(
-        Point::from((cached.rect.x - output_geo.loc.x, cached.rect.y - output_geo.loc.y)),
+        Point::from((
+            cached.rect.x - output_geo.loc.x,
+            cached.rect.y - output_geo.loc.y,
+        )),
         (cached.rect.width, cached.rect.height).into(),
     );
 
@@ -137,6 +144,5 @@ fn intersect_logical_rect(
     let right = (rect.x + rect.width).min(output_geo.loc.x + output_geo.size.w);
     let bottom = (rect.y + rect.height).min(output_geo.loc.y + output_geo.size.h);
 
-    (right > left && bottom > top)
-        .then(|| LogicalRect::new(left, top, right - left, bottom - top))
+    (right > left && bottom > top).then(|| LogicalRect::new(left, top, right - left, bottom - top))
 }

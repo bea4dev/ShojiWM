@@ -17,7 +17,10 @@ pub struct DamageOnlyElement {
 
 impl DamageOnlyElement {
     pub fn new(rect: Rectangle<i32, Logical>) -> Self {
-        Self { id: Id::new(), rect }
+        Self {
+            id: Id::new(),
+            rect,
+        }
     }
 }
 
@@ -31,7 +34,12 @@ impl Element for DamageOnlyElement {
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
-        Rectangle::from_size(self.rect.size.to_f64().to_buffer(1.0, smithay::utils::Transform::Normal))
+        Rectangle::from_size(
+            self.rect
+                .size
+                .to_f64()
+                .to_buffer(1.0, smithay::utils::Transform::Normal),
+        )
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -73,7 +81,8 @@ pub fn elements_for_output(
     rects: &[LogicalRect],
     output_geo: Rectangle<i32, Logical>,
 ) -> Vec<DamageOnlyElement> {
-    rects.iter()
+    rects
+        .iter()
         .filter_map(|rect| {
             let left = rect.x.max(output_geo.loc.x);
             let top = rect.y.max(output_geo.loc.y);

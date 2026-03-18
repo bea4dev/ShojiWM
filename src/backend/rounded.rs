@@ -4,7 +4,7 @@ use smithay::{
         gles::{GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName},
         utils::{CommitCounter, OpaqueRegions},
     },
-    utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform, user_data::UserDataMap},
+    utils::{user_data::UserDataMap, Buffer, Logical, Physical, Rectangle, Scale, Transform},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -149,20 +149,36 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
         .get::<RoundedRectProgram>()
         .is_none()
     {
-        let compiled = RoundedRectProgram(
-            renderer.compile_custom_pixel_shader(
-                include_str!("rounded_rect.frag"),
-                &[
-                    UniformName::new("color", smithay::backend::renderer::gles::UniformType::_4f),
-                    UniformName::new("corner_radius", smithay::backend::renderer::gles::UniformType::_4f),
-                    UniformName::new("border_width", smithay::backend::renderer::gles::UniformType::_1f),
-                    UniformName::new("render_scale", smithay::backend::renderer::gles::UniformType::_1f),
-                    UniformName::new("clip_enabled", smithay::backend::renderer::gles::UniformType::_1f),
-                    UniformName::new("clip_rect", smithay::backend::renderer::gles::UniformType::_4f),
-                    UniformName::new("clip_radius", smithay::backend::renderer::gles::UniformType::_4f),
-                ],
-            )?,
-        );
+        let compiled = RoundedRectProgram(renderer.compile_custom_pixel_shader(
+            include_str!("rounded_rect.frag"),
+            &[
+                UniformName::new("color", smithay::backend::renderer::gles::UniformType::_4f),
+                UniformName::new(
+                    "corner_radius",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+                UniformName::new(
+                    "border_width",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "render_scale",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "clip_enabled",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "clip_rect",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+                UniformName::new(
+                    "clip_radius",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+            ],
+        )?);
         renderer
             .egl_context()
             .user_data()
@@ -195,7 +211,10 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
             ]
         })
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-    let clip_radius = spec.clip.map(|clip| clip.radius.max(0) as f32).unwrap_or(0.0);
+    let clip_radius = spec
+        .clip
+        .map(|clip| clip.radius.max(0) as f32)
+        .unwrap_or(0.0);
     let radius = spec.radius.max(0) as f32;
 
     vec![
@@ -203,8 +222,14 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
         Uniform::new("corner_radius", [radius, radius, radius, radius]),
         Uniform::new("border_width", border_width),
         Uniform::new("render_scale", spec.render_scale.max(1.0)),
-        Uniform::new("clip_enabled", if spec.clip.is_some() { 1.0f32 } else { 0.0f32 }),
+        Uniform::new(
+            "clip_enabled",
+            if spec.clip.is_some() { 1.0f32 } else { 0.0f32 },
+        ),
         Uniform::new("clip_rect", local_clip_rect),
-        Uniform::new("clip_radius", [clip_radius, clip_radius, clip_radius, clip_radius]),
+        Uniform::new(
+            "clip_radius",
+            [clip_radius, clip_radius, clip_radius, clip_radius],
+        ),
     ]
 }

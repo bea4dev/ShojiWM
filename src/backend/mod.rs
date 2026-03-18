@@ -5,24 +5,31 @@ pub mod decoration;
 pub mod rounded;
 pub mod text;
 pub mod tty;
-pub mod winit;
 pub mod window;
+pub mod winit;
 
-use std::time::Duration;
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use smithay::{
     backend::{
         drm::DrmNode,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        session::{Session, libseat::LibSeatSession},
-        udev::{UdevBackend, primary_gpu},
+        session::{libseat::LibSeatSession, Session},
+        udev::{primary_gpu, UdevBackend},
     },
     reexports::{calloop::EventLoop, input::Libinput, wayland_server::Display},
 };
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
 use crate::{
-    backend::tty::{device_added, render_if_needed}, spawn_client, state::ShojiWM
+    backend::tty::{device_added, render_if_needed},
+    spawn_client,
+    state::ShojiWM,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,18 +85,92 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
             state.process_input_event(event);
         })?;
 
-    // 本当は ShojiWM 側に backend 用フィールドを追加して保持する
-    // ここでは説明のため local で初期化フローだけ示す
-    let primary = primary_gpu(session.seat())?.expect("no gpu");
-    let primary_node = DrmNode::from_path(primary)?;
-    info!(?primary_node, "selected primary drm node");
+    let primary_node = primary_gpu(session.seat())?
+        .as_ref()
+        .map(DrmNode::from_path)
+        .transpose()?;
+    if let Some(primary_node) = primary_node {
+        info!(?primary_node, "selected primary drm node");
+    } else {
+        warn!("no primary drm node reported by smithay");
+    }
 
-    for (dev_id, path) in udev.device_list() {
-        let node = DrmNode::from_dev_id(dev_id)?;
-        if node == primary_node {
-            info!(?node, path = ?path, "initializing drm device");
-            device_added(&mut state, &event_loop, &mut session, node, path)?;
+    let candidates = udev
+        .device_list()
+        .map(|(dev_id, path)| {
+            let node = DrmNode::from_dev_id(dev_id)?;
+            Ok(TtyDeviceCandidate {
+                node,
+                path: path.to_path_buf(),
+                connected_connectors: connected_drm_connectors(path),
+                is_primary: primary_node.is_some_and(|primary| primary == node),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+
+    if candidates.is_empty() {
+        return Err("no drm devices found for tty backend".into());
+    }
+
+    for candidate in &candidates {
+        if candidate.connected_connectors.is_empty() {
+            info!(
+                ?candidate.node,
+                path = ?candidate.path,
+                is_primary = candidate.is_primary,
+                "discovered drm device without connected connectors"
+            );
+        } else {
+            info!(
+                ?candidate.node,
+                path = ?candidate.path,
+                is_primary = candidate.is_primary,
+                connectors = ?candidate.connected_connectors,
+                "discovered drm device with connected connectors"
+            );
         }
+    }
+
+    let selected_devices = select_tty_devices(&candidates)?;
+    info!(
+        selected = ?selected_devices
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect::<Vec<_>>(),
+        "selected tty drm devices"
+    );
+
+    for candidate in selected_devices {
+        let outputs_before = state.space.outputs().count();
+        info!(
+            ?candidate.node,
+            path = ?candidate.path,
+            connectors = ?candidate.connected_connectors,
+            "initializing drm device"
+        );
+        device_added(
+            &mut state,
+            &event_loop,
+            &mut session,
+            candidate.node,
+            &candidate.path,
+        )?;
+
+        let outputs_after = state.space.outputs().count();
+        if outputs_after == outputs_before {
+            warn!(
+                ?candidate.node,
+                path = ?candidate.path,
+                "drm device initialized but did not add any outputs"
+            );
+        }
+    }
+
+    if state.space.outputs().next().is_none() {
+        return Err(
+            "tty backend did not find any connected drm outputs; set SHOJI_TTY_DRM_DEVICE=/dev/dri/cardN to override device selection"
+                .into(),
+        );
     }
 
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
@@ -124,4 +205,79 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("tty backend loop exited");
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct TtyDeviceCandidate {
+    node: DrmNode,
+    path: PathBuf,
+    connected_connectors: Vec<String>,
+    is_primary: bool,
+}
+
+fn select_tty_devices(
+    candidates: &[TtyDeviceCandidate],
+) -> Result<Vec<&TtyDeviceCandidate>, Box<dyn std::error::Error>> {
+    if let Some(override_value) = std::env::var_os("SHOJI_TTY_DRM_DEVICE") {
+        let selected = candidates
+            .iter()
+            .filter(|candidate| path_matches_override(&candidate.path, override_value.as_os_str()))
+            .collect::<Vec<_>>();
+
+        if selected.is_empty() {
+            return Err(format!(
+                "SHOJI_TTY_DRM_DEVICE={:?} did not match any discovered drm device",
+                override_value
+            )
+            .into());
+        }
+
+        return Ok(selected);
+    }
+
+    let connected = candidates
+        .iter()
+        .filter(|candidate| !candidate.connected_connectors.is_empty())
+        .collect::<Vec<_>>();
+    if !connected.is_empty() {
+        return Ok(connected);
+    }
+
+    let primary = candidates
+        .iter()
+        .filter(|candidate| candidate.is_primary)
+        .collect::<Vec<_>>();
+    if !primary.is_empty() {
+        warn!("no connected drm connectors detected; falling back to primary gpu");
+        return Ok(primary);
+    }
+
+    warn!("no connected drm connectors detected and no primary gpu match found; probing all drm devices");
+    Ok(candidates.iter().collect())
+}
+
+fn path_matches_override(path: &Path, override_value: &OsStr) -> bool {
+    path == Path::new(override_value) || path.file_name().is_some_and(|name| name == override_value)
+}
+
+fn connected_drm_connectors(card_path: &Path) -> Vec<String> {
+    let Some(card_name) = card_path.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+
+    fs::read_dir("/sys/class/drm")
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            (name.starts_with(card_name) && name.as_bytes().get(card_name.len()) == Some(&b'-'))
+                .then_some((name.to_string(), entry.path()))
+        })
+        .filter_map(|(name, path)| {
+            let status = fs::read_to_string(path.join("status")).ok()?;
+            (status.trim() == "connected").then_some(name)
+        })
+        .collect()
 }

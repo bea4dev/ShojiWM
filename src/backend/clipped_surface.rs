@@ -1,7 +1,10 @@
 use cgmath::{ElementWise, Matrix3, Vector2};
 use smithay::{
     backend::renderer::{
-        element::{Element, Id, Kind, RenderElement, UnderlyingStorage, surface::WaylandSurfaceRenderElement},
+        element::{
+            surface::WaylandSurfaceRenderElement, Element, Id, Kind, RenderElement,
+            UnderlyingStorage,
+        },
         gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
@@ -37,9 +40,18 @@ impl ClippedSurfaceElement {
             let compiled = ClippedSurfaceProgram(renderer.compile_custom_texture_shader(
                 include_str!("clipped_surface.frag"),
                 &[
-                    UniformName::new("clip_scale", smithay::backend::renderer::gles::UniformType::_1f),
-                    UniformName::new("clip_size", smithay::backend::renderer::gles::UniformType::_2f),
-                    UniformName::new("corner_radius", smithay::backend::renderer::gles::UniformType::_4f),
+                    UniformName::new(
+                        "clip_scale",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "clip_size",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "corner_radius",
+                        smithay::backend::renderer::gles::UniformType::_4f,
+                    ),
                     UniformName::new(
                         "input_to_clip",
                         smithay::backend::renderer::gles::UniformType::Matrix3x3,
@@ -69,10 +81,15 @@ impl ClippedSurfaceElement {
     fn uniforms(&self) -> Vec<Uniform<'static>> {
         let scale = Scale::from(self.scale as f64);
         let element_geometry = self.inner.geometry(scale);
-        let clip_geometry: Rectangle<i32, Physical> = self.clip.rect.to_physical_precise_round(scale);
+        let clip_geometry: Rectangle<i32, Physical> =
+            self.clip.rect.to_physical_precise_round(scale);
 
-        let element_loc = Vector2::new(element_geometry.loc.x as f32, element_geometry.loc.y as f32);
-        let element_size = Vector2::new(element_geometry.size.w as f32, element_geometry.size.h as f32);
+        let element_loc =
+            Vector2::new(element_geometry.loc.x as f32, element_geometry.loc.y as f32);
+        let element_size = Vector2::new(
+            element_geometry.size.w as f32,
+            element_geometry.size.h as f32,
+        );
 
         let clip_loc = Vector2::new(clip_geometry.loc.x as f32, clip_geometry.loc.y as f32);
         let clip_size = Vector2::new(clip_geometry.size.w as f32, clip_geometry.size.h as f32);
@@ -96,9 +113,15 @@ impl ClippedSurfaceElement {
             * Matrix3::from_translation(Vector2::new(-0.5, -0.5));
 
         let input_to_clip = transform_matrix
-            * Matrix3::from_nonuniform_scale(element_size.x / clip_size.x, element_size.y / clip_size.y)
+            * Matrix3::from_nonuniform_scale(
+                element_size.x / clip_size.x,
+                element_size.y / clip_size.y,
+            )
             * Matrix3::from_translation((element_loc - clip_loc).div_element_wise(element_size))
-            * Matrix3::from_nonuniform_scale(buffer_size.x / src_size.x, buffer_size.y / src_size.y)
+            * Matrix3::from_nonuniform_scale(
+                buffer_size.x / src_size.x,
+                buffer_size.y / src_size.y,
+            )
             * Matrix3::from_translation(-src_loc.div_element_wise(buffer_size));
 
         let radius = self.clip.radius.max(0) as f32;
@@ -150,7 +173,11 @@ impl Element for ClippedSurfaceElement {
         self.inner.transform()
     }
 
-    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
         self.inner.damage_since(scale, commit)
     }
 

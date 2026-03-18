@@ -1,6 +1,6 @@
 use smithay::{
     backend::renderer::{
-        element::{Id, Kind, solid::SolidColorRenderElement},
+        element::{solid::SolidColorRenderElement, Id, Kind},
         utils::CommitCounter,
     },
     utils::{Logical, Point, Rectangle, Scale},
@@ -46,12 +46,18 @@ pub fn elements_for_output(
         let border_rects = [
             Rectangle::new(physical.loc, (physical.size.w, BLINK_BORDER_WIDTH).into()),
             Rectangle::new(
-                Point::from((physical.loc.x, physical.loc.y + physical.size.h - BLINK_BORDER_WIDTH)),
+                Point::from((
+                    physical.loc.x,
+                    physical.loc.y + physical.size.h - BLINK_BORDER_WIDTH,
+                )),
                 (physical.size.w, BLINK_BORDER_WIDTH).into(),
             ),
             Rectangle::new(physical.loc, (BLINK_BORDER_WIDTH, physical.size.h).into()),
             Rectangle::new(
-                Point::from((physical.loc.x + physical.size.w - BLINK_BORDER_WIDTH, physical.loc.y)),
+                Point::from((
+                    physical.loc.x + physical.size.w - BLINK_BORDER_WIDTH,
+                    physical.loc.y,
+                )),
                 (BLINK_BORDER_WIDTH, physical.size.h).into(),
             ),
         ];

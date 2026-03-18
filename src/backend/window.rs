@@ -1,13 +1,13 @@
 use smithay::{
     backend::renderer::{
         element::{
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             AsRenderElements, Kind,
-            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
-        ImportAll, Renderer,
         gles::GlesRenderer,
+        ImportAll, Renderer,
     },
-    desktop::{LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output},
+    desktop::{layer_map_for_output, LayerSurface, PopupManager, Window, WindowSurface},
     utils::{Physical, Point, Scale},
 };
 
@@ -18,16 +18,17 @@ pub fn layer_elements_for_output<R>(
     output: &smithay::output::Output,
     scale: Scale<f64>,
     alpha: f32,
-) -> (Vec<WaylandSurfaceRenderElement<R>>, Vec<WaylandSurfaceRenderElement<R>>)
+) -> (
+    Vec<WaylandSurfaceRenderElement<R>>,
+    Vec<WaylandSurfaceRenderElement<R>>,
+)
 where
     R: Renderer + ImportAll,
     R::TextureId: Clone + 'static,
 {
     let map = layer_map_for_output(output);
-    let (lower, upper): (Vec<&LayerSurface>, Vec<&LayerSurface>) = map
-        .layers()
-        .rev()
-        .partition(|surface| {
+    let (lower, upper): (Vec<&LayerSurface>, Vec<&LayerSurface>) =
+        map.layers().rev().partition(|surface| {
             matches!(
                 surface.layer(),
                 smithay::wayland::shell::wlr_layer::Layer::Background

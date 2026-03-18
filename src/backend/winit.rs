@@ -3,12 +3,9 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker,
-            element::solid::SolidColorRenderElement,
-            element::memory::MemoryRenderBufferRenderElement,
-            element::surface::WaylandSurfaceRenderElement,
-            gles::GlesRenderer,
-            ImportEgl, ImportMemWl,
+            damage::OutputDamageTracker, element::memory::MemoryRenderBufferRenderElement,
+            element::solid::SolidColorRenderElement, element::surface::WaylandSurfaceRenderElement,
+            gles::GlesRenderer, ImportEgl, ImportMemWl,
         },
         winit::{self, WinitEvent},
     },
@@ -33,7 +30,9 @@ pub fn init_winit(
         Ok(()) => trace!("winit renderer bound wl_display for EGL clients"),
         Err(error) => warn!(?error, "failed to bind wl_display for winit EGL clients"),
     }
-    state.shm_state.update_formats(backend.renderer().shm_formats());
+    state
+        .shm_state
+        .update_formats(backend.renderer().shm_formats());
 
     let mode = Mode {
         size: backend.window_size(),
@@ -93,7 +92,8 @@ pub fn init_winit(
                         let output_geo = state.space.output_geometry(&output).unwrap();
                         let scale =
                             smithay::utils::Scale::from(output.current_scale().fractional_scale());
-                        let windows: Vec<_> = state.space.elements_for_output(&output).cloned().collect();
+                        let windows: Vec<_> =
+                            state.space.elements_for_output(&output).cloned().collect();
                         let extra_damage = state.pending_decoration_damage.clone();
                         let (upper_layer_elements, lower_layer_elements) =
                             window_render::layer_elements_for_output(renderer, &output, scale, 1.0);
@@ -113,9 +113,15 @@ pub fn init_winit(
                                 (render_location - output_geo.loc).to_physical_precise_round(scale);
 
                             scene_elements.extend(
-                                window_render::popup_elements(window, renderer, physical_location, scale, 1.0)
-                                    .into_iter()
-                                    .map(WinitRenderElements::Window),
+                                window_render::popup_elements(
+                                    window,
+                                    renderer,
+                                    physical_location,
+                                    scale,
+                                    1.0,
+                                )
+                                .into_iter()
+                                .map(WinitRenderElements::Window),
                             );
 
                             scene_elements.extend(
@@ -127,8 +133,8 @@ pub fn init_winit(
                                     window,
                                 )
                                 .unwrap_or_default()
-                                    .into_iter()
-                                    .map(WinitRenderElements::Text),
+                                .into_iter()
+                                .map(WinitRenderElements::Text),
                             );
 
                             scene_elements.extend(
@@ -140,8 +146,8 @@ pub fn init_winit(
                                     window,
                                 )
                                 .unwrap_or_default()
-                                    .into_iter()
-                                    .map(WinitRenderElements::Decoration),
+                                .into_iter()
+                                .map(WinitRenderElements::Decoration),
                             );
 
                             scene_elements.extend(
@@ -171,7 +177,9 @@ pub fn init_winit(
                         );
 
                         if state.damage_blink_enabled {
-                            if let Ok((damage, _)) = blink_damage_tracker.damage_output(1, &scene_elements) {
+                            if let Ok((damage, _)) =
+                                blink_damage_tracker.damage_output(1, &scene_elements)
+                            {
                                 if let Some(damage) = damage {
                                     state.record_damage_blink(&output, damage);
                                 }

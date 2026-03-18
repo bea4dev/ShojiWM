@@ -1,14 +1,17 @@
 use std::{collections::HashMap, sync::Arc};
 
 use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
-use fontdue::{Font, FontSettings, layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle}};
+use fontdue::{
+    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
+    Font, FontSettings,
+};
 use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
             element::{
-                Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                Kind,
             },
             gles::{GlesError, GlesRenderer},
         },
@@ -95,9 +98,8 @@ impl TextRasterizer {
             Some("end") => (spec.rect.width as f32 - text_width).max(0.0),
             _ => 0.0,
         };
-        let y_offset =
-            ((spec.rect.height as f32 - line_height as f32) * 0.5).max(0.0)
-                + ((line_height as f32 - text_height) * 0.5).max(0.0);
+        let y_offset = ((spec.rect.height as f32 - line_height as f32) * 0.5).max(0.0)
+            + ((line_height as f32 - text_height) * 0.5).max(0.0);
 
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&LayoutSettings {
@@ -205,11 +207,11 @@ impl TextRasterizer {
 
         for face in self.database.faces() {
             let family_score = if let Some(requested) = &requested {
-                if face
-                    .families
-                    .iter()
-                    .any(|(name, _)| requested.iter().any(|value| name.eq_ignore_ascii_case(value)))
-                {
+                if face.families.iter().any(|(name, _)| {
+                    requested
+                        .iter()
+                        .any(|value| name.eq_ignore_ascii_case(value))
+                }) {
                     0
                 } else {
                     1_000
@@ -219,12 +221,24 @@ impl TextRasterizer {
             };
 
             let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
-            let stretch_penalty = if face.stretch == Stretch::Normal { 0 } else { 25 };
-            let mono_penalty = if family.is_none() && face.monospaced { 50 } else { 0 };
+            let stretch_penalty = if face.stretch == Stretch::Normal {
+                0
+            } else {
+                25
+            };
+            let mono_penalty = if family.is_none() && face.monospaced {
+                50
+            } else {
+                0
+            };
             let source_penalty = face_source_penalty(&face.source);
             let weight_penalty = (i32::from(face.weight.0) - i32::from(weight)).abs();
-            let score =
-                family_score + style_penalty + stretch_penalty + mono_penalty + source_penalty + weight_penalty;
+            let score = family_score
+                + style_penalty
+                + stretch_penalty
+                + mono_penalty
+                + source_penalty
+                + weight_penalty;
 
             match best {
                 Some((_, current_score)) if current_score <= score => {}
@@ -269,7 +283,11 @@ impl TextRasterizer {
                 80
             };
             let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
-            let stretch_penalty = if face.stretch == Stretch::Normal { 0 } else { 25 };
+            let stretch_penalty = if face.stretch == Stretch::Normal {
+                0
+            } else {
+                25
+            };
             let mono_penalty = if face.monospaced { 120 } else { 0 };
             let emoji_penalty = if contains_emoji { 600 } else { 0 };
             let cjk_penalty = if contains_cjk { 220 } else { 0 };
@@ -308,18 +326,16 @@ impl TextRasterizer {
                 },
             )
             .ok(),
-            Source::File(path) => std::fs::read(&path)
+            Source::File(path) => std::fs::read(&path).ok().and_then(|bytes| {
+                Font::from_bytes(
+                    bytes,
+                    FontSettings {
+                        collection_index: face_index,
+                        ..FontSettings::default()
+                    },
+                )
                 .ok()
-                .and_then(|bytes| {
-                    Font::from_bytes(
-                        bytes,
-                        FontSettings {
-                            collection_index: face_index,
-                            ..FontSettings::default()
-                        },
-                    )
-                    .ok()
-                }),
+            }),
             Source::SharedFile(_, data) => Font::from_bytes(
                 data.as_ref().as_ref().to_vec(),
                 FontSettings {
@@ -381,7 +397,10 @@ fn memory_text_element(
         return Ok(None);
     }
 
-    let local = Point::from((label.rect.x - output_geo.loc.x, label.rect.y - output_geo.loc.y));
+    let local = Point::from((
+        label.rect.x - output_geo.loc.x,
+        label.rect.y - output_geo.loc.y,
+    ));
     let physical: Point<i32, Physical> = local.to_f64().to_physical_precise_round(scale);
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -418,6 +437,5 @@ fn intersect_logical_rect(
     let right = (rect.x + rect.width).min(output_geo.loc.x + output_geo.size.w);
     let bottom = (rect.y + rect.height).min(output_geo.loc.y + output_geo.size.h);
 
-    (right > left && bottom > top)
-        .then(|| LogicalRect::new(left, top, right - left, bottom - top))
+    (right > left && bottom > top).then(|| LogicalRect::new(left, top, right - left, bottom - top))
 }
