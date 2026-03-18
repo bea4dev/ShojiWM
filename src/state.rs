@@ -3,7 +3,7 @@ use std::{collections::HashMap, ffi::OsString, sync::Arc};
 use smithay::{
     backend::drm::DrmNode,
     backend::renderer::element::memory::MemoryRenderBuffer,
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
     input::{Seat, SeatState, pointer::CursorImageStatus},
     output::Output,
     reexports::{
@@ -18,10 +18,17 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        dmabuf::{DmabufGlobal, DmabufState},
         cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
+        selection::{
+            data_device::DataDeviceState,
+            primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState,
+        },
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
+        shell::wlr_layer::Layer as WlrLayer,
+        shell::wlr_layer::WlrLayerShellState,
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -34,7 +41,7 @@ use crate::{
     drawing::PointerElement,
 };
 use crate::ssd::{DecorationRuntimeEvaluator, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct ShojiWM {
     pub start_time: std::time::Instant,
@@ -47,12 +54,15 @@ pub struct ShojiWM {
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<ShojiWM>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub data_control_state: DataControlState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -61,6 +71,8 @@ pub struct ShojiWM {
     pub window_decorations: HashMap<Window, WindowDecorationState>,
     pub pending_decoration_damage: Vec<LogicalRect>,
     pub decoration_evaluator: DecorationRuntimeEvaluator,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
     pub damage_blink_enabled: bool,
     pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
     pub damage_blink_pending: HashMap<String, Vec<LogicalRect>>,
@@ -88,6 +100,7 @@ impl ShojiWM {
         // Initialize protocols needed for displaying windows
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
@@ -97,6 +110,9 @@ impl ShojiWM {
 
         // Data device is responsible for clipboard and drag-and-drop
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let data_control_state =
+            DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -145,12 +161,15 @@ impl ShojiWM {
 
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             xdg_decoration_state,
             shm_state,
             cursor_shape_manager_state,
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
+            data_control_state,
             popups,
             seat,
 
@@ -158,6 +177,8 @@ impl ShojiWM {
             window_decorations: HashMap::new(),
             pending_decoration_damage: Vec::new(),
             decoration_evaluator,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_global: None,
             damage_blink_enabled,
             damage_blink_visible: HashMap::new(),
             damage_blink_pending: HashMap::new(),
@@ -221,12 +242,73 @@ impl ShojiWM {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(s, p)| (s, (p + location).to_f64()))
+        let output = self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+        })?;
+        let output_geo = self.space.output_geometry(output).unwrap();
+        let layers = layer_map_for_output(output);
+
+        if let Some(focus) = [WlrLayer::Overlay, WlrLayer::Top]
+            .into_iter()
+            .flat_map(|target_layer| layers.layers_on(target_layer).rev())
+            .find_map(|layer| {
+                let layer_geo = layers.layer_geometry(layer).unwrap();
+                let layer_loc = layer_geo.loc - layer.geometry().loc;
+                let result = layer
+                    .surface_under(
+                        pos - output_geo.loc.to_f64() - layer_loc.to_f64(),
+                        WindowSurfaceType::ALL,
+                    )
+                    .map(|(surface, loc)| (surface, (loc + layer_loc + output_geo.loc).to_f64()));
+                debug!(
+                    pos = ?pos,
+                    output = %output.name(),
+                    layer = ?layer.layer(),
+                    layer_geo = ?layer_geo,
+                    layer_surface_geo = ?layer.geometry(),
+                    layer_origin = ?layer_loc,
+                    hit = result.is_some(),
+                    "layer-shell top/overlay hit-test"
+                );
+                result
+            })
+        {
+            return Some(focus);
+        }
+
+        if let Some(focus) = self.space.element_under(pos).and_then(|(window, location)| {
+            window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, loc)| (surface, (loc + location).to_f64()))
+        }) {
+            return Some(focus);
+        }
+
+        [WlrLayer::Bottom, WlrLayer::Background]
+            .into_iter()
+            .flat_map(|target_layer| layers.layers_on(target_layer).rev())
+            .find_map(|layer| {
+                let layer_geo = layers.layer_geometry(layer).unwrap();
+                let layer_loc = layer_geo.loc - layer.geometry().loc;
+                let result = layer
+                    .surface_under(
+                        pos - output_geo.loc.to_f64() - layer_loc.to_f64(),
+                        WindowSurfaceType::ALL,
+                    )
+                    .map(|(surface, loc)| (surface, (loc + layer_loc + output_geo.loc).to_f64()));
+                debug!(
+                    pos = ?pos,
+                    output = %output.name(),
+                    layer = ?layer.layer(),
+                    layer_geo = ?layer_geo,
+                    layer_surface_geo = ?layer.geometry(),
+                    layer_origin = ?layer_loc,
+                    hit = result.is_some(),
+                    "layer-shell bottom/background hit-test"
+                );
+                result
             })
     }
 

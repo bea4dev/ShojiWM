@@ -1,4 +1,5 @@
 mod compositor;
+mod layer_shell;
 mod xdg_shell;
 
 //
@@ -12,15 +13,22 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::Serial;
 use smithay::wayland::output::OutputHandler;
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, ImportNotifier};
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
+use smithay::wayland::selection::primary_selection::{
+    PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
+};
+use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{
-    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat,
+    delegate_cursor_shape, delegate_data_control, delegate_data_device, delegate_dmabuf,
+    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat,
     delegate_xdg_decoration,
 };
+use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
 
 use crate::state::ShojiWM;
 
@@ -41,13 +49,15 @@ impl SeatHandler for ShojiWM {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        set_primary_focus(dh, seat, client);
     }
 }
 
 delegate_seat!(ShojiWM);
 delegate_cursor_shape!(ShojiWM);
 delegate_xdg_decoration!(ShojiWM);
+delegate_layer_shell!(ShojiWM);
 
 impl TabletSeatHandler for ShojiWM {
     fn tablet_tool_image(
@@ -59,6 +69,32 @@ impl TabletSeatHandler for ShojiWM {
         self.schedule_redraw();
     }
 }
+
+impl DmabufHandler for ShojiWM {
+    fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        let imported = self
+            .tty_backends
+            .values_mut()
+            .any(|backend| backend.renderer.import_dmabuf(&dmabuf, None).is_ok());
+
+        if imported || self.tty_backends.is_empty() {
+            let _ = notifier.successful::<ShojiWM>();
+        } else {
+            notifier.failed();
+        }
+    }
+}
+
+delegate_dmabuf!(ShojiWM);
 
 //
 // Wl Data Device
@@ -102,6 +138,22 @@ impl WaylandDndGrabHandler for ShojiWM {
 }
 
 delegate_data_device!(ShojiWM);
+
+impl PrimarySelectionHandler for ShojiWM {
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        &mut self.primary_selection_state
+    }
+}
+
+delegate_primary_selection!(ShojiWM);
+
+impl DataControlHandler for ShojiWM {
+    fn data_control_state(&mut self) -> &mut DataControlState {
+        &mut self.data_control_state
+    }
+}
+
+delegate_data_control!(ShojiWM);
 
 //
 // Wl Output & Xdg Output

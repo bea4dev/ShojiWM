@@ -1,4 +1,4 @@
-use crate::{grabs::resize_grab, state::{ClientState, ShojiWM}};
+use crate::{grabs::resize_grab, handlers::{layer_shell, xdg_shell}, state::{ClientState, ShojiWM}};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_shm,
@@ -16,8 +16,6 @@ use smithay::{
     },
 };
 use tracing::{debug, trace};
-
-use super::xdg_shell;
 
 impl CompositorHandler for ShojiWM {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -50,6 +48,7 @@ impl CompositorHandler for ShojiWM {
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
 
         self.schedule_redraw();

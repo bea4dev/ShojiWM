@@ -8,9 +8,11 @@ use smithay::{
             element::memory::MemoryRenderBufferRenderElement,
             element::surface::WaylandSurfaceRenderElement,
             gles::GlesRenderer,
+            ImportEgl, ImportMemWl,
         },
         winit::{self, WinitEvent},
     },
+    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
@@ -26,7 +28,12 @@ pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
     state: &mut ShojiWM,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init()?;
+    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    match backend.renderer().bind_wl_display(&state.display_handle) {
+        Ok(()) => trace!("winit renderer bound wl_display for EGL clients"),
+        Err(error) => warn!(?error, "failed to bind wl_display for winit EGL clients"),
+    }
+    state.shm_state.update_formats(backend.renderer().shm_formats());
 
     let mode = Mode {
         size: backend.window_size(),
@@ -88,8 +95,15 @@ pub fn init_winit(
                             smithay::utils::Scale::from(output.current_scale().fractional_scale());
                         let windows: Vec<_> = state.space.elements_for_output(&output).cloned().collect();
                         let extra_damage = state.pending_decoration_damage.clone();
+                        let (upper_layer_elements, lower_layer_elements) =
+                            window_render::layer_elements_for_output(renderer, &output, scale, 1.0);
 
                         let mut scene_elements: Vec<WinitRenderElements> = Vec::new();
+                        scene_elements.extend(
+                            upper_layer_elements
+                                .into_iter()
+                                .map(WinitRenderElements::Window),
+                        );
                         for window in windows.iter().rev() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
@@ -150,6 +164,11 @@ pub fn init_winit(
                                 .map(WinitRenderElements::Clipped),
                             );
                         }
+                        scene_elements.extend(
+                            lower_layer_elements
+                                .into_iter()
+                                .map(WinitRenderElements::Window),
+                        );
 
                         if state.damage_blink_enabled {
                             if let Ok((damage, _)) = blink_damage_tracker.damage_output(1, &scene_elements) {
@@ -201,6 +220,17 @@ pub fn init_winit(
                             |_, _| Some(output.clone()),
                         )
                     });
+                    {
+                        let map = layer_map_for_output(&output);
+                        for layer_surface in map.layers() {
+                            layer_surface.send_frame(
+                                &output,
+                                state.start_time.elapsed(),
+                                Some(Duration::ZERO),
+                                |_, _| Some(output.clone()),
+                            );
+                        }
+                    }
 
                     state.space.refresh();
                     state.popups.cleanup();

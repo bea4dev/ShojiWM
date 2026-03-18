@@ -7,11 +7,70 @@ use smithay::{
         ImportAll, Renderer,
         gles::GlesRenderer,
     },
-    desktop::{PopupManager, Window, WindowSurface},
+    desktop::{LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output},
     utils::{Physical, Point, Scale},
 };
 
 use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
+
+pub fn layer_elements_for_output<R>(
+    renderer: &mut R,
+    output: &smithay::output::Output,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> (Vec<WaylandSurfaceRenderElement<R>>, Vec<WaylandSurfaceRenderElement<R>>)
+where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    let map = layer_map_for_output(output);
+    let (lower, upper): (Vec<&LayerSurface>, Vec<&LayerSurface>) = map
+        .layers()
+        .rev()
+        .partition(|surface| {
+            matches!(
+                surface.layer(),
+                smithay::wayland::shell::wlr_layer::Layer::Background
+                    | smithay::wayland::shell::wlr_layer::Layer::Bottom
+            )
+        });
+
+    let upper_elements = upper
+        .into_iter()
+        .filter_map(|surface| {
+            map.layer_geometry(surface)
+                .map(|geo| (geo.loc - surface.geometry().loc, surface))
+        })
+        .flat_map(|(loc, surface)| {
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+                surface,
+                renderer,
+                loc.to_physical_precise_round(scale),
+                scale,
+                alpha,
+            )
+        })
+        .collect();
+
+    let lower_elements = lower
+        .into_iter()
+        .filter_map(|surface| {
+            map.layer_geometry(surface)
+                .map(|geo| (geo.loc - surface.geometry().loc, surface))
+        })
+        .flat_map(|(loc, surface)| {
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+                surface,
+                renderer,
+                loc.to_physical_precise_round(scale),
+                scale,
+                alpha,
+            )
+        })
+        .collect();
+
+    (upper_elements, lower_elements)
+}
 
 pub fn surface_elements<R>(
     window: &Window,

@@ -19,10 +19,13 @@ use smithay::{
                 surface::WaylandSurfaceRenderElement,
             },
             gles::GlesRenderer,
+            ImportDma,
+            ImportEgl, ImportMemWl,
         },
         session::{Session, libseat::LibSeatSession},
     },
     input::pointer::{CursorImageAttributes, CursorImageStatus},
+    desktop::layer_map_for_output,
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::EventLoop,
@@ -32,7 +35,7 @@ use smithay::{
     },
     render_elements,
     utils::{DeviceFd, IsAlive, Scale, Transform},
-    wayland::compositor,
+    wayland::{compositor, dmabuf::DmabufFeedbackBuilder},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
@@ -89,7 +92,22 @@ pub fn device_added(
 
     let egl = unsafe { EGLDisplay::new(gbm.clone())? };
     let ctx = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
-    let renderer = unsafe { GlesRenderer::new(ctx)? };
+    let mut renderer = unsafe { GlesRenderer::new(ctx)? };
+    match renderer.bind_wl_display(&state.display_handle) {
+        Ok(()) => info!(?node, "bound wl_display for tty EGL clients"),
+        Err(error) => warn!(?node, ?error, "failed to bind wl_display for tty EGL clients"),
+    }
+    state.shm_state.update_formats(renderer.shm_formats());
+    if state.dmabuf_global.is_none() {
+        let default_feedback = DmabufFeedbackBuilder::new(node.dev_id(), renderer.dmabuf_formats())
+            .build()
+            .unwrap();
+        let global = state
+            .dmabuf_state
+            .create_global_with_default_feedback::<ShojiWM>(&state.display_handle, &default_feedback);
+        state.dmabuf_global = Some(global);
+        info!(?node, "initialized linux-dmabuf global");
+    }
 
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -253,6 +271,8 @@ fn render_surface(
         let windows: Vec<_> = space.elements_for_output(&output).cloned().collect();
         let all_windows: Vec<_> = space.elements().cloned().collect();
         let window_count = all_windows.len();
+        let (upper_layer_elements, lower_layer_elements) =
+            window_render::layer_elements_for_output(&mut backend.renderer, &output, scale, 1.0);
 
         if output_geo.to_f64().contains(pointer_pos) {
             let reset = matches!(cursor_status, CursorImageStatus::Surface(surface) if !surface.alive());
@@ -310,6 +330,11 @@ fn render_surface(
         }
 
         let mut scene_elements: Vec<TtyRenderElements> = Vec::new();
+        scene_elements.extend(
+            upper_layer_elements
+                .into_iter()
+                .map(TtyRenderElements::Window),
+        );
 
         for window in windows.iter().rev() {
             let Some(window_location) = space.element_location(window) else {
@@ -375,6 +400,11 @@ fn render_surface(
                 .map(TtyRenderElements::Clipped),
             );
         }
+        scene_elements.extend(
+            lower_layer_elements
+                .into_iter()
+                .map(TtyRenderElements::Window),
+        );
 
         let captured_blink_damage = if should_capture_blink {
             match surface.blink_damage_tracker.damage_output(1, &scene_elements) {
@@ -426,6 +456,17 @@ fn render_surface(
                     |_, _| Some(output.clone()),
                 );
             });
+            {
+                let map = layer_map_for_output(&output);
+                for layer_surface in map.layers() {
+                    layer_surface.send_frame(
+                        &output,
+                        start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+            }
         } else {
             trace!(output = %output.name(), "tty frame had no damage");
         }
