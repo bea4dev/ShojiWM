@@ -1,7 +1,6 @@
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     desktop::Window,
-    reexports::wayland_server::Resource,
     utils::{Logical, Point, Rectangle},
 };
 use std::time::Instant;
@@ -278,8 +277,6 @@ impl ShojiWM {
     ) -> Option<(Window, DecorationHitTestResult)> {
         self.space.elements().rev().find_map(|window| {
             let decoration = self.window_decorations.get(window)?;
-            let geometry = window.geometry();
-            let bbox = window.bbox();
             let logical_point = LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32);
             let transformed_root =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
@@ -289,25 +286,7 @@ impl ShojiWM {
                     decoration.layout.root.rect,
                     decoration.visual_transform,
                 );
-                let hit = decoration.hit_test(local_point);
-                debug!(
-                    pos = ?point,
-                    logical_pos = ?logical_point,
-                    window_id = window
-                        .toplevel()
-                        .map(|toplevel| toplevel.wl_surface().id().protocol_id())
-                        .unwrap_or_default(),
-                    window_bbox = ?bbox,
-                    window_geometry = ?geometry,
-                    root_rect = ?decoration.layout.root.rect,
-                    client_rect = ?decoration.client_rect,
-                    transformed_root = ?transformed_root,
-                    local_point = ?local_point,
-                    transform = ?decoration.visual_transform,
-                    hit = ?hit,
-                    "decoration_under transformed hit-test"
-                );
-                (window.clone(), hit)
+                (window.clone(), decoration.hit_test(local_point))
             })
         })
     }
