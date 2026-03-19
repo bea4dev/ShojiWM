@@ -88,14 +88,17 @@ impl ShojiWM {
         WaylandWindowSnapshot {
             id: toplevel.wl_surface().id().protocol_id().to_string(),
             title,
-            app_id,
+            app_id: app_id.clone(),
             is_focused,
             // ShojiWM is currently a floating WM; expose that policy explicitly.
             is_floating: true,
             is_maximized,
             is_fullscreen,
             is_xwayland: false,
-            icon: None,
+            icon: app_id.as_ref().map(|name| WindowIconSnapshot {
+                name: Some(name.clone()),
+                bytes: None,
+            }),
             interaction: DecorationInteractionSnapshot::default(),
         }
     }

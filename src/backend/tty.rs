@@ -408,6 +408,7 @@ fn render_surface(
             tty_backends,
             start_time,
             cursor_status,
+            cursor_override,
             cursor_theme,
             pointer_images,
             current_pointer_image,
@@ -453,7 +454,11 @@ fn render_surface(
                 *cursor_status = CursorImageStatus::default_named();
             }
 
-            let hotspot = if let CursorImageStatus::Surface(surface) = cursor_status {
+            let effective_cursor_status = cursor_override
+                .map(CursorImageStatus::Named)
+                .unwrap_or_else(|| cursor_status.clone());
+
+            let hotspot = if let CursorImageStatus::Surface(surface) = &effective_cursor_status {
                 *current_pointer_image = None;
                 compositor::with_states(surface, |states| {
                     states
@@ -465,7 +470,7 @@ fn render_surface(
                         .hotspot
                 })
             } else {
-                let icon = match cursor_status {
+                let icon = match &effective_cursor_status {
                     CursorImageStatus::Named(icon) => *icon,
                     _ => smithay::input::pointer::CursorIcon::Default,
                 };
@@ -492,7 +497,7 @@ fn render_surface(
                 (frame.xhot as i32, frame.yhot as i32).into()
             };
 
-            pointer_element.set_status(cursor_status.clone());
+            pointer_element.set_status(effective_cursor_status);
 
             let cursor_location = (pointer_pos - output_geo.loc.to_f64() - hotspot.to_f64())
                 .to_physical(scale)
@@ -517,9 +522,8 @@ fn render_surface(
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
-            let render_location = window_location - window.geometry().loc;
             let physical_location =
-                (render_location - output_geo.loc).to_physical_precise_round(scale);
+                (window_location - output_geo.loc).to_physical_precise_round(scale);
 
             scene_elements.extend(
                 window_render::popup_elements(
@@ -531,6 +535,18 @@ fn render_surface(
                 )
                 .into_iter()
                 .map(TtyRenderElements::Window),
+            );
+
+            scene_elements.extend(
+                decoration::icon_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    &state.window_decorations,
+                    &output,
+                    window,
+                )?
+                .into_iter()
+                .map(TtyRenderElements::Text),
             );
 
             scene_elements.extend(
@@ -595,7 +611,9 @@ fn render_surface(
             None
         };
 
-        let cursor_status_for_log = cursor_status.clone();
+        let cursor_status_for_log = cursor_override
+            .map(CursorImageStatus::Named)
+            .unwrap_or_else(|| cursor_status.clone());
         let mut elements: Vec<TtyRenderElements> = Vec::new();
         elements.extend(
             damage_blink::elements_for_output(&blink_visible, output_geo, scale)
@@ -636,7 +654,7 @@ fn render_surface(
             //
             // Chrome on the TTY backend would otherwise frequently stick to ~60 fps on a 66 Hz
             // output. Keeping this metadata current made Chrome observe the real output cadence.
-            update_primary_scanout_output(&state.space, &output, cursor_status, &result.states);
+            update_primary_scanout_output(&state.space, &output, &cursor_status_for_log, &result.states);
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, &result.states);
             surface

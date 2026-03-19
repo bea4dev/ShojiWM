@@ -80,6 +80,16 @@ pub fn text_elements_for_window(
     text::text_elements_for_window(renderer, space, decorations, output, window)
 }
 
+pub fn icon_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+    crate::backend::icon::icon_elements_for_window(renderer, space, decorations, output, window)
+}
+
 fn rounded_rect_element(
     renderer: &mut GlesRenderer,
     decoration: &mut crate::ssd::WindowDecorationState,

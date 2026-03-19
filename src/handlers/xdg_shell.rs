@@ -55,6 +55,26 @@ impl XdgShellHandler for ShojiWM {
             surface = ?surface.wl_surface().id(),
             "new xdg toplevel received"
         );
+
+        // Experimental Chromium CSD suppression hack, intentionally left disabled:
+        //
+        // Some compositors appear to force Chromium-family clients to stop drawing their own
+        // rounded top corners by sending an initial configure with the maximized state set, even
+        // for ordinary floating windows. This likely works because Chromium switches decoration
+        // paths when it believes the window starts out maximized.
+        //
+        // We are deliberately not enabling this here because it is a risky compatibility hack:
+        // it can change client behavior in hard-to-predict ways, may break initial sizing or
+        // state tracking, and would be surprising as a compositor default for non-maximized
+        // windows.
+        //
+        // If we want to revisit this later, the rough shape would be:
+        //
+        // surface.with_pending_state(|state| {
+        //     state.states.set(xdg_toplevel::State::Maximized);
+        // });
+        // surface.send_pending_configure();
+
         let window = Window::new_wayland_window(surface);
         let snapshot = self.snapshot_window(&window);
         let initial_location = match self.suggested_window_location(&snapshot) {
@@ -180,16 +200,9 @@ impl XdgDecorationHandler for ShojiWM {
     fn request_mode(
         &mut self,
         toplevel: ToplevelSurface,
-        mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        _mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     ) {
-        let negotiated = match mode {
-            xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide => {
-                self.default_decoration_mode
-            }
-            _ => xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide,
-        };
-
-        apply_decoration_mode(self, &toplevel, negotiated);
+        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {

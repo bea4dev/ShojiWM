@@ -110,9 +110,8 @@ pub fn init_winit(
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
                             };
-                            let render_location = window_location - window.geometry().loc;
                             let physical_location =
-                                (render_location - output_geo.loc).to_physical_precise_round(scale);
+                                (window_location - output_geo.loc).to_physical_precise_round(scale);
 
                             scene_elements.extend(
                                 window_render::popup_elements(
@@ -124,6 +123,19 @@ pub fn init_winit(
                                 )
                                 .into_iter()
                                 .map(WinitRenderElements::Window),
+                            );
+
+                            scene_elements.extend(
+                                decoration::icon_elements_for_window(
+                                    renderer,
+                                    &state.space,
+                                    &state.window_decorations,
+                                    &output,
+                                    window,
+                                )
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(WinitRenderElements::Text),
                             );
 
                             scene_elements.extend(

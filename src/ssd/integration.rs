@@ -7,7 +7,10 @@ use std::time::Instant;
 use tracing::{debug, trace};
 
 use crate::state::ShojiWM;
-use crate::backend::text::{CachedDecorationLabel, LabelSpec};
+use crate::backend::{
+    icon::{CachedDecorationIcon, IconSpec},
+    text::{CachedDecorationLabel, LabelSpec},
+};
 use crate::backend::rounded::RoundedElementState;
 
 use super::{
@@ -25,6 +28,7 @@ pub struct WindowDecorationState {
     pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
     pub text_buffers: Vec<CachedDecorationLabel>,
+    pub icon_buffers: Vec<CachedDecorationIcon>,
     pub rounded_cache: std::collections::HashMap<String, RoundedElementState>,
 }
 
@@ -168,6 +172,7 @@ impl ShojiWM {
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
+                let icon_buffers = build_icon_buffers(&layout, &snapshot, &mut self.icon_rasterizer);
                 rebuilt += 1;
                 debug!(
                     window_id = snapshot.id,
@@ -198,6 +203,7 @@ impl ShojiWM {
                         content_clip,
                         buffers,
                         text_buffers,
+                        icon_buffers,
                         rounded_cache,
                     },
                 );
@@ -220,6 +226,8 @@ impl ShojiWM {
                     cached.buffers = build_cached_buffers(&cached.layout);
                     cached.text_buffers =
                         build_text_buffers(&cached.layout, &mut self.text_rasterizer);
+                    cached.icon_buffers =
+                        build_icon_buffers(&cached.layout, &cached.snapshot, &mut self.icon_rasterizer);
                     relayout += 1;
                     debug!(
                         window_id = cached.snapshot.id,
@@ -254,23 +262,23 @@ impl ShojiWM {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, DecorationHitTestResult)> {
-        self.space
-            .elements()
-            .rev()
-            .find_map(|window| {
-                let decoration = self.window_decorations.get(window)?;
-                let hit = decoration.hit_test(point);
-                (!matches!(hit, DecorationHitTestResult::Outside | DecorationHitTestResult::ClientArea))
-                    .then_some((window.clone(), hit))
-            })
+        self.space.elements().rev().find_map(|window| {
+            let decoration = self.window_decorations.get(window)?;
+            decoration
+                .layout
+                .root
+                .rect
+                .contains(LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32))
+                .then(|| (window.clone(), decoration.hit_test(point)))
+        })
     }
 
     fn window_client_rect(&self, window: &Window) -> Option<LogicalRect> {
         let loc = self.space.element_location(window)?;
         let geometry = window.geometry();
         Some(LogicalRect::new(
-            loc.x,
-            loc.y,
+            loc.x + geometry.loc.x,
+            loc.y + geometry.loc.y,
             geometry.size.w,
             geometry.size.h,
         ))
@@ -392,6 +400,16 @@ fn build_text_buffers(
 ) -> Vec<CachedDecorationLabel> {
     let mut buffers = Vec::new();
     collect_text_buffers(&layout.root, rasterizer, &mut buffers);
+    buffers
+}
+
+fn build_icon_buffers(
+    layout: &ComputedDecorationTree,
+    snapshot: &WaylandWindowSnapshot,
+    rasterizer: &mut crate::backend::icon::IconRasterizer,
+) -> Vec<CachedDecorationIcon> {
+    let mut buffers = Vec::new();
+    collect_icon_buffers(&layout.root, snapshot, rasterizer, &mut buffers);
     buffers
 }
 
@@ -531,6 +549,35 @@ fn collect_text_buffers(
     };
 
     if let Some(buffer) = rasterizer.render_label(&spec) {
+        buffers.push(buffer);
+    }
+}
+
+fn collect_icon_buffers(
+    node: &super::ComputedDecorationNode,
+    snapshot: &WaylandWindowSnapshot,
+    rasterizer: &mut crate::backend::icon::IconRasterizer,
+    buffers: &mut Vec<CachedDecorationIcon>,
+) {
+    if node.style.visible == Some(false) {
+        return;
+    }
+
+    for child in node.children.iter().rev() {
+        collect_icon_buffers(child, snapshot, rasterizer, buffers);
+    }
+
+    let super::DecorationNodeKind::AppIcon = &node.kind else {
+        return;
+    };
+
+    let spec = IconSpec {
+        rect: node.rect,
+        icon: snapshot.icon.clone(),
+        app_id: snapshot.app_id.clone(),
+    };
+
+    if let Some(buffer) = rasterizer.render_icon(&spec) {
         buffers.push(buffer);
     }
 }

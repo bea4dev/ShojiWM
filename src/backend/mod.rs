@@ -2,6 +2,7 @@ pub mod clipped_surface;
 pub mod damage;
 pub mod damage_blink;
 pub mod decoration;
+pub mod icon;
 pub mod rounded;
 pub mod text;
 pub mod tty;

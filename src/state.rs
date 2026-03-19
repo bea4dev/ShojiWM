@@ -4,9 +4,10 @@ use smithay::{
     backend::drm::DrmNode,
     backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
-    input::{Seat, SeatState, pointer::CursorImageStatus},
+    input::{Seat, SeatState, pointer::{CursorIcon, CursorImageStatus}},
     output::Output,
     reexports::{
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -24,6 +25,7 @@ use smithay::{
         fixes::FixesState,
         fifo::FifoManagerState,
         fractional_scale::FractionalScaleManagerState,
+        input_method::InputMethodManagerState,
         output::OutputManagerState,
         presentation::PresentationState,
         selection::{
@@ -32,23 +34,26 @@ use smithay::{
             wlr_data_control::DataControlState,
         },
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
+        shell::kde::decoration::KdeDecorationState,
         shell::wlr_layer::Layer as WlrLayer,
         shell::wlr_layer::WlrLayerShellState,
         shm::ShmState,
         single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
+        text_input::TextInputManagerState,
         viewporter::ViewporterState,
+        virtual_keyboard::VirtualKeyboardManagerState,
     },
 };
 use xcursor::parser::Image;
 
 use crate::{
-    backend::{text::TextRasterizer, tty::BackendData},
+    backend::{icon::IconRasterizer, text::TextRasterizer, tty::BackendData},
     config::DisplayConfig,
     cursor::Cursor,
     drawing::PointerElement,
 };
-use crate::ssd::{DecorationRuntimeEvaluator, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
+use crate::ssd::{DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::{debug, info};
 
 pub struct ShojiWM {
@@ -64,6 +69,7 @@ pub struct ShojiWM {
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
     pub xdg_decoration_state: XdgDecorationState,
+    pub kde_decoration_state: KdeDecorationState,
     pub shm_state: ShmState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub output_manager_state: OutputManagerState,
@@ -96,11 +102,13 @@ pub struct ShojiWM {
     pub is_running: bool,
     pub needs_redraw: bool,
     pub cursor_status: CursorImageStatus,
+    pub cursor_override: Option<CursorIcon>,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
     pub current_pointer_image: Option<Image>,
     pub pointer_element: PointerElement,
     pub text_rasterizer: TextRasterizer,
+    pub icon_rasterizer: IconRasterizer,
     pub default_decoration_mode: DecorationMode,
     pub display_config: DisplayConfig,
     pub clock: Clock<Monotonic>,
@@ -121,6 +129,7 @@ impl ShojiWM {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeDecorationMode::Server);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
@@ -134,6 +143,9 @@ impl ShojiWM {
         let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
         let fixes_state = FixesState::new::<Self>(&dh);
+        TextInputManagerState::new::<Self>(&dh);
+        InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
+        VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
 
         // Data device is responsible for clipboard and drag-and-drop
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -190,6 +202,7 @@ impl ShojiWM {
             xdg_shell_state,
             layer_shell_state,
             xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             cursor_shape_manager_state,
             output_manager_state,
@@ -221,11 +234,13 @@ impl ShojiWM {
             is_running: true,
             needs_redraw: true,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_override: None,
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
             current_pointer_image: None,
             pointer_element: PointerElement::default(),
             text_rasterizer: TextRasterizer::new(),
+            icon_rasterizer: IconRasterizer::new(),
             // SSD rendering is available, so prefer compositor-side decorations by default.
             default_decoration_mode: DecorationMode::ServerSide,
             display_config: DisplayConfig::default(),
@@ -314,6 +329,24 @@ impl ShojiWM {
             })
         {
             return Some(focus);
+        }
+
+        let logical_pos = LogicalPoint::new(pos.x.floor() as i32, pos.y.floor() as i32);
+        for window in self.space.elements().rev() {
+            let Some(decoration) = self.window_decorations.get(window) else {
+                continue;
+            };
+            if !decoration.layout.root.rect.contains(logical_pos) {
+                continue;
+            }
+
+            let Some(location) = self.space.element_location(window) else {
+                return None;
+            };
+
+            return window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, loc)| (surface, (loc + location).to_f64()));
         }
 
         if let Some(focus) = self.space.element_under(pos).and_then(|(window, location)| {

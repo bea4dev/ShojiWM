@@ -5,7 +5,7 @@ use smithay::{
     },
     input::{
         keyboard::{FilterResult, keysyms},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, CursorIcon, MotionEvent},
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{SERIAL_COUNTER, Serial},
@@ -90,6 +90,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
 
+                self.update_decoration_cursor_icon(pos);
                 self.schedule_redraw();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -115,6 +116,7 @@ impl ShojiWM {
                     },
                 );
                 pointer.frame(self);
+                self.update_decoration_cursor_icon(pos);
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
@@ -131,24 +133,42 @@ impl ShojiWM {
                     if let Some((window, hit)) = self.decoration_under(pointer.current_location()) {
                         self.focus_window(&window, serial);
 
-                        pointer.button(
-                            self,
-                            &ButtonEvent {
-                                button,
-                                state: button_state,
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-
                         match hit {
                             DecorationHitTestResult::Action(WindowAction::Close) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
                                 if let Some(toplevel) = window.toplevel() {
                                     toplevel.send_close();
                                 }
                             }
-                            DecorationHitTestResult::Action(_) => {}
+                            DecorationHitTestResult::Action(_) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+                            }
                             DecorationHitTestResult::Move => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
                                 if let (Some(start_data), Some(initial_window_location)) = (
                                     pointer.grab_start_data(),
                                     self.space.element_location(&window),
@@ -167,6 +187,15 @@ impl ShojiWM {
                                 }
                             }
                             DecorationHitTestResult::Resize(edges) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
                                 if let (Some(start_data), Some(initial_window_location)) = (
                                     pointer.grab_start_data(),
                                     self.space.element_location(&window),
@@ -198,8 +227,18 @@ impl ShojiWM {
                                     );
                                 }
                             }
-                            DecorationHitTestResult::ClientArea
-                            | DecorationHitTestResult::Outside => {}
+                            DecorationHitTestResult::ClientArea => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+                            }
+                            DecorationHitTestResult::Outside => {}
                         }
 
                         pointer.frame(self);
@@ -272,6 +311,23 @@ impl ShojiWM {
 }
 
 impl ShojiWM {
+    fn update_decoration_cursor_icon(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
+        let next_override = self
+            .decoration_under(pos)
+            .and_then(|(_, hit)| match hit {
+                DecorationHitTestResult::Resize(edges) => Some(resize_edges_to_cursor_icon(edges)),
+                DecorationHitTestResult::Move
+                | DecorationHitTestResult::Action(_)
+                | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
+                DecorationHitTestResult::ClientArea => None,
+            });
+
+        if self.cursor_override != next_override {
+            self.cursor_override = next_override;
+            self.schedule_redraw();
+        }
+    }
+
     fn focus_window(&mut self, window: &smithay::desktop::Window, serial: Serial) {
         let started_at = Instant::now();
         self.space.raise_element(window, true);
@@ -323,6 +379,22 @@ impl ShojiWM {
             elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
             "clear_focus finished"
         );
+    }
+}
+
+fn resize_edges_to_cursor_icon(edges: ResizeEdges) -> CursorIcon {
+    match edges {
+        edges if edges == (ResizeEdges::TOP | ResizeEdges::LEFT) => CursorIcon::NwResize,
+        edges if edges == (ResizeEdges::TOP | ResizeEdges::RIGHT) => CursorIcon::NeResize,
+        edges if edges == (ResizeEdges::BOTTOM | ResizeEdges::LEFT) => CursorIcon::SwResize,
+        edges if edges == (ResizeEdges::BOTTOM | ResizeEdges::RIGHT) => CursorIcon::SeResize,
+        edges if edges == ResizeEdges::LEFT => CursorIcon::WResize,
+        edges if edges == ResizeEdges::RIGHT => CursorIcon::EResize,
+        edges if edges == ResizeEdges::TOP => CursorIcon::NResize,
+        edges if edges == ResizeEdges::BOTTOM => CursorIcon::SResize,
+        edges if edges.intersects(ResizeEdges::LEFT | ResizeEdges::RIGHT) => CursorIcon::EwResize,
+        edges if edges.intersects(ResizeEdges::TOP | ResizeEdges::BOTTOM) => CursorIcon::NsResize,
+        _ => CursorIcon::AllResize,
     }
 }
 

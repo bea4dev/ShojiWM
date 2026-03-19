@@ -47,13 +47,19 @@ pub struct LabelSpec {
 #[derive(Debug, Default)]
 pub struct TextRasterizer {
     database: Database,
-    fonts: HashMap<FontCacheKey, Arc<Font>>,
+    fonts: HashMap<fontdb::ID, Arc<Font>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct FontCacheKey {
-    family: Option<String>,
-    weight: u16,
+#[derive(Debug, Clone)]
+struct ResolvedFont {
+    id: fontdb::ID,
+    font: Arc<Font>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextRun<'a> {
+    text: &'a str,
+    font_index: usize,
 }
 
 impl TextRasterizer {
@@ -72,7 +78,7 @@ impl TextRasterizer {
         }
 
         let weight = parse_font_weight(spec.font_weight.as_ref());
-        let font = self.resolve_font(spec.font_family.as_deref(), weight)?;
+        let (fonts, runs) = self.resolve_text_runs(spec.font_family.as_deref(), weight, &spec.text)?;
         let font_size = spec.font_size.max(1) as f32;
         let line_height = spec.line_height.unwrap_or((font_size.ceil() as i32) + 4);
 
@@ -82,7 +88,9 @@ impl TextRasterizer {
             max_height: None,
             ..LayoutSettings::default()
         });
-        measure_layout.append(&[font.as_ref()], &TextStyle::new(&spec.text, font_size, 0));
+        for run in &runs {
+            measure_layout.append(&fonts, &TextStyle::new(run.text, font_size, run.font_index));
+        }
         let glyphs = measure_layout.glyphs();
         let text_width = glyphs
             .iter()
@@ -109,11 +117,13 @@ impl TextRasterizer {
             max_height: Some(spec.rect.height as f32),
             ..LayoutSettings::default()
         });
-        layout.append(&[font.as_ref()], &TextStyle::new(&spec.text, font_size, 0));
+        for run in &runs {
+            layout.append(&fonts, &TextStyle::new(run.text, font_size, run.font_index));
+        }
 
         let mut pixels = vec![0u8; (spec.rect.width * spec.rect.height * 4) as usize];
         for glyph in layout.glyphs() {
-            let (metrics, bitmap) = font.rasterize_config(glyph.key);
+            let (metrics, bitmap) = fonts[glyph.font_index].rasterize_config(glyph.key);
             if metrics.width == 0 || metrics.height == 0 {
                 continue;
             }
@@ -163,16 +173,62 @@ impl TextRasterizer {
         })
     }
 
-    fn resolve_font(&mut self, family: Option<&[String]>, weight: u16) -> Option<Arc<Font>> {
-        let key = FontCacheKey {
-            family: family.and_then(|families| families.first().cloned()),
-            weight,
-        };
-        if let Some(font) = self.fonts.get(&key) {
-            return Some(font.clone());
+    fn resolve_text_runs<'a>(
+        &mut self,
+        family: Option<&[String]>,
+        weight: u16,
+        text: &'a str,
+    ) -> Option<(Vec<Arc<Font>>, Vec<TextRun<'a>>)> {
+        let mut fonts = self.resolve_font_chain(family, weight);
+        if fonts.is_empty() {
+            return None;
         }
 
-        let face = if let Some(names) = family {
+        let mut runs = Vec::new();
+        let mut fallback_cache: HashMap<char, usize> = HashMap::new();
+        let mut current_font_index = None;
+        let mut run_start = 0usize;
+
+        for (byte_index, character) in text.char_indices() {
+            let font_index = self.font_index_for_character(
+                character,
+                family,
+                weight,
+                &mut fonts,
+                &mut fallback_cache,
+            );
+
+            match current_font_index {
+                Some(current) if current == font_index => {}
+                Some(current) => {
+                    runs.push(TextRun {
+                        text: &text[run_start..byte_index],
+                        font_index: current,
+                    });
+                    run_start = byte_index;
+                    current_font_index = Some(font_index);
+                }
+                None => {
+                    run_start = byte_index;
+                    current_font_index = Some(font_index);
+                }
+            }
+        }
+
+        if let Some(current) = current_font_index {
+            runs.push(TextRun {
+                text: &text[run_start..],
+                font_index: current,
+            });
+        }
+
+        Some((fonts.into_iter().map(|font| font.font).collect(), runs))
+    }
+
+    fn resolve_font_chain(&mut self, family: Option<&[String]>, weight: u16) -> Vec<ResolvedFont> {
+        let mut face_ids = Vec::new();
+
+        if let Some(names) = family {
             let mut families = names
                 .iter()
                 .map(|name| Family::Name(name.as_str()))
@@ -184,16 +240,62 @@ impl TextRasterizer {
                 stretch: Stretch::Normal,
                 style: Style::Normal,
             };
-            self.database
-                .query(&query)
-                .or_else(|| self.pick_matching_face(Some(names), weight))
-        } else {
-            self.pick_default_face(weight)
-        }?;
-        let font = self.load_font_for_face(face)?;
-        let font = Arc::new(font);
-        self.fonts.insert(key, font.clone());
-        Some(font)
+            if let Some(face) = self.database.query(&query) {
+                push_unique_face(&mut face_ids, face);
+            }
+            if let Some(face) = self.pick_matching_face(Some(names), weight) {
+                push_unique_face(&mut face_ids, face);
+            }
+        }
+
+        if let Some(face) = self.pick_default_face(weight) {
+            push_unique_face(&mut face_ids, face);
+        }
+
+        face_ids
+            .into_iter()
+            .filter_map(|id| {
+                self.load_cached_font(id)
+                    .map(|font| ResolvedFont { id, font })
+            })
+            .collect()
+    }
+
+    fn font_index_for_character(
+        &mut self,
+        character: char,
+        family: Option<&[String]>,
+        weight: u16,
+        fonts: &mut Vec<ResolvedFont>,
+        fallback_cache: &mut HashMap<char, usize>,
+    ) -> usize {
+        if let Some(index) = fallback_cache.get(&character).copied() {
+            return index;
+        }
+
+        if let Some(index) = fonts.iter().position(|font| font.font.has_glyph(character)) {
+            fallback_cache.insert(character, index);
+            return index;
+        }
+
+        if let Some(face) = self.pick_fallback_face_for_char(character, family, weight)
+            && let Some(index) = fonts.iter().position(|font| font.id == face)
+        {
+            fallback_cache.insert(character, index);
+            return index;
+        }
+
+        if let Some(face) = self.pick_fallback_face_for_char(character, family, weight)
+            && let Some(font) = self.load_cached_font(face)
+        {
+            fonts.push(ResolvedFont { id: face, font });
+            let index = fonts.len() - 1;
+            fallback_cache.insert(character, index);
+            return index;
+        }
+
+        fallback_cache.insert(character, 0);
+        0
     }
 
     fn pick_matching_face(&self, family: Option<&[String]>, weight: u16) -> Option<fontdb::ID> {
@@ -315,6 +417,98 @@ impl TextRasterizer {
         best.map(|(id, _)| id)
     }
 
+    fn pick_fallback_face_for_char(
+        &mut self,
+        character: char,
+        family: Option<&[String]>,
+        weight: u16,
+    ) -> Option<fontdb::ID> {
+        let requested = family.map(|values| {
+            values
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        });
+        let is_emoji = looks_like_emoji(character);
+        let mut candidates = Vec::new();
+
+        for face in self.database.faces() {
+            let names = face
+                .families
+                .iter()
+                .map(|(name, _)| name.to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            let exact_requested = requested.as_ref().is_some_and(|requested| {
+                names.iter().any(|name| requested.iter().any(|value| value == name))
+            });
+            let contains_sans = names.iter().any(|name| name.contains("sans"));
+            let contains_serif = names.iter().any(|name| name.contains("serif"));
+            let contains_emoji = names.iter().any(|name| name.contains("emoji"));
+            let contains_cjk = names.iter().any(|name| name.contains("cjk"));
+
+            let family_score = if exact_requested {
+                0
+            } else if contains_sans {
+                25
+            } else if contains_serif {
+                140
+            } else {
+                80
+            };
+            let emoji_score = if is_emoji {
+                if contains_emoji { 0 } else { 400 }
+            } else if contains_emoji {
+                500
+            } else {
+                0
+            };
+            let mono_penalty = if face.monospaced { 120 } else { 0 };
+            let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
+            let stretch_penalty = if face.stretch == Stretch::Normal {
+                0
+            } else {
+                25
+            };
+            let cjk_penalty = if contains_cjk { 120 } else { 0 };
+            let source_penalty = face_source_penalty(&face.source);
+            let weight_penalty = (i32::from(face.weight.0) - i32::from(weight)).abs();
+
+            candidates.push((
+                face.id,
+                family_score
+                    + emoji_score
+                    + mono_penalty
+                    + style_penalty
+                    + stretch_penalty
+                    + cjk_penalty
+                    + source_penalty
+                    + weight_penalty,
+            ));
+        }
+
+        candidates.sort_by_key(|(_, score)| *score);
+
+        for (face, _) in candidates {
+            let Some(font) = self.load_cached_font(face) else {
+                continue;
+            };
+            if font.has_glyph(character) {
+                return Some(face);
+            }
+        }
+
+        None
+    }
+
+    fn load_cached_font(&mut self, face: fontdb::ID) -> Option<Arc<Font>> {
+        if let Some(font) = self.fonts.get(&face) {
+            return Some(font.clone());
+        }
+        let font = Arc::new(self.load_font_for_face(face)?);
+        self.fonts.insert(face, font.clone());
+        Some(font)
+    }
+
     fn load_font_for_face(&self, face: fontdb::ID) -> Option<Font> {
         let (source, face_index) = self.database.face_source(face)?;
         match source {
@@ -346,6 +540,21 @@ impl TextRasterizer {
             .ok(),
         }
     }
+}
+
+fn push_unique_face(faces: &mut Vec<fontdb::ID>, face: fontdb::ID) {
+    if !faces.contains(&face) {
+        faces.push(face);
+    }
+}
+
+fn looks_like_emoji(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x2600..=0x27BF
+            | 0x1F000..=0x1FAFF
+            | 0x1FC00..=0x1FFFD
+    )
 }
 
 fn face_source_penalty(source: &Source) -> i32 {

@@ -9,12 +9,19 @@ mod xdg_shell;
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::desktop::PopupKind;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+    Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
+use smithay::utils::{Logical, Rectangle};
 use smithay::utils::Serial;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, ImportNotifier};
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
+use smithay::wayland::input_method::{InputMethodHandler, PopupSurface};
+use smithay::wayland::shell::kde::decoration::KdeDecorationHandler;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
@@ -26,9 +33,10 @@ use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{
     delegate_commit_timing, delegate_cursor_shape, delegate_data_control, delegate_data_device,
-    delegate_dmabuf, delegate_fifo, delegate_fixes, delegate_fractional_scale, delegate_layer_shell,
-    delegate_output, delegate_presentation, delegate_primary_selection, delegate_seat,
-    delegate_single_pixel_buffer, delegate_viewporter,
+    delegate_dmabuf, delegate_fifo, delegate_fixes, delegate_fractional_scale,
+    delegate_input_method_manager, delegate_kde_decoration, delegate_layer_shell, delegate_output,
+    delegate_presentation, delegate_primary_selection, delegate_seat, delegate_single_pixel_buffer,
+    delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
     delegate_xdg_decoration,
 };
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
@@ -68,6 +76,10 @@ delegate_viewporter!(ShojiWM);
 delegate_fractional_scale!(ShojiWM);
 delegate_single_pixel_buffer!(ShojiWM);
 delegate_fixes!(ShojiWM);
+delegate_text_input_manager!(ShojiWM);
+delegate_input_method_manager!(ShojiWM);
+delegate_virtual_keyboard_manager!(ShojiWM);
+delegate_kde_decoration!(ShojiWM);
 
 impl FractionalScaleHandler for ShojiWM {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
@@ -118,6 +130,51 @@ impl TabletSeatHandler for ShojiWM {
     ) {
         self.cursor_status = image;
         self.schedule_redraw();
+    }
+}
+
+impl InputMethodHandler for ShojiWM {
+    fn new_popup(&mut self, surface: PopupSurface) {
+        if let Err(err) = self.popups.track_popup(PopupKind::from(surface)) {
+            tracing::warn!(?err, "failed to track input method popup");
+        }
+    }
+
+    fn popup_repositioned(&mut self, _surface: PopupSurface) {}
+
+    fn dismiss_popup(&mut self, surface: PopupSurface) {
+        if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
+            let _ = smithay::desktop::PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));
+        }
+    }
+
+    fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical> {
+        self.space
+            .elements()
+            .find_map(|window| {
+                (window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == parent))
+                    .then(|| window.geometry())
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl KdeDecorationHandler for ShojiWM {
+    fn kde_decoration_state(&self) -> &smithay::wayland::shell::kde::decoration::KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        decoration.mode(KdeDecorationMode::Server);
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        _mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
+    ) {
+        decoration.mode(KdeDecorationMode::Server);
     }
 }
 
