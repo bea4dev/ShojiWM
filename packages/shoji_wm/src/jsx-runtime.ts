@@ -2,13 +2,14 @@ import { createElementNode, normalizeChildren } from "./runtime";
 import type {
   Component,
   ComponentProps,
+  ClientWindowProps,
   DecorationChild,
   DecorationElementNode,
   DecorationNodeType,
 } from "./types";
 
 export function jsx(
-  type: DecorationNodeType | Component,
+  type: DecorationNodeType | Component<any>,
   props: ComponentProps,
   key?: string,
 ): DecorationElementNode {
@@ -16,7 +17,7 @@ export function jsx(
 }
 
 export function jsxs(
-  type: DecorationNodeType | Component,
+  type: DecorationNodeType | Component<any>,
   props: ComponentProps,
   key?: string,
 ): DecorationElementNode {
@@ -26,7 +27,7 @@ export function jsxs(
 export const Fragment = "Fragment" satisfies DecorationNodeType;
 
 function createJsxNode(
-  type: DecorationNodeType | Component,
+  type: DecorationNodeType | Component<any>,
   props: ComponentProps = {},
   key?: string,
 ): DecorationElementNode {
@@ -44,7 +45,7 @@ function createJsxNode(
 
 export namespace JSX {
   export type Element = DecorationElementNode;
-  export type ElementType = DecorationNodeType | Component;
+  export type ElementType = DecorationNodeType | Component<any>;
   export interface ElementChildrenAttribute {
     children: {};
   }
@@ -56,6 +57,7 @@ export namespace JSX {
     Label: ComponentProps;
     Button: ComponentProps;
     AppIcon: ComponentProps;
+    ClientWindow: ClientWindowProps;
     Window: ComponentProps;
     WindowBorder: ComponentProps;
     Fragment: ComponentProps;

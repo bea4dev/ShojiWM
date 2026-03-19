@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsString, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
     backend::drm::DrmNode,
@@ -9,7 +9,7 @@ use smithay::{
     reexports::{
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic, timer::{TimeoutAction, Timer}},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -54,7 +54,7 @@ use crate::{
     drawing::PointerElement,
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
-use crate::ssd::{DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
+use crate::ssd::{DecorationEvaluator, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::{debug, info};
 
 pub struct ShojiWM {
@@ -99,6 +99,9 @@ pub struct ShojiWM {
     pub damage_blink_enabled: bool,
     pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
     pub damage_blink_pending: HashMap<String, Vec<LogicalRect>>,
+    pub runtime_poll_dirty: bool,
+    pub runtime_dirty_window_ids: std::collections::HashSet<String>,
+    pub runtime_scheduler_enabled: bool,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -175,6 +178,7 @@ impl ShojiWM {
 
         // Setup a wayland socket that will be used to accept clients
         let socket_name = Self::init_wayland_listener(display, event_loop);
+        Self::init_runtime_scheduler(event_loop);
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
@@ -231,6 +235,9 @@ impl ShojiWM {
             damage_blink_enabled,
             damage_blink_visible: HashMap::new(),
             damage_blink_pending: HashMap::new(),
+            runtime_poll_dirty: false,
+            runtime_dirty_window_ids: Default::default(),
+            runtime_scheduler_enabled: false,
 
             is_running: true,
             needs_redraw: true,
@@ -290,6 +297,40 @@ impl ShojiWM {
             .unwrap();
 
         socket_name
+    }
+
+    fn init_runtime_scheduler(event_loop: &mut EventLoop<Self>) {
+        let loop_handle = event_loop.handle();
+        loop_handle
+            .insert_source(Timer::immediate(), |_, _, state| {
+                if !state.runtime_scheduler_enabled {
+                    return TimeoutAction::ToDuration(Duration::from_millis(250));
+                }
+
+                let now_ms = Duration::from(state.clock.now()).as_millis() as u64;
+                let tick = match state.decoration_evaluator.scheduler_tick(now_ms) {
+                    Ok(tick) => tick,
+                    Err(error) => {
+                        debug!(?error, "failed to tick decoration runtime scheduler");
+                        state.runtime_scheduler_enabled = false;
+                        return TimeoutAction::ToDuration(Duration::from_millis(250));
+                    }
+                };
+
+                if tick.dirty {
+                    state.runtime_poll_dirty = true;
+                    state.runtime_dirty_window_ids
+                        .extend(tick.dirty_window_ids.into_iter());
+                    state.schedule_redraw();
+                }
+
+                state.runtime_scheduler_enabled = tick.next_poll_in_ms.is_some();
+
+                TimeoutAction::ToDuration(Duration::from_millis(
+                    tick.next_poll_in_ms.unwrap_or(250).clamp(8, 250),
+                ))
+            })
+            .expect("Failed to init runtime scheduler.");
     }
 
     pub fn surface_under(
@@ -362,6 +403,16 @@ impl ShojiWM {
                 });
         }
 
+        if let Some((window, _)) = self.raw_window_under(logical_pos) {
+            let Some(location) = self.space.element_location(window) else {
+                return None;
+            };
+
+            return window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, loc)| (surface, loc.to_f64() + location.to_f64()));
+        }
+
         [WlrLayer::Bottom, WlrLayer::Background]
             .into_iter()
             .flat_map(|target_layer| layers.layers_on(target_layer).rev())
@@ -397,6 +448,23 @@ impl ShojiWM {
             let transformed_root =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
             transformed_root.contains(logical_pos).then_some((window, decoration))
+        })
+    }
+
+    pub fn raw_window_under(
+        &self,
+        logical_pos: LogicalPoint,
+    ) -> Option<(&Window, LogicalRect)> {
+        self.space.elements().rev().find_map(|window| {
+            let location = self.space.element_location(window)?;
+            let bbox = window.bbox();
+            let rect = LogicalRect::new(
+                location.x + bbox.loc.x,
+                location.y + bbox.loc.y,
+                bbox.size.w,
+                bbox.size.h,
+            );
+            rect.contains(logical_pos).then_some((window, rect))
         })
     }
 

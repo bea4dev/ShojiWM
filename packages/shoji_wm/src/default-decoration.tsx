@@ -1,13 +1,11 @@
-/** @jsxImportSource shoji_wm */
-
 import {
   AppIcon,
   applyInteractionStyle,
   Box,
   Button,
+  ClientWindow,
   getInteractionState,
   Label,
-  Window,
   WindowBorder,
   type SSDStyle,
   type WaylandWindow,
@@ -17,15 +15,8 @@ import {
 const TITLEBAR_HEIGHT = 30;
 
 export const defaultWindowDecoration = (window: WaylandWindow) => {
-  const isFocused = window.isFocused;
+  const isFocused = window.isFocused();
   const closeState = getInteractionState(window, "window.close");
-
-  window.transform.origin = { x: 0.5, y: 0.5 };
-  window.transform.translateX = 0;
-  window.transform.translateY = 0;
-  window.transform.scaleX = isFocused ? 1 : 0.5;
-  window.transform.scaleY = isFocused ? 1 : 0.5;
-  window.transform.opacity = 1;
 
   const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
   const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
@@ -49,9 +40,9 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
     >
       <Box direction="column">
         <Box direction="row" style={titlebarStyle}>
-          <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+          <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
           <Label
-            text={window.title}
+            text={window.title()}
             style={{
               color: titleColor,
               fontSize: 13,
@@ -78,7 +69,7 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
             onClick={windowAction("close")}
           />
         </Box>
-        <Window />
+        <ClientWindow />
       </Box>
     </WindowBorder>
   );

@@ -18,7 +18,7 @@ use crate::{
         move_grab::MoveSurfaceGrab,
         resize_grab::{ResizeEdge, ResizeSurfaceGrab},
     },
-    ssd::{DecorationHitTestResult, LogicalPoint, ResizeEdges, WindowAction},
+    ssd::{DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges, RuntimeWindowAction, WindowAction},
     state::ShojiWM,
 };
 
@@ -146,6 +146,49 @@ impl ShojiWM {
                                 );
                                 if let Some(toplevel) = window.toplevel() {
                                     toplevel.send_close();
+                                }
+                            }
+                            DecorationHitTestResult::Action(WindowAction::RuntimeHandler(handler_id)) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+
+                                let window_id = self.snapshot_window(&window).id;
+                                if let Ok(invocation) = self
+                                    .decoration_evaluator
+                                    .invoke_handler(&window_id, &handler_id)
+                                {
+                                    if let Some(decoration) =
+                                        self.window_decorations.get_mut(&window)
+                                    {
+                                        if let Some(node) = invocation.node {
+                                            decoration.tree = crate::ssd::DecorationTree::new(node);
+                                            if let Ok(layout) = decoration
+                                                .tree
+                                                .layout_for_client(decoration.client_rect)
+                                            {
+                                                decoration.layout = layout;
+                                            }
+                                        }
+                                        if let Some(transform) = invocation.transform {
+                                            decoration.visual_transform = transform;
+                                        }
+                                    }
+
+                                    if invocation.invoked {
+                                        self.runtime_dirty_window_ids
+                                            .extend(invocation.dirty_window_ids.into_iter());
+                                        self.runtime_scheduler_enabled =
+                                            invocation.next_poll_in_ms.is_some();
+                                        self.apply_runtime_window_actions(invocation.actions);
+                                        self.schedule_redraw();
+                                    }
                                 }
                             }
                             DecorationHitTestResult::Action(_) => {
@@ -310,6 +353,39 @@ impl ShojiWM {
                 pointer.frame(self);
             }
             _ => {}
+        }
+    }
+
+    fn apply_runtime_window_actions(&mut self, actions: Vec<RuntimeWindowAction>) {
+        for runtime_action in actions {
+            let target_window = self
+                .space
+                .elements()
+                .find(|window| self.snapshot_window(window).id == runtime_action.window_id)
+                .cloned();
+
+            let Some(window) = target_window else {
+                continue;
+            };
+
+            match runtime_action.action {
+                crate::ssd::WaylandWindowAction::Close => {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                    }
+                }
+                crate::ssd::WaylandWindowAction::Maximize => {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.states.set(
+                                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized,
+                            );
+                        });
+                        toplevel.send_pending_configure();
+                    }
+                }
+                crate::ssd::WaylandWindowAction::Minimize => {}
+            }
         }
     }
 }

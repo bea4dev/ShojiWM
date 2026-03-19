@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import {
   createReactiveWindow,
   serializeDecorationTree,
+  type DecorationSerializationContext,
   type DecorationFunction,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
@@ -62,7 +63,13 @@ async function main() {
 
   const handle = createReactiveWindow(snapshot, actions);
   const tree = decoration(handle.window);
-  const serialized = serializeDecorationTree(tree);
+  let nextHandlerId = 1;
+  const context: DecorationSerializationContext = {
+    registerClickHandler(key) {
+      return `${key}-eval-${nextHandlerId++}`;
+    },
+  };
+  const serialized = serializeDecorationTree(tree, context);
 
   console.log(JSON.stringify(serialized, null, 2));
 }

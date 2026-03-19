@@ -12,9 +12,21 @@ export interface WaylandWindowSnapshot {
   readonly interaction: DecorationInteractionSnapshot;
 }
 
-export interface WaylandWindow extends WaylandWindowSnapshot {
+export type MaybeSignal<T> = T | import("./signals").ReadonlySignal<T>;
+
+export interface WaylandWindow {
+  readonly id: string;
+  readonly title: import("./signals").ReadonlySignal<string>;
+  readonly appId: import("./signals").ReadonlySignal<string | undefined>;
   readonly position: WindowPosition;
   readonly transform: WindowTransform;
+  readonly animation: import("./animation").WindowAnimationController;
+  readonly isFocused: import("./signals").ReadonlySignal<boolean>;
+  readonly isFloating: import("./signals").ReadonlySignal<boolean>;
+  readonly isMaximized: import("./signals").ReadonlySignal<boolean>;
+  readonly isFullscreen: import("./signals").ReadonlySignal<boolean>;
+  readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
+  readonly interaction: import("./signals").ReadonlySignal<DecorationInteractionSnapshot>;
   close(): void;
   maximize(): void;
   minimize(): void;
@@ -29,17 +41,17 @@ export interface WindowPosition {
 }
 
 export interface WindowTransform {
-  origin: TransformOrigin;
-  translateX: number;
-  translateY: number;
-  scaleX: number;
-  scaleY: number;
-  opacity: number;
+  origin: MaybeSignal<TransformOrigin>;
+  translateX: MaybeSignal<number>;
+  translateY: MaybeSignal<number>;
+  scaleX: MaybeSignal<number>;
+  scaleY: MaybeSignal<number>;
+  opacity: MaybeSignal<number>;
 }
 
 export interface TransformOrigin {
-  x: number;
-  y: number;
+  x: MaybeSignal<number>;
+  y: MaybeSignal<number>;
 }
 
 export type PrimitiveChild = string | number;
@@ -90,52 +102,52 @@ export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
 
 export interface BorderValue {
-  px: number;
-  color: string;
+  px: MaybeSignal<number>;
+  color: MaybeSignal<string>;
 }
 
 export interface SSDStyle {
-  width?: number | string;
-  height?: number | string;
-  minWidth?: number;
-  minHeight?: number;
-  maxWidth?: number;
-  maxHeight?: number;
-  flexGrow?: number;
-  flexShrink?: number;
-  gap?: number;
-  padding?: number;
-  paddingX?: number;
-  paddingY?: number;
-  paddingTop?: number;
-  paddingRight?: number;
-  paddingBottom?: number;
-  paddingLeft?: number;
-  margin?: number;
-  marginX?: number;
-  marginY?: number;
-  marginTop?: number;
-  marginRight?: number;
-  marginBottom?: number;
-  marginLeft?: number;
-  alignItems?: AlignItems;
-  justifyContent?: JustifyContent;
-  background?: string;
-  color?: string;
-  opacity?: number;
-  border?: BorderValue;
-  borderTop?: BorderValue;
-  borderRight?: BorderValue;
-  borderBottom?: BorderValue;
-  borderLeft?: BorderValue;
-  borderRadius?: number;
-  visible?: boolean;
-  cursor?: string;
-  fontSize?: number;
-  fontWeight?: FontWeight;
-  fontFamily?: FontFamily;
-  textAlign?: "start" | "center" | "end";
-  lineHeight?: number;
+  width?: MaybeSignal<number | string>;
+  height?: MaybeSignal<number | string>;
+  minWidth?: MaybeSignal<number>;
+  minHeight?: MaybeSignal<number>;
+  maxWidth?: MaybeSignal<number>;
+  maxHeight?: MaybeSignal<number>;
+  flexGrow?: MaybeSignal<number>;
+  flexShrink?: MaybeSignal<number>;
+  gap?: MaybeSignal<number>;
+  padding?: MaybeSignal<number>;
+  paddingX?: MaybeSignal<number>;
+  paddingY?: MaybeSignal<number>;
+  paddingTop?: MaybeSignal<number>;
+  paddingRight?: MaybeSignal<number>;
+  paddingBottom?: MaybeSignal<number>;
+  paddingLeft?: MaybeSignal<number>;
+  margin?: MaybeSignal<number>;
+  marginX?: MaybeSignal<number>;
+  marginY?: MaybeSignal<number>;
+  marginTop?: MaybeSignal<number>;
+  marginRight?: MaybeSignal<number>;
+  marginBottom?: MaybeSignal<number>;
+  marginLeft?: MaybeSignal<number>;
+  alignItems?: MaybeSignal<AlignItems>;
+  justifyContent?: MaybeSignal<JustifyContent>;
+  background?: MaybeSignal<string>;
+  color?: MaybeSignal<string>;
+  opacity?: MaybeSignal<number>;
+  border?: MaybeSignal<BorderValue>;
+  borderTop?: MaybeSignal<BorderValue>;
+  borderRight?: MaybeSignal<BorderValue>;
+  borderBottom?: MaybeSignal<BorderValue>;
+  borderLeft?: MaybeSignal<BorderValue>;
+  borderRadius?: MaybeSignal<number>;
+  visible?: MaybeSignal<boolean>;
+  cursor?: MaybeSignal<string>;
+  fontSize?: MaybeSignal<number>;
+  fontWeight?: MaybeSignal<FontWeight>;
+  fontFamily?: MaybeSignal<FontFamily>;
+  textAlign?: MaybeSignal<"start" | "center" | "end">;
+  lineHeight?: MaybeSignal<number>;
 }
 
 export interface InteractionStyleVariants {
@@ -169,11 +181,13 @@ export interface AppIconProps extends ComponentProps {
   id?: string;
 }
 
-export interface WindowProps extends ComponentProps {
+export interface ClientWindowProps extends ComponentProps {
   style?: SSDStyle;
   id?: string;
   children?: never;
 }
+
+export type WindowProps = ClientWindowProps;
 
 export interface WindowBorderProps extends ComponentProps {
   style?: SSDStyle;
@@ -184,6 +198,7 @@ export type DecorationFunction = (window: WaylandWindow) => DecorationChild;
 
 export interface WindowManagerDefinition {
   decoration: DecorationFunction | null;
+  event: import("./events").WindowManagerEventController;
   display?: DisplayConfig;
 }
 

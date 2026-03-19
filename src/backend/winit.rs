@@ -131,7 +131,6 @@ pub fn init_winit(
                                     translation: (0, 0).into(),
                                     opacity: 1.0,
                                 });
-
                             scene_elements.extend(
                                 transform_window_elements(
                                     window_render::popup_elements(
@@ -178,42 +177,66 @@ pub fn init_winit(
                                 .into_iter(),
                             );
 
-                            scene_elements.extend(
-                                transform_decoration_elements(
-                                    decoration::rounded_elements_for_window(
-                                        renderer,
-                                        state.window_decorations.get_mut(window).unwrap(),
-                                        output_geo,
-                                        scale,
-                                        window,
+                            if let Some(decoration_state) =
+                                state.window_decorations.get_mut(window)
+                            {
+                                scene_elements.extend(
+                                    transform_decoration_elements(
+                                        decoration::rounded_elements_for_window(
+                                            renderer,
+                                            decoration_state,
+                                            output_geo,
+                                            scale,
+                                            window,
+                                        )
+                                        .unwrap_or_default(),
+                                        visual_state,
                                     )
-                                    .unwrap_or_default(),
-                                    visual_state,
-                                )
-                                .into_iter(),
-                            );
+                                    .into_iter(),
+                                );
+                            }
 
-                            scene_elements.extend(
-                                transform_clipped_elements(
-                                    window_render::clipped_surface_elements(
-                                        window,
-                                        renderer,
-                                        physical_location,
-                                        scale,
-                                        1.0,
-                                        state
-                                            .window_decorations
-                                            .get(window)
-                                            .and_then(|decoration| decoration.content_clip),
+                            let content_clip = state
+                                .window_decorations
+                                .get(window)
+                                .and_then(|decoration| decoration.content_clip);
+
+                            if let Some(content_clip) = content_clip {
+                                scene_elements.extend(
+                                    transform_clipped_elements(
+                                        window_render::clipped_surface_elements(
+                                            window,
+                                            renderer,
+                                            physical_location,
+                                            scale,
+                                            1.0,
+                                            Some(content_clip),
+                                        )
+                                        .inspect_err(|error| {
+                                            warn!(?error, "failed to build clipped surface elements");
+                                        })
+                                        .unwrap_or_default(),
+                                        visual_state,
                                     )
-                                    .inspect_err(|error| {
-                                        warn!(?error, "failed to build clipped surface elements");
-                                    })
-                                    .unwrap_or_default(),
-                                    visual_state,
-                                )
-                                .into_iter(),
-                            );
+                                    .into_iter(),
+                                );
+                            } else {
+                                scene_elements.extend(
+                                    transform_window_elements(
+                                        window_render::surface_elements(
+                                            window,
+                                            renderer,
+                                            physical_location,
+                                            scale,
+                                            1.0,
+                                        ),
+                                        visual_state,
+                                        WinitRenderElements::Window,
+                                        WinitRenderElements::TransformedWindow,
+                                    )
+                                    .into_iter(),
+                                );
+                            }
                         }
                         scene_elements.extend(
                             lower_layer_elements

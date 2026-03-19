@@ -1,5 +1,13 @@
 import { createReactiveWindow } from "./reactive-window";
-import { serializeDecorationTree } from "./serialize";
+import { read } from "./signals";
+import {
+  enterWindowDependencyScope,
+  leaveWindowDependencyScope,
+} from "./runtime-hooks";
+import {
+  serializeDecorationTree,
+  type DecorationSerializationContext,
+} from "./serialize";
 import type {
   DecorationChild,
   DecorationFunction,
@@ -38,6 +46,8 @@ export interface DecorationEvaluationCache {
   readonly lastTree: DecorationChild;
   readonly lastTransform: WindowTransform;
   update(snapshot: WaylandWindowSnapshot): DecorationEvaluationResult | null;
+  reevaluate(): DecorationEvaluationResult;
+  invokeHandler(handlerId: string): boolean;
 }
 
 export function diffWindowSnapshot(
@@ -103,9 +113,44 @@ export function createDecorationEvaluationCache(
 
   let currentSnapshot = snapshot;
   let version = 1;
-  let tree = evaluate(handle.window);
-  let serialized = serializeDecorationTree(tree);
-  let transform = snapshotTransform(handle);
+  let tree: DecorationChild;
+  let serialized: SerializableDecorationChild;
+  let transform: WindowTransform;
+  let nextHandlerId = 1;
+  let clickHandlers = new Map<string, () => void>();
+  const handlerIdsByKey = new Map<string, string>();
+
+  const serializationContext: DecorationSerializationContext = {
+    registerClickHandler(key, handler) {
+      const handlerId = handlerIdsByKey.get(key) ?? `click-${nextHandlerId++}`;
+      handlerIdsByKey.set(key, handlerId);
+      clickHandlers.set(handlerId, handler);
+      return handlerId;
+    },
+  };
+
+  const evaluateCurrentTree = (): DecorationEvaluationResult => {
+    clickHandlers = new Map();
+    enterWindowDependencyScope(currentSnapshot.id);
+    try {
+      tree = evaluate(handle.window);
+      serialized = serializeDecorationTree(tree, serializationContext);
+      transform = snapshotTransform(handle);
+    } finally {
+      leaveWindowDependencyScope();
+    }
+    version += 1;
+
+    return {
+      tree,
+      serialized,
+      transform,
+      version,
+    };
+  };
+
+  const initial = evaluateCurrentTree();
+  version = initial.version;
 
   return {
     get window() {
@@ -132,17 +177,19 @@ export function createDecorationEvaluationCache(
 
       handle.update(nextSnapshot);
       currentSnapshot = nextSnapshot;
-      tree = evaluate(handle.window);
-      serialized = serializeDecorationTree(tree);
-      transform = snapshotTransform(handle);
-      version += 1;
+      return evaluateCurrentTree();
+    },
+    reevaluate() {
+      return evaluateCurrentTree();
+    },
+    invokeHandler(handlerId) {
+      const handler = clickHandlers.get(handlerId);
+      if (!handler) {
+        return false;
+      }
 
-      return {
-        tree,
-        serialized,
-        transform,
-        version,
-      };
+      handler();
+      return true;
     },
   };
 }
@@ -150,16 +197,18 @@ export function createDecorationEvaluationCache(
 function snapshotTransform(
   handle: ReactiveWaylandWindowHandle,
 ): WindowTransform {
+  const origin = read(handle.transform.origin);
+
   return {
     origin: {
-      x: handle.transform.origin.x,
-      y: handle.transform.origin.y,
+      x: read(origin.x),
+      y: read(origin.y),
     },
-    translateX: handle.transform.translateX,
-    translateY: handle.transform.translateY,
-    scaleX: handle.transform.scaleX,
-    scaleY: handle.transform.scaleY,
-    opacity: handle.transform.opacity,
+    translateX: read(handle.transform.translateX),
+    translateY: read(handle.transform.translateY),
+    scaleX: read(handle.transform.scaleX),
+    scaleY: read(handle.transform.scaleY),
+    opacity: read(handle.transform.opacity),
   };
 }
 

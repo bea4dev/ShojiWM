@@ -1,8 +1,104 @@
-/** @jsxImportSource shoji_wm */
+import {
+    AppIcon,
+    applyInteractionStyle,
+    Box,
+    Button,
+    ClientWindow,
+    getInteractionState,
+    Label,
+    WINDOW_MANAGER,
+    WindowBorder,
+    windowAction,
+    type SSDStyle,
+    type WaylandWindow,
+    signal,
+    animationVariable,
+    seconds,
+    cubicBezier
+} from "shoji_wm";
 
-import { WINDOW_MANAGER } from "shoji_wm";
-import { defaultWindowDecoration } from "shoji_wm/default-decoration";
+const focusAnimation = animationVariable("window.focus");
 
-WINDOW_MANAGER.decoration = defaultWindowDecoration;
+WINDOW_MANAGER.event.onOpen((window) => {
+    window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
+});
+
+WINDOW_MANAGER.event.onFocus((window, focused) => {
+    window.animation.start(focusAnimation, {
+        duration: seconds(0.5),
+        to: focused ? 1 : 0.8,
+        easing: cubicBezier(0.47, 0.4, 0, 2.0)
+    });
+});
+
+WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
+    const isFocused = window.isFocused();
+    const closeState = getInteractionState(window, "window.close");
+
+    const scale = window.animation.signal(focusAnimation);
+
+    window.transform.origin = { x: 0.5, y: 0.5 };
+    window.transform.translateX = 0;
+    window.transform.translateY = 0;
+    window.transform.scaleX = scale;
+    window.transform.scaleY = scale;
+    window.transform.opacity = 1;
+
+    const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
+    const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
+    const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
+
+    const titlebarStyle: SSDStyle = {
+        height: 30,
+        paddingX: 20,
+        gap: 8,
+        alignItems: "center",
+        background: titlebarBackground,
+    };
+
+    return (
+        <WindowBorder
+            style={{
+                border: { px: 2, color: borderColor },
+                borderRadius: 20,
+                background: "#101319",
+            }}
+        >
+            <Box direction="column">
+                <Box direction="row" style={titlebarStyle}>
+                    <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
+                    <Label
+                        text={window.title()}
+                        style={{
+                            color: titleColor,
+                            fontSize: 13,
+                            fontWeight: 600,
+                        }}
+                    />
+                    <Box style={{ flexGrow: 1 }} />
+                    <Button
+                        id="window.close"
+                        style={applyInteractionStyle(
+                            {
+                                width: 18,
+                                height: 18,
+                                borderRadius: 9,
+                                background: "#8a1c1c",
+                            },
+                            {
+                                hovered: { background: "#b32626" },
+                                active: { background: "#d63b3b" },
+                                focused: { border: { px: 1, color: "#f5f7fa" } },
+                            },
+                            closeState,
+                        )}
+                        onClick={() => window.close()}
+                    />
+                </Box>
+                <ClientWindow />
+            </Box>
+        </WindowBorder>
+    );
+};
 
 export { WINDOW_MANAGER };

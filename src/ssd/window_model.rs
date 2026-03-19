@@ -78,7 +78,7 @@ pub struct TransformOrigin {
     pub y: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WaylandWindowAction {
     Close,

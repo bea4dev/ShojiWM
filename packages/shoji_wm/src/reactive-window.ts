@@ -1,8 +1,11 @@
 import { signal, type Signal } from "./signals";
+import { createWindowAnimationController } from "./animation";
 import type {
   DecorationInteractionSnapshot,
+  MaybeSignal,
   ReactiveWaylandWindow,
   ReactiveWaylandWindowHandle,
+  TransformOrigin,
   WaylandWindowActions,
   WaylandWindowSnapshot,
   WindowIcon,
@@ -60,6 +63,13 @@ export function createReactiveWindow(
     transformOpacity: signal(1),
   };
 
+  let transformOrigin: MaybeSignal<TransformOrigin> = { x: 0.5, y: 0.5 };
+  let transformTranslateX: MaybeSignal<number> = 0;
+  let transformTranslateY: MaybeSignal<number> = 0;
+  let transformScaleX: MaybeSignal<number> = 1;
+  let transformScaleY: MaybeSignal<number> = 1;
+  let transformOpacity: MaybeSignal<number> = 1;
+
   const position = {
     get x() {
       return signals.positionX.value;
@@ -77,44 +87,40 @@ export function createReactiveWindow(
 
   const transform = {
     get origin() {
-      return {
-        x: signals.transformOriginX.value,
-        y: signals.transformOriginY.value,
-      };
+      return transformOrigin;
     },
     set origin(value) {
-      signals.transformOriginX.value = value.x;
-      signals.transformOriginY.value = value.y;
+      transformOrigin = value;
     },
     get translateX() {
-      return signals.transformTranslateX.value;
+      return transformTranslateX;
     },
     set translateX(value) {
-      signals.transformTranslateX.value = value;
+      transformTranslateX = value;
     },
     get translateY() {
-      return signals.transformTranslateY.value;
+      return transformTranslateY;
     },
     set translateY(value) {
-      signals.transformTranslateY.value = value;
+      transformTranslateY = value;
     },
     get scaleX() {
-      return signals.transformScaleX.value;
+      return transformScaleX;
     },
     set scaleX(value) {
-      signals.transformScaleX.value = value;
+      transformScaleX = value;
     },
     get scaleY() {
-      return signals.transformScaleY.value;
+      return transformScaleY;
     },
     set scaleY(value) {
-      signals.transformScaleY.value = value;
+      transformScaleY = value;
     },
     get opacity() {
-      return signals.transformOpacity.value;
+      return transformOpacity;
     },
     set opacity(value) {
-      signals.transformOpacity.value = value;
+      transformOpacity = value;
     },
   };
 
@@ -122,44 +128,28 @@ export function createReactiveWindow(
     get id() {
       return signals.id.value;
     },
-    get title() {
-      return signals.title.value;
-    },
-    get appId() {
-      return signals.appId.value;
-    },
+    title: signals.title,
+    appId: signals.appId,
     get position() {
       return position;
     },
-    get isFocused() {
-      return signals.isFocused.value;
-    },
-    get isFloating() {
-      return signals.isFloating.value;
-    },
-    get isMaximized() {
-      return signals.isMaximized.value;
-    },
-    get isFullscreen() {
-      return signals.isFullscreen.value;
-    },
-    get isXwayland() {
-      return signals.isXwayland.value;
-    },
-    get icon() {
-      return signals.icon.value;
-    },
-    get interaction() {
-      return signals.interaction.value;
-    },
+    isFocused: signals.isFocused,
+    isFloating: signals.isFloating,
+    isMaximized: signals.isMaximized,
+    isFullscreen: signals.isFullscreen,
+    icon: signals.icon,
+    interaction: signals.interaction,
     get transform() {
       return transform;
     },
+    animation: createWindowAnimationController(snapshot.id),
     signals,
     close: actions.close,
     maximize: actions.maximize,
     minimize: actions.minimize,
-    isXWayland: actions.isXWayland,
+    isXWayland() {
+      return signals.isXwayland.value;
+    },
   };
 
   return {

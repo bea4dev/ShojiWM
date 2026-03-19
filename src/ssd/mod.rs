@@ -22,8 +22,9 @@ pub use bridge::{
     WireWindowAction, decode_tree_json,
 };
 pub use evaluator::{
-    DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator, NodeDecorationEvaluator,
-    StaticDecorationEvaluator, evaluate_dynamic_decoration,
+    DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
+    DecorationHandlerInvocation, DecorationSchedulerTick, NodeDecorationEvaluator,
+    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use interaction::DecorationInteractionSnapshot;
 pub use integration::{
@@ -190,7 +191,7 @@ pub enum DecorationRenderPrimitive {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecorationHitTestResult {
     Outside,
     Move,
@@ -299,17 +300,18 @@ pub struct LabelNode {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ButtonNode {
     pub action: WindowAction,
 }
 
 /// Minimal action surface required by milestone 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowAction {
     Close,
     Maximize,
     Minimize,
+    RuntimeHandler(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -854,8 +856,8 @@ fn find_button_action(
         }
     }
 
-    match node.kind {
-        DecorationNodeKind::Button(button) if node.rect.contains(point) => Some(button.action),
+    match &node.kind {
+        DecorationNodeKind::Button(button) if node.rect.contains(point) => Some(button.action.clone()),
         _ => None,
     }
 }

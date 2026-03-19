@@ -16,6 +16,7 @@ import type {
   InteractionState,
   InteractionStyleVariants,
   LabelProps,
+  MaybeSignal,
   SSDStyle,
   SerializableDecorationChild,
   SerializedDecorationNode,
@@ -24,6 +25,7 @@ import type {
   WindowBorderProps,
   WindowManagerDefinition,
   WindowPosition,
+  ClientWindowProps,
   WindowProps,
   WindowTransform,
   TransformOrigin,
@@ -31,8 +33,37 @@ import type {
   WaylandWindowSnapshot,
   WaylandWindow,
 } from "./types";
+import { createWindowManagerEventController } from "./events";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
+export {
+  animationVariable,
+  createWindowAnimationController,
+  milliseconds,
+  seconds,
+  type AnimationStartOptions,
+  type AnimationVariable,
+  type WindowAnimationController,
+} from "./animation";
+export {
+  cubicBezier,
+  ease,
+  easeIn,
+  easeInOut,
+  easeInOutCubic,
+  easeOut,
+  easeOutCubic,
+  easeOutExpo,
+  linear,
+  type EasingFunction,
+} from "./easing";
+export {
+  createWindowManagerEventController,
+  type WindowCloseListener,
+  type WindowFocusListener,
+  type WindowManagerEventController,
+  type WindowOpenListener,
+} from "./events";
 export { createReactiveWindow } from "./reactive-window";
 export {
   createDecorationEvaluationCache,
@@ -50,7 +81,26 @@ export {
   signal,
   type ReadonlySignal,
   type Signal,
+  type SignalSetter,
 } from "./signals";
+export {
+  createPoll,
+  createManagedPoll,
+  installSchedulerBridge,
+  type PollCallback,
+  type PollDirtyMode,
+  type PollHandle,
+} from "./scheduler";
+export {
+  dropWindowDependencies,
+  enterWindowDependencyScope,
+  installRuntimeHooks,
+  leaveWindowDependencyScope,
+  markRuntimeDirty,
+  markWindowDirty,
+  trackSignalRead,
+  trackSignalWrite,
+} from "./runtime-hooks";
 
 export type {
   AppIconProps,
@@ -68,6 +118,7 @@ export type {
   DisplayConfig,
   DisplayModePreference,
   LabelProps,
+  MaybeSignal,
   InteractionState,
   InteractionStyleVariants,
   SSDStyle,
@@ -78,6 +129,7 @@ export type {
   WindowBorderProps,
   WindowManagerDefinition,
   WindowPosition,
+  ClientWindowProps,
   WindowProps,
   WindowTransform,
   TransformOrigin,
@@ -98,7 +150,8 @@ export const Box = defineIntrinsicComponent<BoxProps>("Box");
 export const Label = defineIntrinsicComponent<LabelProps>("Label");
 export const Button = defineIntrinsicComponent<ButtonProps>("Button");
 export const AppIcon = defineIntrinsicComponent<AppIconProps>("AppIcon");
-export const Window = defineIntrinsicComponent<WindowProps>("Window");
+export const ClientWindow = defineIntrinsicComponent<ClientWindowProps>("Window");
+export const Window = ClientWindow;
 export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowBorder");
 
 /**
@@ -106,6 +159,7 @@ export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowB
  */
 export const WINDOW_MANAGER: WindowManagerDefinition = {
   decoration: null,
+  event: createWindowManagerEventController(),
 };
 
 export function windowAction(
@@ -121,10 +175,12 @@ export function getInteractionState(
   window: WaylandWindow,
   id: string,
 ): InteractionState {
+  const interaction = window.interaction();
+
   return {
-    hovered: window.interaction.hoveredIds.includes(id),
-    active: window.interaction.activeIds.includes(id),
-    focused: window.isFocused,
+    hovered: interaction.hoveredIds.includes(id),
+    active: interaction.activeIds.includes(id),
+    focused: window.isFocused(),
   };
 }
 

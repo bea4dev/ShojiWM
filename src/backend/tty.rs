@@ -333,6 +333,12 @@ pub fn render_if_needed(
         state.needs_redraw = true;
     }
 
+    debug!(
+        skipped_for_pending_frame,
+        processed_outputs = ?processed_outputs,
+        "tty render_if_needed end"
+    );
+
     state.pending_decoration_damage.clear();
     state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
 
@@ -547,7 +553,6 @@ fn render_surface(
                     translation: (0, 0).into(),
                     opacity: 1.0,
                 });
-
             scene_elements.extend(
                 transform_window_elements(
                     window_render::popup_elements(
@@ -594,42 +599,64 @@ fn render_surface(
                 .collect::<Vec<_>>(),
             );
 
-            scene_elements.extend(
-                transform_decoration_elements(
-                    decoration::rounded_elements_for_window(
-                        &mut backend.renderer,
-                        state.window_decorations.get_mut(window).unwrap(),
-                        output_geo,
-                        scale,
-                        window,
-                    )?,
-                    visual_state,
-                )?
-                .into_iter()
-                .collect::<Vec<_>>(),
-            );
+            if let Some(decoration_state) = state.window_decorations.get_mut(window) {
+                scene_elements.extend(
+                    transform_decoration_elements(
+                        decoration::rounded_elements_for_window(
+                            &mut backend.renderer,
+                            decoration_state,
+                            output_geo,
+                            scale,
+                            window,
+                        )?,
+                        visual_state,
+                    )?
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                );
+            }
 
-            scene_elements.extend(
-                transform_clipped_elements(
-                    window_render::clipped_surface_elements(
-                        window,
-                        &mut backend.renderer,
-                        physical_location,
-                        scale,
-                        1.0,
-                        state
-                            .window_decorations
-                            .get(window)
-                            .and_then(|decoration| decoration.content_clip),
+            let content_clip = state
+                .window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.content_clip);
+
+            if let Some(content_clip) = content_clip {
+                scene_elements.extend(
+                    transform_clipped_elements(
+                        window_render::clipped_surface_elements(
+                            window,
+                            &mut backend.renderer,
+                            physical_location,
+                            scale,
+                            1.0,
+                            Some(content_clip),
+                        )
+                        .inspect_err(|error| {
+                            warn!(?error, "failed to build clipped surface elements");
+                        })
+                        .unwrap_or_default(),
+                        visual_state,
                     )
-                    .inspect_err(|error| {
-                        warn!(?error, "failed to build clipped surface elements");
-                    })
-                    .unwrap_or_default(),
-                    visual_state,
-                )
-                .into_iter(),
-            );
+                    .into_iter(),
+                );
+            } else {
+                scene_elements.extend(
+                    transform_window_elements(
+                        window_render::surface_elements(
+                            window,
+                            &mut backend.renderer,
+                            physical_location,
+                            scale,
+                            1.0,
+                        ),
+                        visual_state,
+                        TtyRenderElements::Window,
+                        TtyRenderElements::TransformedWindow,
+                    )
+                    .into_iter(),
+                );
+            }
         }
         scene_elements.extend(
             lower_layer_elements

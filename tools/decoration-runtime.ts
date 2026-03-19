@@ -1,26 +1,94 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
 import {
   createDecorationEvaluationCache,
+  dropWindowDependencies,
+  installRuntimeHooks,
+  type WindowManagerEventController,
+  installSchedulerBridge,
   type DecorationEvaluationCache,
   type DecorationFunction,
+  type PollCallback,
+  type PollDirtyMode,
+  type PollHandle,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
   type WindowTransform,
 } from "shoji_wm";
 
-interface RuntimeRequest {
+interface EvaluateRequest {
   requestId: number;
+  kind: "evaluate";
   snapshot: WaylandWindowSnapshot;
 }
 
-interface RuntimeSuccess {
+interface SchedulerTickRequest {
+  requestId: number;
+  kind: "schedulerTick";
+  nowMs: number;
+}
+
+interface WindowClosedRequest {
+  requestId: number;
+  kind: "windowClosed";
+  windowId: string;
+}
+
+interface InvokeHandlerRequest {
+  requestId: number;
+  kind: "invokeHandler";
+  windowId: string;
+  handlerId: string;
+}
+
+type RuntimeRequest =
+  | EvaluateRequest
+  | SchedulerTickRequest
+  | WindowClosedRequest
+  | InvokeHandlerRequest;
+
+interface EvaluateSuccess {
   requestId: number;
   ok: true;
+  kind: "evaluate";
   serialized: unknown;
   transform: WindowTransform;
+  nextPollInMs?: number;
+}
+
+interface SchedulerTickSuccess {
+  requestId: number;
+  ok: true;
+  kind: "schedulerTick";
+  dirty: boolean;
+  dirtyWindowIds: string[];
+  nextPollInMs?: number;
+}
+
+interface WindowClosedSuccess {
+  requestId: number;
+  ok: true;
+  kind: "windowClosed";
+}
+
+interface RuntimeWindowAction {
+  windowId: string;
+  action: "close" | "maximize" | "minimize";
+}
+
+interface InvokeHandlerSuccess {
+  requestId: number;
+  ok: true;
+  kind: "invokeHandler";
+  invoked: boolean;
+  serialized?: unknown;
+  transform?: WindowTransform;
+  dirtyWindowIds: string[];
+  actions: RuntimeWindowAction[];
+  nextPollInMs?: number;
 }
 
 interface RuntimeFailure {
@@ -30,24 +98,56 @@ interface RuntimeFailure {
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
+const polls = new Map<number, RuntimePoll>();
+const dirtyWindowIds = new Set<string>();
+let runtimeDirty = false;
+let nextPollId = 1;
+let currentSchedulerTimeMs = 0;
 
 interface RuntimeCacheEntry {
   latestSnapshot: WaylandWindowSnapshot;
   cache: DecorationEvaluationCache;
+  pendingActions: RuntimeWindowAction[];
+}
+
+interface RuntimePoll {
+  intervalMs: number;
+  nextRunAtMs: number;
+  callback: PollCallback;
+  handle: PollHandle;
+  nowMs: number;
+  dirtyMode: PollDirtyMode;
 }
 
 async function main() {
   const configPath = process.argv[2];
-  if (!configPath) {
-    throw new Error("usage: tsx tools/decoration-runtime.ts <config-path>");
+  const socketPath = process.argv[3];
+  if (!configPath || !socketPath) {
+    throw new Error("usage: tsx tools/decoration-runtime.ts <config-path> <socket-path>");
   }
+
+  installSchedulerBridge({
+    registerPoll(intervalMs, callback, dirtyMode) {
+      return registerPoll(intervalMs, callback, dirtyMode);
+    },
+  });
+  installRuntimeHooks({
+    markRuntimeDirty() {
+      runtimeDirty = true;
+    },
+    markWindowDirty(windowId) {
+      dirtyWindowIds.add(windowId);
+    },
+  });
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
   const loaded = await import(moduleUrl);
   const decoration = resolveDecoration(loaded);
+  const events = resolveEvents(loaded);
 
+  const socket = await connectSocket(socketPath);
   const rl = createInterface({
-    input: process.stdin,
+    input: socket,
     crlfDelay: Infinity,
   });
 
@@ -60,25 +160,56 @@ async function main() {
     try {
       request = JSON.parse(line) as RuntimeRequest;
     } catch (error) {
-      writeResponse({
-        requestId: -1,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        writeResponse(socket, {
+          requestId: -1,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
       });
       continue;
     }
 
     try {
-      const serialized = evaluateSnapshot(decoration, request.snapshot);
-      writeResponse({
-        requestId: request.requestId,
-        ok: true,
-        serialized,
-        transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
-          identityTransform(),
-      });
+      if (request.kind === "evaluate") {
+        const serialized = evaluateSnapshot(decoration, events, request.snapshot);
+        writeResponse(socket, {
+          requestId: request.requestId,
+          ok: true,
+          kind: "evaluate",
+          serialized,
+          transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
+            identityTransform(),
+          nextPollInMs: peekNextPollDelay(),
+        });
+      } else {
+        if (request.kind === "schedulerTick") {
+          const tick = processSchedulerTick(request.nowMs);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "schedulerTick",
+            dirty: tick.dirty,
+            dirtyWindowIds: tick.dirtyWindowIds,
+            nextPollInMs: tick.nextPollInMs,
+          });
+        } else if (request.kind === "windowClosed") {
+          closeWindow(events, request.windowId);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "windowClosed",
+          });
+        } else {
+          const result = invokeHandler(request.windowId, request.handlerId);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "invokeHandler",
+            ...result,
+          });
+        }
+      }
     } catch (error) {
-      writeResponse({
+      writeResponse(socket, {
         requestId: request.requestId,
         ok: false,
         error: error instanceof Error ? error.stack ?? error.message : String(error),
@@ -89,17 +220,31 @@ async function main() {
 
 function evaluateSnapshot(
   decoration: DecorationFunction,
+  events: WindowManagerEventController,
   snapshot: WaylandWindowSnapshot,
 ): unknown {
   const existing = cacheByWindowId.get(snapshot.id);
   if (!existing) {
     const entry = createRuntimeCacheEntry(snapshot, decoration);
     cacheByWindowId.set(snapshot.id, entry);
-    return entry.cache.lastSerialized;
+    events.emitOpen(entry.cache.window);
+    events.emitFocus(entry.cache.window, snapshot.isFocused);
+    dirtyWindowIds.delete(snapshot.id);
+    return entry.cache.reevaluate().serialized;
   }
 
+  const focusChanged = existing.latestSnapshot.isFocused !== snapshot.isFocused;
+  const wasDirty = dirtyWindowIds.delete(snapshot.id);
   existing.latestSnapshot = snapshot;
   const updated = existing.cache.update(snapshot);
+  if (focusChanged) {
+    events.emitFocus(existing.cache.window, snapshot.isFocused);
+  }
+
+  if (focusChanged || wasDirty) {
+    return existing.cache.reevaluate().serialized;
+  }
+
   return updated?.serialized ?? existing.cache.lastSerialized;
 }
 
@@ -109,19 +254,27 @@ function createRuntimeCacheEntry(
 ): RuntimeCacheEntry {
   let latestSnapshot = snapshot;
   const actions: WaylandWindowActions = {
-    close() {},
-    maximize() {},
-    minimize() {},
+    close() {
+      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "close" });
+    },
+    maximize() {
+      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "maximize" });
+    },
+    minimize() {
+      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "minimize" });
+    },
     isXWayland() {
       return latestSnapshot.isXwayland;
     },
   };
 
   const cache = createDecorationEvaluationCache(snapshot, actions, decoration);
-  return {
+  const entry: RuntimeCacheEntry = {
     latestSnapshot,
     cache,
+    pendingActions: [],
   };
+  return entry;
 }
 
 function identityTransform(): WindowTransform {
@@ -133,6 +286,152 @@ function identityTransform(): WindowTransform {
     scaleY: 1,
     opacity: 1,
   };
+}
+
+function registerPoll(
+  intervalMs: number,
+  callback: PollCallback,
+  dirtyMode: PollDirtyMode,
+): PollHandle {
+  const pollId = nextPollId++;
+  const normalizedIntervalMs = Math.max(1, Math.floor(intervalMs));
+  let cancelled = false;
+
+  const handle: PollHandle = {
+    cancel() {
+      cancelled = true;
+      polls.delete(pollId);
+    },
+    get cancelled() {
+      return cancelled;
+    },
+    get nowMs() {
+      return currentSchedulerTimeMs;
+    },
+  };
+
+  polls.set(pollId, {
+    intervalMs: normalizedIntervalMs,
+    nextRunAtMs: currentSchedulerTimeMs + normalizedIntervalMs,
+    callback,
+    handle,
+    nowMs: currentSchedulerTimeMs,
+    dirtyMode,
+  });
+
+  return handle;
+}
+
+function processSchedulerTick(nowMs: number): {
+  dirty: boolean;
+  dirtyWindowIds: string[];
+  nextPollInMs?: number;
+} {
+  currentSchedulerTimeMs = nowMs;
+
+  for (const [pollId, poll] of polls) {
+    if (poll.handle.cancelled) {
+      polls.delete(pollId);
+      continue;
+    }
+
+    if (poll.nextRunAtMs > nowMs) {
+      continue;
+    }
+
+    poll.nowMs = nowMs;
+    poll.nextRunAtMs = nowMs + poll.intervalMs;
+    poll.callback(poll.handle);
+    if (poll.dirtyMode === "runtime") {
+      runtimeDirty = true;
+    }
+
+    if (poll.handle.cancelled) {
+      polls.delete(pollId);
+    }
+  }
+
+  let nextPollInMs: number | undefined;
+  for (const poll of polls.values()) {
+    if (poll.handle.cancelled) {
+      continue;
+    }
+    const delay = Math.max(1, poll.nextRunAtMs - nowMs);
+    nextPollInMs =
+      nextPollInMs === undefined ? delay : Math.min(nextPollInMs, delay);
+  }
+
+  const nextDirtyWindowIds = Array.from(dirtyWindowIds);
+  const dirty = runtimeDirty || nextDirtyWindowIds.length > 0;
+  runtimeDirty = false;
+
+  return {
+    dirty,
+    dirtyWindowIds: nextDirtyWindowIds,
+    nextPollInMs,
+  };
+}
+
+function closeWindow(events: WindowManagerEventController, windowId: string): void {
+  const existing = cacheByWindowId.get(windowId);
+  if (!existing) {
+    return;
+  }
+
+  events.emitClose(existing.cache.window);
+  cacheByWindowId.delete(windowId);
+  dirtyWindowIds.delete(windowId);
+  dropWindowDependencies(windowId);
+}
+
+function invokeHandler(
+  windowId: string,
+  handlerId: string,
+): Omit<InvokeHandlerSuccess, "requestId" | "ok" | "kind"> {
+  const entry = cacheByWindowId.get(windowId);
+  if (!entry) {
+    return {
+      invoked: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: peekNextPollDelay(),
+    };
+  }
+
+  const invoked = entry.cache.invokeHandler(handlerId);
+  if (!invoked) {
+    return {
+      invoked: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: peekNextPollDelay(),
+    };
+  }
+
+  const reevaluated = entry.cache.reevaluate();
+  const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
+
+  return {
+    invoked: true,
+    serialized: reevaluated.serialized,
+    transform: entry.cache.lastTransform,
+    dirtyWindowIds: [windowId],
+    actions,
+    nextPollInMs: peekNextPollDelay(),
+  };
+}
+
+function peekNextPollDelay(): number | undefined {
+  let nextPollInMs: number | undefined;
+  for (const poll of polls.values()) {
+    if (poll.handle.cancelled) {
+      continue;
+    }
+    const delay = Math.max(1, poll.nextRunAtMs - currentSchedulerTimeMs);
+    nextPollInMs =
+      nextPollInMs === undefined ? delay : Math.min(nextPollInMs, delay);
+  }
+  return nextPollInMs;
 }
 
 function resolveDecoration(
@@ -153,8 +452,40 @@ function resolveDecoration(
   return maybeDecoration;
 }
 
-function writeResponse(response: RuntimeSuccess | RuntimeFailure) {
-  process.stdout.write(`${JSON.stringify(response)}\n`);
+function resolveEvents(
+  loaded: Record<string, unknown>,
+): WindowManagerEventController {
+  const maybeEvents =
+    (loaded.WINDOW_MANAGER as { event?: WindowManagerEventController } | undefined)?.event ??
+    (loaded.default as { event?: WindowManagerEventController } | undefined)?.event;
+
+  if (!maybeEvents) {
+    throw new Error(
+      "config module did not export WINDOW_MANAGER.event",
+    );
+  }
+
+  return maybeEvents;
+}
+
+async function connectSocket(socketPath: string): Promise<Socket> {
+  return await new Promise((resolveSocket, reject) => {
+    const socket = createConnection(socketPath);
+    socket.once("connect", () => resolveSocket(socket));
+    socket.once("error", reject);
+  });
+}
+
+function writeResponse(
+  socket: Socket,
+  response:
+    | EvaluateSuccess
+    | SchedulerTickSuccess
+    | WindowClosedSuccess
+    | InvokeHandlerSuccess
+    | RuntimeFailure,
+) {
+  socket.write(`${JSON.stringify(response)}\n`);
 }
 
 main().catch((error) => {

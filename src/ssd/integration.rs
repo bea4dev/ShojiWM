@@ -4,7 +4,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle},
 };
 use std::time::Instant;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::state::ShojiWM;
 use crate::backend::{
@@ -16,8 +16,8 @@ use crate::backend::rounded::RoundedElementState;
 
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
-    DecorationHitTestResult, DecorationTree, LogicalPoint, LogicalRect, WaylandWindowSnapshot,
-    WindowTransform,
+    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LogicalPoint, LogicalRect,
+    StaticDecorationEvaluator, WaylandWindowSnapshot, WindowTransform,
 };
 
 #[derive(Debug, Clone)]
@@ -82,6 +82,34 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
             Self::Node(evaluator) => evaluator.evaluate_window(window),
         }
     }
+
+    fn scheduler_tick(
+        &self,
+        now_ms: u64,
+    ) -> Result<DecorationSchedulerTick, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(DecorationSchedulerTick::default()),
+            Self::Node(evaluator) => evaluator.scheduler_tick(now_ms),
+        }
+    }
+
+    fn window_closed(&self, window_id: &str) -> Result<(), DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(()),
+            Self::Node(evaluator) => evaluator.window_closed(window_id),
+        }
+    }
+
+    fn invoke_handler(
+        &self,
+        window_id: &str,
+        handler_id: &str,
+    ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
+            Self::Node(evaluator) => evaluator.invoke_handler(window_id, handler_id),
+        }
+    }
 }
 
 impl ShojiWM {
@@ -134,10 +162,22 @@ impl ShojiWM {
 
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
         let refresh_started_at = Instant::now();
+        let force_runtime_reevaluate = self.runtime_poll_dirty;
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         let window_count = windows.len();
         let mut rebuilt = 0usize;
         let mut relayout = 0usize;
+
+        let removed_ids = self
+            .window_decorations
+            .iter()
+            .filter(|(window, _)| !windows.contains(window))
+            .map(|(_, decoration)| decoration.snapshot.id.clone())
+            .collect::<Vec<_>>();
+        for window_id in &removed_ids {
+            self.decoration_evaluator.window_closed(window_id)?;
+            self.runtime_dirty_window_ids.remove(window_id);
+        }
 
         let removed_roots = self
             .window_decorations
@@ -155,7 +195,9 @@ impl ShojiWM {
             };
             let snapshot = self.snapshot_window(&window);
 
-            let needs_tree = self
+            let needs_tree = force_runtime_reevaluate
+                || self.runtime_dirty_window_ids.contains(&snapshot.id)
+                || self
                 .window_decorations
                 .get(&window)
                 .map(|cached| cached.snapshot != snapshot)
@@ -167,7 +209,19 @@ impl ShojiWM {
                     .window_decorations
                     .get(&window)
                     .map(|cached| transformed_root_rect(cached.layout.root.rect, cached.visual_transform));
-                let evaluation = self.decoration_evaluator.evaluate_window(&snapshot)?;
+                let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                    Ok(evaluation) => evaluation,
+                    Err(error) => {
+                        warn!(
+                            window_id = snapshot.id,
+                            title = snapshot.title,
+                            app_id = snapshot.app_id,
+                            ?error,
+                            "decoration runtime evaluation failed, falling back to static decoration"
+                        );
+                        StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                    }
+                };
                 let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
                     .layout_for_client(client_rect)
@@ -216,12 +270,26 @@ impl ShojiWM {
                         rounded_cache,
                     },
                 );
+                self.schedule_redraw();
+                self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
                 if cached.client_rect != client_rect {
                     let started_at = Instant::now();
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
-                    let evaluation = self.decoration_evaluator.evaluate_window(&snapshot)?;
+                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                        Ok(evaluation) => evaluation,
+                        Err(error) => {
+                            warn!(
+                                window_id = snapshot.id,
+                                title = snapshot.title,
+                                app_id = snapshot.app_id,
+                                ?error,
+                                "decoration runtime evaluation failed during relayout, falling back to static decoration"
+                            );
+                            StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                        }
+                    };
                     cached.tree = DecorationTree::new(evaluation.node);
                     cached.layout = cached
                         .tree
@@ -256,6 +324,38 @@ impl ShojiWM {
                         &cached.layout,
                         &cached.buffers,
                     );
+                    self.schedule_redraw();
+                    self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                } else if force_runtime_reevaluate
+                    || self.runtime_dirty_window_ids.contains(&snapshot.id)
+                {
+                    let previous_root =
+                        transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
+                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                        Ok(evaluation) => evaluation,
+                        Err(error) => {
+                            warn!(
+                                window_id = snapshot.id,
+                                title = snapshot.title,
+                                app_id = snapshot.app_id,
+                                ?error,
+                                "decoration runtime evaluation failed during transform update, falling back to static decoration"
+                            );
+                            StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                        }
+                    };
+
+                    if cached.visual_transform != evaluation.transform {
+                        push_damage_pair(
+                            &mut self.pending_decoration_damage,
+                            Some(previous_root),
+                            transformed_root_rect(cached.layout.root.rect, evaluation.transform),
+                        );
+                        cached.visual_transform = evaluation.transform;
+                        cached.snapshot = snapshot;
+                        self.schedule_redraw();
+                    }
+                    self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 }
             }
         }
@@ -267,6 +367,9 @@ impl ShojiWM {
             elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0,
             "refresh_window_decorations finished"
         );
+
+        self.runtime_poll_dirty = false;
+        self.runtime_dirty_window_ids.clear();
 
         Ok(())
     }

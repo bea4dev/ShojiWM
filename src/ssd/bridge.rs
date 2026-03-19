@@ -30,7 +30,7 @@ pub struct WireProps {
     pub icon: Option<serde_json::Value>,
     pub id: Option<String>,
     pub style: WireStyle,
-    pub on_click: Option<WireWindowAction>,
+    pub on_click: Option<WireOnClick>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -145,7 +145,11 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                 text: value.props.text.unwrap_or_default(),
             }),
             "Button" => DecorationNodeKind::Button(ButtonNode {
-                action: value.props.on_click.unwrap_or(WireWindowAction::Close).into(),
+                action: value
+                    .props
+                    .on_click
+                    .unwrap_or(WireOnClick::Action(WireWindowAction::Close))
+                    .try_into()?,
             }),
             "AppIcon" => DecorationNodeKind::AppIcon,
             "Window" => DecorationNodeKind::WindowSlot,
@@ -347,6 +351,23 @@ impl From<WireWindowAction> for WindowAction {
     }
 }
 
+impl TryFrom<WireOnClick> for WindowAction {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireOnClick) -> Result<Self, Self::Error> {
+        match value {
+            WireOnClick::Action(action) => Ok(action.into()),
+            WireOnClick::RuntimeHandler(handler) => {
+                if handler.kind == "runtime-handler" {
+                    Ok(WindowAction::RuntimeHandler(handler.id))
+                } else {
+                    Err(DecorationBridgeError::UnsupportedNodeKind(handler.kind))
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,4 +435,16 @@ mod tests {
         let err = decode_tree_json(json).expect_err("primitive children are unsupported");
         assert_eq!(err, DecorationBridgeError::UnsupportedPrimitiveChild);
     }
+}
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WireOnClick {
+    Action(WireWindowAction),
+    RuntimeHandler(WireRuntimeHandler),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WireRuntimeHandler {
+    pub kind: String,
+    pub id: String,
 }
