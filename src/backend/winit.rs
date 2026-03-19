@@ -9,17 +9,19 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
-    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Rectangle, Transform},
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+    utils::{Monotonic, Rectangle, Transform},
 };
 use tracing::{trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, window as window_render},
+    presentation::take_presentation_feedback,
     ShojiWM,
 };
+use smithay::wayland::presentation::Refresh;
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -210,35 +212,45 @@ pub fn init_winit(
                             "rendering winit frame"
                         );
 
-                        let _ = damage_tracker.render_output(
+                        let frame_target = state.clock.now()
+                            + output
+                                .current_mode()
+                                .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
+                                .unwrap_or(Duration::ZERO);
+                        state.pre_repaint(&output, frame_target);
+
+                        let render_output_result = damage_tracker.render_output(
                             renderer,
                             &mut framebuffer,
                             0,
                             &elements,
                             [0.1, 0.1, 0.1, 1.0],
                         );
-                    }
-                    backend.submit(Some(&[damage])).unwrap();
+                        if let Ok(render_output_result) = render_output_result {
+                            let frame_time = Duration::from(state.clock.now())
+                                + output
+                                    .current_mode()
+                                    .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
+                                    .unwrap_or(Duration::ZERO);
 
-                    state.space.elements().for_each(|window| {
-                        window.send_frame(
-                            &output,
-                            state.start_time.elapsed(),
-                            Some(Duration::ZERO),
-                            |_, _| Some(output.clone()),
-                        )
-                    });
-                    {
-                        let map = layer_map_for_output(&output);
-                        for layer_surface in map.layers() {
-                            layer_surface.send_frame(
-                                &output,
-                                state.start_time.elapsed(),
-                                Some(Duration::ZERO),
-                                |_, _| Some(output.clone()),
-                            );
+                            if render_output_result.damage.is_some() {
+                                let mut output_presentation_feedback =
+                                    take_presentation_feedback(&output, &state.space, &render_output_result.states);
+                                output_presentation_feedback.presented::<Duration, Monotonic>(
+                                    frame_time,
+                                    output
+                                        .current_mode()
+                                        .map(|mode| Refresh::fixed(Duration::from_secs_f64(1_000f64 / mode.refresh as f64)))
+                                        .unwrap_or(Refresh::Unknown),
+                                    0,
+                                    wp_presentation_feedback::Kind::Vsync,
+                                );
+                            }
+
+                            state.post_repaint(&output, frame_time, &render_output_result.states);
                         }
                     }
+                    backend.submit(Some(&[damage])).unwrap();
 
                     state.space.refresh();
                     state.popups.cleanup();

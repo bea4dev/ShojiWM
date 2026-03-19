@@ -161,6 +161,19 @@ export type DecorationFunction = (window: WaylandWindow) => DecorationChild;
 
 export interface WindowManagerDefinition {
   decoration: DecorationFunction | null;
+  display?: DisplayConfig;
+}
+
+export type DisplayModePreference =
+  | "auto"
+  | {
+      width: number;
+      height: number;
+      refreshMhz?: number;
+    };
+
+export interface DisplayConfig {
+  defaultMode?: DisplayModePreference;
 }
 
 export interface ReactiveWaylandWindowSignals {

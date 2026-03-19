@@ -219,9 +219,24 @@ fn select_tty_devices(
     candidates: &[TtyDeviceCandidate],
 ) -> Result<Vec<&TtyDeviceCandidate>, Box<dyn std::error::Error>> {
     if let Some(override_value) = std::env::var_os("SHOJI_TTY_DRM_DEVICE") {
+        if override_value == "all" {
+            return Ok(candidates.iter().collect());
+        }
+
+        let override_values = override_value
+            .to_string_lossy()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
         let selected = candidates
             .iter()
-            .filter(|candidate| path_matches_override(&candidate.path, override_value.as_os_str()))
+            .filter(|candidate| {
+                override_values.iter().any(|value| {
+                    path_matches_override(&candidate.path, OsStr::new(value))
+                })
+            })
             .collect::<Vec<_>>();
 
         if selected.is_empty() {
@@ -240,7 +255,16 @@ fn select_tty_devices(
         .filter(|candidate| !candidate.connected_connectors.is_empty())
         .collect::<Vec<_>>();
     if !connected.is_empty() {
-        return Ok(connected);
+        if let Some(primary_connected) = connected.iter().copied().find(|candidate| candidate.is_primary) {
+            return Ok(vec![primary_connected]);
+        }
+
+        let best = connected
+            .iter()
+            .copied()
+            .max_by_key(|candidate| candidate.connected_connectors.len())
+            .unwrap();
+        return Ok(vec![best]);
     }
 
     let primary = candidates
@@ -249,11 +273,11 @@ fn select_tty_devices(
         .collect::<Vec<_>>();
     if !primary.is_empty() {
         warn!("no connected drm connectors detected; falling back to primary gpu");
-        return Ok(primary);
+        return Ok(vec![primary[0]]);
     }
 
-    warn!("no connected drm connectors detected and no primary gpu match found; probing all drm devices");
-    Ok(candidates.iter().collect())
+    warn!("no connected drm connectors detected and no primary gpu match found; falling back to first drm device");
+    Ok(vec![&candidates[0]])
 }
 
 fn path_matches_override(path: &Path, override_value: &OsStr) -> bool {

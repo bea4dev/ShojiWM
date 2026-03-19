@@ -40,6 +40,19 @@ impl CompositorHandler for ShojiWM {
                 .find(|w| w.toplevel().unwrap().wl_surface() == &root)
             {
                 window.on_commit();
+                let snapshot = self.snapshot_window(window);
+                let commit_time = std::time::Duration::from(self.clock.now());
+                if let Some(previous_commit_time) =
+                    self.window_commit_times.insert(window.clone(), commit_time)
+                {
+                    trace!(
+                        window_id = snapshot.id,
+                        title = snapshot.title,
+                        app_id = snapshot.app_id,
+                        commit_delta_ms = (commit_time.saturating_sub(previous_commit_time).as_secs_f64() * 1000.0),
+                        "mapped window commit cadence"
+                    );
+                }
                 if let Some(decoration) = self.window_decorations.get(window) {
                     self.pending_decoration_damage.push(decoration.layout.root.rect);
                 }

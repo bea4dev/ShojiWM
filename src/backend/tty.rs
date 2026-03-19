@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::HashMap, path::Path, time::{Duration, Instant}};
 
 use smithay::{
     backend::{
@@ -7,7 +7,7 @@ use smithay::{
             compositor::FrameFlags,
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
         },
         egl::{context::ContextPriority, EGLContext, EGLDisplay},
         renderer::{
@@ -27,13 +27,14 @@ use smithay::{
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
-        calloop::EventLoop,
-        drm::control::{connector, crtc, ModeTypeFlags},
+        calloop::{timer::{TimeoutAction, Timer}, EventLoop, LoopHandle},
+        drm::control::{connector, crtc},
         gbm::{BufferObjectFlags, Device, Format},
         rustix::fs::OFlags,
+        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
     },
     render_elements,
-    utils::{DeviceFd, IsAlive, Scale, Transform},
+    utils::{DeviceFd, IsAlive, Monotonic, Scale, Transform},
     wayland::{compositor, dmabuf::DmabufFeedbackBuilder},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -41,19 +42,34 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     backend::damage, backend::damage_blink, backend::decoration, backend::window as window_render,
+    config::DisplayModePreference,
+    presentation::{take_presentation_feedback, update_primary_scanout_output},
     drawing::PointerRenderElement, state::ShojiWM,
 };
+use smithay::wayland::presentation::Refresh;
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
 type GbmDrmOutput =
-    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutput<
+        GbmAllocator<DrmDeviceFd>,
+        GbmFramebufferExporter<DrmDeviceFd>,
+        Option<smithay::desktop::utils::OutputPresentationFeedback>,
+        DrmDeviceFd,
+    >;
 
 struct SurfaceData {
     output: Output,
     drm_output: GbmDrmOutput,
     blink_damage_tracker: OutputDamageTracker,
+    frame_pending: bool,
+    repaint_scheduled: bool,
+    frame_duration: Duration,
+    next_frame_target: Option<Duration>,
+    estimated_render_duration: Duration,
+    last_presented_at: Option<Duration>,
+    last_frame_callback_at: Option<Duration>,
 }
 
 pub struct BackendData {
@@ -61,7 +77,7 @@ pub struct BackendData {
     pub drm_output_manager: DrmOutputManager<
         GbmAllocator<DrmDeviceFd>,
         GbmFramebufferExporter<DrmDeviceFd>,
-        (),
+        Option<smithay::desktop::utils::OutputPresentationFeedback>,
         DrmDeviceFd,
     >,
     pub renderer: GlesRenderer,
@@ -138,12 +154,13 @@ pub fn device_added(
 
     let backend = state.tty_backends.get_mut(&node).unwrap();
 
+    let loop_handle = event_loop.handle();
     event_loop
         .handle()
-        .insert_source(drm_events, move |event, _, state| {
+        .insert_source(drm_events, move |event, metadata, state| {
             if let DrmEvent::VBlank(crtc) = event {
                 trace!(?node, ?crtc, "received drm vblank");
-                frame_finish(state, node, crtc);
+                frame_finish(state, &loop_handle, node, crtc, metadata);
             }
         })?;
 
@@ -164,7 +181,13 @@ pub fn device_added(
     Ok(())
 }
 
-fn frame_finish(state: &mut ShojiWM, node: DrmNode, crtc: crtc::Handle) {
+fn frame_finish(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    metadata: &mut Option<DrmEventMetadata>,
+) {
     let Some(backend) = state.tty_backends.get_mut(&node) else {
         warn!(?node, ?crtc, "frame_finish without backend");
         return;
@@ -175,10 +198,88 @@ fn frame_finish(state: &mut ShojiWM, node: DrmNode, crtc: crtc::Handle) {
     };
 
     trace!(?node, ?crtc, "marking frame submitted");
-    let _ = surface.drm_output.frame_submitted();
+    let submit_result = surface.drm_output.frame_submitted();
+    let presentation_clock = metadata
+        .as_ref()
+        .and_then(|metadata| match metadata.time {
+            DrmEventTime::Monotonic(tp) => Some(tp),
+            DrmEventTime::Realtime(_) => None,
+        })
+        .unwrap_or_else(|| Duration::from(state.clock.now()));
+    surface.next_frame_target = Some(presentation_clock + surface.frame_duration);
+
+    if let Ok(user_data) = submit_result {
+        let clock = presentation_clock;
+        let sequence = metadata.as_ref().map(|metadata| metadata.sequence).unwrap_or(0);
+        let flags = if metadata
+            .as_ref()
+            .is_some_and(|metadata| matches!(metadata.time, DrmEventTime::Monotonic(_)))
+        {
+            wp_presentation_feedback::Kind::Vsync
+                | wp_presentation_feedback::Kind::HwClock
+                | wp_presentation_feedback::Kind::HwCompletion
+        } else {
+            wp_presentation_feedback::Kind::Vsync
+        };
+
+        if let Some(mut feedback) = user_data.flatten() {
+            feedback.presented::<Duration, Monotonic>(
+                clock,
+                Refresh::fixed(surface.frame_duration),
+                sequence as u64,
+                flags,
+            );
+        }
+    }
+
+    if let Some(previous_presented) = surface.last_presented_at.replace(presentation_clock) {
+        trace!(
+            ?node,
+            ?crtc,
+            output = %surface.output.name(),
+            presented_delta_ms = (presentation_clock.saturating_sub(previous_presented).as_secs_f64() * 1000.0),
+            refresh_mhz = surface.output.current_mode().map(|mode| mode.refresh),
+            "tty presentation cadence"
+        );
+    }
+
+    surface.frame_pending = false;
+
+    if surface.repaint_scheduled {
+        return;
+    }
+
+    let Some(repaint_delay) = repaint_delay(surface) else {
+        return;
+    };
+    let repaint_target = presentation_clock + repaint_delay;
+    let repaint_delay = repaint_target.saturating_sub(Duration::from(state.clock.now()));
+
+    surface.repaint_scheduled = true;
+    if loop_handle
+        .insert_source(Timer::from_duration(repaint_delay), move |_, _, state| {
+            if let Some(backend) = state.tty_backends.get_mut(&node)
+                && let Some(surface) = backend.surfaces.get_mut(&crtc)
+            {
+                surface.repaint_scheduled = false;
+            }
+            state.schedule_redraw();
+            TimeoutAction::Drop
+        })
+        .is_err()
+    {
+        if let Some(backend) = state.tty_backends.get_mut(&node)
+            && let Some(surface) = backend.surfaces.get_mut(&crtc)
+        {
+            surface.repaint_scheduled = false;
+        }
+        warn!(?node, ?crtc, "failed to schedule tty repaint timer");
+    }
 }
 
-pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::Error>> {
+pub fn render_if_needed(
+    state: &mut ShojiWM,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !state.needs_redraw {
         return Ok(());
     }
@@ -191,6 +292,7 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
         "rendering pending redraw"
     );
     state.needs_redraw = false;
+    let mut skipped_for_pending_frame = false;
 
     let nodes: Vec<_> = state.tty_backends.keys().copied().collect();
     for node in nodes {
@@ -204,8 +306,12 @@ pub fn render_if_needed(state: &mut ShojiWM) -> Result<(), Box<dyn std::error::E
             .collect();
 
         for crtc in crtcs {
-            render_surface(state, node, crtc)?;
+            skipped_for_pending_frame |= render_surface(state, node, crtc)?;
         }
+    }
+
+    if skipped_for_pending_frame {
+        state.needs_redraw = true;
     }
 
     state.pending_decoration_damage.clear();
@@ -229,13 +335,43 @@ fn render_surface(
     state: &mut ShojiWM,
     node: DrmNode,
     crtc: crtc::Handle,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let output = state
         .tty_backends
         .get(&node)
         .and_then(|backend| backend.surfaces.get(&crtc))
         .map(|surface| surface.output.clone())
         .unwrap();
+
+    if state
+        .tty_backends
+        .get(&node)
+        .and_then(|backend| backend.surfaces.get(&crtc))
+        .is_some_and(|surface| surface.frame_pending)
+    {
+        trace!(
+            ?node,
+            ?crtc,
+            output = %output.name(),
+            "skipping tty render while previous frame is pending"
+        );
+        return Ok(true);
+    }
+
+    let frame_duration = state
+        .tty_backends
+        .get(&node)
+        .and_then(|backend| backend.surfaces.get(&crtc))
+        .map(|surface| surface.frame_duration)
+        .unwrap_or(Duration::ZERO);
+    let fallback_frame_time = Duration::from(state.clock.now()) + frame_duration;
+    let frame_target = state
+        .tty_backends
+        .get(&node)
+        .and_then(|backend| backend.surfaces.get(&crtc))
+        .and_then(|surface| surface.next_frame_target)
+        .unwrap_or(fallback_frame_time);
+    state.pre_repaint(&output, frame_target.into());
 
     let should_capture_blink = state.damage_blink_enabled;
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
@@ -257,6 +393,7 @@ fn render_surface(
             cursor_status,
             cursor_theme,
             pointer_images,
+            current_pointer_image,
             pointer_element,
             seat,
             ..
@@ -264,6 +401,22 @@ fn render_surface(
 
         let backend = tty_backends.get_mut(&node).unwrap();
         let surface = backend.surfaces.get_mut(&crtc).unwrap();
+        let render_started_at = Instant::now();
+        let frame_time = surface
+            .next_frame_target
+            .take()
+            .unwrap_or(fallback_frame_time);
+        if let Some(previous_callback) = surface.last_frame_callback_at.replace(frame_time) {
+            trace!(
+                ?node,
+                ?crtc,
+                output = %output.name(),
+                callback_delta_ms = (frame_time.saturating_sub(previous_callback).as_secs_f64() * 1000.0),
+                frame_time_ms = frame_time.as_secs_f64() * 1000.0,
+                target_refresh_mhz = output.current_mode().map(|mode| mode.refresh),
+                "tty frame callback cadence"
+            );
+        }
 
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
 
@@ -284,6 +437,7 @@ fn render_surface(
             }
 
             let hotspot = if let CursorImageStatus::Surface(surface) = cursor_status {
+                *current_pointer_image = None;
                 compositor::with_states(surface, |states| {
                     states
                         .data_map
@@ -314,7 +468,10 @@ fn render_surface(
                         pointer_images.push((frame.clone(), buffer.clone()));
                         buffer
                     });
-                pointer_element.set_buffer(buffer);
+                if current_pointer_image.as_ref() != Some(&frame) {
+                    pointer_element.set_buffer(buffer);
+                    *current_pointer_image = Some(frame.clone());
+                }
                 (frame.xhot as i32, frame.yhot as i32).into()
             };
 
@@ -452,16 +609,39 @@ fn render_surface(
             CLEAR_COLOR,
             TTY_FRAME_FLAGS,
         )?;
+        let render_elapsed = render_started_at.elapsed();
+        surface.estimated_render_duration =
+            blend_render_duration(surface.estimated_render_duration, render_elapsed);
 
         if !result.is_empty {
             trace!(output = %output.name(), "queueing tty frame");
-            surface.drm_output.queue_frame(())?;
-
+            // Update primary-scanout metadata before collecting presentation feedback.
+            //
+            // Chrome on the TTY backend would otherwise frequently stick to ~60 fps on a 66 Hz
+            // output. Keeping this metadata current made Chrome observe the real output cadence.
+            update_primary_scanout_output(&state.space, &output, cursor_status, &result.states);
+            let output_presentation_feedback =
+                take_presentation_feedback(&output, &state.space, &result.states);
+            surface
+                .drm_output
+                .queue_frame(Some(output_presentation_feedback))?;
+            surface.frame_pending = true;
+            trace!(
+                ?node,
+                ?crtc,
+                output = %output.name(),
+                frame_time_ms = frame_time.as_secs_f64() * 1000.0,
+                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
+                estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
+                "queued tty frame"
+            );
             all_windows.iter().for_each(|window| {
                 window.send_frame(
                     &output,
-                    start_time.elapsed(),
-                    Some(Duration::ZERO),
+                    frame_time,
+                    Some(Duration::from_secs(1)),
                     |_, _| Some(output.clone()),
                 );
             });
@@ -470,12 +650,13 @@ fn render_surface(
                 for layer_surface in map.layers() {
                     layer_surface.send_frame(
                         &output,
-                        start_time.elapsed(),
-                        Some(Duration::ZERO),
+                        frame_time,
+                        Some(Duration::from_secs(1)),
                         |_, _| Some(output.clone()),
                     );
                 }
             }
+            state.signal_post_repaint_barriers(&output);
         } else {
             trace!(output = %output.name(), "tty frame had no damage");
         }
@@ -487,7 +668,7 @@ fn render_surface(
         state.record_damage_blink(&output, damage);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn connector_connected(
@@ -496,12 +677,22 @@ fn connector_connected(
     crtc: crtc::Handle,
     connector: connector::Info,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mode = connector
+    let mode = select_output_mode(&connector, &state.display_config.default_mode);
+    let available_modes = connector
         .modes()
         .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .copied()
-        .unwrap_or(connector.modes()[0]);
+        .map(|candidate| {
+            let wl_mode = WlMode::from(*candidate);
+            format!(
+                "{}x{}@{}(drm:{} wl:{})",
+                candidate.size().0,
+                candidate.size().1,
+                candidate.name().to_string_lossy(),
+                candidate.vrefresh(),
+                wl_mode.refresh,
+            )
+        })
+        .collect::<Vec<_>>();
 
     let output = Output::new(
         format!(
@@ -518,6 +709,7 @@ fn connector_connected(
         },
     );
     let wl_mode = WlMode::from(mode);
+    let frame_duration = Duration::from_secs_f64(1_000f64 / wl_mode.refresh as f64);
     output.set_preferred(wl_mode);
     output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
     output.create_global::<ShojiWM>(&state.display_handle);
@@ -527,6 +719,8 @@ fn connector_connected(
         ?crtc,
         output = %output.name(),
         size = ?wl_mode.size,
+        refresh_mhz = wl_mode.refresh,
+        available_modes = ?available_modes,
         "connected tty output"
     );
 
@@ -549,6 +743,13 @@ fn connector_connected(
         output: output.clone(),
         drm_output,
         blink_damage_tracker: OutputDamageTracker::from_output(&output),
+        frame_pending: false,
+        repaint_scheduled: false,
+        frame_duration,
+        next_frame_target: None,
+        estimated_render_duration: Duration::from_millis(4),
+        last_presented_at: None,
+        last_frame_callback_at: None,
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");
@@ -558,6 +759,56 @@ fn connector_connected(
         &mut backend.renderer,
     )?;
     Ok(())
+}
+
+fn select_output_mode(
+    connector: &connector::Info,
+    preference: &DisplayModePreference,
+) -> smithay::reexports::drm::control::Mode {
+    match preference {
+        DisplayModePreference::Auto => connector
+            .modes()
+            .iter()
+            .copied()
+            .max_by_key(|mode| {
+                let wl_mode = WlMode::from(*mode);
+                (
+                    i64::from(wl_mode.size.w) * i64::from(wl_mode.size.h),
+                    mode.vrefresh(),
+                    wl_mode.refresh,
+                )
+            })
+            .unwrap_or(connector.modes()[0]),
+        DisplayModePreference::Exact {
+            width,
+            height,
+            refresh_mhz,
+        } => {
+            let exact = connector
+                .modes()
+                .iter()
+                .copied()
+                .filter(|mode| mode.size() == (*width, *height))
+                .collect::<Vec<_>>();
+
+            if exact.is_empty() {
+                return select_output_mode(connector, &DisplayModePreference::Auto);
+            }
+
+            match refresh_mhz {
+                Some(refresh_mhz) => exact
+                    .into_iter()
+                    .min_by_key(|mode| {
+                        (i64::from(WlMode::from(*mode).refresh) - i64::from(*refresh_mhz)).abs()
+                    })
+                    .unwrap_or(connector.modes()[0]),
+                None => exact
+                    .into_iter()
+                    .max_by_key(|mode| (mode.vrefresh(), WlMode::from(*mode).refresh))
+                    .unwrap_or(connector.modes()[0]),
+            }
+        }
+    }
 }
 
 fn render_now(
@@ -573,8 +824,37 @@ fn render_now(
             .render_frame(renderer, &elements, CLEAR_COLOR, TTY_FRAME_FLAGS)?;
 
     if !result.is_empty {
-        surface.drm_output.queue_frame(())?;
+        surface.drm_output.queue_frame(None)?;
+        surface.frame_pending = true;
     }
 
     Ok(())
+}
+
+fn repaint_delay(surface: &SurfaceData) -> Option<Duration> {
+    let refresh_mhz = surface.output.current_mode()?.refresh;
+    if refresh_mhz <= 0 {
+        return None;
+    }
+
+    let frame_duration = Duration::from_secs_f64(1_000f64 / refresh_mhz as f64);
+    let min_budget = Duration::from_millis(2);
+    let max_budget = Duration::from_millis(3);
+    let compositor_budget = std::cmp::max(
+        surface
+            .estimated_render_duration
+            .saturating_add(Duration::from_millis(1)),
+        min_budget,
+    );
+    let compositor_budget = std::cmp::min(compositor_budget, max_budget);
+
+    Some(frame_duration.saturating_sub(compositor_budget))
+}
+
+fn blend_render_duration(previous: Duration, current: Duration) -> Duration {
+    if previous.is_zero() {
+        return current;
+    }
+
+    Duration::from_secs_f64(previous.as_secs_f64() * 0.75 + current.as_secs_f64() * 0.25)
 }

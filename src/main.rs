@@ -8,11 +8,13 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 pub mod backend;
+pub mod config;
 pub mod cursor;
 pub mod drawing;
 pub mod grabs;
 pub mod handlers;
 pub mod input;
+pub mod presentation;
 pub mod ssd;
 pub mod state;
 

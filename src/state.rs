@@ -15,12 +15,17 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Physical, Point, Rectangle, Scale},
+    utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale},
     wayland::{
+        commit_timing::CommitTimingManagerState,
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufGlobal, DmabufState},
         cursor_shape::CursorShapeManagerState,
+        fixes::FixesState,
+        fifo::FifoManagerState,
+        fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
+        presentation::PresentationState,
         selection::{
             data_device::DataDeviceState,
             primary_selection::PrimarySelectionState,
@@ -30,13 +35,16 @@ use smithay::{
         shell::wlr_layer::Layer as WlrLayer,
         shell::wlr_layer::WlrLayerShellState,
         shm::ShmState,
+        single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
+        viewporter::ViewporterState,
     },
 };
 use xcursor::parser::Image;
 
 use crate::{
     backend::{text::TextRasterizer, tty::BackendData},
+    config::DisplayConfig,
     cursor::Cursor,
     drawing::PointerElement,
 };
@@ -59,6 +67,13 @@ pub struct ShojiWM {
     pub shm_state: ShmState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub output_manager_state: OutputManagerState,
+    pub presentation_state: PresentationState,
+    pub fifo_manager_state: FifoManagerState,
+    pub commit_timing_manager_state: CommitTimingManagerState,
+    pub viewporter_state: ViewporterState,
+    pub fractional_scale_manager_state: FractionalScaleManagerState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
+    pub fixes_state: FixesState,
     pub seat_state: SeatState<ShojiWM>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
@@ -69,6 +84,7 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub window_commit_times: HashMap<Window, std::time::Duration>,
     pub pending_decoration_damage: Vec<LogicalRect>,
     pub decoration_evaluator: DecorationRuntimeEvaluator,
     pub dmabuf_state: DmabufState,
@@ -82,9 +98,12 @@ pub struct ShojiWM {
     pub cursor_status: CursorImageStatus,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
+    pub current_pointer_image: Option<Image>,
     pub pointer_element: PointerElement,
     pub text_rasterizer: TextRasterizer,
     pub default_decoration_mode: DecorationMode,
+    pub display_config: DisplayConfig,
+    pub clock: Clock<Monotonic>,
 }
 
 impl ShojiWM {
@@ -105,8 +124,16 @@ impl ShojiWM {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
+        let clock = Clock::<Monotonic>::new();
+        let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
 
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
+        let fifo_manager_state = FifoManagerState::new::<Self>(&dh);
+        let commit_timing_manager_state = CommitTimingManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
+        let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
+        let fixes_state = FixesState::new::<Self>(&dh);
 
         // Data device is responsible for clipboard and drag-and-drop
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -166,6 +193,13 @@ impl ShojiWM {
             shm_state,
             cursor_shape_manager_state,
             output_manager_state,
+            presentation_state,
+            fifo_manager_state,
+            commit_timing_manager_state,
+            viewporter_state,
+            fractional_scale_manager_state,
+            single_pixel_buffer_state,
+            fixes_state,
             seat_state,
             data_device_state,
             primary_selection_state,
@@ -175,6 +209,7 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             window_decorations: HashMap::new(),
+            window_commit_times: HashMap::new(),
             pending_decoration_damage: Vec::new(),
             decoration_evaluator,
             dmabuf_state: DmabufState::new(),
@@ -188,10 +223,13 @@ impl ShojiWM {
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
+            current_pointer_image: None,
             pointer_element: PointerElement::default(),
             text_rasterizer: TextRasterizer::new(),
             // SSD rendering is available, so prefer compositor-side decorations by default.
             default_decoration_mode: DecorationMode::ServerSide,
+            display_config: DisplayConfig::default(),
+            clock,
         }
     }
 

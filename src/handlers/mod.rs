@@ -14,6 +14,7 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::utils::Serial;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, ImportNotifier};
+use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
@@ -24,8 +25,10 @@ use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataCont
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{
-    delegate_cursor_shape, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat,
+    delegate_commit_timing, delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_dmabuf, delegate_fifo, delegate_fixes, delegate_fractional_scale, delegate_layer_shell,
+    delegate_output, delegate_presentation, delegate_primary_selection, delegate_seat,
+    delegate_single_pixel_buffer, delegate_viewporter,
     delegate_xdg_decoration,
 };
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
@@ -58,6 +61,54 @@ delegate_seat!(ShojiWM);
 delegate_cursor_shape!(ShojiWM);
 delegate_xdg_decoration!(ShojiWM);
 delegate_layer_shell!(ShojiWM);
+delegate_presentation!(ShojiWM);
+delegate_fifo!(ShojiWM);
+delegate_commit_timing!(ShojiWM);
+delegate_viewporter!(ShojiWM);
+delegate_fractional_scale!(ShojiWM);
+delegate_single_pixel_buffer!(ShojiWM);
+delegate_fixes!(ShojiWM);
+
+impl FractionalScaleHandler for ShojiWM {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+
+        smithay::wayland::compositor::with_states(&surface, |states| {
+            let primary_scanout_output = smithay::desktop::utils::surface_primary_scanout_output(&surface, states)
+                .or_else(|| {
+                            if root != surface {
+                        smithay::wayland::compositor::with_states(&root, |states| {
+                            smithay::desktop::utils::surface_primary_scanout_output(&root, states).or_else(|| {
+                                self.space
+                                    .elements()
+                                    .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
+                                    .cloned()
+                                    .and_then(|window| {
+                                    self.space.outputs_for_element(&window).first().cloned()
+                                })
+                            })
+                        })
+                    } else {
+                        self.space
+                            .elements()
+                            .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
+                            .cloned()
+                            .and_then(|window| self.space.outputs_for_element(&window).first().cloned())
+                    }
+                })
+                .or_else(|| self.space.outputs().next().cloned());
+
+            if let Some(output) = primary_scanout_output {
+                with_fractional_scale(states, |fractional_scale| {
+                    fractional_scale.set_preferred_scale(output.current_scale().fractional_scale());
+                });
+            }
+        });
+    }
+}
 
 impl TabletSeatHandler for ShojiWM {
     fn tablet_tool_image(
