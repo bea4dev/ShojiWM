@@ -7,12 +7,14 @@ import type {
   SerializableDecorationChild,
   WaylandWindowActions,
   WaylandWindowSnapshot,
+  WindowTransform,
 } from "./types";
 
 export interface WindowSnapshotDiff {
   changed: boolean;
   title: boolean;
   appId: boolean;
+  position: boolean;
   focus: boolean;
   floating: boolean;
   maximized: boolean;
@@ -25,6 +27,7 @@ export interface WindowSnapshotDiff {
 export interface DecorationEvaluationResult {
   tree: DecorationChild;
   serialized: SerializableDecorationChild;
+  transform: WindowTransform;
   version: number;
 }
 
@@ -33,6 +36,7 @@ export interface DecorationEvaluationCache {
   readonly version: number;
   readonly lastSerialized: SerializableDecorationChild;
   readonly lastTree: DecorationChild;
+  readonly lastTransform: WindowTransform;
   update(snapshot: WaylandWindowSnapshot): DecorationEvaluationResult | null;
 }
 
@@ -42,6 +46,7 @@ export function diffWindowSnapshot(
 ): WindowSnapshotDiff {
   const title = previous.title !== next.title;
   const appId = previous.appId !== next.appId;
+  const position = !shallowEqual(previous.position, next.position);
   const focus = previous.isFocused !== next.isFocused;
   const floating = previous.isFloating !== next.isFloating;
   const maximized = previous.isMaximized !== next.isMaximized;
@@ -54,6 +59,7 @@ export function diffWindowSnapshot(
     changed:
       title ||
       appId ||
+      position ||
       focus ||
       floating ||
       maximized ||
@@ -63,6 +69,7 @@ export function diffWindowSnapshot(
       xwayland,
     title,
     appId,
+    position,
     focus,
     floating,
     maximized,
@@ -98,6 +105,7 @@ export function createDecorationEvaluationCache(
   let version = 1;
   let tree = evaluate(handle.window);
   let serialized = serializeDecorationTree(tree);
+  let transform = snapshotTransform(handle);
 
   return {
     get window() {
@@ -112,6 +120,9 @@ export function createDecorationEvaluationCache(
     get lastTree() {
       return tree;
     },
+    get lastTransform() {
+      return transform;
+    },
     update(nextSnapshot) {
       if (!shouldReevaluateDecoration(currentSnapshot, nextSnapshot)) {
         handle.update(nextSnapshot);
@@ -123,14 +134,32 @@ export function createDecorationEvaluationCache(
       currentSnapshot = nextSnapshot;
       tree = evaluate(handle.window);
       serialized = serializeDecorationTree(tree);
+      transform = snapshotTransform(handle);
       version += 1;
 
       return {
         tree,
         serialized,
+        transform,
         version,
       };
     },
+  };
+}
+
+function snapshotTransform(
+  handle: ReactiveWaylandWindowHandle,
+): WindowTransform {
+  return {
+    origin: {
+      x: handle.transform.origin.x,
+      y: handle.transform.origin.y,
+    },
+    translateX: handle.transform.translateX,
+    translateY: handle.transform.translateY,
+    scaleX: handle.transform.scaleX,
+    scaleY: handle.transform.scaleY,
+    opacity: handle.transform.opacity,
   };
 }
 

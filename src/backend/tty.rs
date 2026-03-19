@@ -16,6 +16,7 @@ use smithay::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
                 AsRenderElements,
             },
             gles::GlesRenderer,
@@ -42,6 +43,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     backend::damage, backend::damage_blink, backend::decoration, backend::window as window_render,
+    backend::visual::{AlphaRenderElement, WindowVisualState, window_visual_state},
     config::DisplayModePreference,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     drawing::PointerRenderElement, state::ShojiWM,
@@ -340,11 +342,15 @@ pub fn render_if_needed(
 render_elements! {
     pub TtyRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
+    TransformedWindow=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
+    TransformedClipped=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>>,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
+    TransformedText=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
+    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::rounded::StableRoundedElement>>>,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
@@ -524,73 +530,105 @@ fn render_surface(
             };
             let physical_location =
                 (window_location - output_geo.loc).to_physical_precise_round(scale);
-
-            scene_elements.extend(
-                window_render::popup_elements(
-                    window,
-                    &mut backend.renderer,
-                    physical_location,
-                    scale,
-                    1.0,
-                )
-                .into_iter()
-                .map(TtyRenderElements::Window),
-            );
-
-            scene_elements.extend(
-                decoration::icon_elements_for_window(
-                    &mut backend.renderer,
-                    space,
-                    &state.window_decorations,
-                    &output,
-                    window,
-                )?
-                .into_iter()
-                .map(TtyRenderElements::Text),
-            );
-
-            scene_elements.extend(
-                decoration::text_elements_for_window(
-                    &mut backend.renderer,
-                    space,
-                    &state.window_decorations,
-                    &output,
-                    window,
-                )?
-                .into_iter()
-                .map(TtyRenderElements::Text),
-            );
-
-            scene_elements.extend(
-                decoration::rounded_elements_for_window(
-                    &mut backend.renderer,
-                    state.window_decorations.get_mut(window).unwrap(),
-                    output_geo,
-                    scale,
-                    window,
-                )?
-                .into_iter()
-                .map(TtyRenderElements::Decoration),
-            );
-
-            scene_elements.extend(
-                window_render::clipped_surface_elements(
-                    window,
-                    &mut backend.renderer,
-                    physical_location,
-                    scale,
-                    1.0,
-                    state
-                        .window_decorations
-                        .get(window)
-                        .and_then(|decoration| decoration.content_clip),
-                )
-                .inspect_err(|error| {
-                    warn!(?error, "failed to build clipped surface elements");
+            let visual_state = state
+                .window_decorations
+                .get(window)
+                .map(|decoration| {
+                    window_visual_state(
+                        decoration.layout.root.rect,
+                        decoration.visual_transform,
+                        output_geo,
+                        scale,
+                    )
                 })
-                .unwrap_or_default()
+                .unwrap_or(WindowVisualState {
+                    origin: physical_location,
+                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                    translation: (0, 0).into(),
+                    opacity: 1.0,
+                });
+
+            scene_elements.extend(
+                transform_window_elements(
+                    window_render::popup_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        1.0,
+                    ),
+                    visual_state,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
+
+            scene_elements.extend(
+                transform_text_elements(
+                    decoration::icon_elements_for_window(
+                        &mut backend.renderer,
+                        space,
+                        &state.window_decorations,
+                        &output,
+                        window,
+                    )?,
+                    visual_state,
+                )?
                 .into_iter()
-                .map(TtyRenderElements::Clipped),
+                .collect::<Vec<_>>(),
+            );
+
+            scene_elements.extend(
+                transform_text_elements(
+                    decoration::text_elements_for_window(
+                        &mut backend.renderer,
+                        space,
+                        &state.window_decorations,
+                        &output,
+                        window,
+                    )?,
+                    visual_state,
+                )?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            );
+
+            scene_elements.extend(
+                transform_decoration_elements(
+                    decoration::rounded_elements_for_window(
+                        &mut backend.renderer,
+                        state.window_decorations.get_mut(window).unwrap(),
+                        output_geo,
+                        scale,
+                        window,
+                    )?,
+                    visual_state,
+                )?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            );
+
+            scene_elements.extend(
+                transform_clipped_elements(
+                    window_render::clipped_surface_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        1.0,
+                        state
+                            .window_decorations
+                            .get(window)
+                            .and_then(|decoration| decoration.content_clip),
+                    )
+                    .inspect_err(|error| {
+                        warn!(?error, "failed to build clipped surface elements");
+                    })
+                    .unwrap_or_default(),
+                    visual_state,
+                )
+                .into_iter(),
             );
         }
         scene_elements.extend(
@@ -704,6 +742,112 @@ fn render_surface(
     }
 
     Ok(RenderSurfaceOutcome::Processed)
+}
+
+fn transform_window_elements(
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    visual: WindowVisualState,
+    direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> TtyRenderElements,
+    transformed: fn(RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>) -> TtyRenderElements,
+) -> Vec<TtyRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(direct).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            transformed(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_clipped_elements(
+    elements: Vec<crate::backend::clipped_surface::ClippedSurfaceElement>,
+    visual: WindowVisualState,
+) -> Vec<TtyRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(TtyRenderElements::Clipped).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedClipped(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_text_elements(
+    elements: Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    visual: WindowVisualState,
+) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    if is_identity_visual(visual) {
+        return Ok(elements.into_iter().map(TtyRenderElements::Text).collect());
+    }
+
+    Ok(elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedText(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect())
+}
+
+fn transform_decoration_elements(
+    elements: Vec<crate::backend::rounded::StableRoundedElement>,
+    visual: WindowVisualState,
+) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    if is_identity_visual(visual) {
+        return Ok(elements.into_iter().map(TtyRenderElements::Decoration).collect());
+    }
+
+    Ok(elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect())
+}
+
+fn is_identity_visual(visual: WindowVisualState) -> bool {
+    visual.translation.x == 0
+        && visual.translation.y == 0
+        && (visual.scale.x - 1.0).abs() < f64::EPSILON
+        && (visual.scale.y - 1.0).abs() < f64::EPSILON
+        && (visual.opacity - 1.0).abs() < f32::EPSILON
 }
 
 fn connector_connected(

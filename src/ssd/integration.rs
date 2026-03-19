@@ -1,6 +1,7 @@
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     desktop::Window,
+    reexports::wayland_server::Resource,
     utils::{Logical, Point, Rectangle},
 };
 use std::time::Instant;
@@ -11,12 +12,13 @@ use crate::backend::{
     icon::{CachedDecorationIcon, IconSpec},
     text::{CachedDecorationLabel, LabelSpec},
 };
+use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
 use crate::backend::rounded::RoundedElementState;
 
 use super::{
-    ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluator,
+    ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
     DecorationHitTestResult, DecorationTree, LogicalPoint, LogicalRect, WaylandWindowSnapshot,
-    evaluate_dynamic_decoration,
+    WindowTransform,
 };
 
 #[derive(Debug, Clone)]
@@ -25,6 +27,7 @@ pub struct WindowDecorationState {
     pub tree: DecorationTree,
     pub layout: ComputedDecorationTree,
     pub client_rect: LogicalRect,
+    pub visual_transform: WindowTransform,
     pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
     pub text_buffers: Vec<CachedDecorationLabel>,
@@ -74,7 +77,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
-    ) -> Result<super::DecorationNode, DecorationEvaluationError> {
+    ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(evaluator) => evaluator.evaluate_window(window),
             Self::Node(evaluator) => evaluator.evaluate_window(window),
@@ -87,7 +90,8 @@ impl ShojiWM {
         &self,
         snapshot: &WaylandWindowSnapshot,
     ) -> Result<(i32, i32), DecorationEvaluationError> {
-        let tree = evaluate_dynamic_decoration(&self.decoration_evaluator, snapshot)?;
+        let evaluation = self.decoration_evaluator.evaluate_window(snapshot)?;
+        let tree = DecorationTree::new(evaluation.node);
         let layout = tree
             .layout_for_client(LogicalRect::new(0, 0, 0, 0))
             .map_err(super::DecorationEvaluationError::Layout)?;
@@ -163,12 +167,17 @@ impl ShojiWM {
                 let previous_root = self
                     .window_decorations
                     .get(&window)
-                    .map(|cached| cached.layout.root.rect);
-                let tree = evaluate_dynamic_decoration(&self.decoration_evaluator, &snapshot)?;
+                    .map(|cached| transformed_root_rect(cached.layout.root.rect, cached.visual_transform));
+                let evaluation = self.decoration_evaluator.evaluate_window(&snapshot)?;
+                let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
                     .layout_for_client(client_rect)
                     .map_err(super::DecorationEvaluationError::Layout)?;
-                push_damage_pair(&mut self.pending_decoration_damage, previous_root, layout.root.rect);
+                push_damage_pair(
+                    &mut self.pending_decoration_damage,
+                    previous_root,
+                    transformed_root_rect(layout.root.rect, evaluation.transform),
+                );
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
@@ -200,6 +209,7 @@ impl ShojiWM {
                         tree,
                         layout,
                         client_rect,
+                        visual_transform: evaluation.transform,
                         content_clip,
                         buffers,
                         text_buffers,
@@ -210,7 +220,10 @@ impl ShojiWM {
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
                 if cached.client_rect != client_rect {
                     let started_at = Instant::now();
-                    let previous_root = cached.layout.root.rect;
+                    let previous_root =
+                        transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
+                    let evaluation = self.decoration_evaluator.evaluate_window(&snapshot)?;
+                    cached.tree = DecorationTree::new(evaluation.node);
                     cached.layout = cached
                         .tree
                         .layout_for_client(client_rect)
@@ -218,10 +231,11 @@ impl ShojiWM {
                     push_damage_pair(
                         &mut self.pending_decoration_damage,
                         Some(previous_root),
-                        cached.layout.root.rect,
+                        transformed_root_rect(cached.layout.root.rect, evaluation.transform),
                     );
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
+                    cached.visual_transform = evaluation.transform;
                     cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout);
                     cached.text_buffers =
@@ -264,12 +278,37 @@ impl ShojiWM {
     ) -> Option<(Window, DecorationHitTestResult)> {
         self.space.elements().rev().find_map(|window| {
             let decoration = self.window_decorations.get(window)?;
-            decoration
-                .layout
-                .root
-                .rect
-                .contains(LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32))
-                .then(|| (window.clone(), decoration.hit_test(point)))
+            let geometry = window.geometry();
+            let bbox = window.bbox();
+            let logical_point = LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32);
+            let transformed_root =
+                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+            transformed_root.contains(logical_point).then(|| {
+                let local_point = inverse_transform_point(
+                    point,
+                    decoration.layout.root.rect,
+                    decoration.visual_transform,
+                );
+                let hit = decoration.hit_test(local_point);
+                debug!(
+                    pos = ?point,
+                    logical_pos = ?logical_point,
+                    window_id = window
+                        .toplevel()
+                        .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                        .unwrap_or_default(),
+                    window_bbox = ?bbox,
+                    window_geometry = ?geometry,
+                    root_rect = ?decoration.layout.root.rect,
+                    client_rect = ?decoration.client_rect,
+                    transformed_root = ?transformed_root,
+                    local_point = ?local_point,
+                    transform = ?decoration.visual_transform,
+                    hit = ?hit,
+                    "decoration_under transformed hit-test"
+                );
+                (window.clone(), hit)
+            })
         })
     }
 

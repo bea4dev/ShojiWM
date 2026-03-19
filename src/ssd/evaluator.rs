@@ -8,7 +8,10 @@ use std::{
 };
 use tracing::debug;
 
-use super::{DecorationBridgeError, DecorationLayoutError, DecorationNode, DecorationTree, decode_tree_json};
+use super::{
+    DecorationBridgeError, DecorationLayoutError, DecorationNode, DecorationTree, WindowTransform,
+    decode_tree_json,
+};
 use super::window_model::WaylandWindowSnapshot;
 
 /// Dynamic decoration evaluation boundary.
@@ -20,7 +23,13 @@ pub trait DecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
-    ) -> Result<DecorationNode, DecorationEvaluationError>;
+    ) -> Result<DecorationEvaluationResult, DecorationEvaluationError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct DecorationEvaluationResult {
+    pub node: DecorationNode,
+    pub transform: WindowTransform,
 }
 
 /// Temporary Rust-side evaluator that mirrors the intended TS-level behavior:
@@ -37,7 +46,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
-    ) -> Result<DecorationNode, DecorationEvaluationError> {
+    ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         let border_color = if window.is_focused {
             "#ffff00"
         } else {
@@ -105,7 +114,10 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
             title = window.title,
         );
 
-        decode_tree_json(&json).map_err(Into::into)
+        Ok(DecorationEvaluationResult {
+            node: decode_tree_json(&json)?,
+            transform: WindowTransform::default(),
+        })
     }
 }
 
@@ -113,7 +125,9 @@ pub fn evaluate_dynamic_decoration<E: DecorationEvaluator>(
     evaluator: &E,
     window: &WaylandWindowSnapshot,
 ) -> Result<DecorationTree, DecorationEvaluationError> {
-    evaluator.evaluate_window(window).map(DecorationTree::new)
+    evaluator
+        .evaluate_window(window)
+        .map(|result| DecorationTree::new(result.node))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +179,7 @@ struct RuntimeResponse {
     request_id: u64,
     ok: bool,
     serialized: Option<serde_json::Value>,
+    transform: Option<WindowTransform>,
     error: Option<String>,
 }
 
@@ -278,7 +293,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
-    ) -> Result<DecorationNode, DecorationEvaluationError> {
+    ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         let started_at = Instant::now();
         let mut runtime_guard = self
             .runtime
@@ -332,20 +347,32 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
             "node decoration evaluation finished"
         );
-        decode_tree_json(stdout.trim()).map_err(Into::into)
+        Ok(DecorationEvaluationResult {
+            node: decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?,
+            transform: response.transform.unwrap_or_default(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ssd::{DecorationNodeKind, window_model::WaylandWindowSnapshot};
+    use crate::ssd::{
+        DecorationNodeKind,
+        window_model::{WaylandWindowSnapshot, WindowPositionSnapshot},
+    };
 
     fn make_window(is_focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),
+            position: WindowPositionSnapshot {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            },
             is_focused,
             is_floating: true,
             is_maximized: false,
@@ -415,7 +442,7 @@ cat <<'JSON'
             .evaluate_window(&make_window(false))
             .expect("node evaluator should decode output");
 
-        assert!(matches!(node.kind, DecorationNodeKind::WindowBorder));
+        assert!(matches!(node.node.kind, DecorationNodeKind::WindowBorder));
         fs::remove_dir_all(temp_dir).ok();
     }
 }

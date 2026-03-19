@@ -12,6 +12,10 @@ interface MutableWindowSignals {
   id: Signal<string>;
   title: Signal<string>;
   appId: Signal<string | undefined>;
+  positionX: Signal<number>;
+  positionY: Signal<number>;
+  positionWidth: Signal<number>;
+  positionHeight: Signal<number>;
   isFocused: Signal<boolean>;
   isFloating: Signal<boolean>;
   isMaximized: Signal<boolean>;
@@ -19,6 +23,13 @@ interface MutableWindowSignals {
   isXwayland: Signal<boolean>;
   icon: Signal<WindowIcon | undefined>;
   interaction: Signal<DecorationInteractionSnapshot>;
+  transformOriginX: Signal<number>;
+  transformOriginY: Signal<number>;
+  transformTranslateX: Signal<number>;
+  transformTranslateY: Signal<number>;
+  transformScaleX: Signal<number>;
+  transformScaleY: Signal<number>;
+  transformOpacity: Signal<number>;
 }
 
 export function createReactiveWindow(
@@ -29,6 +40,10 @@ export function createReactiveWindow(
     id: signal(snapshot.id),
     title: signal(snapshot.title),
     appId: signal(snapshot.appId),
+    positionX: signal(snapshot.position.x),
+    positionY: signal(snapshot.position.y),
+    positionWidth: signal(snapshot.position.width),
+    positionHeight: signal(snapshot.position.height),
     isFocused: signal(snapshot.isFocused),
     isFloating: signal(snapshot.isFloating),
     isMaximized: signal(snapshot.isMaximized),
@@ -36,6 +51,71 @@ export function createReactiveWindow(
     isXwayland: signal(snapshot.isXwayland),
     icon: signal(snapshot.icon),
     interaction: signal(snapshot.interaction),
+    transformOriginX: signal(0.5),
+    transformOriginY: signal(0.5),
+    transformTranslateX: signal(0),
+    transformTranslateY: signal(0),
+    transformScaleX: signal(1),
+    transformScaleY: signal(1),
+    transformOpacity: signal(1),
+  };
+
+  const position = {
+    get x() {
+      return signals.positionX.value;
+    },
+    get y() {
+      return signals.positionY.value;
+    },
+    get width() {
+      return signals.positionWidth.value;
+    },
+    get height() {
+      return signals.positionHeight.value;
+    },
+  };
+
+  const transform = {
+    get origin() {
+      return {
+        x: signals.transformOriginX.value,
+        y: signals.transformOriginY.value,
+      };
+    },
+    set origin(value) {
+      signals.transformOriginX.value = value.x;
+      signals.transformOriginY.value = value.y;
+    },
+    get translateX() {
+      return signals.transformTranslateX.value;
+    },
+    set translateX(value) {
+      signals.transformTranslateX.value = value;
+    },
+    get translateY() {
+      return signals.transformTranslateY.value;
+    },
+    set translateY(value) {
+      signals.transformTranslateY.value = value;
+    },
+    get scaleX() {
+      return signals.transformScaleX.value;
+    },
+    set scaleX(value) {
+      signals.transformScaleX.value = value;
+    },
+    get scaleY() {
+      return signals.transformScaleY.value;
+    },
+    set scaleY(value) {
+      signals.transformScaleY.value = value;
+    },
+    get opacity() {
+      return signals.transformOpacity.value;
+    },
+    set opacity(value) {
+      signals.transformOpacity.value = value;
+    },
   };
 
   const window: ReactiveWaylandWindow = {
@@ -47,6 +127,9 @@ export function createReactiveWindow(
     },
     get appId() {
       return signals.appId.value;
+    },
+    get position() {
+      return position;
     },
     get isFocused() {
       return signals.isFocused.value;
@@ -69,6 +152,9 @@ export function createReactiveWindow(
     get interaction() {
       return signals.interaction.value;
     },
+    get transform() {
+      return transform;
+    },
     signals,
     close: actions.close,
     maximize: actions.maximize,
@@ -78,10 +164,15 @@ export function createReactiveWindow(
 
   return {
     window,
+    transform,
     update(nextSnapshot) {
       signals.id.value = nextSnapshot.id;
       signals.title.value = nextSnapshot.title;
       signals.appId.value = nextSnapshot.appId;
+      signals.positionX.value = nextSnapshot.position.x;
+      signals.positionY.value = nextSnapshot.position.y;
+      signals.positionWidth.value = nextSnapshot.position.width;
+      signals.positionHeight.value = nextSnapshot.position.height;
       signals.isFocused.value = nextSnapshot.isFocused;
       signals.isFloating.value = nextSnapshot.isFloating;
       signals.isMaximized.value = nextSnapshot.isMaximized;

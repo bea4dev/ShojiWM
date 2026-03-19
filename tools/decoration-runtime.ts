@@ -8,6 +8,7 @@ import {
   type DecorationFunction,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
+  type WindowTransform,
 } from "shoji_wm";
 
 interface RuntimeRequest {
@@ -19,6 +20,7 @@ interface RuntimeSuccess {
   requestId: number;
   ok: true;
   serialized: unknown;
+  transform: WindowTransform;
 }
 
 interface RuntimeFailure {
@@ -72,6 +74,8 @@ async function main() {
         requestId: request.requestId,
         ok: true,
         serialized,
+        transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
+          identityTransform(),
       });
     } catch (error) {
       writeResponse({
@@ -117,6 +121,17 @@ function createRuntimeCacheEntry(
   return {
     latestSnapshot,
     cache,
+  };
+}
+
+function identityTransform(): WindowTransform {
+  return {
+    origin: { x: 0.5, y: 0.5 },
+    translateX: 0,
+    translateY: 0,
+    scaleX: 1,
+    scaleY: 1,
+    opacity: 1,
   };
 }
 

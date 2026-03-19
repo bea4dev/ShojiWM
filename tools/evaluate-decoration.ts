@@ -13,6 +13,12 @@ const DEFAULT_SNAPSHOT: WaylandWindowSnapshot = {
   id: "demo-window-1",
   title: "Kitty",
   appId: "kitty",
+  position: {
+    x: 100,
+    y: 80,
+    width: 900,
+    height: 600,
+  },
   isFocused: true,
   isFloating: true,
   isMaximized: false,

@@ -14,6 +14,7 @@ use smithay::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
+            Resource,
         },
     },
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale},
@@ -53,6 +54,7 @@ use crate::{
     cursor::Cursor,
     drawing::PointerElement,
 };
+use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
 use crate::ssd::{DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
 use tracing::{debug, info};
 
@@ -332,29 +334,77 @@ impl ShojiWM {
         }
 
         let logical_pos = LogicalPoint::new(pos.x.floor() as i32, pos.y.floor() as i32);
-        for window in self.space.elements().rev() {
-            let Some(decoration) = self.window_decorations.get(window) else {
-                continue;
-            };
-            if !decoration.layout.root.rect.contains(logical_pos) {
-                continue;
+        if let Some((window, decoration)) = self.window_under_transformed(logical_pos) {
+            let geometry = window.geometry();
+            let bbox = window.bbox();
+            let transformed_root =
+                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+            let transformed_client =
+                transformed_rect(
+                    decoration.client_rect,
+                    decoration.layout.root.rect,
+                    decoration.visual_transform,
+                );
+            let window_id = window
+                .toplevel()
+                .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                .unwrap_or_default();
+            if !transformed_client.contains(logical_pos) {
+                debug!(
+                    pos = ?pos,
+                    logical_pos = ?logical_pos,
+                    window_id,
+                    window_bbox = ?bbox,
+                    window_geometry = ?geometry,
+                    root_rect = ?decoration.layout.root.rect,
+                    client_rect = ?decoration.client_rect,
+                    transformed_root = ?transformed_root,
+                    transformed_client = ?transformed_client,
+                    transform = ?decoration.visual_transform,
+                    "surface_under blocked by transformed client bounds"
+                );
+                return None;
             }
 
             let Some(location) = self.space.element_location(window) else {
                 return None;
             };
+            let local_pos = inverse_transform_point(
+                pos,
+                decoration.layout.root.rect,
+                decoration.visual_transform,
+            );
+                debug!(
+                    pos = ?pos,
+                    logical_pos = ?logical_pos,
+                    window_id,
+                    window_bbox = ?bbox,
+                    window_geometry = ?geometry,
+                    window_location = ?location,
+                    root_rect = ?decoration.layout.root.rect,
+                    client_rect = ?decoration.client_rect,
+                    transformed_root = ?transformed_root,
+                    transformed_client = ?transformed_client,
+                local_pos = ?local_pos,
+                transform = ?decoration.visual_transform,
+                "surface_under testing transformed window"
+            );
 
             return window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(surface, loc)| (surface, (loc + location).to_f64()));
-        }
-
-        if let Some(focus) = self.space.element_under(pos).and_then(|(window, location)| {
-            window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(surface, loc)| (surface, (loc + location).to_f64()))
-        }) {
-            return Some(focus);
+                .surface_under(local_pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, loc)| {
+                    let desired_local = (local_pos - location.to_f64()) - loc.to_f64();
+                    let surface_origin = pos - desired_local;
+                    debug!(
+                        pos = ?pos,
+                        window_id,
+                        surface_loc = ?loc,
+                        desired_local = ?desired_local,
+                        transformed_surface_origin = ?surface_origin,
+                        "surface_under resolved transformed surface origin"
+                    );
+                    (surface, surface_origin)
+                });
         }
 
         [WlrLayer::Bottom, WlrLayer::Background]
@@ -381,6 +431,18 @@ impl ShojiWM {
                 );
                 result
             })
+    }
+
+    pub fn window_under_transformed(
+        &self,
+        logical_pos: LogicalPoint,
+    ) -> Option<(&Window, &WindowDecorationState)> {
+        self.space.elements().rev().find_map(|window| {
+            let decoration = self.window_decorations.get(window)?;
+            let transformed_root =
+                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+            transformed_root.contains(logical_pos).then_some((window, decoration))
+        })
     }
 
     pub fn shutdown(&mut self) {

@@ -6,6 +6,7 @@ pub mod icon;
 pub mod rounded;
 pub mod text;
 pub mod tty;
+pub mod visual;
 pub mod window;
 pub mod winit;
 

@@ -18,7 +18,7 @@ use crate::{
         move_grab::MoveSurfaceGrab,
         resize_grab::{ResizeEdge, ResizeSurfaceGrab},
     },
-    ssd::{DecorationHitTestResult, ResizeEdges, WindowAction},
+    ssd::{DecorationHitTestResult, LogicalPoint, ResizeEdges, WindowAction},
     state::ShojiWM,
 };
 
@@ -245,9 +245,13 @@ impl ShojiWM {
                         self.schedule_redraw();
                         return;
                     } else if let Some((window, _loc)) = self
-                        .space
-                        .element_under(pointer.current_location())
-                        .map(|(w, l)| (w.clone(), l))
+                        .window_under_transformed(
+                            LogicalPoint::new(
+                                pointer.current_location().x.floor() as i32,
+                                pointer.current_location().y.floor() as i32,
+                            ),
+                        )
+                        .map(|(w, _)| (w.clone(), ()))
                     {
                         self.focus_window(&window, serial);
                     } else {

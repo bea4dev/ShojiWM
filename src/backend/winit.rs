@@ -5,6 +5,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker, element::memory::MemoryRenderBufferRenderElement,
             element::solid::SolidColorRenderElement, element::surface::WaylandSurfaceRenderElement,
+            element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             gles::GlesRenderer, ImportEgl, ImportMemWl,
         },
         winit::{self, WinitEvent},
@@ -18,6 +19,7 @@ use tracing::{trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, window as window_render},
+    backend::visual::{AlphaRenderElement, WindowVisualState, window_visual_state},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
 };
@@ -112,76 +114,105 @@ pub fn init_winit(
                             };
                             let physical_location =
                                 (window_location - output_geo.loc).to_physical_precise_round(scale);
-
-                            scene_elements.extend(
-                                window_render::popup_elements(
-                                    window,
-                                    renderer,
-                                    physical_location,
-                                    scale,
-                                    1.0,
-                                )
-                                .into_iter()
-                                .map(WinitRenderElements::Window),
-                            );
-
-                            scene_elements.extend(
-                                decoration::icon_elements_for_window(
-                                    renderer,
-                                    &state.space,
-                                    &state.window_decorations,
-                                    &output,
-                                    window,
-                                )
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Text),
-                            );
-
-                            scene_elements.extend(
-                                decoration::text_elements_for_window(
-                                    renderer,
-                                    &state.space,
-                                    &state.window_decorations,
-                                    &output,
-                                    window,
-                                )
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Text),
-                            );
-
-                            scene_elements.extend(
-                                decoration::rounded_elements_for_window(
-                                    renderer,
-                                    state.window_decorations.get_mut(window).unwrap(),
-                                    output_geo,
-                                    scale,
-                                    window,
-                                )
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Decoration),
-                            );
-
-                            scene_elements.extend(
-                                window_render::clipped_surface_elements(
-                                    window,
-                                    renderer,
-                                    physical_location,
-                                    scale,
-                                    1.0,
-                                    state
-                                        .window_decorations
-                                        .get(window)
-                                        .and_then(|decoration| decoration.content_clip),
-                                )
-                                .inspect_err(|error| {
-                                    warn!(?error, "failed to build clipped surface elements");
+                            let visual_state = state
+                                .window_decorations
+                                .get(window)
+                                .map(|decoration| {
+                                    window_visual_state(
+                                        decoration.layout.root.rect,
+                                        decoration.visual_transform,
+                                        output_geo,
+                                        scale,
+                                    )
                                 })
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(WinitRenderElements::Clipped),
+                                .unwrap_or(WindowVisualState {
+                                    origin: physical_location,
+                                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                                    translation: (0, 0).into(),
+                                    opacity: 1.0,
+                                });
+
+                            scene_elements.extend(
+                                transform_window_elements(
+                                    window_render::popup_elements(
+                                        window,
+                                        renderer,
+                                        physical_location,
+                                        scale,
+                                        1.0,
+                                    ),
+                                    visual_state,
+                                    WinitRenderElements::Window,
+                                    WinitRenderElements::TransformedWindow,
+                                )
+                                .into_iter(),
+                            );
+
+                            scene_elements.extend(
+                                transform_text_elements(
+                                    decoration::icon_elements_for_window(
+                                        renderer,
+                                        &state.space,
+                                        &state.window_decorations,
+                                        &output,
+                                        window,
+                                    )
+                                    .unwrap_or_default(),
+                                    visual_state,
+                                )
+                                .into_iter(),
+                            );
+
+                            scene_elements.extend(
+                                transform_text_elements(
+                                    decoration::text_elements_for_window(
+                                        renderer,
+                                        &state.space,
+                                        &state.window_decorations,
+                                        &output,
+                                        window,
+                                    )
+                                    .unwrap_or_default(),
+                                    visual_state,
+                                )
+                                .into_iter(),
+                            );
+
+                            scene_elements.extend(
+                                transform_decoration_elements(
+                                    decoration::rounded_elements_for_window(
+                                        renderer,
+                                        state.window_decorations.get_mut(window).unwrap(),
+                                        output_geo,
+                                        scale,
+                                        window,
+                                    )
+                                    .unwrap_or_default(),
+                                    visual_state,
+                                )
+                                .into_iter(),
+                            );
+
+                            scene_elements.extend(
+                                transform_clipped_elements(
+                                    window_render::clipped_surface_elements(
+                                        window,
+                                        renderer,
+                                        physical_location,
+                                        scale,
+                                        1.0,
+                                        state
+                                            .window_decorations
+                                            .get(window)
+                                            .and_then(|decoration| decoration.content_clip),
+                                    )
+                                    .inspect_err(|error| {
+                                        warn!(?error, "failed to build clipped surface elements");
+                                    })
+                                    .unwrap_or_default(),
+                                    visual_state,
+                                )
+                                .into_iter(),
                             );
                         }
                         scene_elements.extend(
@@ -293,9 +324,122 @@ pub fn init_winit(
 smithay::render_elements! {
     pub WinitRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
+    TransformedWindow=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
+    TransformedClipped=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>>,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
+    TransformedText=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
+    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::rounded::StableRoundedElement>>>,
+}
+
+fn transform_window_elements(
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    visual: WindowVisualState,
+    direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> WinitRenderElements,
+    transformed: fn(RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>) -> WinitRenderElements,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(direct).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            transformed(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_clipped_elements(
+    elements: Vec<crate::backend::clipped_surface::ClippedSurfaceElement>,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(WinitRenderElements::Clipped).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedClipped(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_text_elements(
+    elements: Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(WinitRenderElements::Text).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedText(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_decoration_elements(
+    elements: Vec<crate::backend::rounded::StableRoundedElement>,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements
+            .into_iter()
+            .map(WinitRenderElements::Decoration)
+            .collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    AlphaRenderElement::from_element(element, visual.opacity),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn is_identity_visual(visual: WindowVisualState) -> bool {
+    visual.translation.x == 0
+        && visual.translation.y == 0
+        && (visual.scale.x - 1.0).abs() < f64::EPSILON
+        && (visual.scale.y - 1.0).abs() < f64::EPSILON
+        && (visual.opacity - 1.0).abs() < f32::EPSILON
 }

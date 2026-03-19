@@ -2,6 +2,7 @@ export interface WaylandWindowSnapshot {
   readonly id: string;
   readonly title: string;
   readonly appId?: string;
+  readonly position: WindowPosition;
   readonly isFocused: boolean;
   readonly isFloating: boolean;
   readonly isMaximized: boolean;
@@ -12,11 +13,33 @@ export interface WaylandWindowSnapshot {
 }
 
 export interface WaylandWindow extends WaylandWindowSnapshot {
-
+  readonly position: WindowPosition;
+  readonly transform: WindowTransform;
   close(): void;
   maximize(): void;
   minimize(): void;
   isXWayland(): boolean;
+}
+
+export interface WindowPosition {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface WindowTransform {
+  origin: TransformOrigin;
+  translateX: number;
+  translateY: number;
+  scaleX: number;
+  scaleY: number;
+  opacity: number;
+}
+
+export interface TransformOrigin {
+  x: number;
+  y: number;
 }
 
 export type PrimitiveChild = string | number;
@@ -180,12 +203,23 @@ export interface ReactiveWaylandWindowSignals {
   id: import("./signals").ReadonlySignal<string>;
   title: import("./signals").ReadonlySignal<string>;
   appId: import("./signals").ReadonlySignal<string | undefined>;
+  positionX: import("./signals").ReadonlySignal<number>;
+  positionY: import("./signals").ReadonlySignal<number>;
+  positionWidth: import("./signals").ReadonlySignal<number>;
+  positionHeight: import("./signals").ReadonlySignal<number>;
   isFocused: import("./signals").ReadonlySignal<boolean>;
   isFloating: import("./signals").ReadonlySignal<boolean>;
   isMaximized: import("./signals").ReadonlySignal<boolean>;
   isFullscreen: import("./signals").ReadonlySignal<boolean>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<DecorationInteractionSnapshot>;
+  transformOriginX: import("./signals").Signal<number>;
+  transformOriginY: import("./signals").Signal<number>;
+  transformTranslateX: import("./signals").Signal<number>;
+  transformTranslateY: import("./signals").Signal<number>;
+  transformScaleX: import("./signals").Signal<number>;
+  transformScaleY: import("./signals").Signal<number>;
+  transformOpacity: import("./signals").Signal<number>;
 }
 
 export interface ReactiveWaylandWindow extends WaylandWindow {
@@ -201,6 +235,7 @@ export interface WaylandWindowActions {
 
 export interface ReactiveWaylandWindowHandle {
   readonly window: ReactiveWaylandWindow;
+  readonly transform: WindowTransform;
   update(snapshot: WaylandWindowSnapshot): void;
 }
 

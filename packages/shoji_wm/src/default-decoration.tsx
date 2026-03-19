@@ -20,6 +20,13 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
   const isFocused = window.isFocused;
   const closeState = getInteractionState(window, "window.close");
 
+  window.transform.origin = { x: 0.5, y: 0.5 };
+  window.transform.translateX = 0;
+  window.transform.translateY = 0;
+  window.transform.scaleX = isFocused ? 1 : 0.5;
+  window.transform.scaleY = isFocused ? 1 : 0.5;
+  window.transform.opacity = 1;
+
   const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
   const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
   const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
@@ -35,7 +42,7 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
   return (
     <WindowBorder
       style={{
-        border: { px: 1, color: borderColor },
+        border: { px: 2, color: borderColor },
         borderRadius: 20,
         background: "#101319",
       }}

@@ -22,14 +22,17 @@ pub use bridge::{
     WireWindowAction, decode_tree_json,
 };
 pub use evaluator::{
-    DecorationEvaluationError, DecorationEvaluator, NodeDecorationEvaluator,
+    DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator, NodeDecorationEvaluator,
     StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use interaction::DecorationInteractionSnapshot;
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
 };
-pub use window_model::{WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot};
+pub use window_model::{
+    TransformOrigin, WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot,
+    WindowPositionSnapshot, WindowTransform,
+};
 
 /// Top-level decoration tree.
 #[derive(Debug, Clone, PartialEq)]
