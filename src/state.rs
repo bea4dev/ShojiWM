@@ -426,6 +426,49 @@ impl ShojiWM {
             self.schedule_redraw();
         }
     }
+
+    pub fn finish_damage_blink_for_outputs<'a>(
+        &mut self,
+        outputs: impl IntoIterator<Item = &'a str>,
+    ) {
+        if !self.damage_blink_enabled {
+            self.damage_blink_visible.clear();
+            self.damage_blink_pending.clear();
+            return;
+        }
+
+        let mut scheduled = false;
+
+        for output_name in outputs {
+            let previous_visible = self
+                .damage_blink_visible
+                .remove(output_name)
+                .unwrap_or_default();
+            let next_visible = self
+                .damage_blink_pending
+                .remove(output_name)
+                .unwrap_or_default();
+
+            let had_visible = !previous_visible.is_empty();
+            let has_visible = !next_visible.is_empty();
+
+            self.pending_decoration_damage
+                .extend(previous_visible.iter().copied());
+            self.pending_decoration_damage
+                .extend(next_visible.iter().copied());
+
+            if has_visible {
+                self.damage_blink_visible
+                    .insert(output_name.to_string(), next_visible);
+            }
+
+            scheduled |= had_visible || has_visible;
+        }
+
+        if scheduled {
+            self.schedule_redraw();
+        }
+    }
 }
 
 /// One instance of this type per client.

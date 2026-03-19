@@ -72,6 +72,11 @@ struct SurfaceData {
     last_frame_callback_at: Option<Duration>,
 }
 
+enum RenderSurfaceOutcome {
+    SkippedPending,
+    Processed,
+}
+
 pub struct BackendData {
     pub drm_scanner: DrmScanner,
     pub drm_output_manager: DrmOutputManager<
@@ -293,6 +298,7 @@ pub fn render_if_needed(
     );
     state.needs_redraw = false;
     let mut skipped_for_pending_frame = false;
+    let mut processed_outputs: Vec<String> = Vec::new();
 
     let nodes: Vec<_> = state.tty_backends.keys().copied().collect();
     for node in nodes {
@@ -306,7 +312,18 @@ pub fn render_if_needed(
             .collect();
 
         for crtc in crtcs {
-            skipped_for_pending_frame |= render_surface(state, node, crtc)?;
+            match render_surface(state, node, crtc)? {
+                RenderSurfaceOutcome::SkippedPending => skipped_for_pending_frame = true,
+                RenderSurfaceOutcome::Processed => {
+                    let output_name = state
+                        .tty_backends
+                        .get(&node)
+                        .and_then(|backend| backend.surfaces.get(&crtc))
+                        .map(|surface| surface.output.name())
+                        .unwrap();
+                    processed_outputs.push(output_name);
+                }
+            }
         }
     }
 
@@ -315,7 +332,7 @@ pub fn render_if_needed(
     }
 
     state.pending_decoration_damage.clear();
-    state.finish_damage_blink_frame();
+    state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
 
     Ok(())
 }
@@ -335,7 +352,7 @@ fn render_surface(
     state: &mut ShojiWM,
     node: DrmNode,
     crtc: crtc::Handle,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
     let output = state
         .tty_backends
         .get(&node)
@@ -355,7 +372,7 @@ fn render_surface(
             output = %output.name(),
             "skipping tty render while previous frame is pending"
         );
-        return Ok(true);
+        return Ok(RenderSurfaceOutcome::SkippedPending);
     }
 
     let frame_duration = state
@@ -377,7 +394,7 @@ fn render_surface(
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
     let output_geo = state.space.output_geometry(&output).unwrap();
     let mut extra_damage = state.pending_decoration_damage.clone();
-    if should_capture_blink {
+    if should_capture_blink && !blink_visible.is_empty() {
         extra_damage.push(crate::ssd::LogicalRect::new(
             output_geo.loc.x,
             output_geo.loc.y,
@@ -668,7 +685,7 @@ fn render_surface(
         state.record_damage_blink(&output, damage);
     }
 
-    Ok(false)
+    Ok(RenderSurfaceOutcome::Processed)
 }
 
 fn connector_connected(

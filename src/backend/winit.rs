@@ -18,7 +18,7 @@ use tracing::{trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, window as window_render},
-    presentation::take_presentation_feedback,
+    presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
@@ -227,6 +227,13 @@ pub fn init_winit(
                             [0.1, 0.1, 0.1, 1.0],
                         );
                         if let Ok(render_output_result) = render_output_result {
+                            update_primary_scanout_output(
+                                &state.space,
+                                &output,
+                                &state.cursor_status,
+                                &render_output_result.states,
+                            );
+
                             let frame_time = Duration::from(state.clock.now())
                                 + output
                                     .current_mode()
