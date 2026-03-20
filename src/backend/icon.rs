@@ -1,8 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fs,
+    hash::{Hash, Hasher},
     io::Cursor,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use png::ColorType;
@@ -24,11 +26,19 @@ use smithay::{
 };
 
 use crate::ssd::{LogicalRect, WindowDecorationState, WindowIconSnapshot};
+use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
     pub rect: LogicalRect,
     pub buffer: MemoryRenderBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedIconPixels {
+    pub width: i32,
+    pub height: i32,
+    pub pixels: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +51,11 @@ pub struct IconSpec {
 #[derive(Debug, Default)]
 pub struct IconRasterizer {
     cache: HashMap<IconCacheKey, Option<MemoryRenderBuffer>>,
+    path_cache: HashMap<IconPathCacheKey, Option<PathBuf>>,
+    icon_index: Option<HashMap<String, Vec<PathBuf>>>,
+    async_job_sender: Option<AsyncAssetJobSender>,
+    async_buffers: HashMap<u64, TimedIconBuffer>,
+    async_in_flight: HashSet<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -50,12 +65,67 @@ struct IconCacheKey {
     height: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct IconPathCacheKey {
+    names: String,
+    target: i32,
+}
+
+#[derive(Debug, Clone)]
+struct TimedIconBuffer {
+    buffer: MemoryRenderBuffer,
+    last_used_at: Instant,
+}
+
 impl IconRasterizer {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(async_job_sender: Option<AsyncAssetJobSender>) -> Self {
+        Self {
+            cache: HashMap::new(),
+            path_cache: HashMap::new(),
+            icon_index: None,
+            async_job_sender,
+            async_buffers: HashMap::new(),
+            async_in_flight: HashSet::new(),
+        }
     }
 
     pub fn render_icon(&mut self, spec: &IconSpec) -> Option<CachedDecorationIcon> {
+        self.prune_async_buffers();
+        let spec_hash = hash_icon_spec(spec);
+        if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
+            cached.last_used_at = Instant::now();
+            return Some(CachedDecorationIcon {
+                rect: spec.rect,
+                buffer: cached.buffer.clone(),
+            });
+        }
+
+        if let Some(async_job_sender) = &self.async_job_sender {
+            if self.async_in_flight.insert(spec_hash) {
+                let _ = async_job_sender.send(AsyncAssetJob::Icon {
+                    spec_hash,
+                    spec: spec.clone(),
+                });
+            }
+            return None;
+        }
+
+        let rendered = self.render_icon_pixels(spec)?;
+        let buffer = MemoryRenderBuffer::from_slice(
+            &rendered.pixels,
+            Fourcc::Argb8888,
+            (rendered.width, rendered.height),
+            1,
+            smithay::utils::Transform::Normal,
+            None,
+        );
+        Some(CachedDecorationIcon {
+            rect: spec.rect,
+            buffer,
+        })
+    }
+
+    pub fn render_icon_pixels(&mut self, spec: &IconSpec) -> Option<RenderedIconPixels> {
         if spec.rect.width <= 0 || spec.rect.height <= 0 {
             return None;
         }
@@ -67,18 +137,11 @@ impl IconRasterizer {
             height: spec.rect.height,
         };
 
-        if let Some(cached) = self.cache.get(&key) {
-            return cached.clone().map(|buffer| CachedDecorationIcon {
-                rect: spec.rect,
-                buffer,
-            });
-        }
-
         let rgba = if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
             decode_png_and_scale(bytes, spec.rect.width, spec.rect.height)?
         } else {
             let names = icon_candidate_names(spec);
-            let Some(path) = find_icon_path(&names, spec.rect.width, spec.rect.height) else {
+            let Some(path) = self.find_icon_path_cached(&names, spec.rect.width, spec.rect.height) else {
                 self.cache.insert(key, None);
                 return None;
             };
@@ -102,8 +165,9 @@ impl IconRasterizer {
             rgba
         };
 
+        let pixels = rgba_to_argb8888(&rgba);
         let buffer = MemoryRenderBuffer::from_slice(
-            &rgba_to_argb8888(&rgba),
+            &pixels,
             Fourcc::Argb8888,
             (spec.rect.width, spec.rect.height),
             1,
@@ -111,12 +175,97 @@ impl IconRasterizer {
             None,
         );
 
-        self.cache.insert(key, Some(buffer.clone()));
-        Some(CachedDecorationIcon {
-            rect: spec.rect,
-            buffer,
+        self.cache.insert(key, Some(buffer));
+        Some(RenderedIconPixels {
+            width: spec.rect.width,
+            height: spec.rect.height,
+            pixels,
         })
     }
+
+    pub fn handle_async_ready(
+        &mut self,
+        spec_hash: u64,
+        width: i32,
+        height: i32,
+        pixels: Vec<u8>,
+    ) {
+        self.async_in_flight.remove(&spec_hash);
+        self.async_buffers.insert(
+            spec_hash,
+            TimedIconBuffer {
+                buffer: MemoryRenderBuffer::from_slice(
+                    &pixels,
+                    Fourcc::Argb8888,
+                    (width, height),
+                    1,
+                    smithay::utils::Transform::Normal,
+                    None,
+                ),
+                last_used_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn handle_async_miss(&mut self, spec_hash: u64) {
+        self.async_in_flight.remove(&spec_hash);
+    }
+
+    fn find_icon_path_cached(
+        &mut self,
+        names: &[String],
+        width: i32,
+        height: i32,
+    ) -> Option<PathBuf> {
+        let key = IconPathCacheKey {
+            names: names.join("\u{0}"),
+            target: width.max(height),
+        };
+        if let Some(cached) = self.path_cache.get(&key) {
+            return cached.clone();
+        }
+
+        let resolved = find_icon_path_in_index(self.ensure_icon_index(), names, width, height);
+        self.path_cache.insert(key, resolved.clone());
+        resolved
+    }
+
+    fn ensure_icon_index(&mut self) -> &HashMap<String, Vec<PathBuf>> {
+        if self.icon_index.is_none() {
+            let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
+            for root in icon_roots() {
+                if !root.exists() {
+                    continue;
+                }
+                build_icon_index(&root, &mut index);
+            }
+            self.icon_index = Some(index);
+        }
+
+        self.icon_index.as_ref().expect("icon index must be initialized")
+    }
+
+    fn prune_async_buffers(&mut self) {
+        const TTL: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        self.async_buffers
+            .retain(|_, entry| now.duration_since(entry.last_used_at) <= TTL);
+    }
+}
+
+pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    spec.rect.width.hash(&mut hasher);
+    spec.rect.height.hash(&mut hasher);
+    spec.app_id.hash(&mut hasher);
+    if let Some(icon) = &spec.icon {
+        icon.name.hash(&mut hasher);
+        icon.bytes.as_ref().map(|bytes| bytes.len()).hash(&mut hasher);
+        if let Some(bytes) = &icon.bytes {
+            bytes.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 pub fn icon_elements_for_window(
@@ -125,6 +274,7 @@ pub fn icon_elements_for_window(
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
     window: &Window,
+    alpha: f32,
 ) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
         return Ok(Vec::new());
@@ -137,7 +287,21 @@ pub fn icon_elements_for_window(
     decoration
         .icon_buffers
         .iter()
-        .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale).transpose())
+        .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale, alpha).transpose())
+        .collect()
+}
+
+pub fn icon_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: OutputScale<f64>,
+    alpha: f32,
+) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+    decoration
+        .icon_buffers
+        .iter()
+        .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale, alpha).transpose())
         .collect()
 }
 
@@ -146,6 +310,7 @@ fn memory_icon_element(
     icon: &CachedDecorationIcon,
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
+    alpha: f32,
 ) -> Result<Option<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
     if intersect_logical_rect(icon.rect, output_geo).is_none() {
         return Ok(None);
@@ -160,7 +325,7 @@ fn memory_icon_element(
         renderer,
         physical.to_f64(),
         &icon.buffer,
-        None,
+        Some(alpha.clamp(0.0, 1.0)),
         None,
         None,
         Kind::Unspecified,
@@ -207,25 +372,30 @@ fn push_unique_name(names: &mut Vec<String>, name: &str) {
     }
 }
 
-fn find_icon_path(names: &[String], width: i32, height: i32) -> Option<PathBuf> {
+fn find_icon_path_in_index(
+    index: &HashMap<String, Vec<PathBuf>>,
+    names: &[String],
+    width: i32,
+    height: i32,
+) -> Option<PathBuf> {
     let mut best: Option<(PathBuf, i32)> = None;
     let target = width.max(height);
 
-    for root in icon_roots() {
-        if !root.exists() {
+    for name in names {
+        let Some(paths) = index.get(name) else {
             continue;
+        };
+        for path in paths {
+            consider_icon_path(path, target, &mut best);
         }
-        find_icon_in_dir(&root, names, target, &mut best);
     }
 
     best.map(|(path, _)| path)
 }
 
-fn find_icon_in_dir(
+fn build_icon_index(
     dir: &Path,
-    names: &[String],
-    target: i32,
-    best: &mut Option<(PathBuf, i32)>,
+    index: &mut HashMap<String, Vec<PathBuf>>,
 ) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -238,7 +408,7 @@ fn find_icon_in_dir(
         };
 
         if file_type.is_dir() {
-            find_icon_in_dir(&path, names, target, best);
+            build_icon_index(&path, index);
             continue;
         }
 
@@ -249,9 +419,6 @@ fn find_icon_in_dir(
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if !names.iter().any(|name| name == stem) {
-            continue;
-        }
         let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
             continue;
         };
@@ -259,27 +426,34 @@ fn find_icon_in_dir(
             continue;
         }
 
-        let size_penalty = guess_icon_size_from_path(&path)
-            .map(|size| (size - target).abs())
-            .unwrap_or(512);
-        let extension_penalty = if extension.eq_ignore_ascii_case("png") {
-            0
-        } else {
-            10
-        };
-        let path_bonus = if path.to_string_lossy().contains("/apps/") {
-            0
-        } else if path.to_string_lossy().contains("/pixmaps/") {
-            25
-        } else {
-            50
-        };
-        let score = size_penalty + path_bonus + extension_penalty;
+        index.entry(stem.to_string()).or_default().push(path);
+    }
+}
 
-        match best {
-            Some((_, current_score)) if *current_score <= score => {}
-            _ => *best = Some((path, score)),
-        }
+fn consider_icon_path(path: &Path, target: i32, best: &mut Option<(PathBuf, i32)>) {
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return;
+    };
+    let size_penalty = guess_icon_size_from_path(path)
+        .map(|size| (size - target).abs())
+        .unwrap_or(512);
+    let extension_penalty = if extension.eq_ignore_ascii_case("png") {
+        0
+    } else {
+        10
+    };
+    let path_bonus = if path.to_string_lossy().contains("/apps/") {
+        0
+    } else if path.to_string_lossy().contains("/pixmaps/") {
+        25
+    } else {
+        50
+    };
+    let score = size_penalty + path_bonus + extension_penalty;
+
+    match best {
+        Some((_, current_score)) if *current_score <= score => {}
+        _ => *best = Some((path.to_path_buf(), score)),
     }
 }
 

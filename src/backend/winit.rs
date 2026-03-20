@@ -5,21 +5,22 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker, element::memory::MemoryRenderBufferRenderElement,
             element::solid::SolidColorRenderElement, element::surface::WaylandSurfaceRenderElement,
+            element::texture::TextureRenderElement,
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
-            gles::GlesRenderer, ImportEgl, ImportMemWl,
+            gles::{GlesRenderer, GlesTexture}, ImportEgl, ImportMemWl,
         },
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
-    utils::{Monotonic, Rectangle, Transform},
+    utils::{Logical, Monotonic, Rectangle, Transform},
 };
 use tracing::{trace, warn};
 
 use crate::{
-    backend::{damage, damage_blink, decoration, window as window_render},
-    backend::visual::{AlphaRenderElement, WindowVisualState, window_visual_state},
+    backend::{damage, damage_blink, decoration, snapshot, window as window_render},
+    backend::visual::{WindowVisualState, window_visual_state},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
 };
@@ -112,8 +113,43 @@ pub fn init_winit(
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
                             };
+                            let Some(window_id) = state
+                                .window_decorations
+                                .get(window)
+                                .map(|decoration| decoration.snapshot.id.clone())
+                            else {
+                                continue;
+                            };
+                            if state.closing_window_snapshots.contains_key(&window_id) {
+                                continue;
+                            }
                             let physical_location =
                                 (window_location - output_geo.loc).to_physical_precise_round(scale);
+                            let direct_surface_count = window_render::surface_elements(
+                                window,
+                                renderer,
+                                physical_location,
+                                scale,
+                                1.0,
+                            )
+                            .len();
+                            if direct_surface_count == 0 {
+                                if let Some(decoration) =
+                                    state.window_decorations.get(window).cloned()
+                                {
+                                    let now_ms = Duration::from(state.clock.now()).as_millis() as u64;
+                                    if state
+                                        .promote_window_to_closing_snapshot(
+                                            &window_id,
+                                            &decoration,
+                                            now_ms,
+                                        )
+                                        .unwrap_or(false)
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
                             let visual_state = state
                                 .window_decorations
                                 .get(window)
@@ -138,7 +174,7 @@ pub fn init_winit(
                                         renderer,
                                         physical_location,
                                         scale,
-                                        1.0,
+                                        visual_state.opacity,
                                     ),
                                     visual_state,
                                     WinitRenderElements::Window,
@@ -155,6 +191,7 @@ pub fn init_winit(
                                         &state.window_decorations,
                                         &output,
                                         window,
+                                        visual_state.opacity,
                                     )
                                     .unwrap_or_default(),
                                     visual_state,
@@ -170,6 +207,7 @@ pub fn init_winit(
                                         &state.window_decorations,
                                         &output,
                                         window,
+                                        visual_state.opacity,
                                     )
                                     .unwrap_or_default(),
                                     visual_state,
@@ -187,7 +225,7 @@ pub fn init_winit(
                                             decoration_state,
                                             output_geo,
                                             scale,
-                                            window,
+                                            visual_state.opacity,
                                         )
                                         .unwrap_or_default(),
                                         visual_state,
@@ -209,7 +247,7 @@ pub fn init_winit(
                                             renderer,
                                             physical_location,
                                             scale,
-                                            1.0,
+                                            visual_state.opacity,
                                             Some(content_clip),
                                         )
                                         .inspect_err(|error| {
@@ -228,7 +266,7 @@ pub fn init_winit(
                                             renderer,
                                             physical_location,
                                             scale,
-                                            1.0,
+                                            visual_state.opacity,
                                         ),
                                         visual_state,
                                         WinitRenderElements::Window,
@@ -237,7 +275,46 @@ pub fn init_winit(
                                     .into_iter(),
                                 );
                             }
+
+                            let should_refresh_snapshot = state
+                                .window_decorations
+                                .get(window)
+                                .map(|decoration| {
+                                    state.snapshot_dirty_window_ids.contains(&decoration.snapshot.id)
+                                        || state
+                                            .live_window_snapshots
+                                            .get(&decoration.snapshot.id)
+                                            .map(|snapshot| snapshot.rect != decoration.client_rect)
+                                            .unwrap_or(true)
+                                })
+                                .unwrap_or(false);
+                            if should_refresh_snapshot {
+                                if capture_live_snapshot_for_window(
+                                    renderer,
+                                    state,
+                                    &output,
+                                    window,
+                                    window_location,
+                                    scale,
+                                    0,
+                                )
+                                .is_ok()
+                                {
+                                    if let Some(window_id) = state
+                                        .window_decorations
+                                        .get(window)
+                                        .map(|decoration| decoration.snapshot.id.clone())
+                                    {
+                                        state.snapshot_dirty_window_ids.remove(&window_id);
+                                    }
+                                }
+                            }
+
                         }
+                        scene_elements.extend(
+                            closing_snapshot_elements(renderer, state, &output, scale)
+                                .into_iter(),
+                        );
                         scene_elements.extend(
                             lower_layer_elements
                                 .into_iter()
@@ -347,22 +424,24 @@ pub fn init_winit(
 smithay::render_elements! {
     pub WinitRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
-    TransformedWindow=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
+    TransformedWindow=RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
-    TransformedClipped=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>>,
+    TransformedClipped=RelocateRenderElement<RescaleRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
-    TransformedText=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>>,
+    TransformedText=RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
+    Snapshot=TextureRenderElement<GlesTexture>,
+    TransformedSnapshot=RelocateRenderElement<RescaleRenderElement<TextureRenderElement<GlesTexture>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
-    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::rounded::StableRoundedElement>>>,
+    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::rounded::StableRoundedElement>>,
 }
 
 fn transform_window_elements(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     visual: WindowVisualState,
     direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> WinitRenderElements,
-    transformed: fn(RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>) -> WinitRenderElements,
+    transformed: fn(RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>) -> WinitRenderElements,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
         return elements.into_iter().map(direct).collect();
@@ -373,7 +452,7 @@ fn transform_window_elements(
         .map(|element| {
             transformed(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -397,7 +476,7 @@ fn transform_clipped_elements(
         .map(|element| {
             WinitRenderElements::TransformedClipped(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -421,7 +500,31 @@ fn transform_text_elements(
         .map(|element| {
             WinitRenderElements::TransformedText(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+fn transform_snapshot_elements(
+    elements: Vec<TextureRenderElement<GlesTexture>>,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(WinitRenderElements::Snapshot).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedSnapshot(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -448,13 +551,131 @@ fn transform_decoration_elements(
         .map(|element| {
             WinitRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
                 visual.translation,
                 Relocate::Relative,
             ))
+        })
+        .collect()
+}
+
+fn capture_live_snapshot_for_window(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    _output: &Output,
+    window: &smithay::desktop::Window,
+    window_location: smithay::utils::Point<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    z_index: usize,
+) -> Result<(), smithay::backend::renderer::gles::GlesError> {
+    let Some(decoration) = state.window_decorations.get_mut(window) else {
+        return Ok(());
+    };
+    let client_rect = decoration.client_rect;
+    let snapshot_geo = Rectangle::new(
+        smithay::utils::Point::from((client_rect.x, client_rect.y)),
+        (client_rect.width, client_rect.height).into(),
+    );
+    let physical_location =
+        (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
+
+    let mut elements: Vec<WinitRenderElements> = Vec::new();
+    let surface_elements =
+        window_render::surface_elements(window, renderer, physical_location, scale, 1.0);
+    let has_client_content = !surface_elements.is_empty();
+    elements.extend(
+        surface_elements
+            .into_iter()
+            .map(WinitRenderElements::Window),
+    );
+
+    let existing = state.live_window_snapshots.remove(&decoration.snapshot.id);
+    if let Some(snapshot) = snapshot::capture_snapshot(
+        renderer,
+        existing,
+        client_rect,
+        z_index,
+        has_client_content,
+        scale,
+        &elements,
+    )? {
+        state
+            .live_window_snapshots
+            .insert(decoration.snapshot.id.clone(), snapshot);
+        if has_client_content {
+            if let Some(snapshot) = state.live_window_snapshots.get(&decoration.snapshot.id) {
+                if let Ok(complete_snapshot) = snapshot::duplicate_snapshot(renderer, snapshot) {
+                    state
+                        .complete_window_snapshots
+                        .insert(decoration.snapshot.id.clone(), complete_snapshot);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn closing_snapshot_elements(
+    renderer: &mut GlesRenderer,
+    state: &ShojiWM,
+    output: &Output,
+    scale: smithay::utils::Scale<f64>,
+) -> Vec<WinitRenderElements> {
+    let Some(output_geo) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+
+    state
+        .closing_window_snapshots
+        .values()
+        .flat_map(|snapshot| {
+            let visual = window_visual_state(
+                snapshot.decoration.layout.root.rect,
+                snapshot.transform,
+                output_geo,
+                scale,
+            );
+
+            let mut elements = Vec::new();
+            if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
+                renderer,
+                &snapshot.decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                elements.extend(transform_text_elements(icon_elements, visual));
+            }
+            if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
+                renderer,
+                &snapshot.decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                elements.extend(transform_text_elements(text_elements, visual));
+            }
+            let mut decoration = snapshot.decoration.clone();
+            if let Ok(rounded_elements) = decoration::rounded_elements_for_window(
+                renderer,
+                &mut decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                elements.extend(transform_decoration_elements(rounded_elements, visual));
+            }
+
+            if let Some(element) =
+                snapshot::closing_snapshot_element(renderer, snapshot, output_geo, scale)
+            {
+                elements.extend(transform_snapshot_elements(vec![element], visual));
+            }
+            elements
         })
         .collect()
 }

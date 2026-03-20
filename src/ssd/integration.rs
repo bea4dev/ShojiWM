@@ -3,7 +3,7 @@ use smithay::{
     desktop::Window,
     utils::{Logical, Point, Rectangle},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
 use crate::state::ShojiWM;
@@ -93,6 +93,18 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn evaluate_cached_window(
+        &self,
+        window_id: &str,
+    ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "cached window evaluation unsupported for static evaluator".into(),
+            )),
+            Self::Node(evaluator) => evaluator.evaluate_cached_window(window_id),
+        }
+    }
+
     fn window_closed(&self, window_id: &str) -> Result<(), DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(()),
@@ -104,20 +116,101 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         &self,
         window_id: &str,
         handler_id: &str,
+        now_ms: u64,
     ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
-            Self::Node(evaluator) => evaluator.invoke_handler(window_id, handler_id),
+            Self::Node(evaluator) => evaluator.invoke_handler(window_id, handler_id, now_ms),
+        }
+    }
+
+    fn start_close(
+        &self,
+        window_id: &str,
+        now_ms: u64,
+    ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
+            Self::Node(evaluator) => evaluator.start_close(window_id, now_ms),
         }
     }
 }
 
 impl ShojiWM {
+    pub fn promote_window_to_closing_snapshot(
+        &mut self,
+        window_id: &str,
+        decoration: &WindowDecorationState,
+        now_ms: u64,
+    ) -> Result<bool, DecorationEvaluationError> {
+        if self.closing_window_snapshots.contains_key(window_id) {
+            return Ok(true);
+        }
+
+        let live_snapshot = self
+            .complete_window_snapshots
+            .remove(window_id)
+            .or_else(|| self.live_window_snapshots.remove(window_id));
+        let Some(live_snapshot) = live_snapshot else {
+            return Ok(false);
+        };
+
+        let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
+        if !invocation.invoked {
+            self.live_window_snapshots
+                .insert(window_id.to_string(), live_snapshot);
+            return Ok(false);
+        }
+
+        self.closing_window_snapshots.insert(
+            window_id.to_string(),
+            crate::backend::snapshot::ClosingWindowSnapshot {
+                window_id: window_id.to_string(),
+                live: live_snapshot,
+                decoration: decoration.clone(),
+                transform: invocation.transform.unwrap_or(decoration.visual_transform),
+            },
+        );
+        self.runtime_dirty_window_ids
+            .extend(invocation.dirty_window_ids.into_iter());
+        self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+        self.apply_runtime_window_actions(invocation.actions);
+        self.schedule_redraw();
+
+        Ok(true)
+    }
+
     pub fn suggested_window_location(
         &self,
         snapshot: &WaylandWindowSnapshot,
     ) -> Result<(i32, i32), DecorationEvaluationError> {
-        let evaluation = self.decoration_evaluator.evaluate_window(snapshot)?;
+        if let Some((left_extent, top_extent)) = self.suggested_window_offset {
+            let location = if let Some(output) = self.space.outputs().next() {
+                if let Some(output_geo) = self.space.output_geometry(output) {
+                    (
+                        output_geo.loc.x + left_extent,
+                        output_geo.loc.y + top_extent,
+                    )
+                } else {
+                    (left_extent, top_extent)
+                }
+            } else {
+                (left_extent, top_extent)
+            };
+
+            debug!(
+                window_id = snapshot.id,
+                title = snapshot.title,
+                app_id = snapshot.app_id,
+                suggested_x = location.0,
+                suggested_y = location.1,
+                "computed suggested client location from cached offsets"
+            );
+
+            return Ok(location);
+        }
+
+        let evaluation = StaticDecorationEvaluator.evaluate_window(snapshot)?;
         let tree = DecorationTree::new(evaluation.node);
         let layout = tree
             .layout_for_client(LogicalRect::new(0, 0, 0, 0))
@@ -156,36 +249,43 @@ impl ShojiWM {
             suggested_y = location.1,
             "computed suggested client location for new window"
         );
-
         Ok(location)
     }
 
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
         let refresh_started_at = Instant::now();
         let force_runtime_reevaluate = self.runtime_poll_dirty;
+        let force_async_asset_refresh = self.async_asset_dirty;
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         let window_count = windows.len();
         let mut rebuilt = 0usize;
         let mut relayout = 0usize;
-
-        let removed_ids = self
+        let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let removed_windows = self
             .window_decorations
             .iter()
             .filter(|(window, _)| !windows.contains(window))
-            .map(|(_, decoration)| decoration.snapshot.id.clone())
+            .map(|(_, decoration)| {
+                (
+                    decoration.snapshot.id.clone(),
+                    decoration.layout.root.rect,
+                    decoration.visual_transform,
+                    decoration.clone(),
+                )
+            })
             .collect::<Vec<_>>();
-        for window_id in &removed_ids {
-            self.decoration_evaluator.window_closed(window_id)?;
-            self.runtime_dirty_window_ids.remove(window_id);
+        for (window_id, root_rect, _previous_transform, decoration) in &removed_windows {
+            if self.closing_window_snapshots.contains_key(window_id) {
+                continue;
+            }
+
+            if !self.promote_window_to_closing_snapshot(window_id, decoration, now_ms)? {
+                self.decoration_evaluator.window_closed(window_id)?;
+                self.runtime_dirty_window_ids.remove(window_id);
+                self.snapshot_dirty_window_ids.remove(window_id);
+                self.pending_decoration_damage.push(*root_rect);
+            }
         }
-
-        let removed_roots = self
-            .window_decorations
-            .iter()
-            .filter(|(window, _)| !windows.contains(window))
-            .map(|(_, decoration)| decoration.layout.root.rect)
-            .collect::<Vec<_>>();
-        self.pending_decoration_damage.extend(removed_roots);
         self.window_decorations.retain(|window, _| windows.contains(window));
 
         for window in windows {
@@ -235,6 +335,7 @@ impl ShojiWM {
                 let buffers = build_cached_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
                 let icon_buffers = build_icon_buffers(&layout, &snapshot, &mut self.icon_rasterizer);
+                self.suggested_window_offset = suggested_window_offset(&layout);
                 rebuilt += 1;
                 debug!(
                     window_id = snapshot.id,
@@ -309,6 +410,7 @@ impl ShojiWM {
                         build_text_buffers(&cached.layout, &mut self.text_rasterizer);
                     cached.icon_buffers =
                         build_icon_buffers(&cached.layout, &cached.snapshot, &mut self.icon_rasterizer);
+                    self.suggested_window_offset = suggested_window_offset(&cached.layout);
                     relayout += 1;
                     debug!(
                         window_id = cached.snapshot.id,
@@ -356,7 +458,63 @@ impl ShojiWM {
                         self.schedule_redraw();
                     }
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                } else if force_async_asset_refresh {
+                    cached.text_buffers =
+                        build_text_buffers(&cached.layout, &mut self.text_rasterizer);
+                    cached.icon_buffers =
+                        build_icon_buffers(&cached.layout, &cached.snapshot, &mut self.icon_rasterizer);
                 }
+            }
+        }
+
+        let closing_dirty_ids = self
+            .runtime_dirty_window_ids
+            .iter()
+            .filter(|window_id| self.closing_window_snapshots.contains_key(*window_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for window_id in closing_dirty_ids {
+            if let Some(closing) = self.closing_window_snapshots.get_mut(&window_id) {
+                let previous_root =
+                    transformed_root_rect(closing.decoration.layout.root.rect, closing.transform);
+                let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id)?;
+                let tree = DecorationTree::new(evaluation.node);
+                let layout = tree
+                    .layout_for_client(closing.decoration.client_rect)
+                    .map_err(super::DecorationEvaluationError::Layout)?;
+                let content_clip = content_clip_for_layout(&tree, &layout);
+                let buffers = build_cached_buffers(&layout);
+                let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
+                let icon_buffers =
+                    build_icon_buffers(&layout, &closing.decoration.snapshot, &mut self.icon_rasterizer);
+                closing.decoration.tree = tree;
+                closing.decoration.layout = layout;
+                closing.decoration.content_clip = content_clip;
+                closing.decoration.buffers = buffers;
+                closing.decoration.text_buffers = text_buffers;
+                closing.decoration.icon_buffers = icon_buffers;
+                self.suggested_window_offset = suggested_window_offset(&closing.decoration.layout);
+                closing.decoration.visual_transform = evaluation.transform;
+                closing.transform = evaluation.transform;
+                push_damage_pair(
+                    &mut self.pending_decoration_damage,
+                    Some(previous_root),
+                    transformed_root_rect(closing.decoration.layout.root.rect, closing.transform),
+                );
+                self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                self.schedule_redraw();
+            }
+        }
+
+        if force_async_asset_refresh {
+            for closing in self.closing_window_snapshots.values_mut() {
+                closing.decoration.text_buffers =
+                    build_text_buffers(&closing.decoration.layout, &mut self.text_rasterizer);
+                closing.decoration.icon_buffers = build_icon_buffers(
+                    &closing.decoration.layout,
+                    &closing.decoration.snapshot,
+                    &mut self.icon_rasterizer,
+                );
             }
         }
 
@@ -367,8 +525,8 @@ impl ShojiWM {
             elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0,
             "refresh_window_decorations finished"
         );
-
         self.runtime_poll_dirty = false;
+        self.async_asset_dirty = false;
         self.runtime_dirty_window_ids.clear();
 
         Ok(())
@@ -397,6 +555,9 @@ impl ShojiWM {
     fn window_client_rect(&self, window: &Window) -> Option<LogicalRect> {
         let loc = self.space.element_location(window)?;
         let geometry = window.geometry();
+        if geometry.size.w <= 0 || geometry.size.h <= 0 {
+            return None;
+        }
         Some(LogicalRect::new(
             loc.x + geometry.loc.x,
             loc.y + geometry.loc.y,
@@ -513,6 +674,12 @@ fn build_cached_buffers(layout: &ComputedDecorationTree) -> Vec<CachedDecoration
     let mut buffers = Vec::new();
     collect_cached_buffers(&layout.root, "root".to_string(), None, &mut buffers);
     buffers
+}
+
+fn suggested_window_offset(layout: &ComputedDecorationTree) -> Option<(i32, i32)> {
+    let root = layout.root.rect;
+    let slot = layout.window_slot_rect()?;
+    Some(((slot.x - root.x).max(0), (slot.y - root.y).max(0)))
 }
 
 fn build_text_buffers(

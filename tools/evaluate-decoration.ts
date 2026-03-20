@@ -56,6 +56,9 @@ async function main() {
     minimize() {
       console.log("[runtime] minimize() requested");
     },
+    setCloseAnimationDuration(durationMs) {
+      console.log(`[runtime] setCloseAnimationDuration(${durationMs}) requested`);
+    },
     isXWayland() {
       return snapshot.isXwayland;
     },

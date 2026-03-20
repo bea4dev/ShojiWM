@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, ffi::OsString, sync::Arc, time::Duration};
 
 use smithay::{
     backend::drm::DrmNode,
@@ -10,6 +10,7 @@ use smithay::{
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic, timer::{TimeoutAction, Timer}},
+        calloop::channel::{channel, Event as ChannelEvent},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -48,14 +49,14 @@ use smithay::{
 use xcursor::parser::Image;
 
 use crate::{
-    backend::{icon::IconRasterizer, text::TextRasterizer, tty::BackendData},
+    backend::{async_assets::{AsyncAssetResult, spawn_async_asset_worker}, icon::IconRasterizer, snapshot::{ClosingWindowSnapshot, LiveWindowSnapshot}, text::TextRasterizer, tty::BackendData},
     config::DisplayConfig,
     cursor::Cursor,
     drawing::PointerElement,
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
-use crate::ssd::{DecorationEvaluator, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WindowDecorationState};
-use tracing::{debug, info};
+use crate::ssd::{DecorationEvaluator, DecorationInteractionSnapshot, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot};
+use tracing::{debug, info, warn};
 
 pub struct ShojiWM {
     pub start_time: std::time::Instant,
@@ -91,6 +92,10 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub live_window_snapshots: HashMap<String, LiveWindowSnapshot>,
+    pub complete_window_snapshots: HashMap<String, LiveWindowSnapshot>,
+    pub closing_window_snapshots: HashMap<String, ClosingWindowSnapshot>,
+    pub snapshot_dirty_window_ids: HashSet<String>,
     pub window_commit_times: HashMap<Window, std::time::Duration>,
     pub pending_decoration_damage: Vec<LogicalRect>,
     pub decoration_evaluator: DecorationRuntimeEvaluator,
@@ -102,6 +107,8 @@ pub struct ShojiWM {
     pub runtime_poll_dirty: bool,
     pub runtime_dirty_window_ids: std::collections::HashSet<String>,
     pub runtime_scheduler_enabled: bool,
+    pub suggested_window_offset: Option<(i32, i32)>,
+    pub async_asset_dirty: bool,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -195,6 +202,45 @@ impl ShojiWM {
             || std::env::var_os("SHOJI_DAMAGE_BLINK")
                 .is_some_and(|value| value != "0" && !value.is_empty());
 
+        let (async_asset_tx, async_asset_rx) = channel();
+        let async_asset_job_sender = spawn_async_asset_worker(async_asset_tx);
+        event_loop
+            .handle()
+            .insert_source(async_asset_rx, |event, _, state| {
+                match event {
+                    ChannelEvent::Msg(result) => {
+                        match result {
+                            AsyncAssetResult::TextReady {
+                                spec_hash,
+                                width,
+                                height,
+                                pixels,
+                            } => state
+                                .text_rasterizer
+                                .handle_async_ready(spec_hash, width, height, pixels),
+                            AsyncAssetResult::TextMissing { spec_hash } => {
+                                state.text_rasterizer.handle_async_miss(spec_hash)
+                            }
+                            AsyncAssetResult::IconReady {
+                                spec_hash,
+                                width,
+                                height,
+                                pixels,
+                            } => state
+                                .icon_rasterizer
+                                .handle_async_ready(spec_hash, width, height, pixels),
+                            AsyncAssetResult::IconMissing { spec_hash } => {
+                                state.icon_rasterizer.handle_async_miss(spec_hash)
+                            }
+                        }
+                        state.async_asset_dirty = true;
+                        state.schedule_redraw();
+                    }
+                    ChannelEvent::Closed => {}
+                }
+            })
+            .expect("Failed to init async asset worker.");
+
         Self {
             start_time,
             display_handle: dh,
@@ -227,6 +273,10 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             window_decorations: HashMap::new(),
+            live_window_snapshots: HashMap::new(),
+            complete_window_snapshots: HashMap::new(),
+            closing_window_snapshots: HashMap::new(),
+            snapshot_dirty_window_ids: HashSet::new(),
             window_commit_times: HashMap::new(),
             pending_decoration_damage: Vec::new(),
             decoration_evaluator,
@@ -238,6 +288,8 @@ impl ShojiWM {
             runtime_poll_dirty: false,
             runtime_dirty_window_ids: Default::default(),
             runtime_scheduler_enabled: false,
+            suggested_window_offset: None,
+            async_asset_dirty: false,
 
             is_running: true,
             needs_redraw: true,
@@ -247,8 +299,8 @@ impl ShojiWM {
             pointer_images: Vec::new(),
             current_pointer_image: None,
             pointer_element: PointerElement::default(),
-            text_rasterizer: TextRasterizer::new(),
-            icon_rasterizer: IconRasterizer::new(),
+            text_rasterizer: TextRasterizer::new(Some(async_asset_job_sender.clone())),
+            icon_rasterizer: IconRasterizer::new(Some(async_asset_job_sender)),
             // SSD rendering is available, so prefer compositor-side decorations by default.
             default_decoration_mode: DecorationMode::ServerSide,
             display_config: DisplayConfig::default(),
@@ -316,7 +368,6 @@ impl ShojiWM {
                         return TimeoutAction::ToDuration(Duration::from_millis(250));
                     }
                 };
-
                 if tick.dirty {
                     state.runtime_poll_dirty = true;
                     state.runtime_dirty_window_ids
@@ -324,13 +375,41 @@ impl ShojiWM {
                     state.schedule_redraw();
                 }
 
-                state.runtime_scheduler_enabled = tick.next_poll_in_ms.is_some();
+                if !tick.actions.is_empty() {
+                    state.apply_runtime_window_actions(tick.actions);
+                    state.schedule_redraw();
+                }
 
+                state.runtime_scheduler_enabled = tick.next_poll_in_ms.is_some();
                 TimeoutAction::ToDuration(Duration::from_millis(
                     tick.next_poll_in_ms.unwrap_or(250).clamp(8, 250),
                 ))
             })
             .expect("Failed to init runtime scheduler.");
+    }
+
+    pub fn warmup_decoration_runtime(&self) {
+        let snapshot = WaylandWindowSnapshot {
+            id: "__warmup__".into(),
+            title: "warmup".into(),
+            app_id: Some("shoji_wm.warmup".into()),
+            position: WindowPositionSnapshot::default(),
+            is_focused: false,
+            is_floating: true,
+            is_maximized: false,
+            is_fullscreen: false,
+            is_xwayland: false,
+            icon: None,
+            interaction: DecorationInteractionSnapshot::default(),
+        };
+
+        if let Err(error) = self.decoration_evaluator.evaluate_window(&snapshot) {
+            warn!(?error, "failed to warm up decoration runtime");
+            return;
+        }
+
+        let _ = self.decoration_evaluator.window_closed(&snapshot.id);
+        debug!(window_id = snapshot.id, "warmed up decoration runtime");
     }
 
     pub fn surface_under(

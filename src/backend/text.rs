@@ -1,9 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    time::{Duration, Instant},
+};
 
-use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
-use fontdue::{
-    layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
-    Font, FontSettings,
+use cosmic_text::{
+    Align, Attrs, Buffer, Color as CosmicColor, Family as CosmicFamily, FontSystem, Metrics,
+    Shaping, Style as CosmicStyle, SwashCache, Weight as CosmicWeight, Wrap,
 };
 use smithay::{
     backend::{
@@ -20,9 +24,14 @@ use smithay::{
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale as OutputScale},
 };
-use tracing::debug;
+use crate::{
+    backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender},
+    ssd::{Color, LogicalRect, WindowDecorationState},
+};
 
-use crate::ssd::{Color, LogicalRect, WindowDecorationState};
+thread_local! {
+    static LABEL_MEASURER: RefCell<LabelMeasurer> = RefCell::new(LabelMeasurer::new());
+}
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationLabel {
@@ -30,6 +39,13 @@ pub struct CachedDecorationLabel {
     pub text: String,
     pub color: Color,
     pub buffer: MemoryRenderBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedLabelPixels {
+    pub width: i32,
+    pub height: i32,
+    pub pixels: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,128 +60,70 @@ pub struct LabelSpec {
     pub line_height: Option<i32>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TextRasterizer {
-    database: Database,
-    fonts: HashMap<fontdb::ID, Arc<Font>>,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    async_job_sender: Option<AsyncAssetJobSender>,
+    async_buffers: HashMap<u64, TimedTextBuffer>,
+    async_in_flight: HashSet<u64>,
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedFont {
-    id: fontdb::ID,
-    font: Arc<Font>,
+struct TimedTextBuffer {
+    buffer: MemoryRenderBuffer,
+    last_used_at: Instant,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct TextRun<'a> {
-    text: &'a str,
-    font_index: usize,
+#[derive(Debug)]
+struct LabelMeasurer {
+    font_system: FontSystem,
+    cache: HashMap<u64, (i32, i32)>,
 }
 
 impl TextRasterizer {
-    pub fn new() -> Self {
-        let mut database = Database::new();
-        database.load_system_fonts();
+    pub fn new(async_job_sender: Option<AsyncAssetJobSender>) -> Self {
         Self {
-            database,
-            fonts: HashMap::new(),
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            async_job_sender,
+            async_buffers: HashMap::new(),
+            async_in_flight: HashSet::new(),
         }
     }
 
     pub fn render_label(&mut self, spec: &LabelSpec) -> Option<CachedDecorationLabel> {
-        if spec.text.is_empty() || spec.rect.width <= 0 || spec.rect.height <= 0 {
+        self.prune_async_buffers();
+        let spec_hash = hash_label_spec(spec);
+        if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
+            cached.last_used_at = Instant::now();
+            return Some(CachedDecorationLabel {
+                rect: spec.rect,
+                text: spec.text.clone(),
+                color: spec.color,
+                buffer: cached.buffer.clone(),
+            });
+        }
+
+        if let Some(async_job_sender) = &self.async_job_sender {
+            if self.async_in_flight.insert(spec_hash) {
+                let _ = async_job_sender.send(AsyncAssetJob::Text {
+                    spec_hash,
+                    spec: spec.clone(),
+                });
+            }
             return None;
         }
 
-        let weight = parse_font_weight(spec.font_weight.as_ref());
-        let (fonts, runs) = self.resolve_text_runs(spec.font_family.as_deref(), weight, &spec.text)?;
-        let font_size = spec.font_size.max(1) as f32;
-        let line_height = spec.line_height.unwrap_or((font_size.ceil() as i32) + 4);
-
-        let mut measure_layout = Layout::new(CoordinateSystem::PositiveYDown);
-        measure_layout.reset(&LayoutSettings {
-            max_width: None,
-            max_height: None,
-            ..LayoutSettings::default()
-        });
-        for run in &runs {
-            measure_layout.append(&fonts, &TextStyle::new(run.text, font_size, run.font_index));
-        }
-        let glyphs = measure_layout.glyphs();
-        let text_width = glyphs
-            .iter()
-            .map(|glyph| glyph.x + glyph.width as f32)
-            .fold(0.0, f32::max);
-        let text_height = glyphs
-            .iter()
-            .map(|glyph| glyph.y + glyph.height as f32)
-            .fold(0.0, f32::max);
-
-        let x_offset = match spec.text_align.as_deref() {
-            Some("center") => ((spec.rect.width as f32 - text_width) * 0.5).max(0.0),
-            Some("end") => (spec.rect.width as f32 - text_width).max(0.0),
-            _ => 0.0,
-        };
-        let y_offset = ((spec.rect.height as f32 - line_height as f32) * 0.5).max(0.0)
-            + ((line_height as f32 - text_height) * 0.5).max(0.0);
-
-        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-        layout.reset(&LayoutSettings {
-            x: x_offset,
-            y: y_offset,
-            max_width: Some(spec.rect.width as f32),
-            max_height: Some(spec.rect.height as f32),
-            ..LayoutSettings::default()
-        });
-        for run in &runs {
-            layout.append(&fonts, &TextStyle::new(run.text, font_size, run.font_index));
-        }
-
-        let mut pixels = vec![0u8; (spec.rect.width * spec.rect.height * 4) as usize];
-        for glyph in layout.glyphs() {
-            let (metrics, bitmap) = fonts[glyph.font_index].rasterize_config(glyph.key);
-            if metrics.width == 0 || metrics.height == 0 {
-                continue;
-            }
-
-            for y in 0..metrics.height {
-                for x in 0..metrics.width {
-                    let coverage = bitmap[y * metrics.width + x];
-                    if coverage == 0 {
-                        continue;
-                    }
-                    let target_x = glyph.x as i32 + x as i32;
-                    let target_y = glyph.y as i32 + y as i32;
-                    if target_x < 0
-                        || target_y < 0
-                        || target_x >= spec.rect.width
-                        || target_y >= spec.rect.height
-                    {
-                        continue;
-                    }
-
-                    let index = ((target_y * spec.rect.width + target_x) * 4) as usize;
-                    let alpha = ((coverage as f32 / 255.0) * spec.color.a as f32).round() as u8;
-                    let premultiplied = alpha as u16;
-                    let blue = ((u16::from(spec.color.b) * premultiplied) / 255) as u8;
-                    let green = ((u16::from(spec.color.g) * premultiplied) / 255) as u8;
-                    let red = ((u16::from(spec.color.r) * premultiplied) / 255) as u8;
-                    pixels[index] = blue;
-                    pixels[index + 1] = green;
-                    pixels[index + 2] = red;
-                    pixels[index + 3] = alpha.max(pixels[index + 3]);
-                }
-            }
-        }
-
+        let rendered = self.render_label_pixels(spec)?;
         Some(CachedDecorationLabel {
             rect: spec.rect,
             text: spec.text.clone(),
             color: spec.color,
             buffer: MemoryRenderBuffer::from_slice(
-                &pixels,
+                &rendered.pixels,
                 Fourcc::Argb8888,
-                (spec.rect.width, spec.rect.height),
+                (rendered.width, rendered.height),
                 1,
                 smithay::utils::Transform::Normal,
                 None,
@@ -173,405 +131,183 @@ impl TextRasterizer {
         })
     }
 
-    fn resolve_text_runs<'a>(
-        &mut self,
-        family: Option<&[String]>,
-        weight: u16,
-        text: &'a str,
-    ) -> Option<(Vec<Arc<Font>>, Vec<TextRun<'a>>)> {
-        let mut fonts = self.resolve_font_chain(family, weight);
-        if fonts.is_empty() {
+    pub fn render_label_pixels(&mut self, spec: &LabelSpec) -> Option<RenderedLabelPixels> {
+        if spec.text.is_empty() || spec.rect.width <= 0 || spec.rect.height <= 0 {
             return None;
         }
 
-        let mut runs = Vec::new();
-        let mut fallback_cache: HashMap<char, usize> = HashMap::new();
-        let mut current_font_index = None;
-        let mut run_start = 0usize;
+        let font_size = spec.font_size.max(1) as f32;
+        let line_height = spec.line_height.unwrap_or((font_size.ceil() as i32) + 4) as f32;
+        let metrics = Metrics::new(font_size, line_height.max(1.0));
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
-        for (byte_index, character) in text.char_indices() {
-            let font_index = self.font_index_for_character(
-                character,
-                family,
-                weight,
-                &mut fonts,
-                &mut fallback_cache,
-            );
+        let attrs = attrs_for_spec(spec);
+        let alignment = alignment_for_spec(spec.text_align.as_deref());
 
-            match current_font_index {
-                Some(current) if current == font_index => {}
-                Some(current) => {
-                    runs.push(TextRun {
-                        text: &text[run_start..byte_index],
-                        font_index: current,
-                    });
-                    run_start = byte_index;
-                    current_font_index = Some(font_index);
-                }
-                None => {
-                    run_start = byte_index;
-                    current_font_index = Some(font_index);
-                }
-            }
+        {
+            let mut buffer = buffer.borrow_with(&mut self.font_system);
+            buffer.set_size(Some(spec.rect.width as f32), Some(spec.rect.height as f32));
+            buffer.set_wrap(Wrap::None);
+            buffer.set_text(&spec.text, &attrs, Shaping::Advanced, alignment);
+            buffer.shape_until_scroll(false);
         }
 
-        if let Some(current) = current_font_index {
-            runs.push(TextRun {
-                text: &text[run_start..],
-                font_index: current,
+        let runs = buffer.layout_runs().collect::<Vec<_>>();
+        let text_height = runs
+            .iter()
+            .map(|run| run.line_top + run.line_height)
+            .fold(0.0f32, f32::max);
+        let y_offset = ((spec.rect.height as f32 - text_height) * 0.5).max(0.0);
+
+        let mut pixels = vec![0u8; (spec.rect.width * spec.rect.height * 4) as usize];
+        let text_color = CosmicColor::rgba(spec.color.r, spec.color.g, spec.color.b, spec.color.a);
+        {
+            let mut buffer = buffer.borrow_with(&mut self.font_system);
+            buffer.draw(&mut self.swash_cache, text_color, |x, y, w, h, color| {
+                for off_y in 0..h as i32 {
+                    for off_x in 0..w as i32 {
+                        let px = x + off_x;
+                        let py = y + off_y + y_offset as i32;
+                        if px < 0 || py < 0 || px >= spec.rect.width || py >= spec.rect.height {
+                            continue;
+                        }
+                        blend_pixel(
+                            &mut pixels,
+                            spec.rect.width,
+                            px,
+                            py,
+                            color.as_rgba_tuple(),
+                        );
+                    }
+                }
             });
         }
 
-        Some((fonts.into_iter().map(|font| font.font).collect(), runs))
+        Some(RenderedLabelPixels {
+            width: spec.rect.width,
+            height: spec.rect.height,
+            pixels,
+        })
     }
 
-    fn resolve_font_chain(&mut self, family: Option<&[String]>, weight: u16) -> Vec<ResolvedFont> {
-        let mut face_ids = Vec::new();
-
-        if let Some(names) = family {
-            let mut families = names
-                .iter()
-                .map(|name| Family::Name(name.as_str()))
-                .collect::<Vec<_>>();
-            families.extend([Family::SansSerif, Family::Serif, Family::Monospace]);
-            let query = Query {
-                families: &families,
-                weight: Weight(weight),
-                stretch: Stretch::Normal,
-                style: Style::Normal,
-            };
-            if let Some(face) = self.database.query(&query) {
-                push_unique_face(&mut face_ids, face);
-            }
-            if let Some(face) = self.pick_matching_face(Some(names), weight) {
-                push_unique_face(&mut face_ids, face);
-            }
-        }
-
-        if let Some(face) = self.pick_default_face(weight) {
-            push_unique_face(&mut face_ids, face);
-        }
-
-        face_ids
-            .into_iter()
-            .filter_map(|id| {
-                self.load_cached_font(id)
-                    .map(|font| ResolvedFont { id, font })
-            })
-            .collect()
-    }
-
-    fn font_index_for_character(
+    pub fn handle_async_ready(
         &mut self,
-        character: char,
-        family: Option<&[String]>,
-        weight: u16,
-        fonts: &mut Vec<ResolvedFont>,
-        fallback_cache: &mut HashMap<char, usize>,
-    ) -> usize {
-        if let Some(index) = fallback_cache.get(&character).copied() {
-            return index;
+        spec_hash: u64,
+        width: i32,
+        height: i32,
+        pixels: Vec<u8>,
+    ) {
+        self.async_in_flight.remove(&spec_hash);
+        self.async_buffers.insert(
+            spec_hash,
+            TimedTextBuffer {
+                buffer: MemoryRenderBuffer::from_slice(
+                    &pixels,
+                    Fourcc::Argb8888,
+                    (width, height),
+                    1,
+                    smithay::utils::Transform::Normal,
+                    None,
+                ),
+                last_used_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn handle_async_miss(&mut self, spec_hash: u64) {
+        self.async_in_flight.remove(&spec_hash);
+    }
+
+    fn prune_async_buffers(&mut self) {
+        const TTL: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        self.async_buffers
+            .retain(|_, entry| now.duration_since(entry.last_used_at) <= TTL);
+    }
+}
+
+impl LabelMeasurer {
+    fn new() -> Self {
+        Self {
+            font_system: FontSystem::new(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn measure(&mut self, spec: &LabelSpec) -> (i32, i32) {
+        let spec_hash = hash_label_measurement_spec(spec);
+        if let Some(cached) = self.cache.get(&spec_hash).copied() {
+            return cached;
         }
 
-        if let Some(index) = fonts.iter().position(|font| font.font.has_glyph(character)) {
-            fallback_cache.insert(character, index);
-            return index;
-        }
+        let font_size = spec.font_size.max(1) as f32;
+        let line_height = spec.line_height.unwrap_or((font_size.ceil() as i32) + 4) as f32;
+        let metrics = Metrics::new(font_size, line_height.max(1.0));
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        let attrs = attrs_for_spec(spec);
 
-        if let Some(face) = self.pick_fallback_face_for_char(character, family, weight)
-            && let Some(index) = fonts.iter().position(|font| font.id == face)
         {
-            fallback_cache.insert(character, index);
-            return index;
+            let mut buffer = buffer.borrow_with(&mut self.font_system);
+            buffer.set_size(None, None);
+            buffer.set_wrap(Wrap::None);
+            buffer.set_text(&spec.text, &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(false);
         }
 
-        if let Some(face) = self.pick_fallback_face_for_char(character, family, weight)
-            && let Some(font) = self.load_cached_font(face)
-        {
-            fonts.push(ResolvedFont { id: face, font });
-            let index = fonts.len() - 1;
-            fallback_cache.insert(character, index);
-            return index;
-        }
+        let runs = buffer.layout_runs().collect::<Vec<_>>();
+        let width = runs
+            .iter()
+            .map(|run| run.line_w.ceil() as i32)
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let height = runs
+            .iter()
+            .map(|run| (run.line_top + run.line_height).ceil() as i32)
+            .max()
+            .unwrap_or(line_height.ceil() as i32)
+            .max(1);
 
-        fallback_cache.insert(character, 0);
-        0
-    }
-
-    fn pick_matching_face(&self, family: Option<&[String]>, weight: u16) -> Option<fontdb::ID> {
-        let requested = family.map(|values| {
-            values
-                .iter()
-                .map(|value| value.to_ascii_lowercase())
-                .collect::<Vec<_>>()
-        });
-        let mut best: Option<(fontdb::ID, i32)> = None;
-
-        for face in self.database.faces() {
-            let family_score = if let Some(requested) = &requested {
-                if face.families.iter().any(|(name, _)| {
-                    requested
-                        .iter()
-                        .any(|value| name.eq_ignore_ascii_case(value))
-                }) {
-                    0
-                } else {
-                    1_000
-                }
-            } else {
-                0
-            };
-
-            let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
-            let stretch_penalty = if face.stretch == Stretch::Normal {
-                0
-            } else {
-                25
-            };
-            let mono_penalty = if family.is_none() && face.monospaced {
-                50
-            } else {
-                0
-            };
-            let source_penalty = face_source_penalty(&face.source);
-            let weight_penalty = (i32::from(face.weight.0) - i32::from(weight)).abs();
-            let score = family_score
-                + style_penalty
-                + stretch_penalty
-                + mono_penalty
-                + source_penalty
-                + weight_penalty;
-
-            match best {
-                Some((_, current_score)) if current_score <= score => {}
-                _ => best = Some((face.id, score)),
-            }
-        }
-
-        if best.is_none() {
-            debug!(requested_family = ?family, weight, "no fallback font face available");
-        }
-
-        best.map(|(id, _)| id)
-    }
-
-    fn pick_default_face(&self, weight: u16) -> Option<fontdb::ID> {
-        let sans_family = self
-            .database
-            .family_name(&Family::SansSerif)
-            .to_ascii_lowercase();
-        let mut best: Option<(fontdb::ID, i32)> = None;
-
-        for face in self.database.faces() {
-            let names = face
-                .families
-                .iter()
-                .map(|(name, _)| name.to_ascii_lowercase())
-                .collect::<Vec<_>>();
-
-            let exact_sans = names.iter().any(|name| name == &sans_family);
-            let contains_sans = names.iter().any(|name| name.contains("sans"));
-            let contains_serif = names.iter().any(|name| name.contains("serif"));
-            let contains_emoji = names.iter().any(|name| name.contains("emoji"));
-            let contains_cjk = names.iter().any(|name| name.contains("cjk"));
-
-            let family_score = if exact_sans {
-                0
-            } else if contains_sans {
-                25
-            } else if contains_serif {
-                140
-            } else {
-                80
-            };
-            let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
-            let stretch_penalty = if face.stretch == Stretch::Normal {
-                0
-            } else {
-                25
-            };
-            let mono_penalty = if face.monospaced { 120 } else { 0 };
-            let emoji_penalty = if contains_emoji { 600 } else { 0 };
-            let cjk_penalty = if contains_cjk { 220 } else { 0 };
-            let source_penalty = face_source_penalty(&face.source);
-            let weight_penalty = (i32::from(face.weight.0) - i32::from(weight)).abs();
-            let score = family_score
-                + style_penalty
-                + stretch_penalty
-                + mono_penalty
-                + emoji_penalty
-                + cjk_penalty
-                + source_penalty
-                + weight_penalty;
-
-            match best {
-                Some((_, current_score)) if current_score <= score => {}
-                _ => best = Some((face.id, score)),
-            }
-        }
-
-        if best.is_none() {
-            debug!(weight, "no default font face available");
-        }
-
-        best.map(|(id, _)| id)
-    }
-
-    fn pick_fallback_face_for_char(
-        &mut self,
-        character: char,
-        family: Option<&[String]>,
-        weight: u16,
-    ) -> Option<fontdb::ID> {
-        let requested = family.map(|values| {
-            values
-                .iter()
-                .map(|value| value.to_ascii_lowercase())
-                .collect::<Vec<_>>()
-        });
-        let is_emoji = looks_like_emoji(character);
-        let mut candidates = Vec::new();
-
-        for face in self.database.faces() {
-            let names = face
-                .families
-                .iter()
-                .map(|(name, _)| name.to_ascii_lowercase())
-                .collect::<Vec<_>>();
-            let exact_requested = requested.as_ref().is_some_and(|requested| {
-                names.iter().any(|name| requested.iter().any(|value| value == name))
-            });
-            let contains_sans = names.iter().any(|name| name.contains("sans"));
-            let contains_serif = names.iter().any(|name| name.contains("serif"));
-            let contains_emoji = names.iter().any(|name| name.contains("emoji"));
-            let contains_cjk = names.iter().any(|name| name.contains("cjk"));
-
-            let family_score = if exact_requested {
-                0
-            } else if contains_sans {
-                25
-            } else if contains_serif {
-                140
-            } else {
-                80
-            };
-            let emoji_score = if is_emoji {
-                if contains_emoji { 0 } else { 400 }
-            } else if contains_emoji {
-                500
-            } else {
-                0
-            };
-            let mono_penalty = if face.monospaced { 120 } else { 0 };
-            let style_penalty = if face.style == Style::Normal { 0 } else { 100 };
-            let stretch_penalty = if face.stretch == Stretch::Normal {
-                0
-            } else {
-                25
-            };
-            let cjk_penalty = if contains_cjk { 120 } else { 0 };
-            let source_penalty = face_source_penalty(&face.source);
-            let weight_penalty = (i32::from(face.weight.0) - i32::from(weight)).abs();
-
-            candidates.push((
-                face.id,
-                family_score
-                    + emoji_score
-                    + mono_penalty
-                    + style_penalty
-                    + stretch_penalty
-                    + cjk_penalty
-                    + source_penalty
-                    + weight_penalty,
-            ));
-        }
-
-        candidates.sort_by_key(|(_, score)| *score);
-
-        for (face, _) in candidates {
-            let Some(font) = self.load_cached_font(face) else {
-                continue;
-            };
-            if font.has_glyph(character) {
-                return Some(face);
-            }
-        }
-
-        None
-    }
-
-    fn load_cached_font(&mut self, face: fontdb::ID) -> Option<Arc<Font>> {
-        if let Some(font) = self.fonts.get(&face) {
-            return Some(font.clone());
-        }
-        let font = Arc::new(self.load_font_for_face(face)?);
-        self.fonts.insert(face, font.clone());
-        Some(font)
-    }
-
-    fn load_font_for_face(&self, face: fontdb::ID) -> Option<Font> {
-        let (source, face_index) = self.database.face_source(face)?;
-        match source {
-            Source::Binary(data) => Font::from_bytes(
-                data.as_ref().as_ref().to_vec(),
-                FontSettings {
-                    collection_index: face_index,
-                    ..FontSettings::default()
-                },
-            )
-            .ok(),
-            Source::File(path) => std::fs::read(&path).ok().and_then(|bytes| {
-                Font::from_bytes(
-                    bytes,
-                    FontSettings {
-                        collection_index: face_index,
-                        ..FontSettings::default()
-                    },
-                )
-                .ok()
-            }),
-            Source::SharedFile(_, data) => Font::from_bytes(
-                data.as_ref().as_ref().to_vec(),
-                FontSettings {
-                    collection_index: face_index,
-                    ..FontSettings::default()
-                },
-            )
-            .ok(),
-        }
+        self.cache.insert(spec_hash, (width, height));
+        (width, height)
     }
 }
 
-fn push_unique_face(faces: &mut Vec<fontdb::ID>, face: fontdb::ID) {
-    if !faces.contains(&face) {
-        faces.push(face);
-    }
+pub fn measure_label_intrinsic(spec: &LabelSpec) -> (i32, i32) {
+    LABEL_MEASURER.with(|measurer| measurer.borrow_mut().measure(spec))
 }
 
-fn looks_like_emoji(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x2600..=0x27BF
-            | 0x1F000..=0x1FAFF
-            | 0x1FC00..=0x1FFFD
-    )
+pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    spec.text.hash(&mut hasher);
+    spec.rect.width.hash(&mut hasher);
+    spec.rect.height.hash(&mut hasher);
+    spec.color.r.hash(&mut hasher);
+    spec.color.g.hash(&mut hasher);
+    spec.color.b.hash(&mut hasher);
+    spec.color.a.hash(&mut hasher);
+    spec.font_size.hash(&mut hasher);
+    spec.text_align.hash(&mut hasher);
+    spec.line_height.hash(&mut hasher);
+    spec.font_family.hash(&mut hasher);
+    spec.font_weight
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
-fn face_source_penalty(source: &Source) -> i32 {
-    match source {
-        Source::Binary(_) => 0,
-        Source::File(path) | Source::SharedFile(path, _) => {
-            let extension = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            match extension.as_str() {
-                "ttc" | "otc" => 180,
-                _ => 0,
-            }
-        }
-    }
+fn hash_label_measurement_spec(spec: &LabelSpec) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    spec.text.hash(&mut hasher);
+    spec.font_size.hash(&mut hasher);
+    spec.line_height.hash(&mut hasher);
+    spec.font_family.hash(&mut hasher);
+    spec.font_weight
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn text_elements_for_window(
@@ -580,6 +316,7 @@ pub fn text_elements_for_window(
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
     window: &Window,
+    alpha: f32,
 ) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
         return Ok(Vec::new());
@@ -592,7 +329,21 @@ pub fn text_elements_for_window(
     decoration
         .text_buffers
         .iter()
-        .filter_map(|label| memory_text_element(renderer, label, output_geo, scale).transpose())
+        .filter_map(|label| memory_text_element(renderer, label, output_geo, scale, alpha).transpose())
+        .collect()
+}
+
+pub fn text_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: OutputScale<f64>,
+    alpha: f32,
+) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+    decoration
+        .text_buffers
+        .iter()
+        .filter_map(|label| memory_text_element(renderer, label, output_geo, scale, alpha).transpose())
         .collect()
 }
 
@@ -601,6 +352,7 @@ fn memory_text_element(
     label: &CachedDecorationLabel,
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
+    alpha: f32,
 ) -> Result<Option<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
     if intersect_logical_rect(label.rect, output_geo).is_none() {
         return Ok(None);
@@ -615,12 +367,70 @@ fn memory_text_element(
         renderer,
         physical.to_f64(),
         &label.buffer,
-        None,
+        Some(alpha.clamp(0.0, 1.0)),
         None,
         None,
         Kind::Unspecified,
     )?;
     Ok(Some(element))
+}
+
+fn attrs_for_spec<'a>(spec: &'a LabelSpec) -> Attrs<'a> {
+    let mut attrs = Attrs::new()
+        .color(CosmicColor::rgba(
+            spec.color.r,
+            spec.color.g,
+            spec.color.b,
+            spec.color.a,
+        ))
+        .weight(CosmicWeight(parse_font_weight(spec.font_weight.as_ref())));
+
+    if let Some(family) = spec
+        .font_family
+        .as_ref()
+        .and_then(|families| families.first())
+    {
+        attrs = attrs.family(CosmicFamily::Name(family.as_str()));
+    }
+
+    attrs.style(CosmicStyle::Normal)
+}
+
+fn alignment_for_spec(text_align: Option<&str>) -> Option<Align> {
+    match text_align {
+        Some("center") => Some(Align::Center),
+        Some("end") => Some(Align::End),
+        _ => None,
+    }
+}
+
+fn blend_pixel(pixels: &mut [u8], width: i32, x: i32, y: i32, rgba: (u8, u8, u8, u8)) {
+    let index = ((y * width + x) * 4) as usize;
+    let (src_r, src_g, src_b, src_a) = rgba;
+    if src_a == 0 {
+        return;
+    }
+
+    let dst_b = pixels[index];
+    let dst_g = pixels[index + 1];
+    let dst_r = pixels[index + 2];
+    let dst_a = pixels[index + 3];
+
+    let src_a_u16 = u16::from(src_a);
+    let inv_a = 255u16.saturating_sub(src_a_u16);
+    let src_r_pm = (u16::from(src_r) * src_a_u16) / 255;
+    let src_g_pm = (u16::from(src_g) * src_a_u16) / 255;
+    let src_b_pm = (u16::from(src_b) * src_a_u16) / 255;
+
+    let out_a = src_a_u16 + ((u16::from(dst_a) * inv_a) / 255);
+    let out_r = src_r_pm + ((u16::from(dst_r) * inv_a) / 255);
+    let out_g = src_g_pm + ((u16::from(dst_g) * inv_a) / 255);
+    let out_b = src_b_pm + ((u16::from(dst_b) * inv_a) / 255);
+
+    pixels[index] = out_b.min(255) as u8;
+    pixels[index + 1] = out_g.min(255) as u8;
+    pixels[index + 2] = out_r.min(255) as u8;
+    pixels[index + 3] = out_a.min(255) as u8;
 }
 
 fn parse_font_weight(value: Option<&serde_json::Value>) -> u16 {

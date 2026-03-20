@@ -1,4 +1,5 @@
 import { createReactiveWindow } from "./reactive-window";
+import type { WindowAnimationController } from "./animation";
 import { read } from "./signals";
 import {
   enterWindowDependencyScope,
@@ -108,8 +109,9 @@ export function createDecorationEvaluationCache(
   snapshot: WaylandWindowSnapshot,
   actions: WaylandWindowActions,
   evaluate: DecorationFunction,
+  animation?: WindowAnimationController,
 ): DecorationEvaluationCache {
-  const handle = createReactiveWindow(snapshot, actions);
+  const handle = createReactiveWindow(snapshot, actions, animation);
 
   let currentSnapshot = snapshot;
   let version = 1;

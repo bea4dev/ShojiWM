@@ -1,9 +1,11 @@
+pub mod async_assets;
 pub mod clipped_surface;
 pub mod damage;
 pub mod damage_blink;
 pub mod decoration;
 pub mod icon;
 pub mod rounded;
+pub mod snapshot;
 pub mod text;
 pub mod tty;
 pub mod visual;
@@ -58,6 +60,7 @@ fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
     winit::init_winit(&mut event_loop, &mut state)?;
 
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
+    state.warmup_decoration_runtime();
 
     spawn_client();
 
@@ -177,6 +180,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     info!(socket = ?state.socket_name, "set wayland display for tty backend");
+    state.warmup_decoration_runtime();
     std::process::Command::new("weston-terminal").spawn().ok();
     info!("spawned weston-terminal");
 

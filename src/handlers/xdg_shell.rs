@@ -51,8 +51,9 @@ impl XdgShellHandler for ShojiWM {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let surface_id = surface.wl_surface().id();
         info!(
-            surface = ?surface.wl_surface().id(),
+            surface = ?surface_id,
             "new xdg toplevel received"
         );
 

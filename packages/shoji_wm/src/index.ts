@@ -38,6 +38,7 @@ import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
 export {
   animationVariable,
+  createWindowAnimationControllerWithStore,
   createWindowAnimationController,
   milliseconds,
   seconds,
@@ -63,6 +64,7 @@ export {
   type WindowFocusListener,
   type WindowManagerEventController,
   type WindowOpenListener,
+  type WindowStartCloseListener,
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
 export {

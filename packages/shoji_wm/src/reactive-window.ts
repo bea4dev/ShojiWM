@@ -1,5 +1,5 @@
 import { signal, type Signal } from "./signals";
-import { createWindowAnimationController } from "./animation";
+import { createWindowAnimationController, type WindowAnimationController } from "./animation";
 import type {
   DecorationInteractionSnapshot,
   MaybeSignal,
@@ -38,6 +38,7 @@ interface MutableWindowSignals {
 export function createReactiveWindow(
   snapshot: WaylandWindowSnapshot,
   actions: WaylandWindowActions,
+  animation: WindowAnimationController = createWindowAnimationController(snapshot.id),
 ): ReactiveWaylandWindowHandle {
   const signals: MutableWindowSignals = {
     id: signal(snapshot.id),
@@ -142,11 +143,12 @@ export function createReactiveWindow(
     get transform() {
       return transform;
     },
-    animation: createWindowAnimationController(snapshot.id),
+    animation,
     signals,
     close: actions.close,
     maximize: actions.maximize,
     minimize: actions.minimize,
+    setCloseAnimationDuration: actions.setCloseAnimationDuration,
     isXWayland() {
       return signals.isXwayland.value;
     },

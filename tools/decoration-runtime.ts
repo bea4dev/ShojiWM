@@ -4,7 +4,9 @@ import { Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
 import {
+  createWindowAnimationControllerWithStore,
   createDecorationEvaluationCache,
+  createManagedPoll,
   dropWindowDependencies,
   installRuntimeHooks,
   type WindowManagerEventController,
@@ -37,17 +39,33 @@ interface WindowClosedRequest {
   windowId: string;
 }
 
+interface StartCloseRequest {
+  requestId: number;
+  kind: "startClose";
+  windowId: string;
+  nowMs: number;
+}
+
+interface EvaluateCachedRequest {
+  requestId: number;
+  kind: "evaluateCached";
+  windowId: string;
+}
+
 interface InvokeHandlerRequest {
   requestId: number;
   kind: "invokeHandler";
   windowId: string;
   handlerId: string;
+  nowMs: number;
 }
 
 type RuntimeRequest =
   | EvaluateRequest
   | SchedulerTickRequest
   | WindowClosedRequest
+  | StartCloseRequest
+  | EvaluateCachedRequest
   | InvokeHandlerRequest;
 
 interface EvaluateSuccess {
@@ -65,6 +83,7 @@ interface SchedulerTickSuccess {
   kind: "schedulerTick";
   dirty: boolean;
   dirtyWindowIds: string[];
+  actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 }
 
@@ -76,13 +95,25 @@ interface WindowClosedSuccess {
 
 interface RuntimeWindowAction {
   windowId: string;
-  action: "close" | "maximize" | "minimize";
+  action: "close" | "finalizeClose" | "maximize" | "minimize";
 }
 
 interface InvokeHandlerSuccess {
   requestId: number;
   ok: true;
   kind: "invokeHandler";
+  invoked: boolean;
+  serialized?: unknown;
+  transform?: WindowTransform;
+  dirtyWindowIds: string[];
+  actions: RuntimeWindowAction[];
+  nextPollInMs?: number;
+}
+
+interface StartCloseSuccess {
+  requestId: number;
+  ok: true;
+  kind: "startClose";
   invoked: boolean;
   serialized?: unknown;
   transform?: WindowTransform;
@@ -98,6 +129,8 @@ interface RuntimeFailure {
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
+const openedWindowIds = new Set<string>();
+const animationEntriesByWindowId = new Map<string, Map<symbol, unknown>>();
 const polls = new Map<number, RuntimePoll>();
 const dirtyWindowIds = new Set<string>();
 let runtimeDirty = false;
@@ -108,6 +141,9 @@ interface RuntimeCacheEntry {
   latestSnapshot: WaylandWindowSnapshot;
   cache: DecorationEvaluationCache;
   pendingActions: RuntimeWindowAction[];
+  closeAnimationDurationMs: number;
+  closeStarted: boolean;
+  closePoll?: PollHandle;
 }
 
 interface RuntimePoll {
@@ -189,6 +225,7 @@ async function main() {
             kind: "schedulerTick",
             dirty: tick.dirty,
             dirtyWindowIds: tick.dirtyWindowIds,
+            actions: tick.actions,
             nextPollInMs: tick.nextPollInMs,
           });
         } else if (request.kind === "windowClosed") {
@@ -198,7 +235,27 @@ async function main() {
             ok: true,
             kind: "windowClosed",
           });
+        } else if (request.kind === "startClose") {
+          currentSchedulerTimeMs = request.nowMs;
+          const result = startClose(events, request.windowId);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "startClose",
+            ...result,
+          });
+        } else if (request.kind === "evaluateCached") {
+          const result = evaluateCached(request.windowId);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "evaluateCached",
+            serialized: result.serialized,
+            transform: result.transform,
+            nextPollInMs: result.nextPollInMs,
+          });
         } else {
+          currentSchedulerTimeMs = request.nowMs;
           const result = invokeHandler(request.windowId, request.handlerId);
           writeResponse(socket, {
             requestId: request.requestId,
@@ -218,6 +275,24 @@ async function main() {
   }
 }
 
+function evaluateCached(windowId: string): {
+  serialized: unknown;
+  transform: WindowTransform;
+  nextPollInMs?: number;
+} {
+  const entry = cacheByWindowId.get(windowId);
+  if (!entry) {
+    throw new Error(`missing cache entry for closing window ${windowId}`);
+  }
+
+  const reevaluated = entry.cache.reevaluate();
+  return {
+    serialized: reevaluated.serialized,
+    transform: entry.cache.lastTransform,
+    nextPollInMs: peekNextPollDelay(),
+  };
+}
+
 function evaluateSnapshot(
   decoration: DecorationFunction,
   events: WindowManagerEventController,
@@ -227,7 +302,10 @@ function evaluateSnapshot(
   if (!existing) {
     const entry = createRuntimeCacheEntry(snapshot, decoration);
     cacheByWindowId.set(snapshot.id, entry);
-    events.emitOpen(entry.cache.window);
+    if (!openedWindowIds.has(snapshot.id)) {
+      openedWindowIds.add(snapshot.id);
+      events.emitOpen(entry.cache.window);
+    }
     events.emitFocus(entry.cache.window, snapshot.isFocused);
     dirtyWindowIds.delete(snapshot.id);
     return entry.cache.reevaluate().serialized;
@@ -263,16 +341,28 @@ function createRuntimeCacheEntry(
     minimize() {
       entry.pendingActions.push({ windowId: latestSnapshot.id, action: "minimize" });
     },
+    setCloseAnimationDuration(durationMs) {
+      entry.closeAnimationDurationMs = Math.max(0, Math.floor(durationMs));
+    },
     isXWayland() {
       return latestSnapshot.isXwayland;
     },
   };
 
-  const cache = createDecorationEvaluationCache(snapshot, actions, decoration);
+  const animationEntries =
+    animationEntriesByWindowId.get(snapshot.id) ?? new Map();
+  animationEntriesByWindowId.set(snapshot.id, animationEntries);
+  const animation = createWindowAnimationControllerWithStore(
+    snapshot.id,
+    animationEntries as Map<symbol, never>,
+  );
+  const cache = createDecorationEvaluationCache(snapshot, actions, decoration, animation);
   const entry: RuntimeCacheEntry = {
     latestSnapshot,
     cache,
     pendingActions: [],
+    closeAnimationDurationMs: 0,
+    closeStarted: false,
   };
   return entry;
 }
@@ -325,6 +415,7 @@ function registerPoll(
 function processSchedulerTick(nowMs: number): {
   dirty: boolean;
   dirtyWindowIds: string[];
+  actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 } {
   currentSchedulerTimeMs = nowMs;
@@ -362,12 +453,14 @@ function processSchedulerTick(nowMs: number): {
   }
 
   const nextDirtyWindowIds = Array.from(dirtyWindowIds);
+  const actions = drainPendingActions();
   const dirty = runtimeDirty || nextDirtyWindowIds.length > 0;
   runtimeDirty = false;
 
   return {
     dirty,
     dirtyWindowIds: nextDirtyWindowIds,
+    actions,
     nextPollInMs,
   };
 }
@@ -378,10 +471,66 @@ function closeWindow(events: WindowManagerEventController, windowId: string): vo
     return;
   }
 
+  existing.closePoll?.cancel();
   events.emitClose(existing.cache.window);
   cacheByWindowId.delete(windowId);
+  openedWindowIds.delete(windowId);
+  animationEntriesByWindowId.delete(windowId);
   dirtyWindowIds.delete(windowId);
   dropWindowDependencies(windowId);
+}
+
+function startClose(
+  events: WindowManagerEventController,
+  windowId: string,
+): Omit<StartCloseSuccess, "requestId" | "ok" | "kind"> {
+  const entry = cacheByWindowId.get(windowId);
+  if (!entry) {
+    return {
+      invoked: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: peekNextPollDelay(),
+    };
+  }
+
+  if (!entry.closeStarted) {
+    entry.closeStarted = true;
+    events.emitStartClose(entry.cache.window);
+
+    const durationMs = entry.closeAnimationDurationMs;
+    if (durationMs <= 0) {
+      entry.pendingActions.push({ windowId, action: "finalizeClose" });
+    } else {
+      entry.closePoll?.cancel();
+      entry.closePoll = createManagedPoll(
+        durationMs,
+        (handle) => {
+          const current = cacheByWindowId.get(windowId);
+          if (!current || !current.closeStarted) {
+            handle.cancel();
+            return;
+          }
+          current.pendingActions.push({ windowId, action: "finalizeClose" });
+          dirtyWindowIds.add(windowId);
+          handle.cancel();
+          current.closePoll = undefined;
+        },
+        "none",
+      );
+    }
+  }
+
+  const reevaluated = entry.cache.reevaluate();
+  const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
+  return {
+    invoked: true,
+    serialized: reevaluated.serialized,
+    transform: entry.cache.lastTransform,
+    dirtyWindowIds: [windowId],
+    actions,
+    nextPollInMs: peekNextPollDelay(),
+  };
 }
 
 function invokeHandler(
@@ -434,6 +583,17 @@ function peekNextPollDelay(): number | undefined {
   return nextPollInMs;
 }
 
+function drainPendingActions(): RuntimeWindowAction[] {
+  const actions: RuntimeWindowAction[] = [];
+  for (const entry of cacheByWindowId.values()) {
+    if (entry.pendingActions.length === 0) {
+      continue;
+    }
+    actions.push(...entry.pendingActions.splice(0, entry.pendingActions.length));
+  }
+  return actions;
+}
+
 function resolveDecoration(
   loaded: Record<string, unknown>,
 ): DecorationFunction {
@@ -482,6 +642,7 @@ function writeResponse(
     | EvaluateSuccess
     | SchedulerTickSuccess
     | WindowClosedSuccess
+    | StartCloseSuccess
     | InvokeHandlerSuccess
     | RuntimeFailure,
 ) {

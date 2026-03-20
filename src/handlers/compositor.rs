@@ -53,6 +53,7 @@ impl CompositorHandler for ShojiWM {
                         "mapped window commit cadence"
                     );
                 }
+                self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
                 if let Some(decoration) = self.window_decorations.get(window) {
                     self.pending_decoration_damage.push(decoration.layout.root.rect);
                 }

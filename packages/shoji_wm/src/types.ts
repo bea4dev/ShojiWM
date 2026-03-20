@@ -30,6 +30,7 @@ export interface WaylandWindow {
   close(): void;
   maximize(): void;
   minimize(): void;
+  setCloseAnimationDuration(durationMs: number): void;
   isXWayland(): boolean;
 }
 
@@ -245,6 +246,7 @@ export interface WaylandWindowActions {
   close(): void;
   maximize(): void;
   minimize(): void;
+  setCloseAnimationDuration(durationMs: number): void;
   isXWayland(): boolean;
 }
 

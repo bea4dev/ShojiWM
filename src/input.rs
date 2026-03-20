@@ -160,9 +160,10 @@ impl ShojiWM {
                                 );
 
                                 let window_id = self.snapshot_window(&window).id;
+                                let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
                                 if let Ok(invocation) = self
                                     .decoration_evaluator
-                                    .invoke_handler(&window_id, &handler_id)
+                                    .invoke_handler(&window_id, &handler_id, now_ms)
                                 {
                                     if let Some(decoration) =
                                         self.window_decorations.get_mut(&window)
@@ -356,8 +357,19 @@ impl ShojiWM {
         }
     }
 
-    fn apply_runtime_window_actions(&mut self, actions: Vec<RuntimeWindowAction>) {
+    pub(crate) fn apply_runtime_window_actions(&mut self, actions: Vec<RuntimeWindowAction>) {
         for runtime_action in actions {
+            if matches!(runtime_action.action, crate::ssd::WaylandWindowAction::FinalizeClose) {
+                self.closing_window_snapshots.remove(&runtime_action.window_id);
+                self.live_window_snapshots.remove(&runtime_action.window_id);
+                self.complete_window_snapshots.remove(&runtime_action.window_id);
+                self.snapshot_dirty_window_ids.remove(&runtime_action.window_id);
+                let _ = self.decoration_evaluator.window_closed(&runtime_action.window_id);
+                self.runtime_dirty_window_ids.remove(&runtime_action.window_id);
+                self.schedule_redraw();
+                continue;
+            }
+
             let target_window = self
                 .space
                 .elements()
@@ -384,6 +396,7 @@ impl ShojiWM {
                         toplevel.send_pending_configure();
                     }
                 }
+                crate::ssd::WaylandWindowAction::FinalizeClose => {}
                 crate::ssd::WaylandWindowAction::Minimize => {}
             }
         }
@@ -460,6 +473,7 @@ impl ShojiWM {
             "clear_focus finished"
         );
     }
+
 }
 
 fn resize_edges_to_cursor_icon(edges: ResizeEdges) -> CursorIcon {

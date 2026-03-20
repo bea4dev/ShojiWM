@@ -37,7 +37,7 @@ pub fn rounded_elements_for_output(
         let buffers = decoration.buffers.clone();
         for cached in &buffers {
             if let Some(element) =
-                rounded_rect_element(renderer, decoration, cached, output_geo, scale)?
+                rounded_rect_element(renderer, decoration, cached, output_geo, scale, 1.0)?
             {
                 elements.push(element);
             }
@@ -59,13 +59,13 @@ pub fn rounded_elements_for_window(
     decoration: &mut WindowDecorationState,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
-    _window: &Window,
+    alpha: f32,
 ) -> Result<Vec<StableRoundedElement>, GlesError> {
     let buffers = decoration.buffers.clone();
     buffers
         .iter()
         .filter_map(|cached| {
-            rounded_rect_element(renderer, decoration, cached, output_geo, scale).transpose()
+            rounded_rect_element(renderer, decoration, cached, output_geo, scale, alpha).transpose()
         })
         .collect()
 }
@@ -76,8 +76,9 @@ pub fn text_elements_for_window(
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
     window: &Window,
+    alpha: f32,
 ) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
-    text::text_elements_for_window(renderer, space, decorations, output, window)
+    text::text_elements_for_window(renderer, space, decorations, output, window, alpha)
 }
 
 pub fn icon_elements_for_window(
@@ -86,8 +87,9 @@ pub fn icon_elements_for_window(
     decorations: &HashMap<Window, WindowDecorationState>,
     output: &Output,
     window: &Window,
+    alpha: f32,
 ) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
-    crate::backend::icon::icon_elements_for_window(renderer, space, decorations, output, window)
+    crate::backend::icon::icon_elements_for_window(renderer, space, decorations, output, window, alpha)
 }
 
 fn rounded_rect_element(
@@ -96,6 +98,7 @@ fn rounded_rect_element(
     cached: &crate::ssd::CachedDecorationBuffer,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
+    alpha: f32,
 ) -> Result<Option<StableRoundedElement>, GlesError> {
     if intersect_logical_rect(cached.rect, output_geo).is_none() {
         return Ok(None);
@@ -130,6 +133,7 @@ fn rounded_rect_element(
                 cached.color.b as f32 / 255.0,
                 cached.color.a as f32 / 255.0,
             ],
+            alpha,
             radius: cached.radius,
             shape: if cached.border_width > 0 {
                 RoundedShapeKind::Border {

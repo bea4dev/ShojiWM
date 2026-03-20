@@ -16,10 +16,11 @@ use smithay::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
+                texture::TextureRenderElement,
                 utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
                 AsRenderElements,
             },
-            gles::GlesRenderer,
+            gles::{GlesRenderer, GlesTexture},
             ImportDma, ImportEgl, ImportMemWl,
         },
         session::{libseat::LibSeatSession, Session},
@@ -35,15 +36,15 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
     },
     render_elements,
-    utils::{DeviceFd, IsAlive, Monotonic, Scale, Transform},
+    utils::{DeviceFd, IsAlive, Logical, Monotonic, Scale, Transform},
     wayland::{compositor, dmabuf::DmabufFeedbackBuilder},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    backend::damage, backend::damage_blink, backend::decoration, backend::window as window_render,
-    backend::visual::{AlphaRenderElement, WindowVisualState, window_visual_state},
+    backend::damage, backend::damage_blink, backend::decoration, backend::snapshot, backend::window as window_render,
+    backend::visual::{WindowVisualState, window_visual_state},
     config::DisplayModePreference,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     drawing::PointerRenderElement, state::ShojiWM,
@@ -333,12 +334,6 @@ pub fn render_if_needed(
         state.needs_redraw = true;
     }
 
-    debug!(
-        skipped_for_pending_frame,
-        processed_outputs = ?processed_outputs,
-        "tty render_if_needed end"
-    );
-
     state.pending_decoration_damage.clear();
     state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
 
@@ -348,15 +343,17 @@ pub fn render_if_needed(
 render_elements! {
     pub TtyRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
-    TransformedWindow=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
+    TransformedWindow=RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
-    TransformedClipped=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>>,
+    TransformedClipped=RelocateRenderElement<RescaleRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>,
     Text=MemoryRenderBufferRenderElement<GlesRenderer>,
-    TransformedText=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>>,
+    TransformedText=RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
+    Snapshot=TextureRenderElement<GlesTexture>,
+    TransformedSnapshot=RelocateRenderElement<RescaleRenderElement<TextureRenderElement<GlesTexture>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::rounded::StableRoundedElement,
-    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<crate::backend::rounded::StableRoundedElement>>>,
+    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::rounded::StableRoundedElement>>,
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
@@ -426,6 +423,11 @@ fn render_surface(
             current_pointer_image,
             pointer_element,
             seat,
+            window_decorations,
+            live_window_snapshots,
+            complete_window_snapshots,
+            closing_window_snapshots,
+            snapshot_dirty_window_ids,
             ..
         } = state;
 
@@ -456,6 +458,10 @@ fn render_surface(
         let windows: Vec<_> = space.elements_for_output(&output).cloned().collect();
         let all_windows: Vec<_> = space.elements().cloned().collect();
         let window_count = all_windows.len();
+        let closing_snapshots = closing_window_snapshots
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let (upper_layer_elements, lower_layer_elements) =
             window_render::layer_elements_for_output(&mut backend.renderer, &output, scale, 1.0);
 
@@ -534,10 +540,18 @@ fn render_surface(
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
+            let Some(window_id) = window_decorations
+                .get(window)
+                .map(|decoration| decoration.snapshot.id.clone())
+            else {
+                continue;
+            };
+            if closing_window_snapshots.contains_key(&window_id) {
+                continue;
+            }
             let physical_location =
                 (window_location - output_geo.loc).to_physical_precise_round(scale);
-            let visual_state = state
-                .window_decorations
+            let visual_state = window_decorations
                 .get(window)
                 .map(|decoration| {
                     window_visual_state(
@@ -560,7 +574,7 @@ fn render_surface(
                         &mut backend.renderer,
                         physical_location,
                         scale,
-                        1.0,
+                        visual_state.opacity,
                     ),
                     visual_state,
                     TtyRenderElements::Window,
@@ -574,9 +588,10 @@ fn render_surface(
                     decoration::icon_elements_for_window(
                         &mut backend.renderer,
                         space,
-                        &state.window_decorations,
+                        window_decorations,
                         &output,
                         window,
+                        visual_state.opacity,
                     )?,
                     visual_state,
                 )?
@@ -589,9 +604,10 @@ fn render_surface(
                     decoration::text_elements_for_window(
                         &mut backend.renderer,
                         space,
-                        &state.window_decorations,
+                        window_decorations,
                         &output,
                         window,
+                        visual_state.opacity,
                     )?,
                     visual_state,
                 )?
@@ -599,7 +615,7 @@ fn render_surface(
                 .collect::<Vec<_>>(),
             );
 
-            if let Some(decoration_state) = state.window_decorations.get_mut(window) {
+            if let Some(decoration_state) = window_decorations.get_mut(window) {
                 scene_elements.extend(
                     transform_decoration_elements(
                         decoration::rounded_elements_for_window(
@@ -607,7 +623,7 @@ fn render_surface(
                             decoration_state,
                             output_geo,
                             scale,
-                            window,
+                            visual_state.opacity,
                         )?,
                         visual_state,
                     )?
@@ -616,8 +632,7 @@ fn render_surface(
                 );
             }
 
-            let content_clip = state
-                .window_decorations
+            let content_clip = window_decorations
                 .get(window)
                 .and_then(|decoration| decoration.content_clip);
 
@@ -629,7 +644,7 @@ fn render_surface(
                             &mut backend.renderer,
                             physical_location,
                             scale,
-                            1.0,
+                            visual_state.opacity,
                             Some(content_clip),
                         )
                         .inspect_err(|error| {
@@ -648,7 +663,7 @@ fn render_surface(
                             &mut backend.renderer,
                             physical_location,
                             scale,
-                            1.0,
+                            visual_state.opacity,
                         ),
                         visual_state,
                         TtyRenderElements::Window,
@@ -657,7 +672,43 @@ fn render_surface(
                     .into_iter(),
                 );
             }
+
+            let should_refresh_snapshot = window_decorations
+                .get(window)
+                .map(|decoration| {
+                    snapshot_dirty_window_ids.contains(&decoration.snapshot.id)
+                        || live_window_snapshots
+                            .get(&decoration.snapshot.id)
+                            .map(|snapshot| snapshot.rect != decoration.client_rect)
+                            .unwrap_or(true)
+                })
+                .unwrap_or(false);
+            if should_refresh_snapshot {
+                if capture_live_snapshot_for_window(
+                    &mut backend.renderer,
+                    window,
+                    window_location,
+                    scale,
+                    0,
+                    window_decorations,
+                    live_window_snapshots,
+                    complete_window_snapshots,
+                )
+                .is_ok()
+                {
+                    if let Some(window_id) = window_decorations
+                        .get(window)
+                        .map(|decoration| decoration.snapshot.id.clone())
+                    {
+                        snapshot_dirty_window_ids.remove(&window_id);
+                    }
+                }
+            }
         }
+        scene_elements.extend(
+            closing_snapshot_elements(&mut backend.renderer, &closing_snapshots, output_geo, scale)
+                .into_iter(),
+        );
         scene_elements.extend(
             lower_layer_elements
                 .into_iter()
@@ -775,7 +826,7 @@ fn transform_window_elements(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     visual: WindowVisualState,
     direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> TtyRenderElements,
-    transformed: fn(RelocateRenderElement<RescaleRenderElement<AlphaRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>) -> TtyRenderElements,
+    transformed: fn(RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>) -> TtyRenderElements,
 ) -> Vec<TtyRenderElements> {
     if is_identity_visual(visual) {
         return elements.into_iter().map(direct).collect();
@@ -786,7 +837,7 @@ fn transform_window_elements(
         .map(|element| {
             transformed(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -810,7 +861,7 @@ fn transform_clipped_elements(
         .map(|element| {
             TtyRenderElements::TransformedClipped(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -834,7 +885,31 @@ fn transform_text_elements(
         .map(|element| {
             TtyRenderElements::TransformedText(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect())
+}
+
+fn transform_snapshot_elements(
+    elements: Vec<TextureRenderElement<GlesTexture>>,
+    visual: WindowVisualState,
+) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    if is_identity_visual(visual) {
+        return Ok(elements.into_iter().map(TtyRenderElements::Snapshot).collect());
+    }
+
+    Ok(elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedSnapshot(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -858,7 +933,7 @@ fn transform_decoration_elements(
         .map(|element| {
             TtyRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    AlphaRenderElement::from_element(element, visual.opacity),
+                    element,
                     visual.origin,
                     visual.scale,
                 ),
@@ -875,6 +950,122 @@ fn is_identity_visual(visual: WindowVisualState) -> bool {
         && (visual.scale.x - 1.0).abs() < f64::EPSILON
         && (visual.scale.y - 1.0).abs() < f64::EPSILON
         && (visual.opacity - 1.0).abs() < f32::EPSILON
+}
+
+fn capture_live_snapshot_for_window(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    window_location: smithay::utils::Point<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    z_index: usize,
+    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    live_window_snapshots: &mut std::collections::HashMap<String, crate::backend::snapshot::LiveWindowSnapshot>,
+    complete_window_snapshots: &mut std::collections::HashMap<String, crate::backend::snapshot::LiveWindowSnapshot>,
+) -> Result<(), smithay::backend::renderer::gles::GlesError> {
+    let Some(decoration) = window_decorations.get_mut(window) else {
+        return Ok(());
+    };
+    let client_rect = decoration.client_rect;
+    let snapshot_geo = smithay::utils::Rectangle::new(
+        smithay::utils::Point::from((client_rect.x, client_rect.y)),
+        (client_rect.width, client_rect.height).into(),
+    );
+    let physical_location =
+        (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
+
+    let surface_elements =
+        window_render::surface_elements(window, renderer, physical_location, scale, 1.0);
+    let has_client_content = !surface_elements.is_empty();
+    let elements = surface_elements
+        .into_iter()
+        .map(TtyRenderElements::Window)
+        .collect::<Vec<_>>();
+
+    let existing = live_window_snapshots.remove(&decoration.snapshot.id);
+    if let Some(snapshot) = snapshot::capture_snapshot(
+        renderer,
+        existing,
+        client_rect,
+        z_index,
+        has_client_content,
+        scale,
+        &elements,
+    )? {
+        live_window_snapshots.insert(decoration.snapshot.id.clone(), snapshot);
+        if has_client_content {
+            if let Some(snapshot) = live_window_snapshots.get(&decoration.snapshot.id) {
+                if let Ok(complete_snapshot) = snapshot::duplicate_snapshot(renderer, snapshot) {
+                    complete_window_snapshots.insert(decoration.snapshot.id.clone(), complete_snapshot);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn closing_snapshot_elements(
+    renderer: &mut GlesRenderer,
+    closing_snapshots: &[crate::backend::snapshot::ClosingWindowSnapshot],
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Vec<TtyRenderElements> {
+    closing_snapshots
+        .iter()
+        .flat_map(|snapshot| {
+            let visual = window_visual_state(
+                snapshot.decoration.layout.root.rect,
+                snapshot.transform,
+                output_geo,
+                scale,
+            );
+
+            let mut elements = Vec::new();
+            if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
+                renderer,
+                &snapshot.decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                if let Ok(transformed) = transform_text_elements(icon_elements, visual) {
+                    elements.extend(transformed);
+                }
+            }
+            if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
+                renderer,
+                &snapshot.decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                if let Ok(transformed) = transform_text_elements(text_elements, visual) {
+                    elements.extend(transformed);
+                }
+            }
+            let mut decoration = snapshot.decoration.clone();
+            if let Ok(rounded_elements) = decoration::rounded_elements_for_window(
+                renderer,
+                &mut decoration,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
+                if let Ok(transformed) = transform_decoration_elements(rounded_elements, visual) {
+                    elements.extend(transformed);
+                }
+            }
+
+            if let Some(element) =
+                snapshot::closing_snapshot_element(renderer, snapshot, output_geo, scale)
+            {
+                if let Ok(transformed) = transform_snapshot_elements(vec![element], visual) {
+                    elements.extend(transformed);
+                }
+            }
+            elements
+        })
+        .collect()
 }
 
 fn connector_connected(

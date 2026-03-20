@@ -156,7 +156,13 @@ export function seconds(value: number): number {
  * Consumers usually receive this indirectly through `window.animation`.
  */
 export function createWindowAnimationController(windowId: string): WindowAnimationController {
-  const entries = new Map<symbol, AnimationEntry>();
+  return createWindowAnimationControllerWithStore(windowId, new Map());
+}
+
+export function createWindowAnimationControllerWithStore(
+  windowId: string,
+  entries: Map<symbol, AnimationEntry>,
+): WindowAnimationController {
 
   const ensureEntry = (variable: AnimationVariable): AnimationEntry => {
     let entry = entries.get(variable.id);

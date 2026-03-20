@@ -17,17 +17,36 @@ import {
     cubicBezier
 } from "shoji_wm";
 
+const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
 WINDOW_MANAGER.event.onOpen((window) => {
+    window.setCloseAnimationDuration(seconds(0.5));
+    window.animation.start(openAnimation, {
+        duration: seconds(0.5),
+        to: 1,
+        easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
+    });
     window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
 });
 
+WINDOW_MANAGER.event.onStartClose((window) => {
+    window.animation.start(openAnimation, {
+        duration: seconds(0.5),
+        to: 0,
+        easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
+    });
+});
+
 WINDOW_MANAGER.event.onFocus((window, focused) => {
+    if (window.animation.running(openAnimation)) {
+        return;
+    }
+
     window.animation.start(focusAnimation, {
         duration: seconds(0.5),
-        to: focused ? 1 : 0.8,
-        easing: cubicBezier(0.47, 0.4, 0, 2.0)
+        to: focused ? 1 : 0.9,
+        easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
 });
 
@@ -36,13 +55,16 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const closeState = getInteractionState(window, "window.close");
 
     const scale = window.animation.signal(focusAnimation);
+    const openVariable = window.animation.signal(openAnimation);
+    const opacity = openVariable;
+    const translateY = openVariable(variable => (1 - variable) * 200);
 
     window.transform.origin = { x: 0.5, y: 0.5 };
     window.transform.translateX = 0;
-    window.transform.translateY = 0;
+    window.transform.translateY = translateY;
     window.transform.scaleX = scale;
     window.transform.scaleY = scale;
-    window.transform.opacity = 1;
+    window.transform.opacity = opacity;
 
     const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
     const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
@@ -71,6 +93,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         text={window.title()}
                         style={{
                             color: titleColor,
+                            fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
                             fontSize: 13,
                             fontWeight: 600,
                         }}

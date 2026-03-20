@@ -17,6 +17,8 @@ mod window_model;
 
 use smithay::utils::Logical;
 
+use crate::backend::text::{LabelSpec, measure_label_intrinsic};
+
 pub use bridge::{
     DecorationBridgeError, WireDecorationChild, WireDecorationNode, WireProps, WireStyle,
     WireWindowAction, decode_tree_json,
@@ -651,9 +653,17 @@ impl DecorationNode {
             DecorationNodeKind::Label(label) => {
                 let font_size = self.style.font_size.unwrap_or(13).max(1);
                 let line_height = self.style.line_height.unwrap_or(font_size + 4).max(font_size);
-                let char_count = label.text.chars().count() as f32;
-                let estimated_width = (char_count * font_size as f32 * 0.6).ceil() as i32;
-                Some((estimated_width.max(1), line_height.max(1)))
+                let spec = LabelSpec {
+                    rect: LogicalRect::new(0, 0, 0, 0),
+                    text: label.text.clone(),
+                    color: self.style.color.unwrap_or(Color::WHITE).with_opacity(self.style.opacity),
+                    font_size,
+                    font_weight: self.style.font_weight.clone(),
+                    font_family: self.style.font_family.clone(),
+                    text_align: self.style.text_align.clone(),
+                    line_height: Some(line_height),
+                };
+                Some(measure_label_intrinsic(&spec))
             }
             _ => None,
         }

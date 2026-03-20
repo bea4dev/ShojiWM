@@ -82,6 +82,7 @@ pub struct TransformOrigin {
 #[serde(rename_all = "camelCase")]
 pub enum WaylandWindowAction {
     Close,
+    FinalizeClose,
     Maximize,
     Minimize,
 }
@@ -140,8 +141,20 @@ impl ShojiWM {
             })
             .unwrap_or_default();
 
+        let runtime_id = if let Some(existing) = self.window_decorations.get(window) {
+            existing.snapshot.id.clone()
+        } else {
+            let protocol_id = toplevel.wl_surface().id().protocol_id();
+            let client_id = toplevel
+                .wl_surface()
+                .client()
+                .map(|client| format!("{:?}", client.id()))
+                .unwrap_or_else(|| "unknown-client".to_string());
+            format!("{client_id}:{protocol_id}")
+        };
+
         WaylandWindowSnapshot {
-            id: toplevel.wl_surface().id().protocol_id().to_string(),
+            id: runtime_id,
             title,
             app_id: app_id.clone(),
             position,
@@ -174,12 +187,15 @@ mod tests {
     #[test]
     fn wayland_window_actions_serialize_to_camel_case_strings() {
         let close = serde_json::to_string(&WaylandWindowAction::Close).expect("serialize close");
+        let finalize_close =
+            serde_json::to_string(&WaylandWindowAction::FinalizeClose).expect("serialize finalize close");
         let maximize =
             serde_json::to_string(&WaylandWindowAction::Maximize).expect("serialize maximize");
         let minimize =
             serde_json::to_string(&WaylandWindowAction::Minimize).expect("serialize minimize");
 
         assert_eq!(close, "\"close\"");
+        assert_eq!(finalize_close, "\"finalizeClose\"");
         assert_eq!(maximize, "\"maximize\"");
         assert_eq!(minimize, "\"minimize\"");
     }
