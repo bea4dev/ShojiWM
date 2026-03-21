@@ -587,55 +587,9 @@ fn render_surface(
                     translation: (0, 0).into(),
                     opacity: 1.0,
                 });
-            scene_elements.extend(
-                transform_window_elements(
-                    window_render::popup_elements(
-                        window,
-                        &mut backend.renderer,
-                        physical_location,
-                        scale,
-                        visual_state.opacity,
-                    ),
-                    visual_state,
-                    TtyRenderElements::Window,
-                    TtyRenderElements::TransformedWindow,
-                )
-                .into_iter(),
-            );
-
             if decoration_ready {
-                scene_elements.extend(
-                    transform_text_elements(
-                        decoration::icon_elements_for_window(
-                            &mut backend.renderer,
-                            space,
-                            window_decorations,
-                            &output,
-                            window,
-                            visual_state.opacity,
-                        )?,
-                        visual_state,
-                    )?
-                    .into_iter()
-                    .collect::<Vec<_>>(),
-                );
-
-                scene_elements.extend(
-                    transform_text_elements(
-                        decoration::text_elements_for_window(
-                            &mut backend.renderer,
-                            space,
-                            window_decorations,
-                            &output,
-                            window,
-                            visual_state.opacity,
-                        )?,
-                        visual_state,
-                    )?
-                    .into_iter()
-                    .collect::<Vec<_>>(),
-                );
-
+                let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+                let mut ordered_ui_debug: Vec<(usize, &'static str)> = Vec::new();
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     &mut backend.renderer,
                     space,
@@ -649,7 +603,7 @@ fn render_surface(
                     decoration_ready,
                 );
                 if let Some(decoration_state) = window_decorations.get_mut(window) {
-                    let mut background_items = decoration::ordered_background_elements_for_window(
+                    let mut ordered_background_items = decoration::ordered_background_elements_for_window(
                         &mut backend.renderer,
                         decoration_state,
                         output_geo,
@@ -660,20 +614,69 @@ fn render_surface(
                         warn!(?error, "failed to build decoration background elements");
                     })
                     .unwrap_or_default();
-                    background_items.append(&mut backdrop_items);
-                    background_items.sort_by_key(|(order, _)| *order);
-                    scene_elements.extend(
-                        transform_decoration_elements(
-                            background_items
+                    for cached in decoration_state.buffers.iter() {
+                        ordered_ui_debug.push((cached.order, cached.source_kind));
+                    }
+                    for cached in decoration_state.shader_buffers.iter() {
+                        let kind = match cached.shader.shader_type {
+                            crate::ssd::ShaderType::Pixel => "shader",
+                            crate::ssd::ShaderType::Backdrop => "backdrop",
+                        };
+                        ordered_ui_debug.push((cached.order, kind));
+                    }
+                    ordered_background_items.append(&mut backdrop_items);
+                    ordered_background_items.sort_by_key(|(order, _)| *order);
+                    for (order, element) in ordered_background_items {
+                        ordered_ui_elements.extend(
+                            transform_decoration_elements(vec![element], visual_state)?
                                 .into_iter()
-                                .map(|(_, element)| element)
-                                .collect(),
-                            visual_state,
-                        )?
-                        .into_iter()
-                        .collect::<Vec<_>>(),
+                                .map(|item| (order, item)),
+                        );
+                    }
+                }
+
+                for (order, element) in decoration::ordered_icon_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    window_decorations,
+                    &output,
+                    window,
+                    visual_state.opacity,
+                )? {
+                    ordered_ui_debug.push((order, "icon"));
+                    ordered_ui_elements.extend(
+                        transform_text_elements(vec![element], visual_state)?
+                            .into_iter()
+                            .map(|item| (order, item)),
                     );
                 }
+
+                for (order, element) in decoration::ordered_text_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    window_decorations,
+                    &output,
+                    window,
+                    visual_state.opacity,
+                )? {
+                    ordered_ui_debug.push((order, "label"));
+                    ordered_ui_elements.extend(
+                        transform_text_elements(vec![element], visual_state)?
+                            .into_iter()
+                            .map(|item| (order, item)),
+                    );
+                }
+
+                ordered_ui_elements.sort_by_key(|(order, _)| *order);
+                ordered_ui_debug.sort_by_key(|(order, _)| *order);
+                trace!(
+                    window_id = window_id,
+                    ?ordered_ui_debug,
+                    "ordered ui elements for tty window"
+                );
+                scene_elements.extend(
+                    ordered_ui_elements.into_iter().map(|(_, element)| element),
+                );
             }
 
             let content_clip = window_decorations
@@ -716,6 +719,22 @@ fn render_surface(
                     .into_iter(),
                 );
             }
+
+            scene_elements.extend(
+                transform_window_elements(
+                    window_render::popup_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        visual_state.opacity,
+                    ),
+                    visual_state,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
 
             windows_ready_for_decoration.insert(window_id.clone());
 
@@ -1189,51 +1208,57 @@ fn window_scene_elements_for_capture(
         });
 
     let mut elements = Vec::new();
-    elements.extend(
-        transform_window_elements(
-            window_render::popup_elements(
-                window,
-                renderer,
-                physical_location,
-                scale,
-                visual_state.opacity,
-            ),
-            visual_state,
-            TtyRenderElements::Window,
-            TtyRenderElements::TransformedWindow,
-        )
-        .into_iter(),
-    );
 
     if let Some(decoration) = window_decorations.get(window) {
-        if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
-            renderer,
-            decoration,
-            capture_geo,
-            scale,
-            visual_state.opacity,
-        ) {
-            elements.extend(transform_text_elements(icon_elements, visual_state)?);
-        }
-        if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
-            renderer,
-            decoration,
-            capture_geo,
-            scale,
-            visual_state.opacity,
-        ) {
-            elements.extend(transform_text_elements(text_elements, visual_state)?);
-        }
+        let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
         let mut decoration = decoration.clone();
-        if let Ok(background_elements) = crate::backend::decoration::background_elements_for_window(
+        if let Ok(backgrounds) = crate::backend::decoration::ordered_background_elements_for_window(
             renderer,
             &mut decoration,
             capture_geo,
             scale,
             visual_state.opacity,
         ) {
-            elements.extend(transform_decoration_elements(background_elements, visual_state)?);
+            for (order, element) in backgrounds {
+                ordered_ui_elements.extend(
+                    transform_decoration_elements(vec![element], visual_state)?
+                        .into_iter()
+                        .map(|item| (order, item)),
+                );
+            }
         }
+        if let Ok(icon_elements) = crate::backend::decoration::ordered_icon_elements_for_decoration(
+            renderer,
+            &decoration,
+            capture_geo,
+            scale,
+            visual_state.opacity,
+        ) {
+            for (order, element) in icon_elements {
+                ordered_ui_elements.extend(
+                    transform_text_elements(vec![element], visual_state)?
+                        .into_iter()
+                        .map(|item| (order, item)),
+                );
+            }
+        }
+        if let Ok(text_elements) = crate::backend::decoration::ordered_text_elements_for_decoration(
+            renderer,
+            &decoration,
+            capture_geo,
+            scale,
+            visual_state.opacity,
+        ) {
+            for (order, element) in text_elements {
+                ordered_ui_elements.extend(
+                    transform_text_elements(vec![element], visual_state)?
+                        .into_iter()
+                        .map(|item| (order, item)),
+                );
+            }
+        }
+        ordered_ui_elements.sort_by_key(|(order, _)| *order);
+        elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
         elements.extend(
             transform_window_elements(
                 window_render::surface_elements(
@@ -1250,6 +1275,22 @@ fn window_scene_elements_for_capture(
             .into_iter(),
         );
     }
+
+    elements.extend(
+        transform_window_elements(
+            window_render::popup_elements(
+                window,
+                renderer,
+                physical_location,
+                scale,
+                visual_state.opacity,
+            ),
+            visual_state,
+            TtyRenderElements::Window,
+            TtyRenderElements::TransformedWindow,
+        )
+        .into_iter(),
+    );
 
     Ok(elements)
 }

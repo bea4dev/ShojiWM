@@ -337,10 +337,11 @@ impl ShojiWM {
                     transformed_root_rect(layout.root.rect, evaluation.transform),
                 );
                 let content_clip = content_clip_for_layout(&tree, &layout);
-                let buffers = build_cached_buffers(&layout);
-                let shader_buffers = build_shader_buffers(&layout);
-                let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
-                let icon_buffers = build_icon_buffers(&layout, &snapshot, &mut self.icon_rasterizer);
+                let order_map = build_render_order_map(&layout);
+                let buffers = build_cached_buffers(&layout, &order_map);
+                let shader_buffers = build_shader_buffers(&layout, &order_map);
+                let text_buffers = build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
+                let icon_buffers = build_icon_buffers(&layout, &order_map, &snapshot, &mut self.icon_rasterizer);
                 self.suggested_window_offset = suggested_window_offset(&layout);
                 rebuilt += 1;
                 debug!(
@@ -413,12 +414,13 @@ impl ShojiWM {
                     cached.snapshot = snapshot;
                     cached.visual_transform = evaluation.transform;
                     cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
-                    cached.buffers = build_cached_buffers(&cached.layout);
-                    cached.shader_buffers = build_shader_buffers(&cached.layout);
+                    let order_map = build_render_order_map(&cached.layout);
+                    cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                    cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
                     cached.text_buffers =
-                        build_text_buffers(&cached.layout, &mut self.text_rasterizer);
+                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
                     cached.icon_buffers =
-                        build_icon_buffers(&cached.layout, &cached.snapshot, &mut self.icon_rasterizer);
+                        build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
                     self.suggested_window_offset = suggested_window_offset(&cached.layout);
                     relayout += 1;
                     debug!(
@@ -468,10 +470,11 @@ impl ShojiWM {
                     }
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 } else if force_async_asset_refresh {
+                    let order_map = build_render_order_map(&cached.layout);
                     cached.text_buffers =
-                        build_text_buffers(&cached.layout, &mut self.text_rasterizer);
+                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
                     cached.icon_buffers =
-                        build_icon_buffers(&cached.layout, &cached.snapshot, &mut self.icon_rasterizer);
+                        build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
                 }
             }
         }
@@ -492,11 +495,12 @@ impl ShojiWM {
                     .layout_for_client(closing.decoration.client_rect)
                     .map_err(super::DecorationEvaluationError::Layout)?;
                 let content_clip = content_clip_for_layout(&tree, &layout);
-                let buffers = build_cached_buffers(&layout);
-                let shader_buffers = build_shader_buffers(&layout);
-                let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
+                let order_map = build_render_order_map(&layout);
+                let buffers = build_cached_buffers(&layout, &order_map);
+                let shader_buffers = build_shader_buffers(&layout, &order_map);
+                let text_buffers = build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
                 let icon_buffers =
-                    build_icon_buffers(&layout, &closing.decoration.snapshot, &mut self.icon_rasterizer);
+                    build_icon_buffers(&layout, &order_map, &closing.decoration.snapshot, &mut self.icon_rasterizer);
                 closing.decoration.tree = tree;
                 closing.decoration.layout = layout;
                 closing.decoration.content_clip = content_clip;
@@ -519,12 +523,16 @@ impl ShojiWM {
 
         if force_async_asset_refresh {
             for closing in self.closing_window_snapshots.values_mut() {
+                let order_map = build_render_order_map(&closing.decoration.layout);
+                closing.decoration.buffers =
+                    build_cached_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.shader_buffers =
-                    build_shader_buffers(&closing.decoration.layout);
+                    build_shader_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.text_buffers =
-                    build_text_buffers(&closing.decoration.layout, &mut self.text_rasterizer);
+                    build_text_buffers(&closing.decoration.layout, &order_map, &mut self.text_rasterizer);
                 closing.decoration.icon_buffers = build_icon_buffers(
                     &closing.decoration.layout,
+                    &order_map,
                     &closing.decoration.snapshot,
                     &mut self.icon_rasterizer,
                 );
@@ -692,27 +700,33 @@ impl super::ComputedDecorationNode {
     }
 }
 
-fn build_cached_buffers(layout: &ComputedDecorationTree) -> Vec<CachedDecorationBuffer> {
-    let (buffers, _) = build_cached_buffers_and_shaders(layout);
+fn build_cached_buffers(
+    layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
+) -> Vec<CachedDecorationBuffer> {
+    let (buffers, _) = build_cached_buffers_and_shaders(layout, order_map);
     buffers
 }
 
-fn build_shader_buffers(layout: &ComputedDecorationTree) -> Vec<CachedShaderEffect> {
-    let (_, buffers) = build_cached_buffers_and_shaders(layout);
+fn build_shader_buffers(
+    layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
+) -> Vec<CachedShaderEffect> {
+    let (_, buffers) = build_cached_buffers_and_shaders(layout, order_map);
     buffers
 }
 
 fn build_cached_buffers_and_shaders(
     layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
 ) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
     let mut buffers = Vec::new();
     let mut shader_buffers = Vec::new();
-    let mut order = 0usize;
     collect_cached_buffers(
         &layout.root,
         "root".to_string(),
         None,
-        &mut order,
+        order_map,
         &mut buffers,
         &mut shader_buffers,
     );
@@ -727,28 +741,100 @@ fn suggested_window_offset(layout: &ComputedDecorationTree) -> Option<(i32, i32)
 
 fn build_text_buffers(
     layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
     rasterizer: &mut crate::backend::text::TextRasterizer,
 ) -> Vec<CachedDecorationLabel> {
     let mut buffers = Vec::new();
-    collect_text_buffers(&layout.root, rasterizer, &mut buffers);
+    collect_text_buffers(&layout.root, "root".into(), order_map, rasterizer, &mut buffers);
     buffers
 }
 
 fn build_icon_buffers(
     layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
     let mut buffers = Vec::new();
-    collect_icon_buffers(&layout.root, snapshot, rasterizer, &mut buffers);
+    collect_icon_buffers(&layout.root, "root".into(), order_map, snapshot, rasterizer, &mut buffers);
     buffers
+}
+
+fn build_render_order_map(
+    layout: &ComputedDecorationTree,
+) -> std::collections::HashMap<String, usize> {
+    let mut map = std::collections::HashMap::new();
+    let mut order = 0usize;
+    collect_render_orders(&layout.root, "root".into(), &mut order, &mut map);
+    map
+}
+
+fn collect_render_orders(
+    node: &super::ComputedDecorationNode,
+    path: String,
+    order: &mut usize,
+    map: &mut std::collections::HashMap<String, usize>,
+) {
+    if node.style.visible == Some(false) {
+        return;
+    }
+
+    match &node.kind {
+        super::DecorationNodeKind::Label(_) => {
+            map.insert(format!("{path}:label"), *order);
+            *order += 1;
+            return;
+        }
+        super::DecorationNodeKind::AppIcon => {
+            map.insert(format!("{path}:icon"), *order);
+            *order += 1;
+            return;
+        }
+        super::DecorationNodeKind::WindowSlot => return,
+        _ => {}
+    }
+
+    for (index, child) in node.children.iter().rev().enumerate() {
+        collect_render_orders(child, format!("{path}/child-{index}"), order, map);
+    }
+
+    if let Some(border) = node.style.border {
+        let color = border.color.with_opacity(node.style.opacity);
+        if color.a > 0 && border.width > 0 {
+            map.insert(format!("{path}:border"), *order);
+            *order += 1;
+        }
+    }
+
+    if let super::DecorationNodeKind::ShaderEffect(_) = &node.kind {
+        map.insert(format!("{path}:shader"), *order);
+        *order += 1;
+    }
+
+    if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
+        if background.a > 0 {
+            if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+                map.insert(format!("{path}:fill-top"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-bottom"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-left"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-right"), *order);
+                *order += 1;
+            } else {
+                map.insert(format!("{path}:fill"), *order);
+                *order += 1;
+            }
+        }
+    }
 }
 
 fn collect_cached_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     ancestor_clip: Option<super::DecorationClip>,
-    order: &mut usize,
+    order_map: &std::collections::HashMap<String, usize>,
     buffers: &mut Vec<CachedDecorationBuffer>,
     shader_buffers: &mut Vec<CachedShaderEffect>,
 ) {
@@ -779,8 +865,8 @@ fn collect_cached_buffers(
             if let Some(border) = node.style.border {
                 let color = border.color.with_opacity(node.style.opacity);
                 if color.a > 0 && border.width > 0 {
-                    let current_order = *order;
-                    *order += 1;
+                    let current_order =
+                        *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
                     buffers.push(CachedDecorationBuffer {
                         stable_key: format!("{path}:border"),
                         order: current_order,
@@ -804,20 +890,9 @@ fn collect_cached_buffers(
                 }
             }
 
-            for (index, child) in node.children.iter().rev().enumerate() {
-                collect_cached_buffers(
-                    child,
-                    format!("{path}/child-{index}"),
-                    child_clip,
-                    order,
-                    buffers,
-                    shader_buffers,
-                );
-            }
-
             if let super::DecorationNodeKind::ShaderEffect(effect) = &node.kind {
-                let current_order = *order;
-                *order += 1;
+                let current_order =
+                    *order_map.get(&format!("{path}:shader")).unwrap_or(&usize::MAX);
                 shader_buffers.push(CachedShaderEffect {
                     stable_key: format!("{path}:shader"),
                     order: current_order,
@@ -834,7 +909,7 @@ fn collect_cached_buffers(
                         if let Some(inner_rect) = window_border_inner_rect {
                             push_fill_rects_around_hole(
                                 buffers,
-                                order,
+                                order_map,
                                 &path,
                                 node.rect,
                                 inner_rect,
@@ -844,7 +919,7 @@ fn collect_cached_buffers(
                         } else {
                             push_cached_fill(
                                 buffers,
-                                order,
+                                *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
                                 format!("{path}:fill"),
                                 node.rect,
                                 background,
@@ -857,7 +932,7 @@ fn collect_cached_buffers(
                     } else {
                         push_cached_fill(
                             buffers,
-                            order,
+                            *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
                             format!("{path}:fill"),
                             node.rect,
                             background,
@@ -869,12 +944,25 @@ fn collect_cached_buffers(
                     }
                 }
             }
+
+            for (index, child) in node.children.iter().rev().enumerate() {
+                collect_cached_buffers(
+                    child,
+                    format!("{path}/child-{index}"),
+                    child_clip,
+                    order_map,
+                    buffers,
+                    shader_buffers,
+                );
+            }
         }
     }
 }
 
 fn collect_text_buffers(
     node: &super::ComputedDecorationNode,
+    path: String,
+    order_map: &std::collections::HashMap<String, usize>,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     buffers: &mut Vec<CachedDecorationLabel>,
 ) {
@@ -882,8 +970,8 @@ fn collect_text_buffers(
         return;
     }
 
-    for child in node.children.iter().rev() {
-        collect_text_buffers(child, rasterizer, buffers);
+    for (index, child) in node.children.iter().rev().enumerate() {
+        collect_text_buffers(child, format!("{path}/child-{index}"), order_map, rasterizer, buffers);
     }
 
     let super::DecorationNodeKind::Label(label) = &node.kind else {
@@ -907,6 +995,7 @@ fn collect_text_buffers(
 
     if let Some(buffer) = rasterizer.render_label(&spec) {
         let mut buffer = buffer;
+        buffer.order = *order_map.get(&format!("{path}:label")).unwrap_or(&usize::MAX);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffers.push(buffer);
@@ -915,6 +1004,8 @@ fn collect_text_buffers(
 
 fn collect_icon_buffers(
     node: &super::ComputedDecorationNode,
+    path: String,
+    order_map: &std::collections::HashMap<String, usize>,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
     buffers: &mut Vec<CachedDecorationIcon>,
@@ -923,8 +1014,8 @@ fn collect_icon_buffers(
         return;
     }
 
-    for child in node.children.iter().rev() {
-        collect_icon_buffers(child, snapshot, rasterizer, buffers);
+    for (index, child) in node.children.iter().rev().enumerate() {
+        collect_icon_buffers(child, format!("{path}/child-{index}"), order_map, snapshot, rasterizer, buffers);
     }
 
     let super::DecorationNodeKind::AppIcon = &node.kind else {
@@ -939,6 +1030,7 @@ fn collect_icon_buffers(
 
     if let Some(buffer) = rasterizer.render_icon(&spec) {
         let mut buffer = buffer;
+        buffer.order = *order_map.get(&format!("{path}:icon")).unwrap_or(&usize::MAX);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffers.push(buffer);
@@ -947,7 +1039,7 @@ fn collect_icon_buffers(
 
 fn push_fill_rects_around_hole(
     buffers: &mut Vec<CachedDecorationBuffer>,
-    order: &mut usize,
+    order_map: &std::collections::HashMap<String, usize>,
     path: &str,
     rect: LogicalRect,
     hole: LogicalRect,
@@ -971,7 +1063,9 @@ fn push_fill_rects_around_hole(
     for (suffix, candidate) in candidates {
         push_cached_fill(
             buffers,
-            order,
+            *order_map
+                .get(&format!("{path}:{suffix}"))
+                .unwrap_or(&usize::MAX),
             format!("{path}:{suffix}"),
             candidate,
             color,
@@ -985,7 +1079,7 @@ fn push_fill_rects_around_hole(
 
 fn push_cached_fill(
     buffers: &mut Vec<CachedDecorationBuffer>,
-    order: &mut usize,
+    order: usize,
     stable_key: String,
     rect: LogicalRect,
     color: super::Color,
@@ -998,11 +1092,9 @@ fn push_cached_fill(
         return;
     }
 
-    let current_order = *order;
-    *order += 1;
     buffers.push(CachedDecorationBuffer {
         stable_key,
-        order: current_order,
+        order,
         rect,
         color,
         buffer: SolidColorBuffer::new(

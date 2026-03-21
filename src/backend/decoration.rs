@@ -169,6 +169,48 @@ pub fn icon_elements_for_window(
     crate::backend::icon::icon_elements_for_window(renderer, space, decorations, output, window, alpha)
 }
 
+pub fn ordered_icon_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    crate::backend::icon::ordered_icon_elements_for_window(renderer, space, decorations, output, window, alpha)
+}
+
+pub fn ordered_icon_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    crate::backend::icon::ordered_icon_elements_for_decoration(renderer, decoration, output_geo, scale, alpha)
+}
+
+pub fn ordered_text_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    crate::backend::text::ordered_text_elements_for_window(renderer, space, decorations, output, window, alpha)
+}
+
+pub fn ordered_text_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    crate::backend::text::ordered_text_elements_for_decoration(renderer, decoration, output_geo, scale, alpha)
+}
+
 fn rounded_rect_element(
     renderer: &mut GlesRenderer,
     decoration: &mut crate::ssd::WindowDecorationState,

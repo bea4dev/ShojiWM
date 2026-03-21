@@ -35,6 +35,7 @@ thread_local! {
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationLabel {
+    pub order: usize,
     pub rect: LogicalRect,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
@@ -100,6 +101,7 @@ impl TextRasterizer {
         if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationLabel {
+                order: 0,
                 rect: spec.rect,
                 clip_rect: None,
                 clip_radius: 0,
@@ -121,6 +123,7 @@ impl TextRasterizer {
 
         let rendered = self.render_label_pixels(spec)?;
         Some(CachedDecorationLabel {
+            order: 0,
             rect: spec.rect,
             clip_rect: None,
             clip_radius: 0,
@@ -342,6 +345,51 @@ pub fn text_elements_for_window(
         .text_buffers
         .iter()
         .filter_map(|label| memory_text_element(renderer, label, output_geo, scale, alpha).transpose())
+        .collect()
+}
+
+pub fn ordered_text_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+    alpha: f32,
+) -> Result<Vec<(usize, DecorationTextureElements)>, GlesError> {
+    let Some(output_geo) = space.output_geometry(output) else {
+        return Ok(Vec::new());
+    };
+    let scale = OutputScale::from(output.current_scale().fractional_scale());
+    let Some(decoration) = decorations.get(window) else {
+        return Ok(Vec::new());
+    };
+
+    decoration
+        .text_buffers
+        .iter()
+        .filter_map(|label| {
+            memory_text_element(renderer, label, output_geo, scale, alpha)
+                .transpose()
+                .map(|result| result.map(|element| (label.order, element)))
+        })
+        .collect()
+}
+
+pub fn ordered_text_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: OutputScale<f64>,
+    alpha: f32,
+) -> Result<Vec<(usize, DecorationTextureElements)>, GlesError> {
+    decoration
+        .text_buffers
+        .iter()
+        .filter_map(|label| {
+            memory_text_element(renderer, label, output_geo, scale, alpha)
+                .transpose()
+                .map(|result| result.map(|element| (label.order, element)))
+        })
         .collect()
 }
 

@@ -30,6 +30,7 @@ use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
+    pub order: usize,
     pub rect: LogicalRect,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
@@ -97,6 +98,7 @@ impl IconRasterizer {
         if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationIcon {
+                order: 0,
                 rect: spec.rect,
                 clip_rect: None,
                 clip_radius: 0,
@@ -124,6 +126,7 @@ impl IconRasterizer {
             None,
         );
         Some(CachedDecorationIcon {
+            order: 0,
             rect: spec.rect,
             clip_rect: None,
             clip_radius: 0,
@@ -294,6 +297,51 @@ pub fn icon_elements_for_window(
         .icon_buffers
         .iter()
         .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale, alpha).transpose())
+        .collect()
+}
+
+pub fn ordered_icon_elements_for_window(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    decorations: &HashMap<Window, WindowDecorationState>,
+    output: &Output,
+    window: &Window,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    let Some(output_geo) = space.output_geometry(output) else {
+        return Ok(Vec::new());
+    };
+    let scale = OutputScale::from(output.current_scale().fractional_scale());
+    let Some(decoration) = decorations.get(window) else {
+        return Ok(Vec::new());
+    };
+
+    decoration
+        .icon_buffers
+        .iter()
+        .filter_map(|icon| {
+            memory_icon_element(renderer, icon, output_geo, scale, alpha)
+                .transpose()
+                .map(|result| result.map(|element| (icon.order, element)))
+        })
+        .collect()
+}
+
+pub fn ordered_icon_elements_for_decoration(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: OutputScale<f64>,
+    alpha: f32,
+) -> Result<Vec<(usize, crate::backend::text::DecorationTextureElements)>, GlesError> {
+    decoration
+        .icon_buffers
+        .iter()
+        .filter_map(|icon| {
+            memory_icon_element(renderer, icon, output_geo, scale, alpha)
+                .transpose()
+                .map(|result| result.map(|element| (icon.order, element)))
+        })
         .collect()
 }
 
