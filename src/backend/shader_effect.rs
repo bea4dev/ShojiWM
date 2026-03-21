@@ -42,6 +42,12 @@ pub struct CachedShaderEffect {
     pub clip_radius: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedBackdropTexture {
+    pub signature: u64,
+    pub texture: GlesTexture,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShaderEffectSpec {
     pub rect: Rectangle<i32, Logical>,

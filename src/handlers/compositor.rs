@@ -28,6 +28,7 @@ impl CompositorHandler for ShojiWM {
 
     fn commit(&mut self, surface: &WlSurface) {
         trace!(surface = ?surface.id(), "wl_surface commit received");
+        self.scene_generation = self.scene_generation.wrapping_add(1);
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();

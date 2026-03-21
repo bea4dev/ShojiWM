@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::hash::{Hash, Hasher};
 
 use smithay::{
     backend::{
@@ -670,7 +671,7 @@ fn transform_backdrop_elements(
 
 fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
-    state: &ShojiWM,
+    state: &mut ShojiWM,
     output: &Output,
     output_geo: Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -683,20 +684,35 @@ fn backdrop_shader_elements_for_window(
     if !has_backdrop_source {
         return Vec::new();
     }
-    let Some(decoration) = state.window_decorations.get(window) else {
+    let Some(decoration) = state.window_decorations.get(window).cloned() else {
         return Vec::new();
     };
 
     decoration
         .shader_buffers
+        .clone()
         .iter()
         .filter(|cached| matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop))
         .filter_map(|cached| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            cached.stable_key.hash(&mut hasher);
+            state.scene_generation.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
                 decoration.visual_transform,
             );
+            (
+                effect_rect.x,
+                effect_rect.y,
+                effect_rect.width,
+                effect_rect.height,
+                output_geo.loc.x,
+                output_geo.loc.y,
+                output_geo.size.w,
+                output_geo.size.h,
+            )
+                .hash(&mut hasher);
             let blur_padding = cached
                 .shader
                 .blur
@@ -706,6 +722,10 @@ fn backdrop_shader_elements_for_window(
                     (radius * passes * 24 + 32).max(32)
                 })
                 .unwrap_or(0);
+            (blur_padding, cached.clip_radius).hash(&mut hasher);
+            if let Some(blur) = cached.shader.blur {
+                (blur.radius, blur.passes).hash(&mut hasher);
+            }
             let capture_geo = Rectangle::new(
                 smithay::utils::Point::from((
                     effect_rect.x - blur_padding,
@@ -717,6 +737,80 @@ fn backdrop_shader_elements_for_window(
                 )
                     .into(),
             );
+            (
+                capture_geo.loc.x,
+                capture_geo.loc.y,
+                capture_geo.size.w,
+                capture_geo.size.h,
+            )
+                .hash(&mut hasher);
+            for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+                if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                    lower_decoration.snapshot.id.hash(&mut hasher);
+                    if let Some(commit) = state.window_commit_times.get(lower_window) {
+                        commit.as_nanos().hash(&mut hasher);
+                    }
+                    lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+                }
+            }
+            let signature = hasher.finish();
+
+            if let Some(existing) = state
+                .window_decorations
+                .get(window)
+                .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                .filter(|existing| existing.signature == signature)
+                .cloned()
+            {
+                let local_rect = Rectangle::new(
+                    smithay::utils::Point::from((
+                        cached.rect.x - output_geo.loc.x,
+                        cached.rect.y - output_geo.loc.y,
+                    )),
+                    (cached.rect.width, cached.rect.height).into(),
+                );
+                let clip_rect = cached.clip_rect.map(|clip_rect| {
+                    Rectangle::new(
+                        smithay::utils::Point::from((
+                            clip_rect.x - output_geo.loc.x,
+                            clip_rect.y - output_geo.loc.y,
+                        )),
+                        (clip_rect.width, clip_rect.height).into(),
+                    )
+                });
+                let local_sample_rect = Rectangle::new(
+                    smithay::utils::Point::from((
+                        effect_rect.x - output_geo.loc.x,
+                        effect_rect.y - output_geo.loc.y,
+                    )),
+                    (effect_rect.width, effect_rect.height).into(),
+                );
+                let local_capture_rect = Rectangle::new(
+                    smithay::utils::Point::from((
+                        capture_geo.loc.x - output_geo.loc.x,
+                        capture_geo.loc.y - output_geo.loc.y,
+                    )),
+                    (capture_geo.size.w, capture_geo.size.h).into(),
+                );
+                return crate::backend::shader_effect::backdrop_shader_element(
+                    renderer,
+                    existing.texture,
+                    local_rect,
+                    local_sample_rect,
+                    local_capture_rect,
+                    &cached.shader,
+                    alpha,
+                    scale.x as f32,
+                    clip_rect,
+                    cached.clip_radius,
+                )
+                .ok()
+                .map(|element| (cached.order, element));
+            }
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
                 backdrop_scene.extend(window_scene_elements_for_capture(
@@ -794,6 +888,15 @@ fn backdrop_shader_elements_for_window(
                     &mut texture,
                     (capture_geo.size.w, capture_geo.size.h).into(),
                     std::path::PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_blurred.png")),
+                );
+            }
+            if let Some(window_decoration) = state.window_decorations.get_mut(window) {
+                window_decoration.backdrop_cache.insert(
+                    cached.stable_key.clone(),
+                    crate::backend::shader_effect::CachedBackdropTexture {
+                        signature,
+                        texture: texture.clone(),
+                    },
                 );
             }
             let local_rect = Rectangle::new(

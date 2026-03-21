@@ -35,6 +35,7 @@ pub struct WindowDecorationState {
     pub icon_buffers: Vec<CachedDecorationIcon>,
     pub rounded_cache: std::collections::HashMap<String, RoundedElementState>,
     pub shader_cache: std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
+    pub backdrop_cache: std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -361,8 +362,9 @@ impl ShojiWM {
                 let rounded_cache = self
                     .window_decorations
                     .remove(&window)
-                    .map(|cached| cached.rounded_cache)
+                    .map(|cached| (cached.rounded_cache, cached.backdrop_cache))
                     .unwrap_or_default();
+                let (rounded_cache, backdrop_cache) = rounded_cache;
                 self.window_decorations.insert(
                     window,
                     WindowDecorationState {
@@ -378,6 +380,7 @@ impl ShojiWM {
                         icon_buffers,
                         rounded_cache,
                         shader_cache: std::collections::HashMap::new(),
+                        backdrop_cache,
                     },
                 );
                 self.schedule_redraw();
