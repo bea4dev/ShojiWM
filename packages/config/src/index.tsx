@@ -23,7 +23,7 @@ const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 const backgroundShader = compileShader("./blur.frag", {
     type: "backdrop",
-    blur: { radius: 3, passes: 2 },
+    blur: { radius: 3, passes: 4 },
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {
@@ -73,7 +73,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.opacity = opacity;
 
     const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
-    const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
+    const titlebarBackground = isFocused ? "#1f243080" : "#2a2f3a80";
     const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
 
     const titlebarStyle: SSDStyle = {

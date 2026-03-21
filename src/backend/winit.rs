@@ -177,12 +177,12 @@ pub fn init_winit(
                                     translation: (0, 0).into(),
                                     opacity: 1.0,
                                 });
+                            let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
                             if decoration_ready {
-                                let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
-                                let mut ordered_ui_debug: Vec<(usize, &'static str)> = Vec::new();
                                 let mut backdrop_items = backdrop_shader_elements_for_window(
                                     renderer,
                                     state,
+                                    &output,
                                     output_geo,
                                     scale,
                                     &windows_top_to_bottom,
@@ -205,16 +205,6 @@ pub fn init_winit(
                                         warn!(?error, "failed to build decoration background elements");
                                     })
                                     .unwrap_or_default();
-                                    for cached in decoration_state.buffers.iter() {
-                                        ordered_ui_debug.push((cached.order, cached.source_kind));
-                                    }
-                                    for cached in decoration_state.shader_buffers.iter() {
-                                        let kind = match cached.shader.shader_type {
-                                            crate::ssd::ShaderType::Pixel => "shader",
-                                            crate::ssd::ShaderType::Backdrop => "backdrop",
-                                        };
-                                        ordered_ui_debug.push((cached.order, kind));
-                                    }
                                     background_items.append(&mut backdrop_items);
                                     background_items.sort_by_key(|(order, _)| *order);
                                     for (order, element) in background_items {
@@ -236,7 +226,6 @@ pub fn init_winit(
                                 )
                                 .unwrap_or_default()
                                 {
-                                    ordered_ui_debug.push((order, "icon"));
                                     ordered_ui_elements.extend(
                                         transform_text_elements(vec![element], visual_state)
                                             .into_iter()
@@ -254,7 +243,6 @@ pub fn init_winit(
                                 )
                                 .unwrap_or_default()
                                 {
-                                    ordered_ui_debug.push((order, "label"));
                                     ordered_ui_elements.extend(
                                         transform_text_elements(vec![element], visual_state)
                                             .into_iter()
@@ -263,15 +251,6 @@ pub fn init_winit(
                                 }
 
                                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
-                                ordered_ui_debug.sort_by_key(|(order, _)| *order);
-                                trace!(
-                                    window_id = window_id,
-                                    ?ordered_ui_debug,
-                                    "ordered ui elements for winit window"
-                                );
-                                scene_elements.extend(
-                                    ordered_ui_elements.into_iter().map(|(_, element)| element),
-                                );
                             }
 
                             let content_clip = state
@@ -315,6 +294,10 @@ pub fn init_winit(
                                     .into_iter(),
                                 );
                             }
+
+                            scene_elements.extend(
+                                ordered_ui_elements.into_iter().map(|(_, element)| element),
+                            );
 
                             scene_elements.extend(
                                 transform_window_elements(
@@ -625,6 +608,7 @@ fn transform_decoration_elements(
 fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     state: &ShojiWM,
+    output: &Output,
     output_geo: Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
     windows_top_to_bottom: &[smithay::desktop::Window],
@@ -649,14 +633,6 @@ fn backdrop_shader_elements_for_window(
                 cached.rect,
                 decoration.layout.root.rect,
                 decoration.visual_transform,
-            );
-            trace!(
-                window_id = decoration.snapshot.id,
-                effect_rect = ?effect_rect,
-                alpha,
-                has_backdrop_source,
-                shader_type = ?cached.shader.shader_type,
-                "considering backdrop shader effect for winit window"
             );
             let blur_padding = cached
                 .shader
@@ -688,12 +664,27 @@ fn backdrop_shader_elements_for_window(
                     lower_window,
                 ));
             }
+            let (_, lower_layer_elements) =
+                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+            let capture_offset = capture_geo.loc - output_geo.loc;
+            let capture_visual = WindowVisualState {
+                origin: smithay::utils::Point::from((0, 0)),
+                scale: smithay::utils::Scale::from((1.0, 1.0)),
+                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
+                opacity: 1.0,
+            };
+            backdrop_scene.extend(
+                transform_window_elements(
+                    lower_layer_elements,
+                    capture_visual,
+                    WinitRenderElements::Window,
+                    WinitRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
             if backdrop_scene.is_empty() {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    effect_rect = ?effect_rect,
-                    "skipping backdrop shader effect because backdrop scene is empty"
-                );
                 return None;
             }
 

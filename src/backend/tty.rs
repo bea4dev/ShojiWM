@@ -587,13 +587,13 @@ fn render_surface(
                     translation: (0, 0).into(),
                     opacity: 1.0,
                 });
+            let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             if decoration_ready {
-                let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
-                let mut ordered_ui_debug: Vec<(usize, &'static str)> = Vec::new();
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     &mut backend.renderer,
                     space,
                     window_decorations,
+                    &output,
                     output_geo,
                     scale,
                     &windows_top_to_bottom,
@@ -614,16 +614,6 @@ fn render_surface(
                         warn!(?error, "failed to build decoration background elements");
                     })
                     .unwrap_or_default();
-                    for cached in decoration_state.buffers.iter() {
-                        ordered_ui_debug.push((cached.order, cached.source_kind));
-                    }
-                    for cached in decoration_state.shader_buffers.iter() {
-                        let kind = match cached.shader.shader_type {
-                            crate::ssd::ShaderType::Pixel => "shader",
-                            crate::ssd::ShaderType::Backdrop => "backdrop",
-                        };
-                        ordered_ui_debug.push((cached.order, kind));
-                    }
                     ordered_background_items.append(&mut backdrop_items);
                     ordered_background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in ordered_background_items {
@@ -643,7 +633,6 @@ fn render_surface(
                     window,
                     visual_state.opacity,
                 )? {
-                    ordered_ui_debug.push((order, "icon"));
                     ordered_ui_elements.extend(
                         transform_text_elements(vec![element], visual_state)?
                             .into_iter()
@@ -659,7 +648,6 @@ fn render_surface(
                     window,
                     visual_state.opacity,
                 )? {
-                    ordered_ui_debug.push((order, "label"));
                     ordered_ui_elements.extend(
                         transform_text_elements(vec![element], visual_state)?
                             .into_iter()
@@ -668,15 +656,6 @@ fn render_surface(
                 }
 
                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
-                ordered_ui_debug.sort_by_key(|(order, _)| *order);
-                trace!(
-                    window_id = window_id,
-                    ?ordered_ui_debug,
-                    "ordered ui elements for tty window"
-                );
-                scene_elements.extend(
-                    ordered_ui_elements.into_iter().map(|(_, element)| element),
-                );
             }
 
             let content_clip = window_decorations
@@ -719,6 +698,10 @@ fn render_surface(
                     .into_iter(),
                 );
             }
+
+            scene_elements.extend(
+                ordered_ui_elements.into_iter().map(|(_, element)| element),
+            );
 
             scene_elements.extend(
                 transform_window_elements(
@@ -1013,6 +996,7 @@ fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
     windows_top_to_bottom: &[smithay::desktop::Window],
@@ -1037,14 +1021,6 @@ fn backdrop_shader_elements_for_window(
                 cached.rect,
                 decoration.layout.root.rect,
                 decoration.visual_transform,
-            );
-            trace!(
-                window_id = decoration.snapshot.id,
-                effect_rect = ?effect_rect,
-                alpha,
-                has_backdrop_source,
-                shader_type = ?cached.shader.shader_type,
-                "considering backdrop shader effect for tty window"
             );
             let blur_padding = cached
                 .shader
@@ -1079,12 +1055,27 @@ fn backdrop_shader_elements_for_window(
                     backdrop_scene.append(&mut elements);
                 }
             }
+            let (_, lower_layer_elements) =
+                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+            let capture_offset = capture_geo.loc - output_geo.loc;
+            let capture_visual = WindowVisualState {
+                origin: smithay::utils::Point::from((0, 0)),
+                scale: smithay::utils::Scale::from((1.0, 1.0)),
+                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
+                opacity: 1.0,
+            };
+            backdrop_scene.extend(
+                transform_window_elements(
+                    lower_layer_elements,
+                    capture_visual,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
             if backdrop_scene.is_empty() {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    effect_rect = ?effect_rect,
-                    "skipping backdrop shader effect because backdrop scene is empty"
-                );
                 return None;
             }
 
