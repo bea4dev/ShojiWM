@@ -21,9 +21,9 @@ import {
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
-const titlebarShader = compileShader("./blur.frag", {
+const backgroundShader = compileShader("./blur.frag", {
     type: "backdrop",
-    blur: { radius: 2, passes: 3 },
+    blur: { radius: 8, passes: 4 },
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {
@@ -73,7 +73,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.opacity = opacity;
 
     const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
-    const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
+    const titlebarBackground = isFocused ? "#1f243080" : "#2a2f3a80";
     const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
 
     const titlebarStyle: SSDStyle = {
@@ -81,6 +81,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         paddingX: 20,
         gap: 8,
         alignItems: "center",
+        background: titlebarBackground,
     };
 
     return (
@@ -88,11 +89,11 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             style={{
                 border: { px: 2, color: borderColor },
                 borderRadius: 20,
-                //background: "#101319",
+                background: "#101319",
             }}
         >
-            <Box direction="column">
-                <ShaderEffect shader={titlebarShader} direction="row" style={titlebarStyle}>
+            <ShaderEffect shader={backgroundShader} direction="column">
+                <Box direction="row" style={titlebarStyle}>
                     <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
                     <Label
                         text={window.title()}
@@ -122,9 +123,9 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         )}
                         onClick={() => window.close()}
                     />
-                </ShaderEffect>
+                </Box>
                 <ClientWindow />
-            </Box>
+            </ShaderEffect>
         </WindowBorder>
     );
 };
