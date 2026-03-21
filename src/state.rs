@@ -92,6 +92,7 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub windows_ready_for_decoration: HashSet<String>,
     pub live_window_snapshots: HashMap<String, LiveWindowSnapshot>,
     pub complete_window_snapshots: HashMap<String, LiveWindowSnapshot>,
     pub closing_window_snapshots: HashMap<String, ClosingWindowSnapshot>,
@@ -273,6 +274,7 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             window_decorations: HashMap::new(),
+            windows_ready_for_decoration: HashSet::new(),
             live_window_snapshots: HashMap::new(),
             complete_window_snapshots: HashMap::new(),
             closing_window_snapshots: HashMap::new(),

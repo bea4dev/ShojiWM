@@ -363,6 +363,7 @@ impl ShojiWM {
                 self.closing_window_snapshots.remove(&runtime_action.window_id);
                 self.live_window_snapshots.remove(&runtime_action.window_id);
                 self.complete_window_snapshots.remove(&runtime_action.window_id);
+                self.windows_ready_for_decoration.remove(&runtime_action.window_id);
                 self.snapshot_dirty_window_ids.remove(&runtime_action.window_id);
                 let _ = self.decoration_evaluator.window_closed(&runtime_action.window_id);
                 self.runtime_dirty_window_ids.remove(&runtime_action.window_id);

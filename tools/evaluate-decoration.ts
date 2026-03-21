@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   createReactiveWindow,
+  installShaderResolverBridge,
   serializeDecorationTree,
   type DecorationSerializationContext,
   type DecorationFunction,
@@ -43,6 +44,7 @@ async function main() {
     : DEFAULT_SNAPSHOT;
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
+  installShaderResolverBridge(resolve(configPath));
   const loaded = await import(moduleUrl);
   const decoration = resolveDecoration(loaded);
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use smithay::{
     backend::renderer::{
-        element::memory::MemoryRenderBufferRenderElement,
+        gles::element::TextureShaderElement,
         gles::{GlesError, GlesRenderer},
     },
     desktop::{Space, Window},
@@ -13,9 +13,25 @@ use tracing::trace;
 
 use crate::{
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
+    backend::shader_effect::{ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement},
     backend::text,
     ssd::{LogicalRect, WindowDecorationState},
 };
+
+smithay::render_elements! {
+    pub DecorationSceneElements<=GlesRenderer>;
+    Rounded=crate::backend::rounded::StableRoundedElement,
+    Shader=crate::backend::shader_effect::StableShaderEffectElement,
+    Backdrop=TextureShaderElement,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DecorationSceneError {
+    #[error(transparent)]
+    Gles(#[from] GlesError),
+    #[error(transparent)]
+    Shader(#[from] ShaderEffectError),
+}
 
 pub fn rounded_elements_for_output(
     renderer: &mut GlesRenderer,
@@ -70,6 +86,67 @@ pub fn rounded_elements_for_window(
         .collect()
 }
 
+pub fn shader_elements_for_window(
+    renderer: &mut GlesRenderer,
+    decoration: &mut WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Vec<StableShaderEffectElement>, ShaderEffectError> {
+    let buffers = decoration.shader_buffers.clone();
+    buffers
+        .iter()
+        .filter_map(|cached| {
+            shader_effect_element(renderer, decoration, cached, output_geo, scale, alpha).transpose()
+        })
+        .collect()
+}
+
+pub fn background_elements_for_window(
+    renderer: &mut GlesRenderer,
+    decoration: &mut WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Vec<DecorationSceneElements>, DecorationSceneError> {
+    Ok(ordered_background_elements_for_window(renderer, decoration, output_geo, scale, alpha)?
+        .into_iter()
+        .map(|(_, element)| element)
+        .collect())
+}
+
+pub fn ordered_background_elements_for_window(
+    renderer: &mut GlesRenderer,
+    decoration: &mut WindowDecorationState,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Vec<(usize, DecorationSceneElements)>, DecorationSceneError> {
+    let mut items = Vec::new();
+
+    for cached in decoration.buffers.clone() {
+        if let Some(element) =
+            rounded_rect_element(renderer, decoration, &cached, output_geo, scale, alpha)?
+        {
+            items.push((cached.order, DecorationSceneElements::Rounded(element)));
+        }
+    }
+
+    for cached in decoration.shader_buffers.clone() {
+        if matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop) {
+            continue;
+        }
+        if let Some(element) =
+            shader_effect_element(renderer, decoration, &cached, output_geo, scale, alpha)?
+        {
+            items.push((cached.order, DecorationSceneElements::Shader(element)));
+        }
+    }
+
+    items.sort_by_key(|(order, _)| *order);
+    Ok(items)
+}
+
 pub fn text_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -77,7 +154,7 @@ pub fn text_elements_for_window(
     output: &Output,
     window: &Window,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<crate::backend::text::DecorationTextureElements>, GlesError> {
     text::text_elements_for_window(renderer, space, decorations, output, window, alpha)
 }
 
@@ -88,7 +165,7 @@ pub fn icon_elements_for_window(
     output: &Output,
     window: &Window,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<crate::backend::text::DecorationTextureElements>, GlesError> {
     crate::backend::icon::icon_elements_for_window(renderer, space, decorations, output, window, alpha)
 }
 
@@ -113,7 +190,10 @@ fn rounded_rect_element(
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
         rect: Rectangle::new(
-            Point::from((clip_rect.x - cached.rect.x, clip_rect.y - cached.rect.y)),
+            Point::from((
+                clip_rect.x - cached.rect.x,
+                clip_rect.y - cached.rect.y,
+            )),
             (clip_rect.width, clip_rect.height).into(),
         ),
         radius: cached.clip_radius,
@@ -144,6 +224,49 @@ fn rounded_rect_element(
             },
             clip,
             render_scale: scale.x as f32,
+        },
+    )?;
+    Ok(Some(element))
+}
+
+fn shader_effect_element(
+    renderer: &mut GlesRenderer,
+    decoration: &mut crate::ssd::WindowDecorationState,
+    cached: &crate::backend::shader_effect::CachedShaderEffect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Option<StableShaderEffectElement>, ShaderEffectError> {
+    if intersect_logical_rect(cached.rect, output_geo).is_none() {
+        return Ok(None);
+    }
+
+    let local_rect = Rectangle::new(
+        Point::from((
+            cached.rect.x - output_geo.loc.x,
+            cached.rect.y - output_geo.loc.y,
+        )),
+        (cached.rect.width, cached.rect.height).into(),
+    );
+
+    let state = decoration
+        .shader_cache
+        .entry(cached.stable_key.clone())
+        .or_default();
+    let element = state.element(
+        renderer,
+        ShaderEffectSpec {
+            rect: local_rect,
+            shader: cached.shader.clone(),
+            alpha_bits: alpha.to_bits(),
+            render_scale: scale.x as f32,
+            clip_rect: cached.clip_rect.map(|clip_rect| {
+                Rectangle::new(
+                    Point::from((clip_rect.x, clip_rect.y)),
+                    (clip_rect.width, clip_rect.height).into(),
+                )
+            }),
+            clip_radius: cached.clip_radius,
         },
     )?;
     Ok(Some(element))

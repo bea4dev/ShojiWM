@@ -1,8 +1,9 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BorderStyle, BoxNode, ButtonNode, Color, DecorationNode, DecorationNodeKind,
-    DecorationStyle, Edges, JustifyContent, LayoutDirection, LabelNode, WindowAction,
+    AlignItems, BackdropBlur, BorderStyle, BoxNode, ButtonNode, Color, CompiledShader,
+    DecorationNode, DecorationNodeKind, DecorationStyle, Edges, JustifyContent, LayoutDirection,
+    LabelNode, ShaderEffectNode, ShaderType, WindowAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -28,9 +29,25 @@ pub struct WireProps {
     pub split: Option<String>,
     pub text: Option<String>,
     pub icon: Option<serde_json::Value>,
+    pub shader: Option<WireCompiledShader>,
     pub id: Option<String>,
     pub style: WireStyle,
     pub on_click: Option<WireOnClick>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireCompiledShader {
+    pub kind: String,
+    pub shader_type: Option<String>,
+    pub path: String,
+    pub blur: Option<WireBackdropBlur>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WireBackdropBlur {
+    pub radius: Option<i32>,
+    pub passes: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -115,6 +132,10 @@ pub enum DecorationBridgeError {
     UnsupportedPrimitiveChild,
     #[error("unsupported node kind: {0}")]
     UnsupportedNodeKind(String),
+    #[error("invalid shader descriptor")]
+    InvalidShaderDescriptor,
+    #[error("invalid shader type: {0}")]
+    InvalidShaderType(String),
     #[error("unsupported dimension keyword: {0}")]
     UnsupportedDimensionKeyword(String),
     #[error("invalid direction: {0}")]
@@ -152,6 +173,14 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .try_into()?,
             }),
             "AppIcon" => DecorationNodeKind::AppIcon,
+            "ShaderEffect" => DecorationNodeKind::ShaderEffect(ShaderEffectNode {
+                direction: parse_direction(value.props.direction.or(value.props.split))?,
+                shader: value
+                    .props
+                    .shader
+                    .ok_or(DecorationBridgeError::InvalidShaderDescriptor)?
+                    .try_into()?,
+            }),
             "Window" => DecorationNodeKind::WindowSlot,
             "WindowBorder" => DecorationNodeKind::WindowBorder,
             "Fragment" => DecorationNodeKind::Box(BoxNode {
@@ -171,6 +200,31 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
             kind,
             style,
             children,
+        })
+    }
+}
+
+impl TryFrom<WireCompiledShader> for CompiledShader {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireCompiledShader) -> Result<Self, Self::Error> {
+        if value.kind != "compiled-shader" || value.path.is_empty() {
+            return Err(DecorationBridgeError::InvalidShaderDescriptor);
+        }
+
+        let shader_type = match value.shader_type.as_deref().unwrap_or("pixel") {
+            "pixel" => ShaderType::Pixel,
+            "backdrop" => ShaderType::Backdrop,
+            other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+        };
+
+        Ok(CompiledShader {
+            path: value.path,
+            shader_type,
+            blur: value.blur.map(|blur| BackdropBlur {
+                radius: blur.radius.unwrap_or(8).max(1),
+                passes: blur.passes.unwrap_or(2).clamp(1, 8),
+            }),
         })
     }
 }

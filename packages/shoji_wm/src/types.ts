@@ -84,6 +84,7 @@ export type DecorationNodeType =
   | "Label"
   | "Button"
   | "AppIcon"
+  | "ShaderEffect"
   | "Window"
   | "WindowBorder"
   | "Fragment";
@@ -101,6 +102,19 @@ export type AlignItems = "start" | "center" | "end" | "stretch";
 export type JustifyContent = "start" | "center" | "end" | "space-between";
 export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
+export type ShaderType = "pixel" | "backdrop";
+
+export interface BackdropBlurOptions {
+  radius?: number;
+  passes?: number;
+}
+
+export interface CompiledShaderHandle {
+  kind: "compiled-shader";
+  shaderType: ShaderType;
+  path: string;
+  blur?: BackdropBlurOptions;
+}
 
 export interface BorderValue {
   px: MaybeSignal<number>;
@@ -178,6 +192,14 @@ export interface ButtonProps extends ComponentProps {
 
 export interface AppIconProps extends ComponentProps {
   icon?: WindowIcon;
+  style?: SSDStyle;
+  id?: string;
+}
+
+export interface ShaderEffectProps extends ComponentProps {
+  shader: CompiledShaderHandle;
+  direction?: Direction;
+  split?: Direction;
   style?: SSDStyle;
   id?: string;
 }

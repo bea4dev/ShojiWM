@@ -4,11 +4,13 @@ import {
     Box,
     Button,
     ClientWindow,
+    ShaderEffect,
     getInteractionState,
     Label,
     WINDOW_MANAGER,
     WindowBorder,
     windowAction,
+    compileShader,
     type SSDStyle,
     type WaylandWindow,
     signal,
@@ -19,6 +21,10 @@ import {
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
+const titlebarShader = compileShader("./blur.frag", {
+    type: "backdrop",
+    blur: { radius: 2, passes: 3 },
+});
 
 WINDOW_MANAGER.event.onOpen((window) => {
     window.setCloseAnimationDuration(seconds(0.5));
@@ -75,7 +81,6 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         paddingX: 20,
         gap: 8,
         alignItems: "center",
-        background: titlebarBackground,
     };
 
     return (
@@ -83,11 +88,11 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             style={{
                 border: { px: 2, color: borderColor },
                 borderRadius: 20,
-                background: "#101319",
+                //background: "#101319",
             }}
         >
             <Box direction="column">
-                <Box direction="row" style={titlebarStyle}>
+                <ShaderEffect shader={titlebarShader} direction="row" style={titlebarStyle}>
                     <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
                     <Label
                         text={window.title()}
@@ -117,7 +122,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         )}
                         onClick={() => window.close()}
                     />
-                </Box>
+                </ShaderEffect>
                 <ClientWindow />
             </Box>
         </WindowBorder>

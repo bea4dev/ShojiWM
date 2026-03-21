@@ -31,6 +31,8 @@ use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
     pub rect: LogicalRect,
+    pub clip_rect: Option<LogicalRect>,
+    pub clip_radius: i32,
     pub buffer: MemoryRenderBuffer,
 }
 
@@ -96,6 +98,8 @@ impl IconRasterizer {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationIcon {
                 rect: spec.rect,
+                clip_rect: None,
+                clip_radius: 0,
                 buffer: cached.buffer.clone(),
             });
         }
@@ -121,6 +125,8 @@ impl IconRasterizer {
         );
         Some(CachedDecorationIcon {
             rect: spec.rect,
+            clip_rect: None,
+            clip_radius: 0,
             buffer,
         })
     }
@@ -275,7 +281,7 @@ pub fn icon_elements_for_window(
     output: &Output,
     window: &Window,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<crate::backend::text::DecorationTextureElements>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
         return Ok(Vec::new());
     };
@@ -297,7 +303,7 @@ pub fn icon_elements_for_decoration(
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<crate::backend::text::DecorationTextureElements>, GlesError> {
     decoration
         .icon_buffers
         .iter()
@@ -311,7 +317,7 @@ fn memory_icon_element(
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
-) -> Result<Option<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Option<crate::backend::text::DecorationTextureElements>, GlesError> {
     if intersect_logical_rect(icon.rect, output_geo).is_none() {
         return Ok(None);
     }
@@ -330,7 +336,23 @@ fn memory_icon_element(
         None,
         Kind::Unspecified,
     )?;
-    Ok(Some(element))
+    if let Some(clip_rect) = icon.clip_rect {
+        let clipped = crate::backend::clipped_memory::ClippedMemoryElement::new(
+            renderer,
+            element,
+            scale,
+            icon.rect,
+            clip_rect,
+            icon.clip_radius,
+        )?;
+        Ok(Some(crate::backend::text::DecorationTextureElements::Clipped(
+            clipped,
+        )))
+    } else {
+        Ok(Some(crate::backend::text::DecorationTextureElements::Memory(
+            element,
+        )))
+    }
 }
 
 fn icon_source_key(spec: &IconSpec) -> Option<String> {

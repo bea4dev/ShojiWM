@@ -18,6 +18,9 @@ import type {
   LabelProps,
   MaybeSignal,
   SSDStyle,
+  ShaderEffectProps,
+  CompiledShaderHandle,
+  ShaderType,
   SerializableDecorationChild,
   SerializedDecorationNode,
   WindowActionDescriptor,
@@ -46,6 +49,11 @@ export {
   type AnimationVariable,
   type WindowAnimationController,
 } from "./animation";
+export {
+  compileShader,
+  installShaderResolverBridge,
+  type CompileShaderOptions,
+} from "./shader";
 export {
   cubicBezier,
   ease,
@@ -124,6 +132,9 @@ export type {
   InteractionState,
   InteractionStyleVariants,
   SSDStyle,
+  ShaderEffectProps,
+  CompiledShaderHandle,
+  ShaderType,
   SerializableDecorationChild,
   SerializedDecorationNode,
   WindowActionDescriptor,
@@ -152,6 +163,7 @@ export const Box = defineIntrinsicComponent<BoxProps>("Box");
 export const Label = defineIntrinsicComponent<LabelProps>("Label");
 export const Button = defineIntrinsicComponent<ButtonProps>("Button");
 export const AppIcon = defineIntrinsicComponent<AppIconProps>("AppIcon");
+export const ShaderEffect = defineIntrinsicComponent<ShaderEffectProps>("ShaderEffect");
 export const ClientWindow = defineIntrinsicComponent<ClientWindowProps>("Window");
 export const Window = ClientWindow;
 export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowBorder");

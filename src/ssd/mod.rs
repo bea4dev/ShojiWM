@@ -74,7 +74,7 @@ impl DecorationTree {
     ) -> Result<ComputedDecorationTree, DecorationLayoutError> {
         self.validate()?;
 
-        let root = layout_node(&self.root, bounds)?;
+        let root = layout_node(&self.root, bounds, None)?;
         if root.window_slot_rect().is_none() {
             return Err(DecorationLayoutError::MissingComputedWindowSlot);
         }
@@ -145,7 +145,14 @@ pub struct ComputedDecorationNode {
     pub kind: DecorationNodeKind,
     pub style: DecorationStyle,
     pub rect: LogicalRect,
+    pub effective_clip: Option<DecorationClip>,
     pub children: Vec<ComputedDecorationNode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecorationClip {
+    pub rect: LogicalRect,
+    pub radius: i32,
 }
 
 impl ComputedDecorationNode {
@@ -187,6 +194,10 @@ pub enum DecorationRenderPrimitive {
     },
     AppIcon {
         rect: LogicalRect,
+    },
+    ShaderEffect {
+        rect: LogicalRect,
+        shader: CompiledShader,
     },
     WindowSlot {
         rect: LogicalRect,
@@ -279,6 +290,7 @@ pub enum DecorationNodeKind {
     Label(LabelNode),
     Button(ButtonNode),
     AppIcon,
+    ShaderEffect(ShaderEffectNode),
     WindowBorder,
     /// Reserved anchor where the client surface is placed.
     WindowSlot,
@@ -305,6 +317,31 @@ pub struct LabelNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ButtonNode {
     pub action: WindowAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderEffectNode {
+    pub direction: LayoutDirection,
+    pub shader: CompiledShader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledShader {
+    pub path: String,
+    pub shader_type: ShaderType,
+    pub blur: Option<BackdropBlur>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderType {
+    Pixel,
+    Backdrop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackdropBlur {
+    pub radius: i32,
+    pub passes: i32,
 }
 
 /// Minimal action surface required by milestone 1.
@@ -504,16 +541,23 @@ impl From<DecorationValidationError> for DecorationLayoutError {
 fn layout_node(
     node: &DecorationNode,
     rect: LogicalRect,
+    inherited_clip: Option<DecorationClip>,
 ) -> Result<ComputedDecorationNode, DecorationLayoutError> {
     let content_rect = rect.inset(node.style.content_inset());
+    let effective_clip = effective_clip_for_node(node, inherited_clip, content_rect);
 
     let children = match &node.kind {
-        DecorationNodeKind::Box(layout) => layout_box_children(node, content_rect, layout.direction)?,
+        DecorationNodeKind::Box(layout) => {
+            layout_box_children(node, content_rect, layout.direction, effective_clip)?
+        }
+        DecorationNodeKind::ShaderEffect(effect) => {
+            layout_box_children(node, content_rect, effect.direction, effective_clip)?
+        }
         _ if node.children.is_empty() => Vec::new(),
         _ => node
             .children
             .iter()
-            .map(|child| layout_node(child, content_rect))
+            .map(|child| layout_node(child, content_rect, effective_clip))
             .collect::<Result<Vec<_>, _>>()?,
     };
 
@@ -521,6 +565,7 @@ fn layout_node(
         kind: node.kind.clone(),
         style: node.style.clone(),
         rect,
+        effective_clip,
         children,
     })
 }
@@ -529,6 +574,7 @@ fn layout_box_children(
     node: &DecorationNode,
     content_rect: LogicalRect,
     direction: LayoutDirection,
+    effective_clip: Option<DecorationClip>,
 ) -> Result<Vec<ComputedDecorationNode>, DecorationLayoutError> {
     if node.children.is_empty() {
         return Ok(Vec::new());
@@ -588,7 +634,7 @@ fn layout_box_children(
         );
 
         let child_rect = direction.rect(cursor, cross_origin, main_size, cross_size);
-        children.push(layout_node(child, child_rect)?);
+        children.push(layout_node(child, child_rect, effective_clip)?);
         cursor += main_size + gap;
     }
 
@@ -778,6 +824,12 @@ fn collect_render_primitives(
         DecorationNodeKind::AppIcon => {
             primitives.push(DecorationRenderPrimitive::AppIcon { rect: node.rect })
         }
+        DecorationNodeKind::ShaderEffect(effect) => {
+            primitives.push(DecorationRenderPrimitive::ShaderEffect {
+                rect: node.rect,
+                shader: effect.shader.clone(),
+            })
+        }
         DecorationNodeKind::WindowSlot => {
             primitives.push(DecorationRenderPrimitive::WindowSlot { rect: node.rect })
         }
@@ -902,6 +954,39 @@ fn hit_test_resize_edges(
     }
 
     (!edges.is_empty()).then_some(edges)
+}
+
+fn effective_clip_for_node(
+    node: &DecorationNode,
+    inherited_clip: Option<DecorationClip>,
+    content_rect: LogicalRect,
+) -> Option<DecorationClip> {
+    let node_clip = node.style.border.map(|border| DecorationClip {
+        rect: content_rect,
+        radius: (node.style.border_radius.unwrap_or(0) - border.width.max(0)).max(0),
+    });
+
+    match (inherited_clip, node_clip) {
+        (Some(parent), Some(current)) => intersect_decoration_clips(parent, current),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    }
+}
+
+fn intersect_decoration_clips(
+    left: DecorationClip,
+    right: DecorationClip,
+) -> Option<DecorationClip> {
+    let x1 = left.rect.x.max(right.rect.x);
+    let y1 = left.rect.y.max(right.rect.y);
+    let x2 = (left.rect.x + left.rect.width).min(right.rect.x + right.rect.width);
+    let y2 = (left.rect.y + left.rect.height).min(right.rect.y + right.rect.height);
+
+    (x2 > x1 && y2 > y1).then_some(DecorationClip {
+        rect: LogicalRect::new(x1, y1, x2 - x1, y2 - y1),
+        radius: left.radius.min(right.radius),
+    })
 }
 
 #[cfg(test)]

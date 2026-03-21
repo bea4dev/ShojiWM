@@ -9,6 +9,7 @@ use tracing::{debug, trace, warn};
 use crate::state::ShojiWM;
 use crate::backend::{
     icon::{CachedDecorationIcon, IconSpec},
+    shader_effect::CachedShaderEffect,
     text::{CachedDecorationLabel, LabelSpec},
 };
 use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
@@ -29,9 +30,11 @@ pub struct WindowDecorationState {
     pub visual_transform: WindowTransform,
     pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
+    pub shader_buffers: Vec<CachedShaderEffect>,
     pub text_buffers: Vec<CachedDecorationLabel>,
     pub icon_buffers: Vec<CachedDecorationIcon>,
     pub rounded_cache: std::collections::HashMap<String, RoundedElementState>,
+    pub shader_cache: std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +59,7 @@ pub enum DecorationRuntimeEvaluator {
 #[derive(Debug, Clone)]
 pub struct CachedDecorationBuffer {
     pub stable_key: String,
+    pub order: usize,
     pub rect: LogicalRect,
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
@@ -281,6 +285,7 @@ impl ShojiWM {
 
             if !self.promote_window_to_closing_snapshot(window_id, decoration, now_ms)? {
                 self.decoration_evaluator.window_closed(window_id)?;
+                self.windows_ready_for_decoration.remove(window_id);
                 self.runtime_dirty_window_ids.remove(window_id);
                 self.snapshot_dirty_window_ids.remove(window_id);
                 self.pending_decoration_damage.push(*root_rect);
@@ -333,6 +338,7 @@ impl ShojiWM {
                 );
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
+                let shader_buffers = build_shader_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
                 let icon_buffers = build_icon_buffers(&layout, &snapshot, &mut self.icon_rasterizer);
                 self.suggested_window_offset = suggested_window_offset(&layout);
@@ -366,9 +372,11 @@ impl ShojiWM {
                         visual_transform: evaluation.transform,
                         content_clip,
                         buffers,
+                        shader_buffers,
                         text_buffers,
                         icon_buffers,
                         rounded_cache,
+                        shader_cache: std::collections::HashMap::new(),
                     },
                 );
                 self.schedule_redraw();
@@ -406,6 +414,7 @@ impl ShojiWM {
                     cached.visual_transform = evaluation.transform;
                     cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout);
+                    cached.shader_buffers = build_shader_buffers(&cached.layout);
                     cached.text_buffers =
                         build_text_buffers(&cached.layout, &mut self.text_rasterizer);
                     cached.icon_buffers =
@@ -484,6 +493,7 @@ impl ShojiWM {
                     .map_err(super::DecorationEvaluationError::Layout)?;
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let buffers = build_cached_buffers(&layout);
+                let shader_buffers = build_shader_buffers(&layout);
                 let text_buffers = build_text_buffers(&layout, &mut self.text_rasterizer);
                 let icon_buffers =
                     build_icon_buffers(&layout, &closing.decoration.snapshot, &mut self.icon_rasterizer);
@@ -491,6 +501,7 @@ impl ShojiWM {
                 closing.decoration.layout = layout;
                 closing.decoration.content_clip = content_clip;
                 closing.decoration.buffers = buffers;
+                closing.decoration.shader_buffers = shader_buffers;
                 closing.decoration.text_buffers = text_buffers;
                 closing.decoration.icon_buffers = icon_buffers;
                 self.suggested_window_offset = suggested_window_offset(&closing.decoration.layout);
@@ -508,6 +519,8 @@ impl ShojiWM {
 
         if force_async_asset_refresh {
             for closing in self.closing_window_snapshots.values_mut() {
+                closing.decoration.shader_buffers =
+                    build_shader_buffers(&closing.decoration.layout);
                 closing.decoration.text_buffers =
                     build_text_buffers(&closing.decoration.layout, &mut self.text_rasterizer);
                 closing.decoration.icon_buffers = build_icon_buffers(
@@ -661,6 +674,15 @@ impl super::ComputedDecorationNode {
                 self.rect.width,
                 self.rect.height,
             ),
+            effective_clip: self.effective_clip.map(|clip| super::DecorationClip {
+                rect: LogicalRect::new(
+                    clip.rect.x + dx,
+                    clip.rect.y + dy,
+                    clip.rect.width,
+                    clip.rect.height,
+                ),
+                radius: clip.radius,
+            }),
             children: self
                 .children
                 .iter()
@@ -671,9 +693,30 @@ impl super::ComputedDecorationNode {
 }
 
 fn build_cached_buffers(layout: &ComputedDecorationTree) -> Vec<CachedDecorationBuffer> {
-    let mut buffers = Vec::new();
-    collect_cached_buffers(&layout.root, "root".to_string(), None, &mut buffers);
+    let (buffers, _) = build_cached_buffers_and_shaders(layout);
     buffers
+}
+
+fn build_shader_buffers(layout: &ComputedDecorationTree) -> Vec<CachedShaderEffect> {
+    let (_, buffers) = build_cached_buffers_and_shaders(layout);
+    buffers
+}
+
+fn build_cached_buffers_and_shaders(
+    layout: &ComputedDecorationTree,
+) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
+    let mut buffers = Vec::new();
+    let mut shader_buffers = Vec::new();
+    let mut order = 0usize;
+    collect_cached_buffers(
+        &layout.root,
+        "root".to_string(),
+        None,
+        &mut order,
+        &mut buffers,
+        &mut shader_buffers,
+    );
+    (buffers, shader_buffers)
 }
 
 fn suggested_window_offset(layout: &ComputedDecorationTree) -> Option<(i32, i32)> {
@@ -704,29 +747,29 @@ fn build_icon_buffers(
 fn collect_cached_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
-    inherited_clip: Option<(LogicalRect, i32)>,
+    ancestor_clip: Option<super::DecorationClip>,
+    order: &mut usize,
     buffers: &mut Vec<CachedDecorationBuffer>,
+    shader_buffers: &mut Vec<CachedShaderEffect>,
 ) {
     if node.style.visible == Some(false) {
         return;
     }
 
     let node_radius = node.style.border_radius.unwrap_or(0).max(0);
-    let child_clip = if let Some(border) = node.style.border {
-        if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-            let inner_rect = node.rect.inset(super::Edges {
+    let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
+    let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
+    let child_clip = node.effective_clip;
+    let window_border_inner_rect = node.style.border.and_then(|border| {
+        matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
+            node.rect.inset(super::Edges {
                 top: border.width.max(0),
                 right: border.width.max(0),
                 bottom: border.width.max(0),
                 left: border.width.max(0),
-            });
-            Some((inner_rect, (node_radius - border.width.max(0)).max(0)))
-        } else {
-            inherited_clip
-        }
-    } else {
-        inherited_clip
-    };
+            })
+        })
+    });
 
     match &node.kind {
         super::DecorationNodeKind::Label(_)
@@ -736,8 +779,11 @@ fn collect_cached_buffers(
             if let Some(border) = node.style.border {
                 let color = border.color.with_opacity(node.style.opacity);
                 if color.a > 0 && border.width > 0 {
+                    let current_order = *order;
+                    *order += 1;
                     buffers.push(CachedDecorationBuffer {
                         stable_key: format!("{path}:border"),
+                        order: current_order,
                         rect: node.rect,
                         color,
                         buffer: SolidColorBuffer::new(
@@ -751,23 +797,44 @@ fn collect_cached_buffers(
                         ),
                         radius: node_radius,
                         border_width: border.width.max(0),
-                        clip_rect: inherited_clip.map(|(rect, _)| rect),
-                        clip_radius: inherited_clip.map(|(_, radius)| radius).unwrap_or(0),
+                        clip_rect: current_clip_rect,
+                        clip_radius: current_clip_radius,
                         source_kind: node_kind_name(&node.kind),
                     });
                 }
             }
 
             for (index, child) in node.children.iter().rev().enumerate() {
-                collect_cached_buffers(child, format!("{path}/child-{index}"), child_clip, buffers);
+                collect_cached_buffers(
+                    child,
+                    format!("{path}/child-{index}"),
+                    child_clip,
+                    order,
+                    buffers,
+                    shader_buffers,
+                );
+            }
+
+            if let super::DecorationNodeKind::ShaderEffect(effect) = &node.kind {
+                let current_order = *order;
+                *order += 1;
+                shader_buffers.push(CachedShaderEffect {
+                    stable_key: format!("{path}:shader"),
+                    order: current_order,
+                    rect: node.rect,
+                    shader: effect.shader.clone(),
+                    clip_rect: current_clip_rect,
+                    clip_radius: current_clip_radius,
+                });
             }
 
             if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
                 if background.a > 0 {
                     if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                        if let Some((inner_rect, _)) = child_clip {
+                        if let Some(inner_rect) = window_border_inner_rect {
                             push_fill_rects_around_hole(
                                 buffers,
+                                order,
                                 &path,
                                 node.rect,
                                 inner_rect,
@@ -777,25 +844,27 @@ fn collect_cached_buffers(
                         } else {
                             push_cached_fill(
                                 buffers,
+                                order,
                                 format!("{path}:fill"),
                                 node.rect,
                                 background,
-                                node_radius,
-                                0,
-                                None,
-                                0,
+                            node_radius,
+                            0,
+                            None,
+                            0,
                             );
                         }
                     } else {
                         push_cached_fill(
                             buffers,
+                            order,
                             format!("{path}:fill"),
                             node.rect,
                             background,
                             node_radius,
                             0,
-                            inherited_clip.map(|(rect, _)| rect),
-                            inherited_clip.map(|(_, radius)| radius).unwrap_or(0),
+                            current_clip_rect,
+                            current_clip_radius,
                         );
                     }
                 }
@@ -837,6 +906,9 @@ fn collect_text_buffers(
     };
 
     if let Some(buffer) = rasterizer.render_label(&spec) {
+        let mut buffer = buffer;
+        buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
+        buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffers.push(buffer);
     }
 }
@@ -866,12 +938,16 @@ fn collect_icon_buffers(
     };
 
     if let Some(buffer) = rasterizer.render_icon(&spec) {
+        let mut buffer = buffer;
+        buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
+        buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffers.push(buffer);
     }
 }
 
 fn push_fill_rects_around_hole(
     buffers: &mut Vec<CachedDecorationBuffer>,
+    order: &mut usize,
     path: &str,
     rect: LogicalRect,
     hole: LogicalRect,
@@ -893,12 +969,23 @@ fn push_fill_rects_around_hole(
     ];
 
     for (suffix, candidate) in candidates {
-        push_cached_fill(buffers, format!("{path}:{suffix}"), candidate, color, radius, 0, None, 0);
+        push_cached_fill(
+            buffers,
+            order,
+            format!("{path}:{suffix}"),
+            candidate,
+            color,
+            radius,
+            0,
+            None,
+            0,
+        );
     }
 }
 
 fn push_cached_fill(
     buffers: &mut Vec<CachedDecorationBuffer>,
+    order: &mut usize,
     stable_key: String,
     rect: LogicalRect,
     color: super::Color,
@@ -911,8 +998,11 @@ fn push_cached_fill(
         return;
     }
 
+    let current_order = *order;
+    *order += 1;
     buffers.push(CachedDecorationBuffer {
         stable_key,
+        order: current_order,
         rect,
         color,
         buffer: SolidColorBuffer::new(
@@ -938,6 +1028,7 @@ fn node_kind_name(kind: &super::DecorationNodeKind) -> &'static str {
         super::DecorationNodeKind::Label(_) => "label",
         super::DecorationNodeKind::Button(_) => "button",
         super::DecorationNodeKind::AppIcon => "app-icon",
+        super::DecorationNodeKind::ShaderEffect(_) => "shader-effect",
         super::DecorationNodeKind::WindowBorder => "window-border",
         super::DecorationNodeKind::WindowSlot => "window-slot",
     }

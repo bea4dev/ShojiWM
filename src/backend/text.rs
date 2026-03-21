@@ -36,6 +36,8 @@ thread_local! {
 #[derive(Debug, Clone)]
 pub struct CachedDecorationLabel {
     pub rect: LogicalRect,
+    pub clip_rect: Option<LogicalRect>,
+    pub clip_radius: i32,
     pub text: String,
     pub color: Color,
     pub buffer: MemoryRenderBuffer,
@@ -99,6 +101,8 @@ impl TextRasterizer {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationLabel {
                 rect: spec.rect,
+                clip_rect: None,
+                clip_radius: 0,
                 text: spec.text.clone(),
                 color: spec.color,
                 buffer: cached.buffer.clone(),
@@ -118,6 +122,8 @@ impl TextRasterizer {
         let rendered = self.render_label_pixels(spec)?;
         Some(CachedDecorationLabel {
             rect: spec.rect,
+            clip_rect: None,
+            clip_radius: 0,
             text: spec.text.clone(),
             color: spec.color,
             buffer: MemoryRenderBuffer::from_slice(
@@ -310,6 +316,12 @@ fn hash_label_measurement_spec(spec: &LabelSpec) -> u64 {
     hasher.finish()
 }
 
+smithay::render_elements! {
+    pub DecorationTextureElements<=GlesRenderer>;
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Clipped=crate::backend::clipped_memory::ClippedMemoryElement,
+}
+
 pub fn text_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -317,7 +329,7 @@ pub fn text_elements_for_window(
     output: &Output,
     window: &Window,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<DecorationTextureElements>, GlesError> {
     let Some(output_geo) = space.output_geometry(output) else {
         return Ok(Vec::new());
     };
@@ -339,7 +351,7 @@ pub fn text_elements_for_decoration(
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
-) -> Result<Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Vec<DecorationTextureElements>, GlesError> {
     decoration
         .text_buffers
         .iter()
@@ -353,7 +365,7 @@ fn memory_text_element(
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
-) -> Result<Option<MemoryRenderBufferRenderElement<GlesRenderer>>, GlesError> {
+) -> Result<Option<DecorationTextureElements>, GlesError> {
     if intersect_logical_rect(label.rect, output_geo).is_none() {
         return Ok(None);
     }
@@ -372,7 +384,19 @@ fn memory_text_element(
         None,
         Kind::Unspecified,
     )?;
-    Ok(Some(element))
+    if let Some(clip_rect) = label.clip_rect {
+        let clipped = crate::backend::clipped_memory::ClippedMemoryElement::new(
+            renderer,
+            element,
+            scale,
+            label.rect,
+            clip_rect,
+            label.clip_radius,
+        )?;
+        Ok(Some(DecorationTextureElements::Clipped(clipped)))
+    } else {
+        Ok(Some(DecorationTextureElements::Memory(element)))
+    }
 }
 
 fn attrs_for_spec<'a>(spec: &'a LabelSpec) -> Attrs<'a> {

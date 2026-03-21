@@ -8,6 +8,7 @@ import {
   createDecorationEvaluationCache,
   createManagedPoll,
   dropWindowDependencies,
+  installShaderResolverBridge,
   installRuntimeHooks,
   type WindowManagerEventController,
   installSchedulerBridge,
@@ -177,6 +178,7 @@ async function main() {
   });
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
+  installShaderResolverBridge(resolve(configPath));
   const loaded = await import(moduleUrl);
   const decoration = resolveDecoration(loaded);
   const events = resolveEvents(loaded);
