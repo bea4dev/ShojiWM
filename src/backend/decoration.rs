@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use smithay::{
     backend::renderer::{
-        gles::element::TextureShaderElement,
         gles::{GlesError, GlesRenderer},
     },
     desktop::{Space, Window},
@@ -13,7 +12,9 @@ use tracing::trace;
 
 use crate::{
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
-    backend::shader_effect::{ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement},
+    backend::shader_effect::{
+        ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement,
+    },
     backend::text,
     ssd::{LogicalRect, WindowDecorationState},
 };
@@ -22,7 +23,7 @@ smithay::render_elements! {
     pub DecorationSceneElements<=GlesRenderer>;
     Rounded=crate::backend::rounded::StableRoundedElement,
     Shader=crate::backend::shader_effect::StableShaderEffectElement,
-    Backdrop=TextureShaderElement,
+    Backdrop=crate::backend::shader_effect::StableBackdropFramebufferElement,
 }
 
 #[derive(Debug, thiserror::Error)]

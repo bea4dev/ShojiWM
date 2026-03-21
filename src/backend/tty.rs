@@ -44,7 +44,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     backend::damage, backend::damage_blink, backend::decoration, backend::snapshot, backend::window as window_render,
-    backend::visual::{WindowVisualState, transformed_rect, window_visual_state},
+    backend::visual::{WindowVisualState, window_visual_state},
     config::DisplayModePreference,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     drawing::PointerRenderElement, state::ShojiWM,
@@ -354,7 +354,31 @@ render_elements! {
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::decoration::DecorationSceneElements,
     TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::decoration::DecorationSceneElements>>,
+    Backdrop=smithay::backend::renderer::gles::element::TextureShaderElement,
+    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<smithay::backend::renderer::gles::element::TextureShaderElement>>,
     Cursor=PointerRenderElement<GlesRenderer>,
+}
+
+fn render_element_kind_name(element: &TtyRenderElements) -> &'static str {
+    match element {
+        TtyRenderElements::Window(_) => "window",
+        TtyRenderElements::TransformedWindow(_) => "transformed-window",
+        TtyRenderElements::Clipped(_) => "clipped",
+        TtyRenderElements::TransformedClipped(_) => "transformed-clipped",
+        TtyRenderElements::Text(_) => "text",
+        TtyRenderElements::TransformedText(_) => "transformed-text",
+        TtyRenderElements::Snapshot(_) => "snapshot",
+        TtyRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
+        TtyRenderElements::Damage(_) => "damage",
+        TtyRenderElements::Blink(_) => "blink",
+        TtyRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Rounded(_)) => "rounded",
+        TtyRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Shader(_)) => "shader",
+        TtyRenderElements::TransformedDecoration(_) => "transformed-decoration",
+        TtyRenderElements::Backdrop(_) => "backdrop",
+        TtyRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
+        TtyRenderElements::Cursor(_) => "cursor",
+        _ => "unknown",
+    }
 }
 
 fn render_surface(
@@ -538,7 +562,7 @@ fn render_surface(
                 .map(TtyRenderElements::Window),
         );
 
-        for (window_index, window) in windows_top_to_bottom.iter().enumerate() {
+        for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
@@ -588,6 +612,7 @@ fn render_surface(
                     opacity: 1.0,
                 });
             let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+            let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             if decoration_ready {
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     &mut backend.renderer,
@@ -597,11 +622,18 @@ fn render_surface(
                     output_geo,
                     scale,
                     &windows_top_to_bottom,
-                    window_index,
+                    _window_index,
                     window,
                     visual_state.opacity,
                     decoration_ready,
                 );
+                for (order, element) in backdrop_items.drain(..) {
+                    ordered_backdrop_elements.extend(
+                        transform_backdrop_elements(vec![element], visual_state)?
+                            .into_iter()
+                            .map(|item| (order, item)),
+                    );
+                }
                 if let Some(decoration_state) = window_decorations.get_mut(window) {
                     let mut ordered_background_items = decoration::ordered_background_elements_for_window(
                         &mut backend.renderer,
@@ -614,7 +646,6 @@ fn render_surface(
                         warn!(?error, "failed to build decoration background elements");
                     })
                     .unwrap_or_default();
-                    ordered_background_items.append(&mut backdrop_items);
                     ordered_background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in ordered_background_items {
                         ordered_ui_elements.extend(
@@ -656,67 +687,65 @@ fn render_surface(
                 }
 
                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
+                ordered_backdrop_elements.sort_by_key(|(order, _)| *order);
             }
 
             let content_clip = window_decorations
                 .get(window)
                 .and_then(|decoration| decoration.content_clip);
 
-            if let Some(content_clip) = content_clip {
-                scene_elements.extend(
-                    transform_clipped_elements(
-                        window_render::clipped_surface_elements(
-                            window,
-                            &mut backend.renderer,
-                            physical_location,
-                            scale,
-                            visual_state.opacity,
-                            Some(content_clip),
-                        )
-                        .inspect_err(|error| {
-                            warn!(?error, "failed to build clipped surface elements");
-                        })
-                        .unwrap_or_default(),
-                        visual_state,
-                    )
-                    .into_iter(),
-                );
+            let client_elements = if let Some(content_clip) = content_clip {
+                let clipped = window_render::clipped_surface_elements(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    scale,
+                    visual_state.opacity,
+                    Some(content_clip),
+                )
+                .inspect_err(|error| {
+                    warn!(?error, "failed to build clipped surface elements");
+                })
+                .unwrap_or_default();
+                transform_clipped_elements(clipped, visual_state)
             } else {
-                scene_elements.extend(
-                    transform_window_elements(
-                        window_render::surface_elements(
-                            window,
-                            &mut backend.renderer,
-                            physical_location,
-                            scale,
-                            visual_state.opacity,
-                        ),
-                        visual_state,
-                        TtyRenderElements::Window,
-                        TtyRenderElements::TransformedWindow,
-                    )
-                    .into_iter(),
+                let surfaces = window_render::surface_elements(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    scale,
+                    visual_state.opacity,
                 );
-            }
-
-            scene_elements.extend(
-                ordered_ui_elements.into_iter().map(|(_, element)| element),
-            );
-
-            scene_elements.extend(
                 transform_window_elements(
-                    window_render::popup_elements(
-                        window,
-                        &mut backend.renderer,
-                        physical_location,
-                        scale,
-                        visual_state.opacity,
-                    ),
+                    surfaces,
                     visual_state,
                     TtyRenderElements::Window,
                     TtyRenderElements::TransformedWindow,
                 )
-                .into_iter(),
+            };
+
+            let popup_elements = transform_window_elements(
+                window_render::popup_elements(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    scale,
+                    visual_state.opacity,
+                ),
+                visual_state,
+                TtyRenderElements::Window,
+                TtyRenderElements::TransformedWindow,
+            );
+
+            scene_elements.extend(popup_elements.into_iter());
+            scene_elements.extend(client_elements.into_iter());
+            scene_elements.extend(
+                ordered_ui_elements.into_iter().map(|(_, element)| element),
+            );
+            scene_elements.extend(
+                ordered_backdrop_elements
+                    .into_iter()
+                    .map(|(_, element)| element),
             );
 
             windows_ready_for_decoration.insert(window_id.clone());
@@ -791,6 +820,15 @@ fn render_surface(
                 .map(TtyRenderElements::Damage),
         );
         elements.extend(scene_elements);
+
+        trace!(
+            order = ?elements
+                .iter()
+                .enumerate()
+                .map(|(idx, element)| (idx, render_element_kind_name(element)))
+                .collect::<Vec<_>>(),
+            "tty final render order"
+        );
 
         trace!(
             ?node,
@@ -920,6 +958,7 @@ fn transform_clipped_elements(
         .collect()
 }
 
+
 fn transform_text_elements(
     elements: Vec<crate::backend::text::DecorationTextureElements>,
     visual: WindowVisualState,
@@ -992,10 +1031,34 @@ fn transform_decoration_elements(
         .collect())
 }
 
+fn transform_backdrop_elements(
+    elements: Vec<smithay::backend::renderer::gles::element::TextureShaderElement>,
+    visual: WindowVisualState,
+) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    if is_identity_visual(visual) {
+        return Ok(elements.into_iter().map(TtyRenderElements::Backdrop).collect());
+    }
+
+    Ok(elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    element,
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect())
+}
+
 fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -1004,7 +1067,7 @@ fn backdrop_shader_elements_for_window(
     window: &smithay::desktop::Window,
     alpha: f32,
     has_backdrop_source: bool,
-) -> Vec<(usize, crate::backend::decoration::DecorationSceneElements)> {
+) -> Vec<(usize, smithay::backend::renderer::gles::element::TextureShaderElement)> {
     if !has_backdrop_source {
         return Vec::new();
     }
@@ -1017,7 +1080,7 @@ fn backdrop_shader_elements_for_window(
         .iter()
         .filter(|cached| matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop))
         .filter_map(|cached| {
-            let effect_rect = transformed_rect(
+            let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
                 decoration.visual_transform,
@@ -1078,7 +1141,6 @@ fn backdrop_shader_elements_for_window(
             if backdrop_scene.is_empty() {
                 return None;
             }
-
             let snapshot = crate::backend::snapshot::capture_snapshot(
                 renderer,
                 None,
@@ -1107,7 +1169,6 @@ fn backdrop_shader_elements_for_window(
             } else {
                 snapshot.texture
             };
-
             let local_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
                     cached.rect.x - output_geo.loc.x,
@@ -1138,7 +1199,6 @@ fn backdrop_shader_elements_for_window(
                 )),
                 (capture_geo.size.w, capture_geo.size.h).into(),
             );
-
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
                 texture,
@@ -1152,18 +1212,7 @@ fn backdrop_shader_elements_for_window(
                 cached.clip_radius,
             )
             .ok()
-            .map(|element| {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    effect_rect = ?effect_rect,
-                    alpha,
-                    "built backdrop shader effect element for tty window"
-                );
-                (
-                    cached.order,
-                    crate::backend::decoration::DecorationSceneElements::Backdrop(element),
-                )
-            })
+            .map(|element| (cached.order, element))
         })
         .collect()
 }

@@ -23,7 +23,7 @@ const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 const backgroundShader = compileShader("./blur.frag", {
     type: "backdrop",
-    blur: { radius: 3, passes: 4 },
+    blur: { radius: 3, passes: 2 },
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {

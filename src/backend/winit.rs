@@ -19,7 +19,7 @@ use tracing::{trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
-    backend::visual::{WindowVisualState, transformed_rect, window_visual_state},
+    backend::visual::{WindowVisualState, window_visual_state},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
 };
@@ -110,7 +110,7 @@ pub fn init_winit(
                                 .into_iter()
                                 .map(WinitRenderElements::Window),
                         );
-                        for (window_index, window) in windows_top_to_bottom.iter().enumerate() {
+                        for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
                             };
@@ -178,6 +178,8 @@ pub fn init_winit(
                                     opacity: 1.0,
                                 });
                             let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
+                            let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> =
+                                Vec::new();
                             if decoration_ready {
                                 let mut backdrop_items = backdrop_shader_elements_for_window(
                                     renderer,
@@ -186,11 +188,18 @@ pub fn init_winit(
                                     output_geo,
                                     scale,
                                     &windows_top_to_bottom,
-                                    window_index,
+                                    _window_index,
                                     window,
                                     visual_state.opacity,
                                     decoration_ready,
                                 );
+                                for (order, element) in backdrop_items.drain(..) {
+                                    ordered_backdrop_elements.extend(
+                                        transform_backdrop_elements(vec![element], visual_state)
+                                            .into_iter()
+                                            .map(|item| (order, item)),
+                                    );
+                                }
                                 if let Some(decoration_state) =
                                     state.window_decorations.get_mut(window)
                                 {
@@ -205,7 +214,6 @@ pub fn init_winit(
                                         warn!(?error, "failed to build decoration background elements");
                                     })
                                     .unwrap_or_default();
-                                    background_items.append(&mut backdrop_items);
                                     background_items.sort_by_key(|(order, _)| *order);
                                     for (order, element) in background_items {
                                         ordered_ui_elements.extend(
@@ -251,6 +259,7 @@ pub fn init_winit(
                                 }
 
                                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
+                                ordered_backdrop_elements.sort_by_key(|(order, _)| *order);
                             }
 
                             let content_clip = state
@@ -258,61 +267,58 @@ pub fn init_winit(
                                 .get(window)
                                 .and_then(|decoration| decoration.content_clip);
 
-                            if let Some(content_clip) = content_clip {
-                                scene_elements.extend(
-                                    transform_clipped_elements(
-                                        window_render::clipped_surface_elements(
-                                            window,
-                                            renderer,
-                                            physical_location,
-                                            scale,
-                                            visual_state.opacity,
-                                            Some(content_clip),
-                                        )
-                                        .inspect_err(|error| {
-                                            warn!(?error, "failed to build clipped surface elements");
-                                        })
-                                        .unwrap_or_default(),
-                                        visual_state,
-                                    )
-                                    .into_iter(),
-                                );
+                            let client_elements = if let Some(content_clip) = content_clip {
+                                let clipped = window_render::clipped_surface_elements(
+                                    window,
+                                    renderer,
+                                    physical_location,
+                                    scale,
+                                    visual_state.opacity,
+                                    Some(content_clip),
+                                )
+                                .inspect_err(|error| {
+                                    warn!(?error, "failed to build clipped surface elements");
+                                })
+                                .unwrap_or_default();
+                                transform_clipped_elements(clipped, visual_state)
                             } else {
-                                scene_elements.extend(
-                                    transform_window_elements(
-                                        window_render::surface_elements(
-                                            window,
-                                            renderer,
-                                            physical_location,
-                                            scale,
-                                            visual_state.opacity,
-                                        ),
-                                        visual_state,
-                                        WinitRenderElements::Window,
-                                        WinitRenderElements::TransformedWindow,
-                                    )
-                                    .into_iter(),
+                                let surfaces = window_render::surface_elements(
+                                    window,
+                                    renderer,
+                                    physical_location,
+                                    scale,
+                                    visual_state.opacity,
                                 );
-                            }
-
-                            scene_elements.extend(
-                                ordered_ui_elements.into_iter().map(|(_, element)| element),
-                            );
-
-                            scene_elements.extend(
                                 transform_window_elements(
-                                    window_render::popup_elements(
-                                        window,
-                                        renderer,
-                                        physical_location,
-                                        scale,
-                                        visual_state.opacity,
-                                    ),
+                                    surfaces,
                                     visual_state,
                                     WinitRenderElements::Window,
                                     WinitRenderElements::TransformedWindow,
                                 )
-                                .into_iter(),
+                            };
+
+                            let popup_elements = transform_window_elements(
+                                window_render::popup_elements(
+                                    window,
+                                    renderer,
+                                    physical_location,
+                                    scale,
+                                    visual_state.opacity,
+                                ),
+                                visual_state,
+                                WinitRenderElements::Window,
+                                WinitRenderElements::TransformedWindow,
+                            );
+
+                            scene_elements.extend(popup_elements.into_iter());
+                            scene_elements.extend(client_elements.into_iter());
+                            scene_elements.extend(
+                                ordered_ui_elements.into_iter().map(|(_, element)| element),
+                            );
+                            scene_elements.extend(
+                                ordered_backdrop_elements
+                                    .into_iter()
+                                    .map(|(_, element)| element),
                             );
 
                             state
@@ -390,6 +396,15 @@ pub fn init_winit(
                                 .map(WinitRenderElements::Damage),
                         );
                         elements.extend(scene_elements);
+
+                        trace!(
+                            order = ?elements
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, element)| (idx, render_element_kind_name(element)))
+                                .collect::<Vec<_>>(),
+                            "winit final render order"
+                        );
 
                         trace!(
                             output = %output.name(),
@@ -478,6 +493,29 @@ smithay::render_elements! {
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::decoration::DecorationSceneElements,
     TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::decoration::DecorationSceneElements>>,
+    Backdrop=smithay::backend::renderer::gles::element::TextureShaderElement,
+    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<smithay::backend::renderer::gles::element::TextureShaderElement>>,
+}
+
+fn render_element_kind_name(element: &WinitRenderElements) -> &'static str {
+    match element {
+        WinitRenderElements::Window(_) => "window",
+        WinitRenderElements::TransformedWindow(_) => "transformed-window",
+        WinitRenderElements::Clipped(_) => "clipped",
+        WinitRenderElements::TransformedClipped(_) => "transformed-clipped",
+        WinitRenderElements::Text(_) => "text",
+        WinitRenderElements::TransformedText(_) => "transformed-text",
+        WinitRenderElements::Snapshot(_) => "snapshot",
+        WinitRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
+        WinitRenderElements::Damage(_) => "damage",
+        WinitRenderElements::Blink(_) => "blink",
+        WinitRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Rounded(_)) => "rounded",
+        WinitRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Shader(_)) => "shader",
+        WinitRenderElements::TransformedDecoration(_) => "transformed-decoration",
+        WinitRenderElements::Backdrop(_) => "backdrop",
+        WinitRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
+        _ => "unknown",
+    }
 }
 
 fn transform_window_elements(
@@ -529,6 +567,7 @@ fn transform_clipped_elements(
         })
         .collect()
 }
+
 
 fn transform_text_elements(
     elements: Vec<crate::backend::text::DecorationTextureElements>,
@@ -605,6 +644,30 @@ fn transform_decoration_elements(
         .collect()
 }
 
+fn transform_backdrop_elements(
+    elements: Vec<smithay::backend::renderer::gles::element::TextureShaderElement>,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(WinitRenderElements::Backdrop).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    element,
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
 fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     state: &ShojiWM,
@@ -616,7 +679,7 @@ fn backdrop_shader_elements_for_window(
     window: &smithay::desktop::Window,
     alpha: f32,
     has_backdrop_source: bool,
-) -> Vec<(usize, crate::backend::decoration::DecorationSceneElements)> {
+) -> Vec<(usize, smithay::backend::renderer::gles::element::TextureShaderElement)> {
     if !has_backdrop_source {
         return Vec::new();
     }
@@ -629,7 +692,7 @@ fn backdrop_shader_elements_for_window(
         .iter()
         .filter(|cached| matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop))
         .filter_map(|cached| {
-            let effect_rect = transformed_rect(
+            let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
                 decoration.visual_transform,
@@ -687,7 +750,6 @@ fn backdrop_shader_elements_for_window(
             if backdrop_scene.is_empty() {
                 return None;
             }
-
             let snapshot = snapshot::capture_snapshot(
                 renderer,
                 None,
@@ -704,19 +766,36 @@ fn backdrop_shader_elements_for_window(
             )
             .ok()
             .flatten()?;
-            let texture = if let Some(blur) = cached.shader.blur {
+            let mut source_texture = snapshot.texture;
+            let dump_id = crate::backend::shader_effect::consume_backdrop_dump_request();
+            if let Some(id) = dump_id {
+                crate::backend::shader_effect::dump_backdrop_texture_png(
+                    renderer,
+                    &mut source_texture,
+                    (capture_geo.size.w, capture_geo.size.h).into(),
+                    std::path::PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_source.png")),
+                );
+            }
+            let mut texture = if let Some(blur) = cached.shader.blur {
                 crate::backend::shader_effect::preblur_backdrop_texture(
                     renderer,
-                    snapshot.texture,
+                    source_texture,
                     (capture_geo.size.w, capture_geo.size.h),
                     blur.radius,
                     blur.passes,
                 )
                 .ok()?
             } else {
-                snapshot.texture
+                source_texture
             };
-
+            if let Some(id) = dump_id {
+                crate::backend::shader_effect::dump_backdrop_texture_png(
+                    renderer,
+                    &mut texture,
+                    (capture_geo.size.w, capture_geo.size.h).into(),
+                    std::path::PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_blurred.png")),
+                );
+            }
             let local_rect = Rectangle::new(
                 smithay::utils::Point::from((
                     cached.rect.x - output_geo.loc.x,
@@ -747,7 +826,6 @@ fn backdrop_shader_elements_for_window(
                 )),
                 (capture_geo.size.w, capture_geo.size.h).into(),
             );
-
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
                 texture,
@@ -761,18 +839,7 @@ fn backdrop_shader_elements_for_window(
                 cached.clip_radius,
             )
             .ok()
-            .map(|element| {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    effect_rect = ?effect_rect,
-                    alpha,
-                    "built backdrop shader effect element for winit window"
-                );
-                (
-                    cached.order,
-                    crate::backend::decoration::DecorationSceneElements::Backdrop(element),
-                )
-            })
+            .map(|element| (cached.order, element))
         })
         .collect()
 }
