@@ -104,11 +104,17 @@ export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
 export type NoiseKind = "salt";
 export type BlendMode = "normal" | "add" | "screen" | "multiply";
+export type ShaderUniformScalar = MaybeSignal<number>;
 export type ShaderUniformValue =
-  | number
-  | readonly [number, number]
-  | readonly [number, number, number]
-  | readonly [number, number, number, number];
+  | ShaderUniformScalar
+  | readonly [ShaderUniformScalar, ShaderUniformScalar]
+  | readonly [ShaderUniformScalar, ShaderUniformScalar, ShaderUniformScalar]
+  | readonly [
+      ShaderUniformScalar,
+      ShaderUniformScalar,
+      ShaderUniformScalar,
+      ShaderUniformScalar,
+    ];
 export type ShaderUniformMap = Record<string, ShaderUniformValue>;
 
 export interface BackdropBlurOptions {
