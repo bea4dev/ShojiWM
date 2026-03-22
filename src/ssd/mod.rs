@@ -174,7 +174,7 @@ impl ComputedDecorationNode {
 }
 
 /// Minimal renderer-facing primitive set for milestone 1.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DecorationRenderPrimitive {
     FillRect {
         rect: LogicalRect,
@@ -197,7 +197,7 @@ pub enum DecorationRenderPrimitive {
     },
     ShaderEffect {
         rect: LogicalRect,
-        shader: CompiledShader,
+        shader: CompiledEffect,
     },
     WindowSlot {
         rect: LogicalRect,
@@ -319,29 +319,87 @@ pub struct ButtonNode {
     pub action: WindowAction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShaderEffectNode {
     pub direction: LayoutDirection,
-    pub shader: CompiledShader,
+    pub shader: CompiledEffect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompiledShader {
+pub struct ShaderModule {
     pub path: String,
-    pub shader_type: ShaderType,
-    pub blur: Option<BackdropBlur>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectInput {
+    Backdrop,
+    Image(String),
+    Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoiseKind {
+    Salt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShaderType {
-    Pixel,
-    Backdrop,
+pub enum BlendMode {
+    Normal,
+    Add,
+    Screen,
+    Multiply,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoiseStage {
+    pub kind: NoiseKind,
+    pub amount: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffectStage {
+    Shader(ShaderModule),
+    Noise(NoiseStage),
+    DualKawaseBlur(BackdropBlur),
+    Save(String),
+    Blend {
+        input: EffectInput,
+        mode: BlendMode,
+        alpha: f32,
+    },
+    Unit(Box<CompiledEffect>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledEffect {
+    pub input: EffectInput,
+    pub pipeline: Vec<EffectStage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackdropBlur {
     pub radius: i32,
     pub passes: i32,
+}
+
+impl CompiledEffect {
+    pub fn is_backdrop(&self) -> bool {
+        matches!(self.input, EffectInput::Backdrop)
+    }
+
+    pub fn blur_stage(&self) -> Option<BackdropBlur> {
+        self.pipeline.iter().find_map(|stage| match stage {
+            EffectStage::DualKawaseBlur(blur) => Some(*blur),
+            _ => None,
+        })
+    }
+
+    pub fn last_shader_stage(&self) -> Option<&ShaderModule> {
+        self.pipeline.iter().rev().find_map(|stage| match stage {
+            EffectStage::Shader(shader) => Some(shader),
+            _ => None,
+        })
+    }
 }
 
 /// Minimal action surface required by milestone 1.

@@ -134,7 +134,7 @@ pub fn ordered_background_elements_for_window(
     }
 
     for cached in decoration.shader_buffers.clone() {
-        if matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop) {
+        if cached.shader.is_backdrop() {
             continue;
         }
         if let Some(element) =

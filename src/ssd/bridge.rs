@@ -1,9 +1,10 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BackdropBlur, BorderStyle, BoxNode, ButtonNode, Color, CompiledShader,
-    DecorationNode, DecorationNodeKind, DecorationStyle, Edges, JustifyContent, LayoutDirection,
-    LabelNode, ShaderEffectNode, ShaderType, WindowAction,
+    AlignItems, BackdropBlur, BlendMode, BorderStyle, BoxNode, ButtonNode, Color, CompiledEffect,
+    DecorationNode, DecorationNodeKind, DecorationStyle, Edges, EffectInput, EffectStage,
+    JustifyContent, LayoutDirection, LabelNode, NoiseKind, NoiseStage, ShaderEffectNode,
+    ShaderModule, WindowAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -29,7 +30,7 @@ pub struct WireProps {
     pub split: Option<String>,
     pub text: Option<String>,
     pub icon: Option<serde_json::Value>,
-    pub shader: Option<WireCompiledShader>,
+    pub shader: Option<WireCompiledEffect>,
     pub id: Option<String>,
     pub style: WireStyle,
     pub on_click: Option<WireOnClick>,
@@ -37,17 +38,77 @@ pub struct WireProps {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WireCompiledShader {
+pub struct WireShaderModule {
     pub kind: String,
-    pub shader_type: Option<String>,
     pub path: String,
-    pub blur: Option<WireBackdropBlur>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct WireBackdropBlur {
+#[serde(rename_all = "camelCase")]
+pub struct WireShaderStageFields {
+    pub shader: WireShaderModule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireDualKawaseBlurStageFields {
     pub radius: Option<i32>,
     pub passes: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum WireEffectStage {
+    ShaderStage(WireShaderStageFields),
+    DualKawaseBlur(WireDualKawaseBlurStageFields),
+    Noise(WireNoiseStageFields),
+    Save(WireSaveStageFields),
+    Blend(WireBlendStageFields),
+    Unit(WireUnitStageFields),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireCompiledEffect {
+    pub kind: String,
+    pub input: Option<WireEffectInput>,
+    #[serde(default)]
+    pub pipeline: Vec<WireEffectStage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum WireEffectInput {
+    BackdropSource,
+    ImageSource { path: String },
+    NamedTexture { name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireNoiseStageFields {
+    pub noise_kind: Option<String>,
+    pub amount: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireSaveStageFields {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireBlendStageFields {
+    pub input: WireEffectInput,
+    pub mode: Option<String>,
+    pub alpha: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireUnitStageFields {
+    pub effect: WireCompiledEffect,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -136,6 +197,8 @@ pub enum DecorationBridgeError {
     InvalidShaderDescriptor,
     #[error("invalid shader type: {0}")]
     InvalidShaderType(String),
+    #[error("invalid effect input")]
+    InvalidEffectInput,
     #[error("unsupported dimension keyword: {0}")]
     UnsupportedDimensionKeyword(String),
     #[error("invalid direction: {0}")]
@@ -204,29 +267,97 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
     }
 }
 
-impl TryFrom<WireCompiledShader> for CompiledShader {
+impl TryFrom<WireCompiledEffect> for CompiledEffect {
     type Error = DecorationBridgeError;
 
-    fn try_from(value: WireCompiledShader) -> Result<Self, Self::Error> {
-        if value.kind != "compiled-shader" || value.path.is_empty() {
+    fn try_from(value: WireCompiledEffect) -> Result<Self, Self::Error> {
+        if value.kind != "compiled-effect" {
             return Err(DecorationBridgeError::InvalidShaderDescriptor);
         }
 
-        let shader_type = match value.shader_type.as_deref().unwrap_or("pixel") {
-            "pixel" => ShaderType::Pixel,
-            "backdrop" => ShaderType::Backdrop,
-            other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
-        };
+        let input = decode_effect_input(value.input.unwrap_or(WireEffectInput::BackdropSource))?;
 
-        Ok(CompiledShader {
-            path: value.path,
-            shader_type,
-            blur: value.blur.map(|blur| BackdropBlur {
-                radius: blur.radius.unwrap_or(8).max(1),
-                passes: blur.passes.unwrap_or(2).clamp(1, 8),
-            }),
+        let mut stages = Vec::with_capacity(value.pipeline.len());
+        for stage in value.pipeline {
+            match stage {
+                WireEffectStage::ShaderStage(stage) => {
+                    if stage.shader.kind != "shader-module" || stage.shader.path.is_empty() {
+                        return Err(DecorationBridgeError::InvalidShaderDescriptor);
+                    }
+                    stages.push(EffectStage::Shader(ShaderModule {
+                        path: stage.shader.path,
+                    }));
+                }
+                WireEffectStage::DualKawaseBlur(stage) => {
+                    stages.push(EffectStage::DualKawaseBlur(BackdropBlur {
+                        radius: stage.radius.unwrap_or(8).max(1),
+                        passes: stage.passes.unwrap_or(2).clamp(1, 8),
+                    }));
+                }
+                WireEffectStage::Noise(stage) => {
+                    let kind = match stage.noise_kind.as_deref().unwrap_or("salt") {
+                        "salt" => NoiseKind::Salt,
+                        other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+                    };
+                    stages.push(EffectStage::Noise(NoiseStage {
+                        kind,
+                        amount: stage.amount.unwrap_or(0.01).clamp(0.0, 1.0),
+                    }));
+                }
+                WireEffectStage::Save(stage) => {
+                    if stage.name.is_empty() {
+                        return Err(DecorationBridgeError::InvalidShaderDescriptor);
+                    }
+                    stages.push(EffectStage::Save(stage.name));
+                }
+                WireEffectStage::Blend(stage) => {
+                    let input = decode_effect_input(stage.input)?;
+                    let mode = match stage.mode.as_deref().unwrap_or("normal") {
+                        "normal" => BlendMode::Normal,
+                        "add" => BlendMode::Add,
+                        "screen" => BlendMode::Screen,
+                        "multiply" => BlendMode::Multiply,
+                        other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+                    };
+                    stages.push(EffectStage::Blend {
+                        input,
+                        mode,
+                        alpha: stage.alpha.unwrap_or(1.0).clamp(0.0, 1.0),
+                    });
+                }
+                WireEffectStage::Unit(stage) => {
+                    stages.push(EffectStage::Unit(Box::new(stage.effect.try_into()?)));
+                }
+            }
+        }
+
+        if stages.is_empty() {
+            return Err(DecorationBridgeError::InvalidShaderDescriptor);
+        }
+
+        Ok(CompiledEffect {
+            input,
+            pipeline: stages,
         })
     }
+}
+
+fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, DecorationBridgeError> {
+    Ok(match value {
+        WireEffectInput::BackdropSource => EffectInput::Backdrop,
+        WireEffectInput::ImageSource { path } => {
+            if path.is_empty() {
+                return Err(DecorationBridgeError::InvalidEffectInput);
+            }
+            EffectInput::Image(path)
+        }
+        WireEffectInput::NamedTexture { name } => {
+            if name.is_empty() {
+                return Err(DecorationBridgeError::InvalidEffectInput);
+            }
+            EffectInput::Named(name)
+        }
+    })
 }
 
 impl TryFrom<WireDecorationChild> for DecorationNode {

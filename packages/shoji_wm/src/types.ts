@@ -102,18 +102,84 @@ export type AlignItems = "start" | "center" | "end" | "stretch";
 export type JustifyContent = "start" | "center" | "end" | "space-between";
 export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
-export type ShaderType = "pixel" | "backdrop";
+export type NoiseKind = "salt";
+export type BlendMode = "normal" | "add" | "screen" | "multiply";
 
 export interface BackdropBlurOptions {
   radius?: number;
   passes?: number;
 }
 
-export interface CompiledShaderHandle {
-  kind: "compiled-shader";
-  shaderType: ShaderType;
+export interface ShaderModuleHandle {
+  kind: "shader-module";
   path: string;
-  blur?: BackdropBlurOptions;
+}
+
+export interface ShaderStageHandle {
+  kind: "shader-stage";
+  shader: ShaderModuleHandle;
+}
+
+export interface BackdropSourceHandle {
+  kind: "backdrop-source";
+}
+
+export interface ImageSourceHandle {
+  kind: "image-source";
+  path: string;
+}
+
+export interface NamedTextureHandle {
+  kind: "named-texture";
+  name: string;
+}
+
+export interface NoiseStageHandle {
+  kind: "noise";
+  noiseKind: NoiseKind;
+  amount?: number;
+}
+
+export interface DualKawaseBlurStageHandle {
+  kind: "dual-kawase-blur";
+  radius?: number;
+  passes?: number;
+}
+
+export interface SaveStageHandle {
+  kind: "save";
+  name: string;
+}
+
+export interface BlendStageHandle {
+  kind: "blend";
+  input: EffectInputHandle;
+  mode?: BlendMode;
+  alpha?: number;
+}
+
+export interface UnitStageHandle {
+  kind: "unit";
+  effect: CompiledEffectHandle;
+}
+
+export type EffectInputHandle =
+  | BackdropSourceHandle
+  | ImageSourceHandle
+  | NamedTextureHandle;
+
+export type EffectStageHandle =
+  | ShaderStageHandle
+  | NoiseStageHandle
+  | DualKawaseBlurStageHandle
+  | SaveStageHandle
+  | BlendStageHandle
+  | UnitStageHandle;
+
+export interface CompiledEffectHandle {
+  kind: "compiled-effect";
+  input: EffectInputHandle;
+  pipeline: EffectStageHandle[];
 }
 
 export interface BorderValue {
@@ -197,7 +263,7 @@ export interface AppIconProps extends ComponentProps {
 }
 
 export interface ShaderEffectProps extends ComponentProps {
-  shader: CompiledShaderHandle;
+  shader: CompiledEffectHandle;
   direction?: Direction;
   split?: Direction;
   style?: SSDStyle;

@@ -10,20 +10,34 @@ import {
     WINDOW_MANAGER,
     WindowBorder,
     windowAction,
-    compileShader,
+    backdropSource,
+    compileEffect,
+    dualKawaseBlur,
+    loadShader,
+    noise,
+    shaderStage,
     type SSDStyle,
     type WaylandWindow,
     signal,
     animationVariable,
     seconds,
-    cubicBezier
+    cubicBezier,
+    save,
+    unit,
+    get,
+    blend
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
-const backgroundShader = compileShader("./blur.frag", {
-    type: "backdrop",
-    blur: { radius: 3, passes: 2 },
+
+const backgroundShader = compileEffect({
+    input: backdropSource(),
+    pipeline: [
+        //noise({ kind: "salt", amount: 0.01 }),
+        //dualKawaseBlur({ radius: 3, passes: 2 }),
+        shaderStage(loadShader("./liquid-glass.frag")),
+    ],
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {

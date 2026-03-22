@@ -2,16 +2,20 @@ use std::{
     cmp::max,
     collections::HashMap,
     env, fs,
+    io::Cursor,
     sync::{
         Mutex,
     },
 };
 use std::cell::RefCell;
 
+use png::ColorType;
+use resvg::{tiny_skia, usvg};
 use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
+            damage::OutputDamageTracker,
             element::{Element, Id, Kind, RenderElement, UnderlyingStorage},
             element::texture::TextureRenderElement,
             gles::{
@@ -20,21 +24,21 @@ use smithay::{
                 UniformName,
             },
             utils::{CommitCounter, OpaqueRegions},
-            Bind, ExportMem, Frame as _, FrameContext as _, Offscreen, Renderer, Texture, ContextId,
+            Bind, ExportMem, Frame as _, FrameContext as _, ImportMem, Offscreen, Renderer, Texture, ContextId,
         },
     },
-    utils::{user_data::UserDataMap, Buffer, Logical, Physical, Rectangle, Scale, Size, Transform},
+    utils::{user_data::UserDataMap, Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 use tracing::{trace, warn};
 
-use crate::ssd::{CompiledShader, LogicalRect, ShaderType};
+use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule};
 
 #[derive(Debug, Clone)]
 pub struct CachedShaderEffect {
     pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
-    pub shader: CompiledShader,
+    pub shader: CompiledEffect,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
 }
@@ -48,7 +52,7 @@ pub struct CachedBackdropTexture {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShaderEffectSpec {
     pub rect: Rectangle<i32, Logical>,
-    pub shader: CompiledShader,
+    pub shader: CompiledEffect,
     pub alpha_bits: u32,
     pub render_scale: f32,
     pub clip_rect: Option<Rectangle<i32, Logical>>,
@@ -85,7 +89,7 @@ pub struct StableShaderEffectElement {
 
 #[derive(Debug, Clone)]
 pub struct StableBackdropFramebufferElement {
-    shader: CompiledShader,
+    shader: CompiledEffect,
     program: GlesTexProgram,
     id: Id,
     commit_counter: CommitCounter,
@@ -106,8 +110,6 @@ struct BackdropFramebufferCache {
 
 #[derive(Debug, Default)]
 struct ShaderProgramCache(Mutex<HashMap<String, GlesPixelProgram>>);
-#[derive(Debug, Default)]
-struct BackdropShaderProgramCache(Mutex<HashMap<String, GlesTexProgram>>);
 #[derive(Debug, Clone)]
 struct BlurShaderPrograms {
     down: BlurProgramInternal,
@@ -117,6 +119,22 @@ struct BlurShaderPrograms {
 
 #[derive(Debug, Default)]
 struct BlurShaderProgramCache(Mutex<Option<BlurShaderPrograms>>);
+#[derive(Debug, Default)]
+struct TextureStageProgramCache(Mutex<HashMap<String, GlesTexProgram>>);
+#[derive(Debug)]
+struct DisplayTextureProgram(GlesTexProgram);
+#[derive(Debug)]
+struct NoiseSaltProgram(GlesTexProgram);
+#[derive(Debug)]
+struct OpaqueFinishProgram(GlesTexProgram);
+#[derive(Debug, Default)]
+struct ImageTextureCache(Mutex<HashMap<(String, i32, i32), GlesTexture>>);
+
+struct EffectExecutionContext {
+    backdrop: GlesTexture,
+    size: (i32, i32),
+    named: HashMap<String, GlesTexture>,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct BlurProgramInternal {
@@ -126,6 +144,25 @@ struct BlurProgramInternal {
     uniform_offset: ffi::types::GLint,
     attrib_vert: ffi::types::GLint,
 }
+
+#[derive(Debug, Clone)]
+struct BlendProgramInternal {
+    program: ffi::types::GLuint,
+    uniform_tex: ffi::types::GLint,
+    uniform_tex2: ffi::types::GLint,
+    uniform_blend_mode: ffi::types::GLint,
+    uniform_blend_alpha: ffi::types::GLint,
+    attrib_vert: ffi::types::GLint,
+}
+
+#[derive(Debug, Clone)]
+struct BlendPrograms {
+    program: BlendProgramInternal,
+    renderer_context_id: ContextId<GlesTexture>,
+}
+
+#[derive(Debug, Default)]
+struct BlendProgramCache(Mutex<Option<BlendPrograms>>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShaderEffectError {
@@ -172,7 +209,7 @@ impl ShaderEffectElementState {
             self.last_spec = Some(spec.clone());
         }
 
-        let program = compile_backdrop_shader_program(renderer, &spec.shader)?;
+        let program = compile_display_texture_program(renderer)?;
         Ok(StableBackdropFramebufferElement {
             shader: spec.shader,
             program,
@@ -368,7 +405,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
         let mut inner = inner.borrow_mut();
         let blur_padding = self
             .shader
-            .blur
+            .blur_stage()
             .map(|blur| {
                 let radius = blur.radius.max(1);
                 let passes = blur.passes.max(1);
@@ -451,7 +488,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             gl.DeleteFramebuffers(1, &fbo as *const _);
         })?;
 
-        if let Some(blur) = self.shader.blur {
+        if let Some(blur) = self.shader.blur_stage() {
             let mut guard = frame.renderer();
             let renderer = guard.as_mut();
             match preblur_backdrop_texture(
@@ -476,7 +513,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
 
 fn compile_shader_program(
     renderer: &mut GlesRenderer,
-    shader: &CompiledShader,
+    shader: &CompiledEffect,
 ) -> Result<GlesPixelProgram, ShaderEffectError> {
     if renderer
         .egl_context()
@@ -490,7 +527,10 @@ fn compile_shader_program(
             .insert_if_missing(ShaderProgramCache::default);
     }
 
-    let cache_key = format!("{:?}:{}", shader.shader_type, shader.path);
+    let shader_module = shader
+        .last_shader_stage()
+        .expect("pixel shader effects should always have a final shader stage");
+    let cache_key = format!("pixel:{}", shader_module.path);
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -505,116 +545,13 @@ fn compile_shader_program(
         return Ok(program);
     }
 
-    let source = fs::read_to_string(&shader.path).map_err(|source| ShaderEffectError::ReadShader {
-        path: shader.path.clone(),
+    let source = fs::read_to_string(&shader_module.path).map_err(|source| ShaderEffectError::ReadShader {
+        path: shader_module.path.clone(),
         source,
     })?;
-    let program = match shader.shader_type {
-        ShaderType::Pixel => renderer.compile_custom_pixel_shader(
-            wrap_pixel_shader_source(&source),
-            &[
-                UniformName::new(
-                    "render_scale",
-                    smithay::backend::renderer::gles::UniformType::_1f,
-                ),
-                UniformName::new(
-                    "clip_enabled",
-                    smithay::backend::renderer::gles::UniformType::_1f,
-                ),
-                UniformName::new(
-                    "clip_rect",
-                    smithay::backend::renderer::gles::UniformType::_4f,
-                ),
-                UniformName::new(
-                    "clip_radius",
-                    smithay::backend::renderer::gles::UniformType::_4f,
-                ),
-            ],
-        )?,
-        ShaderType::Backdrop => renderer.compile_custom_pixel_shader(
-            wrap_pixel_shader_source(&source),
-            &[
-                UniformName::new(
-                    "render_scale",
-                    smithay::backend::renderer::gles::UniformType::_1f,
-                ),
-                UniformName::new(
-                    "clip_enabled",
-                    smithay::backend::renderer::gles::UniformType::_1f,
-                ),
-                UniformName::new(
-                    "clip_rect",
-                    smithay::backend::renderer::gles::UniformType::_4f,
-                ),
-                UniformName::new(
-                    "clip_radius",
-                    smithay::backend::renderer::gles::UniformType::_4f,
-                ),
-            ],
-        )?,
-    };
-    renderer
-        .egl_context()
-        .user_data()
-        .get::<ShaderProgramCache>()
-        .expect("shader effect cache should be initialized")
-        .0
-        .lock()
-        .unwrap()
-        .insert(cache_key, program.clone());
-    Ok(program)
-}
-
-pub fn compile_backdrop_shader_program(
-    renderer: &mut GlesRenderer,
-    shader: &CompiledShader,
-) -> Result<GlesTexProgram, ShaderEffectError> {
-    if renderer
-        .egl_context()
-        .user_data()
-        .get::<BackdropShaderProgramCache>()
-        .is_none()
-    {
-        renderer
-            .egl_context()
-            .user_data()
-            .insert_if_missing(BackdropShaderProgramCache::default);
-    }
-
-    let cache_key = format!("{:?}:{}", shader.shader_type, shader.path);
-    if let Some(program) = renderer
-        .egl_context()
-        .user_data()
-        .get::<BackdropShaderProgramCache>()
-        .expect("backdrop shader cache should be initialized")
-        .0
-        .lock()
-        .unwrap()
-        .get(&cache_key)
-        .cloned()
-    {
-        return Ok(program);
-    }
-
-    let source = fs::read_to_string(&shader.path).map_err(|source| ShaderEffectError::ReadShader {
-        path: shader.path.clone(),
-        source,
-    })?;
-    let program = renderer.compile_custom_texture_shader(
-        wrap_backdrop_shader_source(&source),
+    let program = renderer.compile_custom_pixel_shader(
+        wrap_pixel_shader_source(&source),
         &[
-            UniformName::new(
-                "uv_offset",
-                smithay::backend::renderer::gles::UniformType::_2f,
-            ),
-            UniformName::new(
-                "uv_scale",
-                smithay::backend::renderer::gles::UniformType::_2f,
-            ),
-            UniformName::new(
-                "rect_size",
-                smithay::backend::renderer::gles::UniformType::_2f,
-            ),
             UniformName::new(
                 "render_scale",
                 smithay::backend::renderer::gles::UniformType::_1f,
@@ -636,8 +573,270 @@ pub fn compile_backdrop_shader_program(
     renderer
         .egl_context()
         .user_data()
-        .get::<BackdropShaderProgramCache>()
-        .expect("backdrop shader cache should be initialized")
+        .get::<ShaderProgramCache>()
+        .expect("shader effect cache should be initialized")
+        .0
+        .lock()
+        .unwrap()
+        .insert(cache_key, program.clone());
+    Ok(program)
+}
+
+pub fn compile_backdrop_shader_program(
+    renderer: &mut GlesRenderer,
+    shader: &ShaderModule,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    compile_texture_program(renderer, &shader.path, "display", true)
+}
+
+fn compile_display_texture_program(
+    renderer: &mut GlesRenderer,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<DisplayTextureProgram>()
+        .is_none()
+    {
+        let program = renderer.compile_custom_texture_shader(
+            wrap_backdrop_shader_source(
+                r#"
+vec4 shader_main(vec2 uv, vec2 rect_size) {
+    return texture2D(tex, uv);
+}
+"#,
+            ),
+            &[
+                UniformName::new("uv_offset", smithay::backend::renderer::gles::UniformType::_2f),
+                UniformName::new("uv_scale", smithay::backend::renderer::gles::UniformType::_2f),
+                UniformName::new("rect_size", smithay::backend::renderer::gles::UniformType::_2f),
+                UniformName::new("render_scale", smithay::backend::renderer::gles::UniformType::_1f),
+                UniformName::new("clip_enabled", smithay::backend::renderer::gles::UniformType::_1f),
+                UniformName::new("clip_rect", smithay::backend::renderer::gles::UniformType::_4f),
+                UniformName::new("clip_radius", smithay::backend::renderer::gles::UniformType::_4f),
+            ],
+        )?;
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(|| DisplayTextureProgram(program));
+    }
+
+    Ok(renderer
+        .egl_context()
+        .user_data()
+        .get::<DisplayTextureProgram>()
+        .expect("display texture shader should be initialized")
+        .0
+        .clone())
+}
+
+fn compile_noise_salt_program(
+    renderer: &mut GlesRenderer,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<NoiseSaltProgram>()
+        .is_none()
+    {
+        let program = renderer.compile_custom_texture_shader(
+            wrap_texture_stage_source(include_str!("noise_salt.frag")),
+            &[
+                UniformName::new("rect_size", smithay::backend::renderer::gles::UniformType::_2f),
+                UniformName::new(
+                    "noise_amount",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+            ],
+        )?;
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(|| NoiseSaltProgram(program));
+    }
+
+    Ok(renderer
+        .egl_context()
+        .user_data()
+        .get::<NoiseSaltProgram>()
+        .expect("noise salt shader should be initialized")
+        .0
+        .clone())
+}
+
+fn compile_opaque_finish_program(
+    renderer: &mut GlesRenderer,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<OpaqueFinishProgram>()
+        .is_none()
+    {
+        let program = renderer.compile_custom_texture_shader(
+            wrap_texture_stage_source(
+                r#"
+vec4 shader_main(vec2 uv, vec2 rect_size) {
+    vec4 color = texture2D(tex, uv);
+    color.a = 1.0;
+    return color;
+}
+"#,
+            ),
+            &[UniformName::new(
+                "rect_size",
+                smithay::backend::renderer::gles::UniformType::_2f,
+            )],
+        )?;
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(|| OpaqueFinishProgram(program));
+    }
+
+    Ok(renderer
+        .egl_context()
+        .user_data()
+        .get::<OpaqueFinishProgram>()
+        .expect("opaque finish shader should be initialized")
+        .0
+        .clone())
+}
+
+fn blend_shader_programs(
+    renderer: &mut GlesRenderer,
+) -> Result<BlendPrograms, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<BlendProgramCache>()
+        .is_none()
+    {
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(BlendProgramCache::default);
+    }
+
+    if let Some(programs) = renderer
+        .egl_context()
+        .user_data()
+        .get::<BlendProgramCache>()
+        .expect("blend shader cache should be initialized")
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+    {
+        return Ok(programs);
+    }
+
+    let renderer_context_id = renderer.context_id();
+    let programs = renderer.with_context(|gl| unsafe {
+        let program = link_program(gl, include_str!("backdrop_blur.vert"), include_str!("blend_raw.frag"))?;
+        let vert = c"vert";
+        let tex = c"tex";
+        let tex2 = c"tex2";
+        let blend_mode = c"blend_mode";
+        let blend_alpha = c"blend_alpha";
+
+        Ok::<_, GlesError>(BlendPrograms {
+            program: BlendProgramInternal {
+                program,
+                uniform_tex: gl.GetUniformLocation(program, tex.as_ptr()),
+                uniform_tex2: gl.GetUniformLocation(program, tex2.as_ptr()),
+                uniform_blend_mode: gl.GetUniformLocation(program, blend_mode.as_ptr()),
+                uniform_blend_alpha: gl.GetUniformLocation(program, blend_alpha.as_ptr()),
+                attrib_vert: gl.GetAttribLocation(program, vert.as_ptr()),
+            },
+            renderer_context_id,
+        })
+    })??;
+
+    *renderer
+        .egl_context()
+        .user_data()
+        .get::<BlendProgramCache>()
+        .expect("blend shader cache should be initialized")
+        .0
+        .lock()
+        .unwrap() = Some(programs.clone());
+
+    Ok(programs)
+}
+
+fn compile_texture_stage_program(
+    renderer: &mut GlesRenderer,
+    shader: &ShaderModule,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    compile_texture_program(renderer, &shader.path, "stage", false)
+}
+
+fn compile_texture_program(
+    renderer: &mut GlesRenderer,
+    path: &str,
+    namespace: &str,
+    with_clip: bool,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<TextureStageProgramCache>()
+        .is_none()
+    {
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(TextureStageProgramCache::default);
+    }
+
+    let cache_key = format!("{namespace}:{path}:{with_clip}");
+    if let Some(program) = renderer
+        .egl_context()
+        .user_data()
+        .get::<TextureStageProgramCache>()
+        .expect("texture stage cache should be initialized")
+        .0
+        .lock()
+        .unwrap()
+        .get(&cache_key)
+        .cloned()
+    {
+        return Ok(program);
+    }
+
+    let source = fs::read_to_string(path).map_err(|source| ShaderEffectError::ReadShader {
+        path: path.to_string(),
+        source,
+    })?;
+    let wrapped = if with_clip {
+        wrap_backdrop_shader_source(&source)
+    } else {
+        wrap_texture_stage_source(&source)
+    };
+    let uniforms = if with_clip {
+        vec![
+            UniformName::new("uv_offset", smithay::backend::renderer::gles::UniformType::_2f),
+            UniformName::new("uv_scale", smithay::backend::renderer::gles::UniformType::_2f),
+            UniformName::new("rect_size", smithay::backend::renderer::gles::UniformType::_2f),
+            UniformName::new("render_scale", smithay::backend::renderer::gles::UniformType::_1f),
+            UniformName::new("clip_enabled", smithay::backend::renderer::gles::UniformType::_1f),
+            UniformName::new("clip_rect", smithay::backend::renderer::gles::UniformType::_4f),
+            UniformName::new("clip_radius", smithay::backend::renderer::gles::UniformType::_4f),
+        ]
+    } else {
+        vec![UniformName::new(
+            "rect_size",
+            smithay::backend::renderer::gles::UniformType::_2f,
+        )]
+    };
+    let program = renderer.compile_custom_texture_shader(wrapped, &uniforms)?;
+    renderer
+        .egl_context()
+        .user_data()
+        .get::<TextureStageProgramCache>()
+        .expect("texture stage cache should be initialized")
         .0
         .lock()
         .unwrap()
@@ -860,6 +1059,36 @@ void main() {{
     )
 }
 
+fn wrap_texture_stage_source(source: &str) -> String {
+    format!(
+        r#"
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform vec2 rect_size;
+
+varying vec2 v_coords;
+
+{source}
+
+void main() {{
+    gl_FragColor = shader_main(v_coords, rect_size);
+}}
+"#
+    )
+}
+
 fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
     let clip_rect = spec
         .clip_rect
@@ -893,13 +1122,13 @@ pub fn backdrop_shader_element(
     display_rect: Rectangle<i32, Logical>,
     sample_rect: Rectangle<i32, Logical>,
     captured_rect: Rectangle<i32, Logical>,
-    shader: &CompiledShader,
+    _shader: &CompiledEffect,
     alpha: f32,
     render_scale: f32,
     clip_rect: Option<Rectangle<i32, Logical>>,
     clip_radius: i32,
 ) -> Result<TextureShaderElement, ShaderEffectError> {
-    let program = compile_backdrop_shader_program(renderer, shader)?;
+    let program = compile_display_texture_program(renderer)?;
     let inner = TextureRenderElement::from_static_texture(
         Id::new(),
         renderer.context_id(),
@@ -957,6 +1186,375 @@ pub fn backdrop_shader_element(
             Uniform::new("clip_radius", [radius, radius, radius, radius]),
         ],
     ))
+}
+
+pub fn apply_effect_pipeline(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    size: (i32, i32),
+    effect: &CompiledEffect,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let mut ctx = EffectExecutionContext {
+        backdrop: texture,
+        size,
+        named: HashMap::new(),
+    };
+    run_effect_pipeline(renderer, effect, &mut ctx)
+}
+
+fn run_effect_pipeline(
+    renderer: &mut GlesRenderer,
+    effect: &CompiledEffect,
+    ctx: &mut EffectExecutionContext,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let mut current = resolve_effect_input(renderer, &effect.input, ctx)?;
+
+    for stage in &effect.pipeline {
+        current = match stage {
+            EffectStage::Noise(noise) => {
+                apply_noise_stage(renderer, current, ctx.size, noise.clone())?
+            }
+            EffectStage::DualKawaseBlur(blur) => preblur_backdrop_texture(
+                renderer,
+                current,
+                ctx.size,
+                blur.radius,
+                blur.passes,
+            )?,
+            EffectStage::Shader(shader) => {
+                apply_texture_shader_stage(renderer, current, ctx.size, shader)?
+            }
+            EffectStage::Save(name) => {
+                ctx.named.insert(name.clone(), current.clone());
+                current
+            }
+            EffectStage::Blend { input, mode, alpha } => {
+                let other = resolve_effect_input(renderer, input, ctx)?;
+                apply_blend_stage(renderer, current, other, ctx.size, *mode, *alpha)?
+            }
+            EffectStage::Unit(effect) => {
+                let _ = run_effect_pipeline(renderer, effect, ctx)?;
+                current
+            }
+        };
+    }
+
+    if effect.is_backdrop() {
+        let program = compile_opaque_finish_program(renderer)?;
+        current = apply_texture_program(
+            renderer,
+            current,
+            ctx.size,
+            program,
+            vec![Uniform::new("rect_size", [ctx.size.0 as f32, ctx.size.1 as f32])],
+        )?;
+    }
+
+    Ok(current)
+}
+
+fn resolve_effect_input(
+    renderer: &mut GlesRenderer,
+    input: &EffectInput,
+    ctx: &mut EffectExecutionContext,
+) -> Result<GlesTexture, ShaderEffectError> {
+    match input {
+        EffectInput::Backdrop => Ok(ctx.backdrop.clone()),
+        EffectInput::Named(name) => ctx
+            .named
+            .get(name)
+            .cloned()
+            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+        EffectInput::Image(path) => load_image_texture(renderer, path, ctx.size),
+    }
+}
+
+fn apply_texture_shader_stage(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    size: (i32, i32),
+    shader: &ShaderModule,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let program = compile_texture_stage_program(renderer, shader)?;
+    apply_texture_program(renderer, texture, size, program, vec![Uniform::new(
+        "rect_size",
+        [size.0 as f32, size.1 as f32],
+    )])
+}
+
+fn apply_noise_stage(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    size: (i32, i32),
+    noise: NoiseStage,
+) -> Result<GlesTexture, ShaderEffectError> {
+    match noise.kind {
+        NoiseKind::Salt => {
+            let program = compile_noise_salt_program(renderer)?;
+            apply_texture_program(
+                renderer,
+                texture,
+                size,
+                program,
+                vec![
+                    Uniform::new("rect_size", [size.0 as f32, size.1 as f32]),
+                    Uniform::new("noise_amount", noise.amount),
+                ],
+            )
+        }
+    }
+}
+
+fn apply_blend_stage(
+    renderer: &mut GlesRenderer,
+    current: GlesTexture,
+    other: GlesTexture,
+    size: (i32, i32),
+    mode: BlendMode,
+    alpha: f32,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let programs = blend_shader_programs(renderer)?;
+    if programs.renderer_context_id != renderer.context_id() {
+        return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
+    }
+
+    let target =
+        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size.into())?;
+    renderer.with_context(|gl| unsafe {
+        while gl.GetError() != ffi::NO_ERROR {}
+
+        gl.Disable(ffi::BLEND);
+        gl.Disable(ffi::SCISSOR_TEST);
+        gl.ActiveTexture(ffi::TEXTURE0);
+
+        let mut fbo = 0;
+        gl.GenFramebuffers(1, &mut fbo as *mut _);
+        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
+        gl.FramebufferTexture2D(
+            ffi::DRAW_FRAMEBUFFER,
+            ffi::COLOR_ATTACHMENT0,
+            ffi::TEXTURE_2D,
+            target.tex_id(),
+            0,
+        );
+
+        gl.Viewport(0, 0, size.0, size.1);
+        gl.UseProgram(programs.program.program);
+        gl.Uniform1i(programs.program.uniform_tex, 0);
+        gl.Uniform1i(programs.program.uniform_tex2, 1);
+        gl.Uniform1f(programs.program.uniform_blend_mode, blend_mode_value(mode));
+        gl.Uniform1f(programs.program.uniform_blend_alpha, alpha.clamp(0.0, 1.0));
+
+        let vertices: [f32; 12] = [
+            0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 1.0, 1.0, 1.0, 0.0,
+        ];
+        gl.EnableVertexAttribArray(programs.program.attrib_vert as u32);
+        gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
+        gl.VertexAttribPointer(
+            programs.program.attrib_vert as u32,
+            2,
+            ffi::FLOAT,
+            ffi::FALSE,
+            0,
+            vertices.as_ptr().cast(),
+        );
+
+        gl.ActiveTexture(ffi::TEXTURE0);
+        gl.BindTexture(ffi::TEXTURE_2D, current.tex_id());
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+
+        gl.ActiveTexture(ffi::TEXTURE1);
+        gl.BindTexture(ffi::TEXTURE_2D, other.tex_id());
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+
+        gl.DrawArrays(ffi::TRIANGLES, 0, 6);
+
+        gl.BindTexture(ffi::TEXTURE_2D, 0);
+        gl.ActiveTexture(ffi::TEXTURE0);
+        gl.BindTexture(ffi::TEXTURE_2D, 0);
+        gl.DisableVertexAttribArray(programs.program.attrib_vert as u32);
+        gl.UseProgram(0);
+        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, 0);
+        gl.Enable(ffi::SCISSOR_TEST);
+        gl.DeleteFramebuffers(1, &fbo as *const _);
+        Ok::<_, GlesError>(())
+    })??;
+
+    Ok(target)
+}
+
+fn blend_mode_value(mode: BlendMode) -> f32 {
+    match mode {
+        BlendMode::Normal => 0.0,
+        BlendMode::Add => 1.0,
+        BlendMode::Screen => 2.0,
+        BlendMode::Multiply => 3.0,
+    }
+}
+
+fn apply_texture_program(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    size: (i32, i32),
+    program: GlesTexProgram,
+    uniforms: Vec<Uniform<'static>>,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let mut target = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size.into())?;
+    let inner = TextureRenderElement::from_static_texture(
+        Id::new(),
+        renderer.context_id(),
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        texture,
+        1,
+        Transform::Normal,
+        Some(1.0),
+        None,
+        Some((size.0, size.1).into()),
+        None,
+        Kind::Unspecified,
+    );
+    let element = TextureShaderElement::new(inner, program, uniforms);
+    let mut framebuffer = renderer.bind(&mut target)?;
+    let mut damage_tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+    let _ = damage_tracker
+        .render_output(renderer, &mut framebuffer, 0, &[element], [0.0, 0.0, 0.0, 0.0])
+        .map_err(|_| GlesError::FramebufferBindingError)?;
+    drop(framebuffer);
+    Ok(target)
+}
+
+fn load_image_texture(
+    renderer: &mut GlesRenderer,
+    path: &str,
+    size: (i32, i32),
+) -> Result<GlesTexture, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<ImageTextureCache>()
+        .is_none()
+    {
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(ImageTextureCache::default);
+    }
+
+    let cache_key = (path.to_string(), size.0, size.1);
+    if let Some(texture) = renderer
+        .egl_context()
+        .user_data()
+        .get::<ImageTextureCache>()
+        .expect("image texture cache should exist")
+        .0
+        .lock()
+        .unwrap()
+        .get(&cache_key)
+        .cloned()
+    {
+        return Ok(texture);
+    }
+
+    let bytes = fs::read(path).map_err(|source| ShaderEffectError::ReadShader {
+        path: path.to_string(),
+        source,
+    })?;
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    let rgba = match extension.as_deref() {
+        Some("png") => decode_png_and_scale(&bytes, size.0, size.1),
+        Some("svg") => decode_svg_and_scale(&bytes, size.0, size.1),
+        _ => decode_png_and_scale(&bytes, size.0, size.1),
+    }
+    .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError))?;
+
+    let texture = renderer.import_memory(&rgba, Fourcc::Abgr8888, size.into(), false)?;
+    renderer
+        .egl_context()
+        .user_data()
+        .get::<ImageTextureCache>()
+        .expect("image texture cache should exist")
+        .0
+        .lock()
+        .unwrap()
+        .insert(cache_key, texture.clone());
+    Ok(texture)
+}
+
+fn decode_png_and_scale(bytes: &[u8], target_width: i32, target_height: i32) -> Option<Vec<u8>> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    let source = &buffer[..info.buffer_size()];
+    let rgba = match info.color_type {
+        ColorType::Rgba => source.to_vec(),
+        ColorType::Rgb => source
+            .chunks_exact(3)
+            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
+            .collect(),
+        ColorType::GrayscaleAlpha => source
+            .chunks_exact(2)
+            .flat_map(|chunk| [chunk[0], chunk[0], chunk[0], chunk[1]])
+            .collect(),
+        ColorType::Grayscale => source
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect(),
+        _ => return None,
+    };
+
+    Some(scale_rgba(
+        &rgba,
+        info.width as i32,
+        info.height as i32,
+        target_width,
+        target_height,
+    ))
+}
+
+fn decode_svg_and_scale(bytes: &[u8], target_width: i32, target_height: i32) -> Option<Vec<u8>> {
+    let options = usvg::Options::default();
+    let tree = usvg::Tree::from_data(bytes, &options).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(target_width as u32, target_height as u32)?;
+    let size = tree.size();
+    let sx = target_width as f32 / size.width();
+    let sy = target_height as f32 / size.height();
+    let transform = tiny_skia::Transform::from_scale(sx, sy);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Some(pixmap.data().to_vec())
+}
+
+fn scale_rgba(
+    rgba: &[u8],
+    source_width: i32,
+    source_height: i32,
+    target_width: i32,
+    target_height: i32,
+) -> Vec<u8> {
+    if source_width == target_width && source_height == target_height {
+        return rgba.to_vec();
+    }
+
+    let mut scaled = vec![0u8; (target_width * target_height * 4) as usize];
+    for y in 0..target_height {
+        for x in 0..target_width {
+            let source_x = ((x as f32 / target_width as f32) * source_width as f32).floor() as i32;
+            let source_y = ((y as f32 / target_height as f32) * source_height as f32).floor() as i32;
+            let source_x = source_x.clamp(0, source_width - 1);
+            let source_y = source_y.clamp(0, source_height - 1);
+            let source_index = ((source_y * source_width + source_x) * 4) as usize;
+            let target_index = ((y * target_width + x) * 4) as usize;
+            scaled[target_index..target_index + 4]
+                .copy_from_slice(&rgba[source_index..source_index + 4]);
+        }
+    }
+    scaled
 }
 
 pub fn preblur_backdrop_texture(

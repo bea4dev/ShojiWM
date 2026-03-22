@@ -1051,7 +1051,7 @@ fn backdrop_shader_elements_for_window(
         .shader_buffers
         .clone()
         .iter()
-        .filter(|cached| matches!(cached.shader.shader_type, crate::ssd::ShaderType::Backdrop))
+        .filter(|cached| cached.shader.is_backdrop())
         .filter_map(|cached| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
@@ -1074,7 +1074,7 @@ fn backdrop_shader_elements_for_window(
                 .hash(&mut hasher);
             let blur_padding = cached
                 .shader
-                .blur
+                .blur_stage()
                 .map(|blur| {
                     let radius = blur.radius.max(1);
                     let passes = blur.passes.max(1);
@@ -1082,9 +1082,7 @@ fn backdrop_shader_elements_for_window(
                 })
                 .unwrap_or(0);
             (blur_padding, cached.clip_radius).hash(&mut hasher);
-            if let Some(blur) = cached.shader.blur {
-                (blur.radius, blur.passes).hash(&mut hasher);
-            }
+            format!("{:?}", cached.shader).hash(&mut hasher);
             let capture_geo = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
                     effect_rect.x - blur_padding,
@@ -1218,18 +1216,13 @@ fn backdrop_shader_elements_for_window(
             )
             .ok()
             .flatten()?;
-            let texture = if let Some(blur) = cached.shader.blur {
-                crate::backend::shader_effect::preblur_backdrop_texture(
-                    renderer,
-                    snapshot.texture,
-                    (capture_geo.size.w, capture_geo.size.h),
-                    blur.radius,
-                    blur.passes,
-                )
-                .ok()?
-            } else {
-                snapshot.texture
-            };
+            let texture = crate::backend::shader_effect::apply_effect_pipeline(
+                renderer,
+                snapshot.texture,
+                (capture_geo.size.w, capture_geo.size.h),
+                &cached.shader,
+            )
+            .ok()?;
             if let Some(window_decoration) = window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
                     cached.stable_key.clone(),

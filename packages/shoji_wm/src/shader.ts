@@ -1,26 +1,123 @@
 import { dirname, isAbsolute, resolve } from "node:path";
 
-import type { BackdropBlurOptions, CompiledShaderHandle, ShaderType } from "./types";
+import type {
+  BackdropBlurOptions,
+  BackdropSourceHandle,
+  BlendMode,
+  BlendStageHandle,
+  CompiledEffectHandle,
+  DualKawaseBlurStageHandle,
+  EffectInputHandle,
+  NoiseKind,
+  NoiseStageHandle,
+  SaveStageHandle,
+  ShaderModuleHandle,
+  ShaderStageHandle,
+  UnitStageHandle,
+  ImageSourceHandle,
+  NamedTextureHandle,
+} from "./types";
 
 let shaderBaseDir = process.cwd();
 
-export interface CompileShaderOptions {
-  type?: ShaderType;
-  blur?: BackdropBlurOptions;
+export interface CompileEffectOptions {
+  input: EffectInputHandle;
+  pipeline: Array<
+    | ShaderStageHandle
+    | NoiseStageHandle
+    | DualKawaseBlurStageHandle
+    | SaveStageHandle
+    | BlendStageHandle
+    | UnitStageHandle
+  >;
 }
 
 export function installShaderResolverBridge(configPath: string): void {
   shaderBaseDir = dirname(resolve(configPath));
 }
 
-export function compileShader(
-  path: string,
-  options: CompileShaderOptions = {},
-): CompiledShaderHandle {
+function resolveShaderPath(path: string): string {
+  return isAbsolute(path) ? path : resolve(shaderBaseDir, path);
+}
+
+export function loadShader(path: string): ShaderModuleHandle {
   return {
-    kind: "compiled-shader",
-    shaderType: options.type ?? "pixel",
-    path: isAbsolute(path) ? path : resolve(shaderBaseDir, path),
-    blur: options.blur,
+    kind: "shader-module",
+    path: resolveShaderPath(path),
+  };
+}
+
+export function backdropSource(): BackdropSourceHandle {
+  return { kind: "backdrop-source" };
+}
+
+export function imageSource(path: string): ImageSourceHandle {
+  return {
+    kind: "image-source",
+    path: resolveShaderPath(path),
+  };
+}
+
+export function get(name: string): NamedTextureHandle {
+  return {
+    kind: "named-texture",
+    name,
+  };
+}
+
+export function shaderStage(shader: string | ShaderModuleHandle): ShaderStageHandle {
+  return {
+    kind: "shader-stage",
+    shader: typeof shader === "string" ? loadShader(shader) : shader,
+  };
+}
+
+export function noise(options: { kind?: NoiseKind; amount?: number } = {}): NoiseStageHandle {
+  return {
+    kind: "noise",
+    noiseKind: options.kind ?? "salt",
+    amount: options.amount,
+  };
+}
+
+export function dualKawaseBlur(options: BackdropBlurOptions = {}): DualKawaseBlurStageHandle {
+  return {
+    kind: "dual-kawase-blur",
+    radius: options.radius,
+    passes: options.passes,
+  };
+}
+
+export function save(name: string): SaveStageHandle {
+  return {
+    kind: "save",
+    name,
+  };
+}
+
+export function blend(
+  input: EffectInputHandle,
+  options: { mode?: BlendMode; alpha?: number } = {},
+): BlendStageHandle {
+  return {
+    kind: "blend",
+    input,
+    mode: options.mode,
+    alpha: options.alpha,
+  };
+}
+
+export function unit(effect: CompiledEffectHandle): UnitStageHandle {
+  return {
+    kind: "unit",
+    effect,
+  };
+}
+
+export function compileEffect(options: CompileEffectOptions): CompiledEffectHandle {
+  return {
+    kind: "compiled-effect",
+    input: options.input,
+    pipeline: options.pipeline,
   };
 }
