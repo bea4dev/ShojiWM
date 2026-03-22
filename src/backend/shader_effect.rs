@@ -2,10 +2,7 @@ use std::{
     cmp::max,
     collections::HashMap,
     env, fs,
-    io::BufWriter,
-    path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
 };
@@ -105,19 +102,6 @@ struct BackdropFramebufferCache {
     framebuffer: Option<GlesTexture>,
     blurred: Option<GlesTexture>,
     sample_src: Option<Rectangle<f64, Buffer>>,
-}
-
-static BACKDROP_DUMP_REQUESTED: AtomicBool = AtomicBool::new(false);
-static BACKDROP_DUMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-pub fn request_backdrop_dump() {
-    BACKDROP_DUMP_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-pub fn consume_backdrop_dump_request() -> Option<u64> {
-    BACKDROP_DUMP_REQUESTED
-        .swap(false, Ordering::SeqCst)
-        .then(|| BACKDROP_DUMP_COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
 #[derive(Debug, Default)]
@@ -304,7 +288,6 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
-        trace!(dst = ?dst, alpha = self.alpha, "drawing backdrop framebuffer effect");
         let Some(cache) = cache else {
             return Ok(());
         };
@@ -379,7 +362,6 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
         dst: Rectangle<i32, Physical>,
         cache: &UserDataMap,
     ) -> Result<(), GlesError> {
-        trace!(dst = ?dst, "capturing backdrop framebuffer effect");
         let inner = cache.get_or_insert::<RefCell<BackdropFramebufferCache>, _>(|| {
             RefCell::new(BackdropFramebufferCache::default())
         });
@@ -484,62 +466,11 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             }
         }
 
-        if BACKDROP_DUMP_REQUESTED.swap(false, Ordering::SeqCst) {
-            let mut guard = frame.renderer();
-            let renderer = guard.as_mut();
-            let dump_id = BACKDROP_DUMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-            if let Some(framebuffer) = inner.framebuffer.as_mut() {
-                dump_backdrop_texture_png(renderer, framebuffer, size, dump_path(dump_id, "source"));
-            }
-            if let Some(blurred) = inner.blurred.as_mut() {
-                dump_backdrop_texture_png(renderer, blurred, size, dump_path(dump_id, "blurred"));
-            }
-        }
-
         Ok(())
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
-    }
-}
-
-fn dump_path(id: u64, suffix: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_{suffix}.png"))
-}
-
-pub fn dump_backdrop_texture_png(
-    renderer: &mut GlesRenderer,
-    texture: &mut GlesTexture,
-    size: Size<i32, Buffer>,
-    path: PathBuf,
-) {
-    let Ok(framebuffer) = renderer.bind(texture) else {
-        return;
-    };
-    let Ok(mapping) = renderer.copy_framebuffer(
-        &framebuffer,
-        Rectangle::from_size((size.w, size.h).into()),
-        Fourcc::Abgr8888,
-    ) else {
-        return;
-    };
-    let Ok(copy): Result<&[u8], _> = renderer.map_texture(&mapping) else {
-        return;
-    };
-
-    let Ok(file) = std::fs::File::create(&path) else {
-        return;
-    };
-    let writer = BufWriter::new(file);
-    let mut encoder = png::Encoder::new(writer, size.w.max(0) as u32, size.h.max(0) as u32);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let Ok(mut png_writer) = encoder.write_header() else {
-        return;
-    };
-    if png_writer.write_image_data(copy).is_ok() {
-        trace!(path = %path.display(), "wrote backdrop dump png");
     }
 }
 

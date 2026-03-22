@@ -360,28 +360,6 @@ render_elements! {
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
-fn render_element_kind_name(element: &TtyRenderElements) -> &'static str {
-    match element {
-        TtyRenderElements::Window(_) => "window",
-        TtyRenderElements::TransformedWindow(_) => "transformed-window",
-        TtyRenderElements::Clipped(_) => "clipped",
-        TtyRenderElements::TransformedClipped(_) => "transformed-clipped",
-        TtyRenderElements::Text(_) => "text",
-        TtyRenderElements::TransformedText(_) => "transformed-text",
-        TtyRenderElements::Snapshot(_) => "snapshot",
-        TtyRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
-        TtyRenderElements::Damage(_) => "damage",
-        TtyRenderElements::Blink(_) => "blink",
-        TtyRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Rounded(_)) => "rounded",
-        TtyRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Shader(_)) => "shader",
-        TtyRenderElements::TransformedDecoration(_) => "transformed-decoration",
-        TtyRenderElements::Backdrop(_) => "backdrop",
-        TtyRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
-        TtyRenderElements::Cursor(_) => "cursor",
-        _ => "unknown",
-    }
-}
-
 fn render_surface(
     state: &mut ShojiWM,
     node: DrmNode,
@@ -822,15 +800,6 @@ fn render_surface(
                 .map(TtyRenderElements::Damage),
         );
         elements.extend(scene_elements);
-
-        trace!(
-            order = ?elements
-                .iter()
-                .enumerate()
-                .map(|(idx, element)| (idx, render_element_kind_name(element)))
-                .collect::<Vec<_>>(),
-            "tty final render order"
-        );
 
         trace!(
             ?node,

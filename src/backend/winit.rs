@@ -399,15 +399,6 @@ pub fn init_winit(
                         elements.extend(scene_elements);
 
                         trace!(
-                            order = ?elements
-                                .iter()
-                                .enumerate()
-                                .map(|(idx, element)| (idx, render_element_kind_name(element)))
-                                .collect::<Vec<_>>(),
-                            "winit final render order"
-                        );
-
-                        trace!(
                             output = %output.name(),
                             window_count = state.space.elements().count(),
                             render_element_count = elements.len(),
@@ -496,27 +487,6 @@ smithay::render_elements! {
     TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::decoration::DecorationSceneElements>>,
     Backdrop=smithay::backend::renderer::gles::element::TextureShaderElement,
     TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<smithay::backend::renderer::gles::element::TextureShaderElement>>,
-}
-
-fn render_element_kind_name(element: &WinitRenderElements) -> &'static str {
-    match element {
-        WinitRenderElements::Window(_) => "window",
-        WinitRenderElements::TransformedWindow(_) => "transformed-window",
-        WinitRenderElements::Clipped(_) => "clipped",
-        WinitRenderElements::TransformedClipped(_) => "transformed-clipped",
-        WinitRenderElements::Text(_) => "text",
-        WinitRenderElements::TransformedText(_) => "transformed-text",
-        WinitRenderElements::Snapshot(_) => "snapshot",
-        WinitRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
-        WinitRenderElements::Damage(_) => "damage",
-        WinitRenderElements::Blink(_) => "blink",
-        WinitRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Rounded(_)) => "rounded",
-        WinitRenderElements::Decoration(crate::backend::decoration::DecorationSceneElements::Shader(_)) => "shader",
-        WinitRenderElements::TransformedDecoration(_) => "transformed-decoration",
-        WinitRenderElements::Backdrop(_) => "backdrop",
-        WinitRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
-        _ => "unknown",
-    }
 }
 
 fn transform_window_elements(
@@ -860,17 +830,8 @@ fn backdrop_shader_elements_for_window(
             )
             .ok()
             .flatten()?;
-            let mut source_texture = snapshot.texture;
-            let dump_id = crate::backend::shader_effect::consume_backdrop_dump_request();
-            if let Some(id) = dump_id {
-                crate::backend::shader_effect::dump_backdrop_texture_png(
-                    renderer,
-                    &mut source_texture,
-                    (capture_geo.size.w, capture_geo.size.h).into(),
-                    std::path::PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_source.png")),
-                );
-            }
-            let mut texture = if let Some(blur) = cached.shader.blur {
+            let source_texture = snapshot.texture;
+            let texture = if let Some(blur) = cached.shader.blur {
                 crate::backend::shader_effect::preblur_backdrop_texture(
                     renderer,
                     source_texture,
@@ -882,14 +843,6 @@ fn backdrop_shader_elements_for_window(
             } else {
                 source_texture
             };
-            if let Some(id) = dump_id {
-                crate::backend::shader_effect::dump_backdrop_texture_png(
-                    renderer,
-                    &mut texture,
-                    (capture_geo.size.w, capture_geo.size.h).into(),
-                    std::path::PathBuf::from(format!("/tmp/shoji_backdrop_dump_{id}_blurred.png")),
-                );
-            }
             if let Some(window_decoration) = state.window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
                     cached.stable_key.clone(),

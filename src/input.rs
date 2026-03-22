@@ -25,7 +25,6 @@ use crate::{
 enum KeyboardAction {
     Forward,
     Quit,
-    DumpBackdrop,
 }
 
 impl ShojiWM {
@@ -50,11 +49,6 @@ impl ShojiWM {
 
                             if modifiers.logo && keysym.raw() == keysyms::KEY_q {
                                 FilterResult::Intercept(KeyboardAction::Quit)
-                            } else if modifiers.logo
-                                && modifiers.shift
-                                && keysym.raw() == keysyms::KEY_F12
-                            {
-                                FilterResult::Intercept(KeyboardAction::DumpBackdrop)
                             } else {
                                 FilterResult::Forward
                             }
@@ -64,10 +58,6 @@ impl ShojiWM {
 
                 match action {
                     KeyboardAction::Quit => self.shutdown(),
-                    KeyboardAction::DumpBackdrop => {
-                        crate::backend::shader_effect::request_backdrop_dump();
-                        self.schedule_redraw();
-                    }
                     KeyboardAction::Forward => {}
                 }
             }
