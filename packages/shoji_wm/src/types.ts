@@ -104,6 +104,12 @@ export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
 export type NoiseKind = "salt";
 export type BlendMode = "normal" | "add" | "screen" | "multiply";
+export type ShaderUniformValue =
+  | number
+  | readonly [number, number]
+  | readonly [number, number, number]
+  | readonly [number, number, number, number];
+export type ShaderUniformMap = Record<string, ShaderUniformValue>;
 
 export interface BackdropBlurOptions {
   radius?: number;
@@ -118,6 +124,7 @@ export interface ShaderModuleHandle {
 export interface ShaderStageHandle {
   kind: "shader-stage";
   shader: ShaderModuleHandle;
+  uniforms?: ShaderUniformMap;
 }
 
 export interface BackdropSourceHandle {

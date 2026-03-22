@@ -330,6 +330,20 @@ pub struct ShaderModule {
     pub path: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShaderUniformValue {
+    Float(f32),
+    Vec2([f32; 2]),
+    Vec3([f32; 3]),
+    Vec4([f32; 4]),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderStage {
+    pub shader: ShaderModule,
+    pub uniforms: std::collections::BTreeMap<String, ShaderUniformValue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectInput {
     Backdrop,
@@ -358,7 +372,7 @@ pub struct NoiseStage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectStage {
-    Shader(ShaderModule),
+    Shader(ShaderStage),
     Noise(NoiseStage),
     DualKawaseBlur(BackdropBlur),
     Save(String),
@@ -394,7 +408,7 @@ impl CompiledEffect {
         })
     }
 
-    pub fn last_shader_stage(&self) -> Option<&ShaderModule> {
+    pub fn last_shader_stage(&self) -> Option<&ShaderStage> {
         self.pipeline.iter().rev().find_map(|stage| match stage {
             EffectStage::Shader(shader) => Some(shader),
             _ => None,

@@ -1,113 +1,93 @@
-// Full-panel liquid glass aligned to the effect rect.
-// BORDER_RADIUS_PX now affects the actual visible contour because the lens mask
-// fills the whole rect instead of creating a tiny central "badge".
+// Rounded-rect liquid glass based on signed distance.
+// For each pixel inside the rounded rect, compute the SDF distance to the border,
+// then sample from a point shifted toward the center. The shift is strongest near
+// the edge and fades toward the interior.
 
-const float INSET_PX = 0.0;
-const float BORDER_RADIUS_PX = 0.0;
-const float POWER_EXPONENT = 6.0;
-const float LENS_STRENGTH = 0.18;
-const float EDGE_DISTORTION_PX = 6.0;
-const float EDGE_WIDTH_PX = 10.0;
-const float SAMPLE_RANGE = 3.0;
-const float SAMPLE_OFFSET = 0.45;
-const float WHITE_TINT = 0.08;
-const float HIGHLIGHT = 0.10;
+uniform float inset_px;
+uniform float border_radius_px;
+uniform float edge_width_px;
+uniform float edge_softness_px;
+uniform float max_warp_px;
+uniform float interior_warp_px;
+uniform float white_tint;
+uniform float edge_highlight;
 
-float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {
-    if (coords.x < 0.0 || coords.y < 0.0 || coords.x > rect_size.x || coords.y > rect_size.y) {
-        return 0.0;
-    }
-
+float rounded_rect_sdf(vec2 coords, vec2 rect_size, float radius) {
     vec2 center;
     float r;
 
-    if (coords.x < radius.x && coords.y < radius.x) {
-        r = radius.x;
+    if (coords.x < radius && coords.y < radius) {
+        r = radius;
         center = vec2(r, r);
-    } else if (coords.x > rect_size.x - radius.y && coords.y < radius.y) {
-        r = radius.y;
+        return distance(coords, center) - r;
+    } else if (coords.x > rect_size.x - radius && coords.y < radius) {
+        r = radius;
         center = vec2(rect_size.x - r, r);
-    } else if (coords.x > rect_size.x - radius.z && coords.y > rect_size.y - radius.z) {
-        r = radius.z;
+        return distance(coords, center) - r;
+    } else if (coords.x > rect_size.x - radius && coords.y > rect_size.y - radius) {
+        r = radius;
         center = vec2(rect_size.x - r, rect_size.y - r);
-    } else if (coords.x < radius.w && coords.y > rect_size.y - radius.w) {
-        r = radius.w;
+        return distance(coords, center) - r;
+    } else if (coords.x < radius && coords.y > rect_size.y - radius) {
+        r = radius;
         center = vec2(r, rect_size.y - r);
-    } else {
-        return 1.0;
+        return distance(coords, center) - r;
     }
 
-    float dist = distance(coords, center);
-    return 1.0 - smoothstep(r - 0.5, r + 0.5, dist);
+    float dist_left = coords.x;
+    float dist_right = rect_size.x - coords.x;
+    float dist_top = coords.y;
+    float dist_bottom = rect_size.y - coords.y;
+    return -min(min(dist_left, dist_right), min(dist_top, dist_bottom));
 }
 
-float rounded_rect_sdf(vec2 coords, vec2 rect_size, float radius) {
-    vec2 center = rect_size * 0.5;
-    vec2 half_size = max(rect_size * 0.5 - vec2(radius), vec2(0.0));
-    vec2 q = abs(coords - center) - half_size;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
-}
-
-vec2 rounded_rect_normal(vec2 coords, vec2 rect_size, float radius) {
-    float eps = 1.0;
-    float dx =
-        rounded_rect_sdf(coords + vec2(eps, 0.0), rect_size, radius) -
-        rounded_rect_sdf(coords - vec2(eps, 0.0), rect_size, radius);
-    float dy =
-        rounded_rect_sdf(coords + vec2(0.0, eps), rect_size, radius) -
-        rounded_rect_sdf(coords - vec2(0.0, eps), rect_size, radius);
-    vec2 normal = normalize(vec2(dx, dy));
-    if (length(normal) < 0.001) {
-        return vec2(0.0);
-    }
-    return normal;
+float rounded_rect_alpha(vec2 p, vec2 rect_size, float radius) {
+    float sdf = rounded_rect_sdf(p, rect_size, radius);
+    return 1.0 - smoothstep(-0.5, 0.5, sdf);
 }
 
 vec4 shader_main(vec2 uv, vec2 rect_size) {
-    vec2 origin = vec2(INSET_PX);
-    vec2 size = max(rect_size - vec2(INSET_PX * 2.0), vec2(1.0));
-    vec2 coords = uv * rect_size - origin;
-    float radius = max(BORDER_RADIUS_PX - INSET_PX, 0.0);
+    vec2 origin = vec2(inset_px);
+    vec2 size = max(rect_size - vec2(inset_px * 2.0), vec2(1.0));
+    vec2 local = uv * rect_size - origin;
+    float radius = max(border_radius_px - inset_px, 0.0);
 
-    float clip_mask = rounded_rect_alpha(coords, size, vec4(radius));
     vec4 base = texture2D(tex, uv);
-    if (clip_mask <= 0.0) {
+
+    float sdf = rounded_rect_sdf(local, size, radius);
+    float mask = rounded_rect_alpha(local, size, radius);
+    if (mask <= 0.0) {
         return base;
     }
 
-    vec2 local_uv = clamp(coords / size, vec2(0.0), vec2(1.0));
-    vec2 centered = (local_uv - vec2(0.5)) * 2.0;
-    float aspect = size.x / max(size.y, 1.0);
+    float dist_inside = max(-sdf, 0.0);
+    float edge_band = 1.0 - smoothstep(
+        edge_softness_px,
+        edge_width_px + edge_softness_px,
+        dist_inside
+    );
+    float interior_band = smoothstep(
+        edge_width_px + edge_softness_px,
+        edge_width_px + edge_softness_px + 24.0,
+        dist_inside
+    );
 
-    float rounded_box =
-        pow(abs(centered.x * aspect), POWER_EXPONENT) +
-        pow(abs(centered.y), POWER_EXPONENT);
+    vec2 center = size * 0.5;
+    vec2 to_center = center - local;
+    float to_center_len = max(length(to_center), 0.0001);
+    vec2 dir = to_center / to_center_len;
 
-    float lens_mask = clamp(1.0 - rounded_box, 0.0, 1.0);
-    float sdf = rounded_rect_sdf(coords, size, radius);
-    float edge_boost = 1.0 - smoothstep(0.0, EDGE_WIDTH_PX, -sdf);
-    edge_boost *= clip_mask;
+    float edge_weight = pow(clamp(edge_band, 0.0, 1.0), 0.65);
+    float warp_px = edge_weight * max_warp_px + interior_band * interior_warp_px;
+    vec2 warped_local = local + dir * warp_px;
+    vec2 warped_uv = clamp((warped_local + origin) / rect_size, vec2(0.0), vec2(1.0));
 
-    float transition = smoothstep(0.0, 1.0, lens_mask) * clip_mask;
-    vec2 lens = ((local_uv - 0.5) * (1.0 - lens_mask * LENS_STRENGTH) + 0.5);
-    vec2 edge_normal = rounded_rect_normal(coords, size, radius);
-    lens += (edge_normal * edge_boost * EDGE_DISTORTION_PX) / max(size, vec2(1.0));
-    vec2 lens_uv = clamp((lens * size + origin) / rect_size, vec2(0.0), vec2(1.0));
+    vec4 refracted = texture2D(tex, warped_uv);
+    vec4 color = refracted;
 
-    vec4 accum = vec4(0.0);
-    float total = 0.0;
-    for (float x = -SAMPLE_RANGE; x <= SAMPLE_RANGE; x += 1.0) {
-        for (float y = -SAMPLE_RANGE; y <= SAMPLE_RANGE; y += 1.0) {
-            vec2 offset = vec2(x, y) * SAMPLE_OFFSET / rect_size;
-            accum += texture2D(tex, clamp(lens_uv + offset, vec2(0.0), vec2(1.0)));
-            total += 1.0;
-        }
-    }
-    vec4 blurred = accum / total;
+    float edge_light = edge_band * edge_highlight;
+    color.rgb = mix(color.rgb, vec3(1.0), white_tint + edge_light);
+    color.a = 1.0;
 
-    float edge = max(smoothstep(0.70, 1.0, 1.0 - lens_mask), edge_boost);
-    vec4 lit = blurred;
-    lit.rgb = mix(lit.rgb, vec3(1.0), WHITE_TINT + edge * HIGHLIGHT);
-
-    return mix(base, lit, transition);
+    return vec4(mix(base.rgb, color.rgb, mask), 1.0);
 }

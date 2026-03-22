@@ -4,7 +4,7 @@ use super::{
     AlignItems, BackdropBlur, BlendMode, BorderStyle, BoxNode, ButtonNode, Color, CompiledEffect,
     DecorationNode, DecorationNodeKind, DecorationStyle, Edges, EffectInput, EffectStage,
     JustifyContent, LayoutDirection, LabelNode, NoiseKind, NoiseStage, ShaderEffectNode,
-    ShaderModule, WindowAction,
+    ShaderModule, ShaderStage, ShaderUniformValue, WindowAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -43,10 +43,19 @@ pub struct WireShaderModule {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireShaderStageFields {
     pub shader: WireShaderModule,
+    #[serde(default)]
+    pub uniforms: std::collections::BTreeMap<String, WireShaderUniformValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WireShaderUniformValue {
+    Float(f32),
+    Vec(Vec<f32>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -284,14 +293,30 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                     if stage.shader.kind != "shader-module" || stage.shader.path.is_empty() {
                         return Err(DecorationBridgeError::InvalidShaderDescriptor);
                     }
-                    stages.push(EffectStage::Shader(ShaderModule {
-                        path: stage.shader.path,
+                    let mut uniforms = std::collections::BTreeMap::new();
+                    for (name, value) in stage.uniforms {
+                        let value = match value {
+                            WireShaderUniformValue::Float(value) => ShaderUniformValue::Float(value),
+                            WireShaderUniformValue::Vec(value) => match value.as_slice() {
+                                [x, y] => ShaderUniformValue::Vec2([*x, *y]),
+                                [x, y, z] => ShaderUniformValue::Vec3([*x, *y, *z]),
+                                [x, y, z, w] => ShaderUniformValue::Vec4([*x, *y, *z, *w]),
+                                _ => return Err(DecorationBridgeError::InvalidShaderDescriptor),
+                            },
+                        };
+                        uniforms.insert(name, value);
+                    }
+                    stages.push(EffectStage::Shader(ShaderStage {
+                        shader: ShaderModule {
+                            path: stage.shader.path,
+                        },
+                        uniforms,
                     }));
                 }
                 WireEffectStage::DualKawaseBlur(stage) => {
                     stages.push(EffectStage::DualKawaseBlur(BackdropBlur {
-                        radius: stage.radius.unwrap_or(8).max(1),
-                        passes: stage.passes.unwrap_or(2).clamp(1, 8),
+                        radius: stage.radius.unwrap_or(8).max(0),
+                        passes: stage.passes.unwrap_or(2).clamp(0, 8),
                     }));
                 }
                 WireEffectStage::Noise(stage) => {

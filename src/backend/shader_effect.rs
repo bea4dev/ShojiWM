@@ -31,7 +31,7 @@ use smithay::{
 };
 use tracing::{trace, warn};
 
-use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule};
+use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
 
 #[derive(Debug, Clone)]
 pub struct CachedShaderEffect {
@@ -530,7 +530,7 @@ fn compile_shader_program(
     let shader_module = shader
         .last_shader_stage()
         .expect("pixel shader effects should always have a final shader stage");
-    let cache_key = format!("pixel:{}", shader_module.path);
+    let cache_key = format!("pixel:{}", shader_module.shader.path);
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -545,8 +545,8 @@ fn compile_shader_program(
         return Ok(program);
     }
 
-    let source = fs::read_to_string(&shader_module.path).map_err(|source| ShaderEffectError::ReadShader {
-        path: shader_module.path.clone(),
+    let source = fs::read_to_string(&shader_module.shader.path).map_err(|source| ShaderEffectError::ReadShader {
+        path: shader_module.shader.path.clone(),
         source,
     })?;
     let program = renderer.compile_custom_pixel_shader(
@@ -586,7 +586,7 @@ pub fn compile_backdrop_shader_program(
     renderer: &mut GlesRenderer,
     shader: &ShaderModule,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(renderer, &shader.path, "display", true)
+    compile_texture_program(renderer, &shader.path, "display", true, None)
 }
 
 fn compile_display_texture_program(
@@ -768,9 +768,9 @@ fn blend_shader_programs(
 
 fn compile_texture_stage_program(
     renderer: &mut GlesRenderer,
-    shader: &ShaderModule,
+    stage: &ShaderStage,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(renderer, &shader.path, "stage", false)
+    compile_texture_program(renderer, &stage.shader.path, "stage", false, Some(&stage.uniforms))
 }
 
 fn compile_texture_program(
@@ -778,6 +778,7 @@ fn compile_texture_program(
     path: &str,
     namespace: &str,
     with_clip: bool,
+    uniforms: Option<&std::collections::BTreeMap<String, ShaderUniformValue>>,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
     if renderer
         .egl_context()
@@ -791,7 +792,21 @@ fn compile_texture_program(
             .insert_if_missing(TextureStageProgramCache::default);
     }
 
-    let cache_key = format!("{namespace}:{path}:{with_clip}");
+    let mut cache_key = format!("{namespace}:{path}:{with_clip}");
+    if let Some(uniforms) = uniforms {
+        for (name, value) in uniforms {
+            let kind = match value {
+                ShaderUniformValue::Float(_) => "f1",
+                ShaderUniformValue::Vec2(_) => "f2",
+                ShaderUniformValue::Vec3(_) => "f3",
+                ShaderUniformValue::Vec4(_) => "f4",
+            };
+            cache_key.push(':');
+            cache_key.push_str(name);
+            cache_key.push(':');
+            cache_key.push_str(kind);
+        }
+    }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -815,7 +830,7 @@ fn compile_texture_program(
     } else {
         wrap_texture_stage_source(&source)
     };
-    let uniforms = if with_clip {
+    let mut uniform_names = if with_clip {
         vec![
             UniformName::new("uv_offset", smithay::backend::renderer::gles::UniformType::_2f),
             UniformName::new("uv_scale", smithay::backend::renderer::gles::UniformType::_2f),
@@ -831,7 +846,18 @@ fn compile_texture_program(
             smithay::backend::renderer::gles::UniformType::_2f,
         )]
     };
-    let program = renderer.compile_custom_texture_shader(wrapped, &uniforms)?;
+    if let Some(uniforms) = uniforms {
+        for (name, value) in uniforms {
+            let ty = match value {
+                ShaderUniformValue::Float(_) => smithay::backend::renderer::gles::UniformType::_1f,
+                ShaderUniformValue::Vec2(_) => smithay::backend::renderer::gles::UniformType::_2f,
+                ShaderUniformValue::Vec3(_) => smithay::backend::renderer::gles::UniformType::_3f,
+                ShaderUniformValue::Vec4(_) => smithay::backend::renderer::gles::UniformType::_4f,
+            };
+            uniform_names.push(UniformName::new(name.clone(), ty));
+        }
+    }
+    let program = renderer.compile_custom_texture_shader(wrapped, &uniform_names)?;
     renderer
         .egl_context()
         .user_data()
@@ -1192,6 +1218,8 @@ pub fn apply_effect_pipeline(
     renderer: &mut GlesRenderer,
     texture: GlesTexture,
     size: (i32, i32),
+    sample_region: Option<Rectangle<i32, Buffer>>,
+    output_size: Option<(i32, i32)>,
     effect: &CompiledEffect,
 ) -> Result<GlesTexture, ShaderEffectError> {
     let mut ctx = EffectExecutionContext {
@@ -1199,54 +1227,69 @@ pub fn apply_effect_pipeline(
         size,
         named: HashMap::new(),
     };
-    run_effect_pipeline(renderer, effect, &mut ctx)
+    run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)
 }
 
 fn run_effect_pipeline(
     renderer: &mut GlesRenderer,
     effect: &CompiledEffect,
     ctx: &mut EffectExecutionContext,
+    sample_region: Option<Rectangle<i32, Buffer>>,
+    output_size: Option<(i32, i32)>,
 ) -> Result<GlesTexture, ShaderEffectError> {
     let mut current = resolve_effect_input(renderer, &effect.input, ctx)?;
+    let mut current_size = ctx.size;
+    let mut pending_sample_region = sample_region;
 
     for stage in &effect.pipeline {
         current = match stage {
             EffectStage::Noise(noise) => {
-                apply_noise_stage(renderer, current, ctx.size, noise.clone())?
+                apply_noise_stage(renderer, current, current_size, noise.clone())?
             }
-            EffectStage::DualKawaseBlur(blur) => preblur_backdrop_texture(
-                renderer,
-                current,
-                ctx.size,
-                blur.radius,
-                blur.passes,
-            )?,
+            EffectStage::DualKawaseBlur(blur) => {
+                preblur_backdrop_texture(renderer, current, current_size, blur.radius, blur.passes)?
+            }
             EffectStage::Shader(shader) => {
-                apply_texture_shader_stage(renderer, current, ctx.size, shader)?
+                if let Some(region) = pending_sample_region.take() {
+                    let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+                    current = crop_texture_region(renderer, current, current_size, region, target_size)?;
+                    current_size = target_size;
+                }
+                apply_texture_shader_stage(renderer, current, current_size, shader)?
             }
             EffectStage::Save(name) => {
                 ctx.named.insert(name.clone(), current.clone());
                 current
             }
             EffectStage::Blend { input, mode, alpha } => {
+                if let Some(region) = pending_sample_region.take() {
+                    let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+                    current = crop_texture_region(renderer, current, current_size, region, target_size)?;
+                    current_size = target_size;
+                }
                 let other = resolve_effect_input(renderer, input, ctx)?;
-                apply_blend_stage(renderer, current, other, ctx.size, *mode, *alpha)?
+                apply_blend_stage(renderer, current, other, current_size, *mode, *alpha)?
             }
             EffectStage::Unit(effect) => {
-                let _ = run_effect_pipeline(renderer, effect, ctx)?;
+                let _ = run_effect_pipeline(renderer, effect, ctx, pending_sample_region, output_size)?;
                 current
             }
         };
     }
 
     if effect.is_backdrop() {
+        if let Some(region) = pending_sample_region.take() {
+            let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+            current = crop_texture_region(renderer, current, current_size, region, target_size)?;
+            current_size = target_size;
+        }
         let program = compile_opaque_finish_program(renderer)?;
         current = apply_texture_program(
             renderer,
             current,
-            ctx.size,
+            current_size,
             program,
-            vec![Uniform::new("rect_size", [ctx.size.0 as f32, ctx.size.1 as f32])],
+            vec![Uniform::new("rect_size", [current_size.0 as f32, current_size.1 as f32])],
         )?;
     }
 
@@ -1273,13 +1316,20 @@ fn apply_texture_shader_stage(
     renderer: &mut GlesRenderer,
     texture: GlesTexture,
     size: (i32, i32),
-    shader: &ShaderModule,
+    stage: &ShaderStage,
 ) -> Result<GlesTexture, ShaderEffectError> {
-    let program = compile_texture_stage_program(renderer, shader)?;
-    apply_texture_program(renderer, texture, size, program, vec![Uniform::new(
-        "rect_size",
-        [size.0 as f32, size.1 as f32],
-    )])
+    let program = compile_texture_stage_program(renderer, stage)?;
+    let mut uniforms = vec![Uniform::new("rect_size", [size.0 as f32, size.1 as f32])];
+    for (name, value) in &stage.uniforms {
+        let uniform = match value {
+            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
+        };
+        uniforms.push(uniform);
+    }
+    apply_texture_program(renderer, texture, size, program, uniforms)
 }
 
 fn apply_noise_stage(
@@ -1393,6 +1443,44 @@ fn blend_mode_value(mode: BlendMode) -> f32 {
         BlendMode::Screen => 2.0,
         BlendMode::Multiply => 3.0,
     }
+}
+
+fn crop_texture_region(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    _size: (i32, i32),
+    region: Rectangle<i32, Buffer>,
+    output_size: (i32, i32),
+) -> Result<GlesTexture, ShaderEffectError> {
+    let mut target = Offscreen::<GlesTexture>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        output_size.into(),
+    )?;
+    let element = TextureRenderElement::from_static_texture(
+        Id::new(),
+        renderer.context_id(),
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        texture,
+        1,
+        Transform::Normal,
+        Some(1.0),
+        Some(Rectangle::new(
+            Point::from((region.loc.x as f64, region.loc.y as f64)),
+            (region.size.w as f64, region.size.h as f64).into(),
+        )),
+        Some(output_size.into()),
+        None,
+        Kind::Unspecified,
+    );
+    let mut framebuffer = renderer.bind(&mut target)?;
+    let mut damage_tracker =
+        OutputDamageTracker::new((region.size.w, region.size.h), 1.0, Transform::Normal);
+    let _ = damage_tracker
+        .render_output(renderer, &mut framebuffer, 0, &[element], [0.0, 0.0, 0.0, 0.0])
+        .map_err(|_| GlesError::FramebufferBindingError)?;
+    drop(framebuffer);
+    Ok(target)
 }
 
 fn apply_texture_program(
@@ -1564,6 +1652,10 @@ pub fn preblur_backdrop_texture(
     radius: i32,
     passes: i32,
 ) -> Result<GlesTexture, ShaderEffectError> {
+    if radius <= 0 || passes <= 0 {
+        return Ok(texture);
+    }
+
     let programs = blur_shader_programs(renderer)?;
     let passes = passes.clamp(1, 8) as usize;
     let offset = radius.max(1) as f32;

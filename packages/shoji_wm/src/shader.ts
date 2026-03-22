@@ -16,6 +16,7 @@ import type {
   UnitStageHandle,
   ImageSourceHandle,
   NamedTextureHandle,
+  ShaderUniformMap,
 } from "./types";
 
 let shaderBaseDir = process.cwd();
@@ -65,10 +66,14 @@ export function get(name: string): NamedTextureHandle {
   };
 }
 
-export function shaderStage(shader: string | ShaderModuleHandle): ShaderStageHandle {
+export function shaderStage(
+  shader: string | ShaderModuleHandle,
+  options: { uniforms?: ShaderUniformMap } = {},
+): ShaderStageHandle {
   return {
     kind: "shader-stage",
     shader: typeof shader === "string" ? loadShader(shader) : shader,
+    uniforms: options.uniforms,
   };
 }
 
