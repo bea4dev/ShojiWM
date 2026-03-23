@@ -114,6 +114,7 @@ pub struct ShojiWM {
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
+    pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -309,6 +310,7 @@ impl ShojiWM {
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect,
+            layer_backdrop_cache: HashMap::new(),
 
             is_running: true,
             needs_redraw: true,

@@ -47,6 +47,7 @@ pub struct CachedShaderEffect {
 pub struct CachedBackdropTexture {
     pub signature: u64,
     pub texture: GlesTexture,
+    pub id: Id,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1144,6 +1145,7 @@ fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
 
 pub fn backdrop_shader_element(
     renderer: &mut GlesRenderer,
+    element_id: Id,
     texture: GlesTexture,
     display_rect: Rectangle<i32, Logical>,
     sample_rect: Rectangle<i32, Logical>,
@@ -1156,7 +1158,7 @@ pub fn backdrop_shader_element(
 ) -> Result<TextureShaderElement, ShaderEffectError> {
     let program = compile_display_texture_program(renderer)?;
     let inner = TextureRenderElement::from_static_texture(
-        Id::new(),
+        element_id,
         renderer.context_id(),
         smithay::utils::Point::<f64, Physical>::from((
             display_rect.loc.x as f64,

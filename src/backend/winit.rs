@@ -1,5 +1,5 @@
-use std::time::Duration;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use smithay::{
     backend::{
@@ -14,11 +14,12 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+    reexports::wayland_server::Resource,
     utils::{Logical, Monotonic, Point, Rectangle, Transform},
     desktop::WindowSurface,
     wayland::{
         background_effect::BackgroundEffectSurfaceCachedState,
-        compositor::{self, RectangleKind},
+        compositor,
     },
 };
 use tracing::{trace, warn};
@@ -30,6 +31,11 @@ use crate::{
     ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
+
+fn backdrop_damage_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_BACKDROP_DAMAGE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -72,7 +78,6 @@ pub fn init_winit(
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut blink_damage_tracker = OutputDamageTracker::from_output(&output);
-
     event_loop
         .handle()
         .insert_source(winit, move |event, _, state| {
@@ -97,6 +102,7 @@ pub fn init_winit(
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
 
+                    let mut should_submit_frame = false;
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
                         let output_geo = state.space.output_geometry(&output).unwrap();
@@ -107,7 +113,7 @@ pub fn init_winit(
                         let windows_top_to_bottom: Vec<_> =
                             windows.iter().rev().cloned().collect();
                         let extra_damage = state.pending_decoration_damage.clone();
-                        let (_, lower_layer_elements) =
+                        let (_, _lower_layer_elements) =
                             window_render::layer_elements_for_output(renderer, &output, scale, 1.0);
 
                         let mut scene_elements: Vec<WinitRenderElements> = Vec::new();
@@ -384,11 +390,14 @@ pub fn init_winit(
                             closing_snapshot_elements(renderer, state, &output, scale)
                                 .into_iter(),
                         );
-                        scene_elements.extend(
-                            lower_layer_elements
-                                .into_iter()
-                                .map(WinitRenderElements::Window),
-                        );
+                        scene_elements.extend(lower_layer_scene_elements(
+                            renderer,
+                            state,
+                            &output,
+                            output_geo,
+                            scale,
+                            &windows_top_to_bottom,
+                        ));
 
                         if state.damage_blink_enabled {
                             if let Ok((damage, _)) =
@@ -424,52 +433,72 @@ pub fn init_winit(
                             "rendering winit frame"
                         );
 
-                        let frame_target = state.clock.now()
-                            + output
-                                .current_mode()
-                                .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
-                                .unwrap_or(Duration::ZERO);
-                        state.pre_repaint(&output, frame_target);
-
-                        let render_output_result = damage_tracker.render_output(
-                            renderer,
-                            &mut framebuffer,
-                            0,
-                            &elements,
-                            [0.1, 0.1, 0.1, 1.0],
-                        );
-                        if let Ok(render_output_result) = render_output_result {
-                            update_primary_scanout_output(
-                                &state.space,
-                                &output,
-                                &state.cursor_status,
-                                &render_output_result.states,
-                            );
-
-                            let frame_time = Duration::from(state.clock.now())
+                        if !elements.is_empty() {
+                            let frame_target = state.clock.now()
                                 + output
                                     .current_mode()
                                     .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
                                     .unwrap_or(Duration::ZERO);
+                            state.pre_repaint(&output, frame_target);
 
-                            if render_output_result.damage.is_some() {
-                                let mut output_presentation_feedback =
-                                    take_presentation_feedback(&output, &state.space, &render_output_result.states);
-                                output_presentation_feedback.presented::<Duration, Monotonic>(
-                                    frame_time,
-                                    output
-                                        .current_mode()
-                                        .map(|mode| Refresh::fixed(Duration::from_secs_f64(1_000f64 / mode.refresh as f64)))
-                                        .unwrap_or(Refresh::Unknown),
-                                    0,
-                                    wp_presentation_feedback::Kind::Vsync,
+                            let render_output_result = damage_tracker.render_output(
+                                renderer,
+                                &mut framebuffer,
+                                0,
+                                &elements,
+                                [0.1, 0.1, 0.1, 1.0],
+                            );
+                            if let Ok(render_output_result) = render_output_result {
+                                should_submit_frame = true;
+                                if backdrop_damage_debug_enabled() {
+                                    trace!(
+                                        output = %output.name(),
+                                        has_damage = render_output_result.damage.is_some(),
+                                        scene_generation = state.scene_generation,
+                                        "winit render_output damage result"
+                                    );
+                                }
+                                update_primary_scanout_output(
+                                    &state.space,
+                                    &output,
+                                    &state.cursor_status,
+                                    &render_output_result.states,
                                 );
-                            }
 
-                            state.post_repaint(&output, frame_time, &render_output_result.states);
+                                let frame_time = Duration::from(state.clock.now())
+                                    + output
+                                        .current_mode()
+                                        .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
+                                        .unwrap_or(Duration::ZERO);
+
+                                if render_output_result.damage.is_some() {
+                                    let mut output_presentation_feedback =
+                                        take_presentation_feedback(&output, &state.space, &render_output_result.states);
+                                    output_presentation_feedback.presented::<Duration, Monotonic>(
+                                        frame_time,
+                                        output
+                                            .current_mode()
+                                            .map(|mode| Refresh::fixed(Duration::from_secs_f64(1_000f64 / mode.refresh as f64)))
+                                            .unwrap_or(Refresh::Unknown),
+                                        0,
+                                        wp_presentation_feedback::Kind::Vsync,
+                                    );
+                                }
+
+                                state.post_repaint(&output, frame_time, &render_output_result.states);
+                            }
+                        } else if backdrop_damage_debug_enabled() {
+                            trace!(
+                                output = %output.name(),
+                                has_damage = false,
+                                scene_generation = state.scene_generation,
+                                "winit render_output skipped for empty frame"
+                            );
                         }
                     }
-                    backend.submit(Some(&[damage])).unwrap();
+                    if should_submit_frame {
+                        backend.submit(Some(&[damage])).unwrap();
+                    }
 
                     state.space.refresh();
                     state.popups.cleanup();
@@ -477,7 +506,6 @@ pub fn init_winit(
                     state.finish_damage_blink_frame();
                     let _ = state.display_handle.flush_clients();
 
-                    // Ask for redraw to schedule new frame.
                     backend.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {
@@ -736,6 +764,14 @@ fn backdrop_shader_elements_for_window(
                 .filter(|existing| existing.signature == signature)
                 .cloned()
             {
+                if backdrop_damage_debug_enabled() {
+                    let cache_len = state
+                        .window_decorations
+                        .get(window)
+                        .map(|d| d.backdrop_cache.len())
+                        .unwrap_or(0);
+                    trace!(kind = "window-backdrop", key = %cached.stable_key, cache = "hit", signature, cache_len, "backdrop cache");
+                }
                 let local_rect = Rectangle::new(
                     smithay::utils::Point::from((
                         effect_rect.x - output_geo.loc.x,
@@ -761,6 +797,7 @@ fn backdrop_shader_elements_for_window(
                 let local_capture_rect = local_rect;
                 return crate::backend::shader_effect::backdrop_shader_element(
                     renderer,
+                    existing.id.clone(),
                     existing.texture,
                     local_rect,
                     local_sample_rect,
@@ -773,6 +810,14 @@ fn backdrop_shader_elements_for_window(
                 )
                 .ok()
                 .map(|element| (cached.order, element));
+            }
+            if backdrop_damage_debug_enabled() {
+                let cache_len = state
+                    .window_decorations
+                    .get(window)
+                    .map(|d| d.backdrop_cache.len())
+                    .unwrap_or(0);
+                trace!(kind = "window-backdrop", key = %cached.stable_key, cache = "miss", signature, cache_len, "backdrop cache");
             }
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
@@ -805,6 +850,9 @@ fn backdrop_shader_elements_for_window(
                 .into_iter(),
             );
             if backdrop_scene.is_empty() {
+                if backdrop_damage_debug_enabled() {
+                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "empty-scene", "backdrop build aborted");
+                }
                 return None;
             }
             let snapshot = snapshot::capture_snapshot(
@@ -822,7 +870,14 @@ fn backdrop_shader_elements_for_window(
                 &backdrop_scene,
             )
             .ok()
-            .flatten()?;
+            .flatten();
+            if snapshot.is_none() {
+                if backdrop_damage_debug_enabled() {
+                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "snapshot-none", "backdrop build aborted");
+                }
+                return None;
+            }
+            let snapshot = snapshot?;
             let source_texture = snapshot.texture;
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
@@ -838,15 +893,35 @@ fn backdrop_shader_elements_for_window(
                 Some((effect_rect.width, effect_rect.height)),
                 &cached.shader,
             )
-            .ok()?;
+            .ok();
+            if texture.is_none() {
+                if backdrop_damage_debug_enabled() {
+                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "pipeline-failed", "backdrop build aborted");
+                }
+                return None;
+            }
+            let texture = texture?;
             if let Some(window_decoration) = state.window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
                     cached.stable_key.clone(),
                     crate::backend::shader_effect::CachedBackdropTexture {
                         signature,
                         texture: texture.clone(),
+                        id: smithay::backend::renderer::element::Id::new(),
                     },
                 );
+                if backdrop_damage_debug_enabled() {
+                    trace!(
+                        kind = "window-backdrop",
+                        key = %cached.stable_key,
+                        cache = "insert",
+                        signature,
+                        cache_len = window_decoration.backdrop_cache.len(),
+                        "backdrop cache"
+                    );
+                }
+            } else if backdrop_damage_debug_enabled() {
+                trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "missing-window-decoration", "backdrop build aborted");
             }
             let local_rect = Rectangle::new(
                 smithay::utils::Point::from((
@@ -873,6 +948,12 @@ fn backdrop_shader_elements_for_window(
             let local_capture_rect = local_rect;
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
+                state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                    .map(|cached| cached.id.clone())
+                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
                 texture,
                 local_rect,
                 local_sample_rect,
@@ -908,41 +989,20 @@ fn protocol_background_effect_rects_for_window(
         return Vec::new();
     };
 
-    region
-        .rects
-        .into_iter()
-        .filter_map(|(kind, rect)| {
-            if !matches!(kind, RectangleKind::Add) {
-                return None;
-            }
-            let mapped = crate::ssd::LogicalRect::new(
-                decoration.client_rect.x + rect.loc.x,
-                decoration.client_rect.y + rect.loc.y,
-                rect.size.w,
-                rect.size.h,
-            );
-            intersect_logical_rects(decoration.client_rect, mapped)
-        })
-        .collect()
-}
-
-fn intersect_logical_rects(
-    a: crate::ssd::LogicalRect,
-    b: crate::ssd::LogicalRect,
-) -> Option<crate::ssd::LogicalRect> {
-    let left = a.x.max(b.x);
-    let top = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    if right <= left || bottom <= top {
-        return None;
-    }
-    Some(crate::ssd::LogicalRect::new(
-        left,
-        top,
-        right - left,
-        bottom - top,
-    ))
+    crate::backend::window::region_rects_within_bounds(
+        &region,
+        crate::ssd::LogicalRect::new(0, 0, decoration.client_rect.width, decoration.client_rect.height),
+    )
+    .into_iter()
+    .map(|rect| {
+        crate::ssd::LogicalRect::new(
+            decoration.client_rect.x + rect.x,
+            decoration.client_rect.y + rect.y,
+            rect.width,
+            rect.height,
+        )
+    })
+    .collect()
 }
 
 fn protocol_background_effect_rects_for_layer(
@@ -963,24 +1023,259 @@ fn protocol_background_effect_rects_for_layer(
     };
     drop(map);
 
-    region
-        .rects
-        .into_iter()
-        .filter_map(|(kind, rect)| {
-            if !matches!(kind, RectangleKind::Add) {
-                return None;
-            }
-            intersect_logical_rects(
-                crate::ssd::LogicalRect::new(layer_geo.loc.x, layer_geo.loc.y, layer_geo.size.w, layer_geo.size.h),
-                crate::ssd::LogicalRect::new(
-                    layer_geo.loc.x + rect.loc.x,
-                    layer_geo.loc.y + rect.loc.y,
-                    rect.size.w,
-                    rect.size.h,
-                ),
+    crate::backend::window::region_rects_within_bounds(
+        &region,
+        crate::ssd::LogicalRect::new(0, 0, layer_geo.size.w, layer_geo.size.h),
+    )
+    .into_iter()
+    .map(|rect| {
+        crate::ssd::LogicalRect::new(
+            layer_geo.loc.x + rect.x,
+            layer_geo.loc.y + rect.y,
+            rect.width,
+            rect.height,
+        )
+    })
+    .collect()
+}
+
+fn layer_surface_scene_elements_for_capture(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    capture_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    layer_surface: &smithay::desktop::LayerSurface,
+) -> Vec<WinitRenderElements> {
+    let capture_visual = WindowVisualState {
+        origin: smithay::utils::Point::from((0, 0)),
+        scale: smithay::utils::Scale::from((1.0, 1.0)),
+        translation: smithay::utils::Point::from((-capture_geo.loc.x, -capture_geo.loc.y))
+            .to_f64()
+            .to_physical_precise_round(scale),
+        opacity: 1.0,
+    };
+    transform_window_elements(
+        window_render::layer_surface_elements(renderer, output, layer_surface, scale, 1.0),
+        capture_visual,
+        WinitRenderElements::Window,
+        WinitRenderElements::TransformedWindow,
+    )
+}
+
+fn lower_layer_scene_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    _windows_top_to_bottom: &[smithay::desktop::Window],
+) -> Vec<WinitRenderElements> {
+    let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
+    let Some(config) = state.configured_background_effect.clone() else {
+        return lower_layers
+            .into_iter()
+            .flat_map(|layer_surface| {
+                window_render::layer_surface_elements(renderer, output, &layer_surface, scale, 1.0)
+                    .into_iter()
+                    .map(WinitRenderElements::Window)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    };
+
+    let mut elements = Vec::new();
+    for (index, layer_surface) in lower_layers.iter().enumerate() {
+        let layer_id = layer_surface.wl_surface().id().protocol_id();
+        elements.extend(
+            window_render::layer_surface_elements(renderer, output, layer_surface, scale, 1.0)
+                .into_iter()
+                .map(WinitRenderElements::Window),
+        );
+        let rects = protocol_background_effect_rects_for_layer(output, layer_surface);
+        let Some(effect_rect) = crate::backend::window::bounding_box_for_rects(&rects) else {
+            continue;
+        };
+        let stable_key = format!(
+            "__layer_background_effect_{}_{}_{}_{}x{}",
+            output.name(),
+            layer_id,
+            index,
+            effect_rect.width,
+            effect_rect.height
+        );
+        let blur_padding = config
+            .effect
+            .blur_stage()
+            .map(|blur| {
+                let radius = blur.radius.max(1);
+                let passes = blur.passes.max(1);
+                (radius * passes * 24 + 32).max(32)
+            })
+            .unwrap_or(0);
+        let capture_geo = Rectangle::new(
+            smithay::utils::Point::from((
+                effect_rect.x - blur_padding,
+                effect_rect.y - blur_padding,
+            )),
+            (
+                effect_rect.width + blur_padding * 2,
+                effect_rect.height + blur_padding * 2,
             )
-        })
-        .collect()
+                .into(),
+        );
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stable_key.hash(&mut hasher);
+        match config.invalidate {
+            crate::ssd::EffectInvalidationMode::OnSourceDamage => state.scene_generation.hash(&mut hasher),
+            crate::ssd::EffectInvalidationMode::Always => {}
+            crate::ssd::EffectInvalidationMode::Manual => {}
+        }
+        format!("{:?}", config.effect).hash(&mut hasher);
+        (
+            effect_rect.x,
+            effect_rect.y,
+            effect_rect.width,
+            effect_rect.height,
+            capture_geo.loc.x,
+            capture_geo.loc.y,
+            capture_geo.size.w,
+            capture_geo.size.h,
+        )
+            .hash(&mut hasher);
+        let signature = hasher.finish();
+        let captured_local_rect = Rectangle::new(
+            smithay::utils::Point::from((
+                effect_rect.x - output_geo.loc.x,
+                effect_rect.y - output_geo.loc.y,
+            )),
+            (effect_rect.width, effect_rect.height).into(),
+        );
+        if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
+            if let Some(existing) = state
+                .layer_backdrop_cache
+                .get(&stable_key)
+                .filter(|existing| existing.signature == signature)
+                .cloned()
+            {
+                for rect in rects {
+                    let rect_local = Rectangle::new(
+                        smithay::utils::Point::from((
+                            rect.x - output_geo.loc.x,
+                            rect.y - output_geo.loc.y,
+                        )),
+                        (rect.width, rect.height).into(),
+                    );
+                    if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
+                        renderer,
+                        existing.id.clone(),
+                        existing.texture.clone(),
+                        rect_local,
+                        rect_local,
+                        captured_local_rect,
+                        &config.effect,
+                        1.0,
+                        scale.x as f32,
+                        None,
+                        0,
+                    ) {
+                        elements.push(WinitRenderElements::Backdrop(element));
+                    }
+                }
+                continue;
+            }
+        }
+        let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+        for lower_layer in lower_layers.iter().skip(index + 1) {
+            backdrop_scene.extend(layer_surface_scene_elements_for_capture(
+                renderer,
+                output,
+                capture_geo,
+                scale,
+                lower_layer,
+            ));
+        }
+        if backdrop_scene.is_empty() {
+            continue;
+        }
+        let snapshot = snapshot::capture_snapshot(
+            renderer,
+            None,
+            crate::ssd::LogicalRect::new(
+                capture_geo.loc.x,
+                capture_geo.loc.y,
+                capture_geo.size.w,
+                capture_geo.size.h,
+            ),
+            0,
+            true,
+            scale,
+            &backdrop_scene,
+        )
+        .ok()
+        .flatten();
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let texture = crate::backend::shader_effect::apply_effect_pipeline(
+            renderer,
+            snapshot.texture,
+            (capture_geo.size.w, capture_geo.size.h),
+            Some(Rectangle::new(
+                Point::from((
+                    effect_rect.x - capture_geo.loc.x,
+                    effect_rect.y - capture_geo.loc.y,
+                )),
+                (effect_rect.width, effect_rect.height).into(),
+            )),
+            Some((effect_rect.width, effect_rect.height)),
+            &config.effect,
+        )
+        .ok();
+        let Some(texture) = texture else {
+            continue;
+        };
+        state.layer_backdrop_cache.insert(
+            stable_key.clone(),
+            crate::backend::shader_effect::CachedBackdropTexture {
+                signature,
+                texture: texture.clone(),
+                id: state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .map(|cached| cached.id.clone())
+                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+            },
+        );
+        for rect in rects {
+            let rect_local = Rectangle::new(
+                smithay::utils::Point::from((
+                    rect.x - output_geo.loc.x,
+                    rect.y - output_geo.loc.y,
+                )),
+                (rect.width, rect.height).into(),
+            );
+            if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
+                renderer,
+                state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .map(|cached| cached.id.clone())
+                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                texture.clone(),
+                rect_local,
+                rect_local,
+                captured_local_rect,
+                &config.effect,
+                1.0,
+                scale.x as f32,
+                None,
+                0,
+            ) {
+                elements.push(WinitRenderElements::Backdrop(element));
+            }
+        }
+    }
+    elements
 }
 
 fn configured_background_effect_elements_for_layer(
@@ -1001,108 +1296,204 @@ fn configured_background_effect_elements_for_layer(
         return Vec::new();
     }
 
+    let Some(effect_rect) = crate::backend::window::bounding_box_for_rects(&rects) else {
+        return Vec::new();
+    };
+    let blur_padding = config
+        .effect
+        .blur_stage()
+        .map(|blur| {
+            let radius = blur.radius.max(1);
+            let passes = blur.passes.max(1);
+            (radius * passes * 24 + 32).max(32)
+        })
+        .unwrap_or(0);
+    let capture_geo = Rectangle::new(
+        smithay::utils::Point::from((
+            effect_rect.x - blur_padding,
+            effect_rect.y - blur_padding,
+        )),
+        (
+            effect_rect.width + blur_padding * 2,
+            effect_rect.height + blur_padding * 2,
+        )
+            .into(),
+    );
+
+    let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+    for lower_window in windows_top_to_bottom {
+        backdrop_scene.extend(window_scene_elements_for_capture(
+            renderer,
+            state,
+            capture_geo,
+            scale,
+            lower_window,
+        ));
+    }
+    let (_, lower_layer_elements) =
+        window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+    let capture_offset = capture_geo.loc - output_geo.loc;
+    let capture_visual = WindowVisualState {
+        origin: smithay::utils::Point::from((0, 0)),
+        scale: smithay::utils::Scale::from((1.0, 1.0)),
+        translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+            .to_f64()
+            .to_physical_precise_round(scale),
+        opacity: 1.0,
+    };
+    backdrop_scene.extend(
+        transform_window_elements(
+            lower_layer_elements,
+            capture_visual,
+            WinitRenderElements::Window,
+            WinitRenderElements::TransformedWindow,
+        )
+        .into_iter(),
+    );
+    if backdrop_scene.is_empty() {
+        return Vec::new();
+    }
+    let snapshot = snapshot::capture_snapshot(
+        renderer,
+        None,
+        crate::ssd::LogicalRect::new(
+            capture_geo.loc.x,
+            capture_geo.loc.y,
+            capture_geo.size.w,
+            capture_geo.size.h,
+        ),
+        0,
+        true,
+        scale,
+        &backdrop_scene,
+    )
+    .ok()
+    .flatten();
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    let layer_id = layer_surface.wl_surface().id().protocol_id();
+    let stable_key = format!(
+        "__layer_background_effect_{}_{}_top_{}x{}",
+        output.name(),
+        layer_id,
+        effect_rect.width,
+        effect_rect.height
+    );
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    stable_key.hash(&mut hasher);
+    match config.invalidate {
+        crate::ssd::EffectInvalidationMode::OnSourceDamage => state.scene_generation.hash(&mut hasher),
+        crate::ssd::EffectInvalidationMode::Always => {}
+        crate::ssd::EffectInvalidationMode::Manual => {}
+    }
+    format!("{:?}", config.effect).hash(&mut hasher);
+    (
+        effect_rect.x,
+        effect_rect.y,
+        effect_rect.width,
+        effect_rect.height,
+        capture_geo.loc.x,
+        capture_geo.loc.y,
+        capture_geo.size.w,
+        capture_geo.size.h,
+    )
+        .hash(&mut hasher);
+    let signature = hasher.finish();
+    let captured_local_rect = Rectangle::new(
+        smithay::utils::Point::from((
+            effect_rect.x - output_geo.loc.x,
+            effect_rect.y - output_geo.loc.y,
+        )),
+        (effect_rect.width, effect_rect.height).into(),
+    );
+    if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
+        if let Some(existing) = state
+            .layer_backdrop_cache
+            .get(&stable_key)
+            .filter(|existing| existing.signature == signature)
+            .cloned()
+        {
+            return rects
+                .into_iter()
+                .filter_map(|rect| {
+                    let rect_local = Rectangle::new(
+                        smithay::utils::Point::from((
+                            rect.x - output_geo.loc.x,
+                            rect.y - output_geo.loc.y,
+                        )),
+                        (rect.width, rect.height).into(),
+                    );
+                    crate::backend::shader_effect::backdrop_shader_element(
+                        renderer,
+                        existing.id.clone(),
+                        existing.texture.clone(),
+                        rect_local,
+                        rect_local,
+                        captured_local_rect,
+                        &config.effect,
+                        alpha,
+                        scale.x as f32,
+                        None,
+                        0,
+                    )
+                    .ok()
+                    .map(WinitRenderElements::Backdrop)
+                })
+                .collect();
+        }
+    }
+    let texture = crate::backend::shader_effect::apply_effect_pipeline(
+        renderer,
+        snapshot.texture,
+        (capture_geo.size.w, capture_geo.size.h),
+        Some(Rectangle::new(
+            Point::from((
+                effect_rect.x - capture_geo.loc.x,
+                effect_rect.y - capture_geo.loc.y,
+            )),
+            (effect_rect.width, effect_rect.height).into(),
+        )),
+        Some((effect_rect.width, effect_rect.height)),
+        &config.effect,
+    )
+    .ok();
+    let Some(texture) = texture else {
+        return Vec::new();
+    };
+    state.layer_backdrop_cache.insert(
+        stable_key.clone(),
+        crate::backend::shader_effect::CachedBackdropTexture {
+            signature,
+            texture: texture.clone(),
+            id: state
+                .layer_backdrop_cache
+                .get(&stable_key)
+                .map(|cached| cached.id.clone())
+                .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+        },
+    );
     rects
         .into_iter()
         .filter_map(|rect| {
-            let effect_rect = rect;
-            let blur_padding = config
-                .effect
-                .blur_stage()
-                .map(|blur| {
-                    let radius = blur.radius.max(1);
-                    let passes = blur.passes.max(1);
-                    (radius * passes * 24 + 32).max(32)
-                })
-                .unwrap_or(0);
-            let capture_geo = Rectangle::new(
+            let rect_local = Rectangle::new(
                 smithay::utils::Point::from((
-                    effect_rect.x - blur_padding,
-                    effect_rect.y - blur_padding,
+                    rect.x - output_geo.loc.x,
+                    rect.y - output_geo.loc.y,
                 )),
-                (
-                    effect_rect.width + blur_padding * 2,
-                    effect_rect.height + blur_padding * 2,
-                )
-                    .into(),
-            );
-
-            let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-            for lower_window in windows_top_to_bottom {
-                backdrop_scene.extend(window_scene_elements_for_capture(
-                    renderer,
-                    state,
-                    capture_geo,
-                    scale,
-                    lower_window,
-                ));
-            }
-            let (_, lower_layer_elements) =
-                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-            let capture_offset = capture_geo.loc - output_geo.loc;
-            let capture_visual = WindowVisualState {
-                origin: smithay::utils::Point::from((0, 0)),
-                scale: smithay::utils::Scale::from((1.0, 1.0)),
-                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                    .to_f64()
-                    .to_physical_precise_round(scale),
-                opacity: 1.0,
-            };
-            backdrop_scene.extend(
-                transform_window_elements(
-                    lower_layer_elements,
-                    capture_visual,
-                    WinitRenderElements::Window,
-                    WinitRenderElements::TransformedWindow,
-                )
-                .into_iter(),
-            );
-            if backdrop_scene.is_empty() {
-                return None;
-            }
-            let snapshot = snapshot::capture_snapshot(
-                renderer,
-                None,
-                crate::ssd::LogicalRect::new(
-                    capture_geo.loc.x,
-                    capture_geo.loc.y,
-                    capture_geo.size.w,
-                    capture_geo.size.h,
-                ),
-                0,
-                true,
-                scale,
-                &backdrop_scene,
-            )
-            .ok()
-            .flatten()?;
-            let texture = crate::backend::shader_effect::apply_effect_pipeline(
-                renderer,
-                snapshot.texture,
-                (capture_geo.size.w, capture_geo.size.h),
-                Some(Rectangle::new(
-                    Point::from((
-                        effect_rect.x - capture_geo.loc.x,
-                        effect_rect.y - capture_geo.loc.y,
-                    )),
-                    (effect_rect.width, effect_rect.height).into(),
-                )),
-                Some((effect_rect.width, effect_rect.height)),
-                &config.effect,
-            )
-            .ok()?;
-            let local_rect = Rectangle::new(
-                smithay::utils::Point::from((
-                    effect_rect.x - output_geo.loc.x,
-                    effect_rect.y - output_geo.loc.y,
-                )),
-                (effect_rect.width, effect_rect.height).into(),
+                (rect.width, rect.height).into(),
             );
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
-                texture,
-                local_rect,
-                local_rect,
-                local_rect,
+                state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .map(|cached| cached.id.clone())
+                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                texture.clone(),
+                rect_local,
+                rect_local,
+                captured_local_rect,
                 &config.effect,
                 alpha,
                 scale.x as f32,
@@ -1269,6 +1660,7 @@ fn configured_background_effect_elements_for_window(
                     );
                     return crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
+                        existing.id.clone(),
                         existing.texture,
                         local_rect,
                         local_rect,
@@ -1350,10 +1742,11 @@ fn configured_background_effect_elements_for_window(
             .ok()?;
             if let Some(window_decoration) = state.window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
-                    stable_key,
+                    stable_key.clone(),
                     crate::backend::shader_effect::CachedBackdropTexture {
                         signature,
                         texture: texture.clone(),
+                        id: smithay::backend::renderer::element::Id::new(),
                     },
                 );
             }
@@ -1366,6 +1759,12 @@ fn configured_background_effect_elements_for_window(
             );
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
+                state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .map(|cached| cached.id.clone())
+                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
                 texture,
                 local_rect,
                 local_rect,
