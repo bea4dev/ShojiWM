@@ -48,6 +48,23 @@ pub struct CachedBackdropTexture {
     pub signature: u64,
     pub texture: GlesTexture,
     pub id: Id,
+    pub commit_counter: CommitCounter,
+    pub sub_elements: HashMap<String, CachedBackdropSubElement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedBackdropSubElement {
+    pub id: Id,
+    pub commit_counter: CommitCounter,
+}
+
+impl Default for CachedBackdropSubElement {
+    fn default() -> Self {
+        Self {
+            id: Id::new(),
+            commit_counter: CommitCounter::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +116,23 @@ pub struct StableBackdropFramebufferElement {
     render_scale: f32,
     clip_rect: Option<Rectangle<i32, Logical>>,
     clip_radius: i32,
+    kind: Kind,
+}
+
+#[derive(Debug, Clone)]
+pub struct StableBackdropTextureElement {
+    texture: GlesTexture,
+    program: GlesTexProgram,
+    id: Id,
+    commit_counter: CommitCounter,
+    area: Rectangle<i32, Logical>,
+    src: Rectangle<f64, Buffer>,
+    alpha: f32,
+    render_scale: f32,
+    clip_rect: Option<Rectangle<i32, Logical>>,
+    clip_radius: i32,
+    uv_offset: [f32; 2],
+    uv_scale: [f32; 2],
     kind: Kind,
 }
 
@@ -509,6 +543,91 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
+    }
+}
+
+impl Element for StableBackdropTextureElement {
+    fn id(&self) -> &Id {
+        &self.id
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.commit_counter
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.src
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.area.to_physical_precise_round(scale)
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        OpaqueRegions::default()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.alpha
+    }
+
+    fn kind(&self) -> Kind {
+        self.kind
+    }
+}
+
+impl RenderElement<GlesRenderer> for StableBackdropTextureElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&UserDataMap>,
+    ) -> Result<(), GlesError> {
+        let clip_rect = self
+            .clip_rect
+            .map(|clip| {
+                [
+                    (clip.loc.x - self.area.loc.x) as f32,
+                    (clip.loc.y - self.area.loc.y) as f32,
+                    clip.size.w as f32,
+                    clip.size.h as f32,
+                ]
+            })
+            .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        let radius = self.clip_radius.max(0) as f32;
+
+        frame.render_texture_from_to(
+            &self.texture,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            Transform::Normal,
+            self.alpha,
+            Some(&self.program),
+            &[
+                Uniform::new("uv_offset", self.uv_offset),
+                Uniform::new("uv_scale", self.uv_scale),
+                Uniform::new(
+                    "rect_size",
+                    [self.area.size.w as f32, self.area.size.h as f32],
+                ),
+                Uniform::new("render_scale", self.render_scale.max(1.0)),
+                Uniform::new(
+                    "clip_enabled",
+                    if clip_rect[2] > 0.0 && clip_rect[3] > 0.0 {
+                        1.0f32
+                    } else {
+                        0.0f32
+                    },
+                ),
+                Uniform::new("clip_rect", clip_rect),
+                Uniform::new("clip_radius", [radius, radius, radius, radius]),
+            ],
+        )
     }
 }
 
@@ -1146,6 +1265,7 @@ fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
 pub fn backdrop_shader_element(
     renderer: &mut GlesRenderer,
     element_id: Id,
+    commit_counter: CommitCounter,
     texture: GlesTexture,
     display_rect: Rectangle<i32, Logical>,
     sample_rect: Rectangle<i32, Logical>,
@@ -1155,41 +1275,15 @@ pub fn backdrop_shader_element(
     render_scale: f32,
     clip_rect: Option<Rectangle<i32, Logical>>,
     clip_radius: i32,
-) -> Result<TextureShaderElement, ShaderEffectError> {
+) -> Result<StableBackdropTextureElement, ShaderEffectError> {
     let program = compile_display_texture_program(renderer)?;
-    let inner = TextureRenderElement::from_static_texture(
-        element_id,
-        renderer.context_id(),
-        smithay::utils::Point::<f64, Physical>::from((
-            display_rect.loc.x as f64,
-            display_rect.loc.y as f64,
+    let src = Rectangle::new(
+        smithay::utils::Point::from((
+            (sample_rect.loc.x - captured_rect.loc.x) as f64,
+            (sample_rect.loc.y - captured_rect.loc.y) as f64,
         )),
-        texture,
-        1,
-        Transform::Normal,
-        Some(alpha.clamp(0.0, 1.0)),
-        Some(Rectangle::new(
-            smithay::utils::Point::from((
-                (sample_rect.loc.x - captured_rect.loc.x) as f64,
-                (sample_rect.loc.y - captured_rect.loc.y) as f64,
-            )),
-            (sample_rect.size.w as f64, sample_rect.size.h as f64).into(),
-        )),
-        Some((display_rect.size.w, display_rect.size.h).into()),
-        None,
-        Kind::Unspecified,
+        (sample_rect.size.w as f64, sample_rect.size.h as f64).into(),
     );
-    let clip_rect = clip_rect
-        .map(|clip| {
-            [
-                (clip.loc.x - display_rect.loc.x) as f32,
-                (clip.loc.y - display_rect.loc.y) as f32,
-                clip.size.w as f32,
-                clip.size.h as f32,
-            ]
-        })
-        .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-    let radius = clip_radius.max(0) as f32;
     let uv_offset = [
         (sample_rect.loc.x - captured_rect.loc.x) as f32 / captured_rect.size.w.max(1) as f32,
         (sample_rect.loc.y - captured_rect.loc.y) as f32 / captured_rect.size.h.max(1) as f32,
@@ -1198,22 +1292,21 @@ pub fn backdrop_shader_element(
         sample_rect.size.w as f32 / captured_rect.size.w.max(1) as f32,
         sample_rect.size.h as f32 / captured_rect.size.h.max(1) as f32,
     ];
-    Ok(TextureShaderElement::new(
-        inner,
+    Ok(StableBackdropTextureElement {
+        texture,
         program,
-        vec![
-            Uniform::new("uv_offset", uv_offset),
-            Uniform::new("uv_scale", uv_scale),
-            Uniform::new(
-                "rect_size",
-                [display_rect.size.w as f32, display_rect.size.h as f32],
-            ),
-            Uniform::new("render_scale", render_scale.max(1.0)),
-            Uniform::new("clip_enabled", if clip_rect[2] > 0.0 && clip_rect[3] > 0.0 { 1.0f32 } else { 0.0f32 }),
-            Uniform::new("clip_rect", clip_rect),
-            Uniform::new("clip_radius", [radius, radius, radius, radius]),
-        ],
-    ))
+        id: element_id,
+        commit_counter,
+        area: display_rect,
+        src,
+        alpha: alpha.clamp(0.0, 1.0),
+        render_scale,
+        clip_rect,
+        clip_radius,
+        uv_offset,
+        uv_scale,
+        kind: Kind::Unspecified,
+    })
 }
 
 pub fn apply_effect_pipeline(

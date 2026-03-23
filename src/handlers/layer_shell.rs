@@ -88,6 +88,19 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         }
     }
 
+    if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+        match layer.layer() {
+            Layer::Background | Layer::Bottom => {
+                state.lower_layer_scene_generation =
+                    state.lower_layer_scene_generation.wrapping_add(1);
+            }
+            Layer::Top | Layer::Overlay => {
+                state.upper_layer_scene_generation =
+                    state.upper_layer_scene_generation.wrapping_add(1);
+            }
+        }
+    }
+
     drop(map);
     state.schedule_redraw();
 }

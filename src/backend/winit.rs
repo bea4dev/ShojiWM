@@ -532,8 +532,8 @@ smithay::render_elements! {
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::decoration::DecorationSceneElements,
     TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::decoration::DecorationSceneElements>>,
-    Backdrop=smithay::backend::renderer::gles::element::TextureShaderElement,
-    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<smithay::backend::renderer::gles::element::TextureShaderElement>>,
+    Backdrop=crate::backend::shader_effect::StableBackdropTextureElement,
+    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>,
 }
 
 fn transform_window_elements(
@@ -663,7 +663,7 @@ fn transform_decoration_elements(
 }
 
 fn transform_backdrop_elements(
-    elements: Vec<smithay::backend::renderer::gles::element::TextureShaderElement>,
+    elements: Vec<crate::backend::shader_effect::StableBackdropTextureElement>,
     _visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     elements.into_iter().map(WinitRenderElements::Backdrop).collect()
@@ -680,7 +680,7 @@ fn backdrop_shader_elements_for_window(
     window: &smithay::desktop::Window,
     alpha: f32,
     has_backdrop_source: bool,
-) -> Vec<(usize, smithay::backend::renderer::gles::element::TextureShaderElement)> {
+) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
     if !has_backdrop_source {
         return Vec::new();
     }
@@ -696,7 +696,8 @@ fn backdrop_shader_elements_for_window(
         .filter_map(|cached| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
-            state.scene_generation.hash(&mut hasher);
+            state.window_scene_generation.hash(&mut hasher);
+            state.lower_layer_scene_generation.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
@@ -770,7 +771,17 @@ fn backdrop_shader_elements_for_window(
                         .get(window)
                         .map(|d| d.backdrop_cache.len())
                         .unwrap_or(0);
-                    trace!(kind = "window-backdrop", key = %cached.stable_key, cache = "hit", signature, cache_len, "backdrop cache");
+                    trace!(
+                        kind = "window-backdrop",
+                        window_id = %decoration.snapshot.id,
+                        key = %cached.stable_key,
+                        cache = "hit",
+                        signature,
+                        cache_len,
+                        scene_generation = state.scene_generation,
+                        lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
+                        "backdrop cache"
+                    );
                 }
                 let local_rect = Rectangle::new(
                     smithay::utils::Point::from((
@@ -798,6 +809,7 @@ fn backdrop_shader_elements_for_window(
                 return crate::backend::shader_effect::backdrop_shader_element(
                     renderer,
                     existing.id.clone(),
+                    existing.commit_counter,
                     existing.texture,
                     local_rect,
                     local_sample_rect,
@@ -817,7 +829,17 @@ fn backdrop_shader_elements_for_window(
                     .get(window)
                     .map(|d| d.backdrop_cache.len())
                     .unwrap_or(0);
-                trace!(kind = "window-backdrop", key = %cached.stable_key, cache = "miss", signature, cache_len, "backdrop cache");
+                trace!(
+                    kind = "window-backdrop",
+                    window_id = %decoration.snapshot.id,
+                    key = %cached.stable_key,
+                    cache = "miss",
+                    signature,
+                    cache_len,
+                    scene_generation = state.scene_generation,
+                    lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
+                    "backdrop cache"
+                );
             }
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
@@ -851,7 +873,15 @@ fn backdrop_shader_elements_for_window(
             );
             if backdrop_scene.is_empty() {
                 if backdrop_damage_debug_enabled() {
-                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "empty-scene", "backdrop build aborted");
+                    trace!(
+                        kind = "window-backdrop",
+                        window_id = %decoration.snapshot.id,
+                        key = %cached.stable_key,
+                        reason = "empty-scene",
+                        scene_generation = state.scene_generation,
+                        lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
+                        "backdrop build aborted"
+                    );
                 }
                 return None;
             }
@@ -873,7 +903,14 @@ fn backdrop_shader_elements_for_window(
             .flatten();
             if snapshot.is_none() {
                 if backdrop_damage_debug_enabled() {
-                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "snapshot-none", "backdrop build aborted");
+                    trace!(
+                        kind = "window-backdrop",
+                        window_id = %decoration.snapshot.id,
+                        key = %cached.stable_key,
+                        reason = "snapshot-none",
+                        scene_generation = state.scene_generation,
+                        "backdrop build aborted"
+                    );
                 }
                 return None;
             }
@@ -896,11 +933,28 @@ fn backdrop_shader_elements_for_window(
             .ok();
             if texture.is_none() {
                 if backdrop_damage_debug_enabled() {
-                    trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "pipeline-failed", "backdrop build aborted");
+                    trace!(
+                        kind = "window-backdrop",
+                        window_id = %decoration.snapshot.id,
+                        key = %cached.stable_key,
+                        reason = "pipeline-failed",
+                        scene_generation = state.scene_generation,
+                        "backdrop build aborted"
+                    );
                 }
                 return None;
             }
             let texture = texture?;
+            let commit_counter = state
+                .window_decorations
+                .get(window)
+                .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                .map(|existing| {
+                    let mut counter = existing.commit_counter;
+                    counter.increment();
+                    counter
+                })
+                .unwrap_or_default();
             if let Some(window_decoration) = state.window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
                     cached.stable_key.clone(),
@@ -908,20 +962,31 @@ fn backdrop_shader_elements_for_window(
                         signature,
                         texture: texture.clone(),
                         id: smithay::backend::renderer::element::Id::new(),
+                        commit_counter,
+                        sub_elements: std::collections::HashMap::new(),
                     },
                 );
                 if backdrop_damage_debug_enabled() {
                     trace!(
                         kind = "window-backdrop",
+                        window_id = %decoration.snapshot.id,
                         key = %cached.stable_key,
                         cache = "insert",
                         signature,
                         cache_len = window_decoration.backdrop_cache.len(),
+                        scene_generation = state.scene_generation,
                         "backdrop cache"
                     );
                 }
             } else if backdrop_damage_debug_enabled() {
-                trace!(kind = "window-backdrop", key = %cached.stable_key, reason = "missing-window-decoration", "backdrop build aborted");
+                trace!(
+                    kind = "window-backdrop",
+                    window_id = %decoration.snapshot.id,
+                    key = %cached.stable_key,
+                    reason = "missing-window-decoration",
+                    scene_generation = state.scene_generation,
+                    "backdrop build aborted"
+                );
             }
             let local_rect = Rectangle::new(
                 smithay::utils::Point::from((
@@ -954,6 +1019,12 @@ fn backdrop_shader_elements_for_window(
                     .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
                     .map(|cached| cached.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                    .map(|cached| cached.commit_counter)
+                    .unwrap_or_default(),
                 texture,
                 local_rect,
                 local_sample_rect,
@@ -1126,7 +1197,10 @@ fn lower_layer_scene_elements(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         stable_key.hash(&mut hasher);
         match config.invalidate {
-            crate::ssd::EffectInvalidationMode::OnSourceDamage => state.scene_generation.hash(&mut hasher),
+            crate::ssd::EffectInvalidationMode::OnSourceDamage => {
+                state.window_scene_generation.hash(&mut hasher);
+                state.lower_layer_scene_generation.hash(&mut hasher);
+            }
             crate::ssd::EffectInvalidationMode::Always => {}
             crate::ssd::EffectInvalidationMode::Manual => {}
         }
@@ -1158,6 +1232,7 @@ fn lower_layer_scene_elements(
                 .cloned()
             {
                 for rect in rects {
+                    let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
                     let rect_local = Rectangle::new(
                         smithay::utils::Point::from((
                             rect.x - output_geo.loc.x,
@@ -1167,7 +1242,16 @@ fn lower_layer_scene_elements(
                     );
                     if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
-                        existing.id.clone(),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.id.clone())
+                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.commit_counter)
+                            .unwrap_or_default(),
                         existing.texture.clone(),
                         rect_local,
                         rect_local,
@@ -1234,6 +1318,19 @@ fn lower_layer_scene_elements(
         let Some(texture) = texture else {
             continue;
         };
+        let mut sub_elements = state
+            .layer_backdrop_cache
+            .get(&stable_key)
+            .map(|existing| existing.sub_elements.clone())
+            .unwrap_or_default();
+        let had_existing = state.layer_backdrop_cache.contains_key(&stable_key);
+        for rect in &rects {
+            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+            let entry = sub_elements.entry(rect_key).or_default();
+            if had_existing {
+                entry.commit_counter.increment();
+            }
+        }
         state.layer_backdrop_cache.insert(
             stable_key.clone(),
             crate::backend::shader_effect::CachedBackdropTexture {
@@ -1244,9 +1341,24 @@ fn lower_layer_scene_elements(
                     .get(&stable_key)
                     .map(|cached| cached.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                commit_counter: state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .map(|existing| {
+                        let mut counter = existing.commit_counter;
+                        counter.increment();
+                        counter
+                    })
+                    .unwrap_or_default(),
+                sub_elements: state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .map(|_| sub_elements.clone())
+                    .unwrap_or(sub_elements),
             },
         );
         for rect in rects {
+            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
             let rect_local = Rectangle::new(
                 smithay::utils::Point::from((
                     rect.x - output_geo.loc.x,
@@ -1259,8 +1371,15 @@ fn lower_layer_scene_elements(
                 state
                     .layer_backdrop_cache
                     .get(&stable_key)
-                    .map(|cached| cached.id.clone())
+                    .and_then(|cached| cached.sub_elements.get(&rect_key))
+                    .map(|entry| entry.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .and_then(|cached| cached.sub_elements.get(&rect_key))
+                    .map(|entry| entry.commit_counter)
+                    .unwrap_or_default(),
                 texture.clone(),
                 rect_local,
                 rect_local,
@@ -1383,7 +1502,9 @@ fn configured_background_effect_elements_for_layer(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     stable_key.hash(&mut hasher);
     match config.invalidate {
-        crate::ssd::EffectInvalidationMode::OnSourceDamage => state.scene_generation.hash(&mut hasher),
+        crate::ssd::EffectInvalidationMode::OnSourceDamage => {
+            state.lower_layer_scene_generation.hash(&mut hasher);
+        }
         crate::ssd::EffectInvalidationMode::Always => {}
         crate::ssd::EffectInvalidationMode::Manual => {}
     }
@@ -1417,6 +1538,7 @@ fn configured_background_effect_elements_for_layer(
             return rects
                 .into_iter()
                 .filter_map(|rect| {
+                    let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
                     let rect_local = Rectangle::new(
                         smithay::utils::Point::from((
                             rect.x - output_geo.loc.x,
@@ -1426,7 +1548,16 @@ fn configured_background_effect_elements_for_layer(
                     );
                     crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
-                        existing.id.clone(),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.id.clone())
+                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.commit_counter)
+                            .unwrap_or_default(),
                         existing.texture.clone(),
                         rect_local,
                         rect_local,
@@ -1461,6 +1592,19 @@ fn configured_background_effect_elements_for_layer(
     let Some(texture) = texture else {
         return Vec::new();
     };
+    let mut sub_elements = state
+        .layer_backdrop_cache
+        .get(&stable_key)
+        .map(|existing| existing.sub_elements.clone())
+        .unwrap_or_default();
+    let had_existing = state.layer_backdrop_cache.contains_key(&stable_key);
+    for rect in &rects {
+        let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+        let entry = sub_elements.entry(rect_key).or_default();
+        if had_existing {
+            entry.commit_counter.increment();
+        }
+    }
     state.layer_backdrop_cache.insert(
         stable_key.clone(),
         crate::backend::shader_effect::CachedBackdropTexture {
@@ -1471,11 +1615,26 @@ fn configured_background_effect_elements_for_layer(
                 .get(&stable_key)
                 .map(|cached| cached.id.clone())
                 .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+            commit_counter: state
+                .layer_backdrop_cache
+                .get(&stable_key)
+                .map(|existing| {
+                    let mut counter = existing.commit_counter;
+                    counter.increment();
+                    counter
+                })
+                .unwrap_or_default(),
+            sub_elements: state
+                .layer_backdrop_cache
+                .get(&stable_key)
+                .map(|_| sub_elements.clone())
+                .unwrap_or(sub_elements),
         },
     );
     rects
         .into_iter()
         .filter_map(|rect| {
+            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
             let rect_local = Rectangle::new(
                 smithay::utils::Point::from((
                     rect.x - output_geo.loc.x,
@@ -1488,8 +1647,15 @@ fn configured_background_effect_elements_for_layer(
                 state
                     .layer_backdrop_cache
                     .get(&stable_key)
-                    .map(|cached| cached.id.clone())
+                    .and_then(|cached| cached.sub_elements.get(&rect_key))
+                    .map(|entry| entry.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                state
+                    .layer_backdrop_cache
+                    .get(&stable_key)
+                    .and_then(|cached| cached.sub_elements.get(&rect_key))
+                    .map(|entry| entry.commit_counter)
+                    .unwrap_or_default(),
                 texture.clone(),
                 rect_local,
                 rect_local,
@@ -1555,7 +1721,7 @@ fn configured_background_effect_elements_for_window(
     window_index: usize,
     window: &smithay::desktop::Window,
     alpha: f32,
-) -> Vec<(usize, smithay::backend::renderer::gles::element::TextureShaderElement)> {
+) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
     let Some(config) = state.configured_background_effect.clone() else {
         return Vec::new();
     };
@@ -1576,7 +1742,8 @@ fn configured_background_effect_elements_for_window(
             stable_key.hash(&mut hasher);
             match config.invalidate {
                 crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                    state.scene_generation.hash(&mut hasher);
+                    state.window_scene_generation.hash(&mut hasher);
+                    state.lower_layer_scene_generation.hash(&mut hasher);
                 }
                 crate::ssd::EffectInvalidationMode::Always => {}
                 crate::ssd::EffectInvalidationMode::Manual => {}
@@ -1661,6 +1828,7 @@ fn configured_background_effect_elements_for_window(
                     return crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
                         existing.id.clone(),
+                        existing.commit_counter,
                         existing.texture,
                         local_rect,
                         local_rect,
@@ -1740,6 +1908,16 @@ fn configured_background_effect_elements_for_window(
                 &config.effect,
             )
             .ok()?;
+            let commit_counter = state
+                .window_decorations
+                .get(window)
+                .and_then(|d| d.backdrop_cache.get(&stable_key))
+                .map(|existing| {
+                    let mut counter = existing.commit_counter;
+                    counter.increment();
+                    counter
+                })
+                .unwrap_or_default();
             if let Some(window_decoration) = state.window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
                     stable_key.clone(),
@@ -1747,6 +1925,8 @@ fn configured_background_effect_elements_for_window(
                         signature,
                         texture: texture.clone(),
                         id: smithay::backend::renderer::element::Id::new(),
+                        commit_counter,
+                        sub_elements: std::collections::HashMap::new(),
                     },
                 );
             }
@@ -1765,6 +1945,12 @@ fn configured_background_effect_elements_for_window(
                     .and_then(|d| d.backdrop_cache.get(&stable_key))
                     .map(|cached| cached.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .map(|cached| cached.commit_counter)
+                    .unwrap_or_default(),
                 texture,
                 local_rect,
                 local_rect,
