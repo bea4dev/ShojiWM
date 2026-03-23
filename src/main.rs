@@ -21,6 +21,7 @@ pub mod state;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
     init_logging(&args)?;
+    apply_runtime_overrides(&args);
 
     let backend = if args.tty {
         ShojiWMBackend::TTY
@@ -34,11 +35,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn apply_runtime_overrides(args: &CliArgs) {
+    if !args.tty_outputs.is_empty() {
+        unsafe { std::env::set_var("SHOJI_TTY_OUTPUT", args.tty_outputs.join(",")) };
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CliArgs {
     tty: bool,
     log_off: bool,
     no_log_rotate: bool,
+    tty_outputs: Vec<String>,
 }
 
 impl CliArgs {
@@ -49,12 +57,42 @@ impl CliArgs {
         let env_no_rotate = std::env::var_os("SHOJI_LOG_ROTATE")
             .is_some_and(|value| value == "0" || value == "off");
 
+        let tty_outputs = parse_tty_outputs(&args);
+
         Self {
             tty: args.iter().any(|arg| arg == "--tty"),
             log_off: args.iter().any(|arg| arg == "--log-off") || env_log_off,
             no_log_rotate: args.iter().any(|arg| arg == "--no-log-rotate") || env_no_rotate,
+            tty_outputs,
         }
     }
+}
+
+fn parse_tty_outputs(args: &[String]) -> Vec<String> {
+    let mut outputs = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if let Some(value) = arg.strip_prefix("--tty-output=") {
+            outputs.extend(split_tty_outputs(value));
+        } else if arg == "--tty-output" {
+            if let Some(value) = args.get(index + 1) {
+                outputs.extend(split_tty_outputs(value));
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    outputs
+}
+
+fn split_tty_outputs(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {

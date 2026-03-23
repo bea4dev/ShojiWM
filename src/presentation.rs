@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, time::Duration};
 
 use smithay::{
     backend::renderer::element::{
@@ -25,6 +23,11 @@ use smithay::{
 };
 
 use crate::state::ShojiWM;
+
+#[derive(Default)]
+struct SurfaceFrameThrottlingState {
+    last_sent_at: RefCell<Option<(Output, u32)>>,
+}
 
 pub fn update_primary_scanout_output(
     space: &Space<Window>,
@@ -116,6 +119,50 @@ pub fn take_presentation_feedback(
 }
 
 impl ShojiWM {
+    pub fn send_frame_callbacks_for_output(
+        &mut self,
+        output: &Output,
+        time: Duration,
+        frame_callback_sequence: Option<u32>,
+    ) {
+        let throttle = Some(Duration::from_secs(1));
+
+        let should_send = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+                           states: &smithay::wayland::compositor::SurfaceData| {
+            let current_primary_output = surface_primary_scanout_output(surface, states);
+            if current_primary_output.as_ref() != Some(output) {
+                return None;
+            }
+
+            if let Some(sequence) = frame_callback_sequence {
+                let frame_throttling_state = states
+                    .data_map
+                    .get_or_insert(SurfaceFrameThrottlingState::default);
+                let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
+                if let Some((last_output, last_sequence)) = &*last_sent_at
+                    && last_output == output
+                    && *last_sequence == sequence
+                {
+                    return None;
+                }
+                *last_sent_at = Some((output.clone(), sequence));
+            }
+
+            Some(output.clone())
+        };
+
+        self.space.elements().for_each(|window| {
+            if self.space.outputs_for_element(window).contains(output) {
+                window.send_frame(output, time, throttle, &should_send);
+            }
+        });
+
+        let map = layer_map_for_output(output);
+        for layer_surface in map.layers() {
+            layer_surface.send_frame(output, time, throttle, &should_send);
+        }
+    }
+
     pub fn pre_repaint(&mut self, output: &Output, frame_target: Time<Monotonic>) {
         #[allow(clippy::mutable_key_type)]
         let mut clients: HashMap<ClientId, Client> = HashMap::new();
@@ -225,19 +272,18 @@ impl ShojiWM {
         time: Duration,
         _render_element_states: &RenderElementStates,
     ) {
-        let throttle = Some(Duration::from_secs(1));
-
         self.signal_post_repaint_barriers(output);
+        self.send_frame_callbacks_for_output(output, time, None);
+    }
 
-        self.space.elements().for_each(|window| {
-            if self.space.outputs_for_element(window).contains(output) {
-                window.send_frame(output, time, throttle, surface_primary_scanout_output);
-            }
-        });
-
-        let map = layer_map_for_output(output);
-        for layer_surface in map.layers() {
-            layer_surface.send_frame(output, time, throttle, surface_primary_scanout_output);
-        }
+    pub fn post_repaint_with_sequence(
+        &mut self,
+        output: &Output,
+        time: Duration,
+        _render_element_states: &RenderElementStates,
+        frame_callback_sequence: Option<u32>,
+    ) {
+        self.signal_post_repaint_barriers(output);
+        self.send_frame_callbacks_for_output(output, time, frame_callback_sequence);
     }
 }

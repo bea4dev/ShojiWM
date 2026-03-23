@@ -330,7 +330,7 @@ impl ShojiWM {
             icon_rasterizer: IconRasterizer::new(Some(async_asset_job_sender)),
             // SSD rendering is available, so prefer compositor-side decorations by default.
             default_decoration_mode: DecorationMode::ServerSide,
-            display_config: DisplayConfig::default(),
+            display_config: DisplayConfig::from_env(),
             clock,
         }
     }

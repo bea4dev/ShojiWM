@@ -60,6 +60,11 @@ use smithay::wayland::presentation::Refresh;
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
+fn high_refresh_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_HIGH_REFRESH_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 type GbmDrmOutput =
     DrmOutput<
         GbmAllocator<DrmDeviceFd>,
@@ -74,6 +79,9 @@ struct SurfaceData {
     blink_damage_tracker: OutputDamageTracker,
     frame_pending: bool,
     repaint_scheduled: bool,
+    frame_callback_timer_armed: bool,
+    frame_callback_timer_generation: u64,
+    frame_callback_sequence: u32,
     frame_duration: Duration,
     next_frame_target: Option<Duration>,
     estimated_render_duration: Duration,
@@ -257,6 +265,21 @@ fn frame_finish(
         );
     }
 
+    if high_refresh_debug_enabled() {
+        let repaint_budget = repaint_delay(surface);
+        trace!(
+            ?node,
+            ?crtc,
+            output = %surface.output.name(),
+            presentation_clock_ms = presentation_clock.as_secs_f64() * 1000.0,
+            frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+            next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
+            repaint_delay_ms = repaint_budget.map(|delay| delay.as_secs_f64() * 1000.0),
+            estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
+            "tty high refresh frame_finish"
+        );
+    }
+
     surface.frame_pending = false;
 
     if surface.repaint_scheduled {
@@ -293,6 +316,7 @@ fn frame_finish(
 
 pub fn render_if_needed(
     state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !state.needs_redraw {
         return Ok(());
@@ -321,7 +345,7 @@ pub fn render_if_needed(
             .collect();
 
         for crtc in crtcs {
-            match render_surface(state, node, crtc)? {
+            match render_surface(state, loop_handle, node, crtc)? {
                 RenderSurfaceOutcome::SkippedPending => skipped_for_pending_frame = true,
                 RenderSurfaceOutcome::Processed => {
                     let output_name = state
@@ -367,6 +391,7 @@ render_elements! {
 
 fn render_surface(
     state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
     node: DrmNode,
     crtc: crtc::Handle,
 ) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
@@ -389,6 +414,22 @@ fn render_surface(
             output = %output.name(),
             "skipping tty render while previous frame is pending"
         );
+        if high_refresh_debug_enabled() {
+            let surface = state
+                .tty_backends
+                .get(&node)
+                .and_then(|backend| backend.surfaces.get(&crtc))
+                .unwrap();
+            trace!(
+                ?node,
+                ?crtc,
+                output = %output.name(),
+                next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
+                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                "tty high refresh skipped pending frame"
+            );
+        }
         return Ok(RenderSurfaceOutcome::SkippedPending);
     }
 
@@ -868,6 +909,11 @@ fn render_surface(
                 .drm_output
                 .queue_frame(Some(output_presentation_feedback))?;
             surface.frame_pending = true;
+            surface.frame_callback_timer_armed = false;
+            surface.frame_callback_timer_generation =
+                surface.frame_callback_timer_generation.wrapping_add(1);
+            surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
+            let frame_callback_sequence = surface.frame_callback_sequence;
             trace!(
                 ?node,
                 ?crtc,
@@ -879,28 +925,47 @@ fn render_surface(
                 next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
                 "queued tty frame"
             );
-            all_windows.iter().for_each(|window| {
-                window.send_frame(
-                    &output,
-                    frame_time,
-                    Some(Duration::from_secs(1)),
-                    |_, _| Some(output.clone()),
+            if high_refresh_debug_enabled() {
+                let frame_budget = surface.frame_duration.as_secs_f64() * 1000.0;
+                let render_ms = render_elapsed.as_secs_f64() * 1000.0;
+                trace!(
+                    ?node,
+                    ?crtc,
+                    output = %output.name(),
+                    frame_budget_ms = frame_budget,
+                    render_elapsed_ms = render_ms,
+                    estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                    budget_utilization = if frame_budget > 0.0 { render_ms / frame_budget } else { 0.0 },
+                    element_count = elements.len(),
+                    "tty high refresh queued frame stats"
                 );
-            });
-            {
-                let map = layer_map_for_output(&output);
-                for layer_surface in map.layers() {
-                    layer_surface.send_frame(
-                        &output,
-                        frame_time,
-                        Some(Duration::from_secs(1)),
-                        |_, _| Some(output.clone()),
-                    );
-                }
             }
-            state.signal_post_repaint_barriers(&output);
+            let _ = surface;
+            let _ = backend;
+            state.post_repaint_with_sequence(
+                &output,
+                frame_time,
+                &result.states,
+                Some(frame_callback_sequence),
+            );
         } else {
             trace!(output = %output.name(), "tty frame had no damage");
+            if high_refresh_debug_enabled() {
+                let frame_budget = surface.frame_duration.as_secs_f64() * 1000.0;
+                let render_ms = render_elapsed.as_secs_f64() * 1000.0;
+                trace!(
+                    ?node,
+                    ?crtc,
+                    output = %output.name(),
+                    frame_budget_ms = frame_budget,
+                    render_elapsed_ms = render_ms,
+                    estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                    budget_utilization = if frame_budget > 0.0 { render_ms / frame_budget } else { 0.0 },
+                    element_count = elements.len(),
+                    "tty high refresh no-damage stats"
+                );
+            }
+            schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
         }
 
         captured_blink_damage
@@ -2441,6 +2506,17 @@ fn connector_connected(
     crtc: crtc::Handle,
     connector: connector::Info,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let output_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+    if !state.display_config.tty_output_allowed(&output_name) {
+        info!(
+            ?node,
+            ?crtc,
+            output = %output_name,
+            "skipping tty output because it is filtered out"
+        );
+        return Ok(());
+    }
+
     let mode = select_output_mode(&connector, &state.display_config.default_mode);
     let available_modes = connector
         .modes()
@@ -2459,11 +2535,7 @@ fn connector_connected(
         .collect::<Vec<_>>();
 
     let output = Output::new(
-        format!(
-            "{}-{}",
-            connector.interface().as_str(),
-            connector.interface_id()
-        ),
+        output_name,
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: connector.subpixel().into(),
@@ -2509,6 +2581,9 @@ fn connector_connected(
         blink_damage_tracker: OutputDamageTracker::from_output(&output),
         frame_pending: false,
         repaint_scheduled: false,
+        frame_callback_timer_armed: false,
+        frame_callback_timer_generation: 0,
+        frame_callback_sequence: 0,
         frame_duration,
         next_frame_target: None,
         estimated_render_duration: Duration::from_millis(4),
@@ -2613,6 +2688,64 @@ fn repaint_delay(surface: &SurfaceData) -> Option<Duration> {
     let compositor_budget = std::cmp::min(compositor_budget, max_budget);
 
     Some(frame_duration.saturating_sub(compositor_budget))
+}
+
+fn schedule_estimated_vblank_callback(
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    state: &mut ShojiWM,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    frame_time: Duration,
+) {
+    let Some(backend) = state.tty_backends.get_mut(&node) else {
+        return;
+    };
+    let Some(surface) = backend.surfaces.get_mut(&crtc) else {
+        return;
+    };
+    if surface.frame_callback_timer_armed {
+        return;
+    }
+
+    let delay = surface.frame_duration;
+    let generation = surface.frame_callback_timer_generation.wrapping_add(1);
+    surface.frame_callback_timer_generation = generation;
+    surface.frame_callback_timer_armed = true;
+    let output = surface.output.clone();
+
+    if loop_handle
+        .insert_source(Timer::from_duration(delay), move |_, _, state| {
+            let sequence = {
+            let Some(backend) = state.tty_backends.get_mut(&node) else {
+                return TimeoutAction::Drop;
+            };
+            let Some(surface) = backend.surfaces.get_mut(&crtc) else {
+                return TimeoutAction::Drop;
+            };
+            if !surface.frame_callback_timer_armed
+                || surface.frame_callback_timer_generation != generation
+            {
+                return TimeoutAction::Drop;
+            }
+
+            surface.frame_callback_timer_armed = false;
+            surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
+            surface.frame_callback_sequence
+            };
+            let callback_time = frame_time.saturating_add(delay);
+            state.send_frame_callbacks_for_output(
+                &output,
+                callback_time,
+                Some(sequence),
+            );
+            state.signal_post_repaint_barriers(&output);
+            TimeoutAction::Drop
+        })
+        .is_err()
+    {
+        surface.frame_callback_timer_armed = false;
+        warn!(?node, ?crtc, "failed to schedule tty estimated vblank callback");
+    }
 }
 
 fn blend_render_duration(previous: Duration, current: Duration) -> Duration {

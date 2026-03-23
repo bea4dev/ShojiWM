@@ -34,6 +34,7 @@ use tracing::{info, trace, warn};
 
 use crate::{
     backend::tty::{device_added, render_if_needed},
+    config::tty_output_names_match,
     spawn_client,
     state::ShojiWM,
 };
@@ -199,7 +200,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         if state.needs_redraw {
             trace!("tty loop observed pending redraw");
         }
-        render_if_needed(&mut state)?;
+        render_if_needed(&mut state, &event_loop.handle())?;
 
         let window_count_before_refresh = state.space.elements().count();
         state.space.refresh();
@@ -226,6 +227,18 @@ struct TtyDeviceCandidate {
 fn select_tty_devices(
     candidates: &[TtyDeviceCandidate],
 ) -> Result<Vec<&TtyDeviceCandidate>, Box<dyn std::error::Error>> {
+    let desired_outputs = std::env::var_os("SHOJI_TTY_OUTPUT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|outputs| !outputs.is_empty());
+
     if let Some(override_value) = std::env::var_os("SHOJI_TTY_DRM_DEVICE") {
         if override_value == "all" {
             return Ok(candidates.iter().collect());
@@ -258,8 +271,32 @@ fn select_tty_devices(
         return Ok(selected);
     }
 
+    let candidates = if let Some(desired_outputs) = &desired_outputs {
+        let selected = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.connected_connectors.iter().any(|connector| {
+                    desired_outputs
+                        .iter()
+                        .any(|desired| tty_output_names_match(desired, connector))
+                })
+            })
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Err(format!(
+                "SHOJI_TTY_OUTPUT={:?} did not match any connected drm connector",
+                desired_outputs
+            )
+            .into());
+        }
+        selected
+    } else {
+        candidates.iter().collect::<Vec<_>>()
+    };
+
     let connected = candidates
         .iter()
+        .copied()
         .filter(|candidate| !candidate.connected_connectors.is_empty())
         .collect::<Vec<_>>();
     if !connected.is_empty() {

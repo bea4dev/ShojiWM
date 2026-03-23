@@ -17,4 +17,45 @@ impl Default for DisplayModePreference {
 #[derive(Debug, Clone, Default)]
 pub struct DisplayConfig {
     pub default_mode: DisplayModePreference,
+    pub tty_outputs: Option<Vec<String>>,
+}
+
+impl DisplayConfig {
+    pub fn from_env() -> Self {
+        Self {
+            default_mode: DisplayModePreference::default(),
+            tty_outputs: parse_tty_outputs_from_env(),
+        }
+    }
+
+    pub fn tty_output_allowed(&self, output_name: &str) -> bool {
+        self.tty_outputs
+            .as_ref()
+            .is_none_or(|outputs| outputs.iter().any(|candidate| tty_output_names_match(candidate, output_name)))
+    }
+}
+
+fn parse_tty_outputs_from_env() -> Option<Vec<String>> {
+    let value = std::env::var_os("SHOJI_TTY_OUTPUT")?;
+    let outputs = value
+        .to_string_lossy()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!outputs.is_empty()).then_some(outputs)
+}
+
+pub fn tty_output_names_match(candidate: &str, actual: &str) -> bool {
+    normalize_tty_output_name(candidate) == normalize_tty_output_name(actual)
+}
+
+fn normalize_tty_output_name(name: &str) -> &str {
+    if let Some((prefix, rest)) = name.split_once('-') {
+        if prefix.starts_with("card") && prefix[4..].chars().all(|ch| ch.is_ascii_digit()) {
+            return rest;
+        }
+    }
+    name
 }
