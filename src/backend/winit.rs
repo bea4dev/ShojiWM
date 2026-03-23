@@ -32,11 +32,6 @@ use crate::{
 };
 use smithay::wayland::presentation::Refresh;
 
-fn backdrop_damage_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_BACKDROP_DAMAGE_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
     state: &mut ShojiWM,
@@ -450,14 +445,6 @@ pub fn init_winit(
                             );
                             if let Ok(render_output_result) = render_output_result {
                                 should_submit_frame = true;
-                                if backdrop_damage_debug_enabled() {
-                                    trace!(
-                                        output = %output.name(),
-                                        has_damage = render_output_result.damage.is_some(),
-                                        scene_generation = state.scene_generation,
-                                        "winit render_output damage result"
-                                    );
-                                }
                                 update_primary_scanout_output(
                                     &state.space,
                                     &output,
@@ -487,13 +474,6 @@ pub fn init_winit(
 
                                 state.post_repaint(&output, frame_time, &render_output_result.states);
                             }
-                        } else if backdrop_damage_debug_enabled() {
-                            trace!(
-                                output = %output.name(),
-                                has_damage = false,
-                                scene_generation = state.scene_generation,
-                                "winit render_output skipped for empty frame"
-                            );
                         }
                     }
                     if should_submit_frame {
@@ -765,24 +745,6 @@ fn backdrop_shader_elements_for_window(
                 .filter(|existing| existing.signature == signature)
                 .cloned()
             {
-                if backdrop_damage_debug_enabled() {
-                    let cache_len = state
-                        .window_decorations
-                        .get(window)
-                        .map(|d| d.backdrop_cache.len())
-                        .unwrap_or(0);
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        cache = "hit",
-                        signature,
-                        cache_len,
-                        scene_generation = state.scene_generation,
-                        lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
-                        "backdrop cache"
-                    );
-                }
                 let local_rect = Rectangle::new(
                     smithay::utils::Point::from((
                         effect_rect.x - output_geo.loc.x,
@@ -823,24 +785,6 @@ fn backdrop_shader_elements_for_window(
                 .ok()
                 .map(|element| (cached.order, element));
             }
-            if backdrop_damage_debug_enabled() {
-                let cache_len = state
-                    .window_decorations
-                    .get(window)
-                    .map(|d| d.backdrop_cache.len())
-                    .unwrap_or(0);
-                trace!(
-                    kind = "window-backdrop",
-                    window_id = %decoration.snapshot.id,
-                    key = %cached.stable_key,
-                    cache = "miss",
-                    signature,
-                    cache_len,
-                    scene_generation = state.scene_generation,
-                    lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
-                    "backdrop cache"
-                );
-            }
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
                 backdrop_scene.extend(window_scene_elements_for_capture(
@@ -872,17 +816,6 @@ fn backdrop_shader_elements_for_window(
                 .into_iter(),
             );
             if backdrop_scene.is_empty() {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        reason = "empty-scene",
-                        scene_generation = state.scene_generation,
-                        lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
-                        "backdrop build aborted"
-                    );
-                }
                 return None;
             }
             let snapshot = snapshot::capture_snapshot(
@@ -902,16 +835,6 @@ fn backdrop_shader_elements_for_window(
             .ok()
             .flatten();
             if snapshot.is_none() {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        reason = "snapshot-none",
-                        scene_generation = state.scene_generation,
-                        "backdrop build aborted"
-                    );
-                }
                 return None;
             }
             let snapshot = snapshot?;
@@ -932,16 +855,6 @@ fn backdrop_shader_elements_for_window(
             )
             .ok();
             if texture.is_none() {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        reason = "pipeline-failed",
-                        scene_generation = state.scene_generation,
-                        "backdrop build aborted"
-                    );
-                }
                 return None;
             }
             let texture = texture?;
@@ -965,27 +878,6 @@ fn backdrop_shader_elements_for_window(
                         commit_counter,
                         sub_elements: std::collections::HashMap::new(),
                     },
-                );
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        cache = "insert",
-                        signature,
-                        cache_len = window_decoration.backdrop_cache.len(),
-                        scene_generation = state.scene_generation,
-                        "backdrop cache"
-                    );
-                }
-            } else if backdrop_damage_debug_enabled() {
-                trace!(
-                    kind = "window-backdrop",
-                    window_id = %decoration.snapshot.id,
-                    key = %cached.stable_key,
-                    reason = "missing-window-decoration",
-                    scene_generation = state.scene_generation,
-                    "backdrop build aborted"
                 );
             }
             let local_rect = Rectangle::new(

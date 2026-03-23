@@ -17,11 +17,6 @@ use smithay::{
 };
 use tracing::{debug, trace};
 
-fn backdrop_damage_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_BACKDROP_DAMAGE_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
 impl CompositorHandler for ShojiWM {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -34,13 +29,6 @@ impl CompositorHandler for ShojiWM {
     fn commit(&mut self, surface: &WlSurface) {
         trace!(surface = ?surface.id(), "wl_surface commit received");
         self.scene_generation = self.scene_generation.wrapping_add(1);
-        if backdrop_damage_debug_enabled() {
-            trace!(
-                surface = ?surface.id(),
-                scene_generation = self.scene_generation,
-                "scene generation incremented"
-            );
-        }
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -65,16 +53,6 @@ impl CompositorHandler for ShojiWM {
                         app_id = snapshot.app_id,
                         commit_delta_ms = (commit_time.saturating_sub(previous_commit_time).as_secs_f64() * 1000.0),
                         "mapped window commit cadence"
-                    );
-                }
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        surface = ?root.id(),
-                        window_id = snapshot.id,
-                        title = snapshot.title,
-                        app_id = snapshot.app_id,
-                        scene_generation = self.scene_generation,
-                        "mapped window commit invalidated scene"
                     );
                 }
                 self.snapshot_dirty_window_ids.insert(snapshot.id.clone());

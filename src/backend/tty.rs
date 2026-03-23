@@ -57,11 +57,6 @@ use crate::{
 };
 use smithay::wayland::presentation::Refresh;
 
-fn backdrop_damage_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_BACKDROP_DAMAGE_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
@@ -856,17 +851,6 @@ fn render_surface(
             CLEAR_COLOR,
             TTY_FRAME_FLAGS,
         )?;
-        if backdrop_damage_debug_enabled() {
-            trace!(
-                output = %output.name(),
-                has_damage = !result.is_empty,
-                scene_generation = state.scene_generation,
-                window_scene_generation = state.window_scene_generation,
-                lower_layer_scene_generation = state.lower_layer_scene_generation,
-                upper_layer_scene_generation = state.upper_layer_scene_generation,
-                "tty render_frame damage result"
-            );
-        }
         let render_elapsed = render_started_at.elapsed();
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
@@ -1152,23 +1136,6 @@ fn backdrop_shader_elements_for_window(
                 .filter(|existing| existing.signature == signature)
                 .cloned()
             {
-                if backdrop_damage_debug_enabled() {
-                    let cache_len = window_decorations
-                        .get(window)
-                        .map(|d| d.backdrop_cache.len())
-                        .unwrap_or(0);
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        cache = "hit",
-                        signature,
-                        cache_len,
-                        source_generation = scene_generation,
-                        lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
-                        "tty backdrop cache"
-                    );
-                }
                 let local_rect = smithay::utils::Rectangle::new(
                     smithay::utils::Point::from((
                         effect_rect.x - output_geo.loc.x,
@@ -1209,23 +1176,6 @@ fn backdrop_shader_elements_for_window(
                 .ok()
                 .map(|element| (cached.order, element));
             }
-            if backdrop_damage_debug_enabled() {
-                let cache_len = window_decorations
-                    .get(window)
-                    .map(|d| d.backdrop_cache.len())
-                    .unwrap_or(0);
-                trace!(
-                    kind = "window-backdrop",
-                    window_id = %decoration.snapshot.id,
-                    key = %cached.stable_key,
-                    cache = "miss",
-                    signature,
-                    cache_len,
-                    source_generation = scene_generation,
-                    lower_window_count = windows_top_to_bottom.len().saturating_sub(window_index + 1),
-                    "tty backdrop cache"
-                );
-            }
             let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
                 if let Ok(mut elements) = window_scene_elements_for_capture(
@@ -1260,16 +1210,6 @@ fn backdrop_shader_elements_for_window(
                 .into_iter(),
             );
             if backdrop_scene.is_empty() {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        reason = "empty-scene",
-                        source_generation = scene_generation,
-                        "tty backdrop build aborted"
-                    );
-                }
                 return None;
             }
             let snapshot = crate::backend::snapshot::capture_snapshot(
@@ -1323,18 +1263,6 @@ fn backdrop_shader_elements_for_window(
                         sub_elements: std::collections::HashMap::new(),
                     },
                 );
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "window-backdrop",
-                        window_id = %decoration.snapshot.id,
-                        key = %cached.stable_key,
-                        cache = "insert",
-                        signature,
-                        cache_len = window_decoration.backdrop_cache.len(),
-                        source_generation = scene_generation,
-                        "tty backdrop cache"
-                    );
-                }
             }
             let local_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
@@ -1623,17 +1551,6 @@ fn configured_background_effect_elements_for_layer(
         .filter(|existing| existing.signature == signature)
         .cloned()
     {
-        if backdrop_damage_debug_enabled() {
-            trace!(
-                kind = "layer-backdrop-top",
-                key = %stable_key,
-                cache = "hit",
-                signature,
-                rect_count = rects.len(),
-                source_generation = scene_generation,
-                "tty backdrop cache"
-            );
-        }
         for rect in rects {
             let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
             let rect_local = smithay::utils::Rectangle::new(
@@ -1670,17 +1587,6 @@ fn configured_background_effect_elements_for_layer(
         }
         return Ok(elements);
     }
-    if backdrop_damage_debug_enabled() {
-        trace!(
-            kind = "layer-backdrop-top",
-            key = %stable_key,
-            cache = "miss",
-            signature,
-            rect_count = rects.len(),
-            source_generation = scene_generation,
-            "tty backdrop cache"
-        );
-    }
     let mut sub_elements = layer_backdrop_cache
         .get(&stable_key)
         .map(|existing| existing.sub_elements.clone())
@@ -1713,18 +1619,6 @@ fn configured_background_effect_elements_for_layer(
             sub_elements,
         },
     );
-    if backdrop_damage_debug_enabled() {
-        trace!(
-            kind = "layer-backdrop-top",
-            key = %stable_key,
-            cache = "insert",
-            signature,
-            rect_count = rects.len(),
-            cache_len = layer_backdrop_cache.len(),
-            source_generation = scene_generation,
-            "tty backdrop cache"
-        );
-    }
     for rect in rects {
         let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
         let rect_local = smithay::utils::Rectangle::new(
@@ -1848,17 +1742,6 @@ fn lower_layer_scene_elements(
                 .filter(|existing| existing.signature == signature)
                 .cloned()
             {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "layer-backdrop-lower",
-                        key = %stable_key,
-                        cache = "hit",
-                        signature,
-                        rect_count = rects.len(),
-                        source_generation = scene_generation,
-                        "tty backdrop cache"
-                    );
-                }
                 for rect in rects {
                     let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
                     let rect_local = smithay::utils::Rectangle::new(
@@ -1895,17 +1778,6 @@ fn lower_layer_scene_elements(
                 }
                 continue;
             }
-            if backdrop_damage_debug_enabled() {
-                trace!(
-                    kind = "layer-backdrop-lower",
-                    key = %stable_key,
-                    cache = "miss",
-                    signature,
-                    rect_count = rects.len(),
-                    source_generation = scene_generation,
-                    "tty backdrop cache"
-                );
-            }
             let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
             for lower_layer in lower_layers.iter().skip(index + 1) {
                 if let Ok(mut layer_elements) = layer_surface_scene_elements_for_capture(
@@ -1919,15 +1791,6 @@ fn lower_layer_scene_elements(
                 }
             }
             if backdrop_scene.is_empty() {
-                if backdrop_damage_debug_enabled() {
-                    trace!(
-                        kind = "layer-backdrop-lower",
-                        key = %stable_key,
-                        reason = "empty-scene",
-                        source_generation = scene_generation,
-                        "tty backdrop build aborted"
-                    );
-                }
                 continue;
             }
             let snapshot = crate::backend::snapshot::capture_snapshot(
@@ -1991,18 +1854,6 @@ fn lower_layer_scene_elements(
                     sub_elements,
                 },
             );
-            if backdrop_damage_debug_enabled() {
-                trace!(
-                    kind = "layer-backdrop-lower",
-                    key = %stable_key,
-                    cache = "insert",
-                    signature,
-                    rect_count = rects.len(),
-                    cache_len = layer_backdrop_cache.len(),
-                    source_generation = scene_generation,
-                    "tty backdrop cache"
-                );
-            }
             for rect in rects {
                 let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
                 let rect_local = smithay::utils::Rectangle::new(
