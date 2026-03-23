@@ -18,6 +18,7 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Rectangle};
 use smithay::utils::Serial;
 use smithay::wayland::output::OutputHandler;
+use smithay::wayland::background_effect::{Capability, ExtBackgroundEffectHandler};
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, ImportNotifier};
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
 use smithay::wayland::input_method::{InputMethodHandler, PopupSurface};
@@ -39,6 +40,7 @@ use smithay::{
     delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
     delegate_xdg_decoration,
 };
+use smithay::delegate_background_effect;
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
 
 use crate::state::ShojiWM;
@@ -80,6 +82,7 @@ delegate_text_input_manager!(ShojiWM);
 delegate_input_method_manager!(ShojiWM);
 delegate_virtual_keyboard_manager!(ShojiWM);
 delegate_kde_decoration!(ShojiWM);
+delegate_background_effect!(ShojiWM);
 
 impl FractionalScaleHandler for ShojiWM {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
@@ -203,6 +206,20 @@ impl DmabufHandler for ShojiWM {
 }
 
 delegate_dmabuf!(ShojiWM);
+
+impl ExtBackgroundEffectHandler for ShojiWM {
+    fn capabilities(&self) -> Capability {
+        Capability::Blur
+    }
+
+    fn set_blur_region(&mut self, _wl_surface: WlSurface, _region: smithay::wayland::compositor::RegionAttributes) {
+        self.schedule_redraw();
+    }
+
+    fn unset_blur_region(&mut self, _wl_surface: WlSurface) {
+        self.schedule_redraw();
+    }
+}
 
 //
 // Wl Data Device

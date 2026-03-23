@@ -21,7 +21,7 @@ use crate::backend::text::{LabelSpec, measure_label_intrinsic};
 
 pub use bridge::{
     DecorationBridgeError, WireDecorationChild, WireDecorationNode, WireProps, WireStyle,
-    WireWindowAction, decode_tree_json,
+    WireWindowAction, WireBackgroundEffectConfig, decode_tree_json,
 };
 pub use evaluator::{
     DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
@@ -364,6 +364,13 @@ pub enum BlendMode {
     Multiply,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectInvalidationMode {
+    OnSourceDamage,
+    Always,
+    Manual,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseStage {
     pub kind: NoiseKind,
@@ -388,6 +395,12 @@ pub enum EffectStage {
 pub struct CompiledEffect {
     pub input: EffectInput,
     pub pipeline: Vec<EffectStage>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundEffectConfig {
+    pub effect: CompiledEffect,
+    pub invalidate: EffectInvalidationMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

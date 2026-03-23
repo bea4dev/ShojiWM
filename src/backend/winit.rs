@@ -15,6 +15,11 @@ use smithay::{
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
     utils::{Logical, Monotonic, Point, Rectangle, Transform},
+    desktop::WindowSurface,
+    wayland::{
+        background_effect::BackgroundEffectSurfaceCachedState,
+        compositor::{self, RectangleKind},
+    },
 };
 use tracing::{trace, warn};
 
@@ -102,15 +107,18 @@ pub fn init_winit(
                         let windows_top_to_bottom: Vec<_> =
                             windows.iter().rev().cloned().collect();
                         let extra_damage = state.pending_decoration_damage.clone();
-                        let (upper_layer_elements, lower_layer_elements) =
+                        let (_, lower_layer_elements) =
                             window_render::layer_elements_for_output(renderer, &output, scale, 1.0);
 
                         let mut scene_elements: Vec<WinitRenderElements> = Vec::new();
-                        scene_elements.extend(
-                            upper_layer_elements
-                                .into_iter()
-                                .map(WinitRenderElements::Window),
-                        );
+                        scene_elements.extend(upper_layer_scene_elements(
+                            renderer,
+                            state,
+                            &output,
+                            output_geo,
+                            scale,
+                            &windows_top_to_bottom,
+                        ));
                         for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
@@ -194,6 +202,17 @@ pub fn init_winit(
                                     visual_state.opacity,
                                     decoration_ready,
                                 );
+                                backdrop_items.extend(configured_background_effect_elements_for_window(
+                                    renderer,
+                                    state,
+                                    &output,
+                                    output_geo,
+                                    scale,
+                                    &windows_top_to_bottom,
+                                    _window_index,
+                                    window,
+                                    visual_state.opacity,
+                                ));
                                 for (order, element) in backdrop_items.drain(..) {
                                     ordered_backdrop_elements.extend(
                                         transform_backdrop_elements(vec![element], visual_state)
@@ -866,6 +885,499 @@ fn backdrop_shader_elements_for_window(
             )
             .ok()
             .map(|element| (cached.order, element))
+        })
+        .collect()
+}
+
+fn protocol_background_effect_rects_for_window(
+    state: &ShojiWM,
+    window: &smithay::desktop::Window,
+) -> Vec<crate::ssd::LogicalRect> {
+    let Some(decoration) = state.window_decorations.get(window) else {
+        return Vec::new();
+    };
+    let WindowSurface::Wayland(surface) = window.underlying_surface() else {
+        return Vec::new();
+    };
+    let wl_surface = surface.wl_surface();
+    let blur_region = compositor::with_states(wl_surface, |states| {
+        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        cached.current().blur_region.clone()
+    });
+    let Some(region) = blur_region else {
+        return Vec::new();
+    };
+
+    region
+        .rects
+        .into_iter()
+        .filter_map(|(kind, rect)| {
+            if !matches!(kind, RectangleKind::Add) {
+                return None;
+            }
+            let mapped = crate::ssd::LogicalRect::new(
+                decoration.client_rect.x + rect.loc.x,
+                decoration.client_rect.y + rect.loc.y,
+                rect.size.w,
+                rect.size.h,
+            );
+            intersect_logical_rects(decoration.client_rect, mapped)
+        })
+        .collect()
+}
+
+fn intersect_logical_rects(
+    a: crate::ssd::LogicalRect,
+    b: crate::ssd::LogicalRect,
+) -> Option<crate::ssd::LogicalRect> {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(crate::ssd::LogicalRect::new(
+        left,
+        top,
+        right - left,
+        bottom - top,
+    ))
+}
+
+fn protocol_background_effect_rects_for_layer(
+    output: &Output,
+    layer_surface: &smithay::desktop::LayerSurface,
+) -> Vec<crate::ssd::LogicalRect> {
+    let wl_surface = layer_surface.wl_surface();
+    let blur_region = compositor::with_states(wl_surface, |states| {
+        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        cached.current().blur_region.clone()
+    });
+    let Some(region) = blur_region else {
+        return Vec::new();
+    };
+    let map = smithay::desktop::layer_map_for_output(output);
+    let Some(layer_geo) = map.layer_geometry(layer_surface) else {
+        return Vec::new();
+    };
+    drop(map);
+
+    region
+        .rects
+        .into_iter()
+        .filter_map(|(kind, rect)| {
+            if !matches!(kind, RectangleKind::Add) {
+                return None;
+            }
+            intersect_logical_rects(
+                crate::ssd::LogicalRect::new(layer_geo.loc.x, layer_geo.loc.y, layer_geo.size.w, layer_geo.size.h),
+                crate::ssd::LogicalRect::new(
+                    layer_geo.loc.x + rect.loc.x,
+                    layer_geo.loc.y + rect.loc.y,
+                    rect.size.w,
+                    rect.size.h,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn configured_background_effect_elements_for_layer(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    windows_top_to_bottom: &[smithay::desktop::Window],
+    layer_surface: &smithay::desktop::LayerSurface,
+    alpha: f32,
+) -> Vec<WinitRenderElements> {
+    let Some(config) = state.configured_background_effect.clone() else {
+        return Vec::new();
+    };
+    let rects = protocol_background_effect_rects_for_layer(output, layer_surface);
+    if rects.is_empty() {
+        return Vec::new();
+    }
+
+    rects
+        .into_iter()
+        .filter_map(|rect| {
+            let effect_rect = rect;
+            let blur_padding = config
+                .effect
+                .blur_stage()
+                .map(|blur| {
+                    let radius = blur.radius.max(1);
+                    let passes = blur.passes.max(1);
+                    (radius * passes * 24 + 32).max(32)
+                })
+                .unwrap_or(0);
+            let capture_geo = Rectangle::new(
+                smithay::utils::Point::from((
+                    effect_rect.x - blur_padding,
+                    effect_rect.y - blur_padding,
+                )),
+                (
+                    effect_rect.width + blur_padding * 2,
+                    effect_rect.height + blur_padding * 2,
+                )
+                    .into(),
+            );
+
+            let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+            for lower_window in windows_top_to_bottom {
+                backdrop_scene.extend(window_scene_elements_for_capture(
+                    renderer,
+                    state,
+                    capture_geo,
+                    scale,
+                    lower_window,
+                ));
+            }
+            let (_, lower_layer_elements) =
+                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+            let capture_offset = capture_geo.loc - output_geo.loc;
+            let capture_visual = WindowVisualState {
+                origin: smithay::utils::Point::from((0, 0)),
+                scale: smithay::utils::Scale::from((1.0, 1.0)),
+                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
+                opacity: 1.0,
+            };
+            backdrop_scene.extend(
+                transform_window_elements(
+                    lower_layer_elements,
+                    capture_visual,
+                    WinitRenderElements::Window,
+                    WinitRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
+            if backdrop_scene.is_empty() {
+                return None;
+            }
+            let snapshot = snapshot::capture_snapshot(
+                renderer,
+                None,
+                crate::ssd::LogicalRect::new(
+                    capture_geo.loc.x,
+                    capture_geo.loc.y,
+                    capture_geo.size.w,
+                    capture_geo.size.h,
+                ),
+                0,
+                true,
+                scale,
+                &backdrop_scene,
+            )
+            .ok()
+            .flatten()?;
+            let texture = crate::backend::shader_effect::apply_effect_pipeline(
+                renderer,
+                snapshot.texture,
+                (capture_geo.size.w, capture_geo.size.h),
+                Some(Rectangle::new(
+                    Point::from((
+                        effect_rect.x - capture_geo.loc.x,
+                        effect_rect.y - capture_geo.loc.y,
+                    )),
+                    (effect_rect.width, effect_rect.height).into(),
+                )),
+                Some((effect_rect.width, effect_rect.height)),
+                &config.effect,
+            )
+            .ok()?;
+            let local_rect = Rectangle::new(
+                smithay::utils::Point::from((
+                    effect_rect.x - output_geo.loc.x,
+                    effect_rect.y - output_geo.loc.y,
+                )),
+                (effect_rect.width, effect_rect.height).into(),
+            );
+            crate::backend::shader_effect::backdrop_shader_element(
+                renderer,
+                texture,
+                local_rect,
+                local_rect,
+                local_rect,
+                &config.effect,
+                alpha,
+                scale.x as f32,
+                None,
+                0,
+            )
+            .ok()
+            .map(WinitRenderElements::Backdrop)
+        })
+        .collect()
+}
+
+fn upper_layer_scene_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    windows_top_to_bottom: &[smithay::desktop::Window],
+) -> Vec<WinitRenderElements> {
+    let map = smithay::desktop::layer_map_for_output(output);
+    let upper_layers: Vec<_> = [
+        smithay::wayland::shell::wlr_layer::Layer::Overlay,
+        smithay::wayland::shell::wlr_layer::Layer::Top,
+    ]
+    .into_iter()
+    .flat_map(|layer| map.layers_on(layer).rev().cloned())
+    .collect();
+    drop(map);
+
+    let mut elements = Vec::new();
+    for layer_surface in upper_layers {
+        elements.extend(
+            window_render::layer_surface_elements(renderer, output, &layer_surface, scale, 1.0)
+                .into_iter()
+                .map(WinitRenderElements::Window),
+        );
+        elements.extend(configured_background_effect_elements_for_layer(
+            renderer,
+            state,
+            output,
+            output_geo,
+            scale,
+            windows_top_to_bottom,
+            &layer_surface,
+            1.0,
+        ));
+    }
+    elements
+}
+
+fn configured_background_effect_elements_for_window(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    windows_top_to_bottom: &[smithay::desktop::Window],
+    window_index: usize,
+    window: &smithay::desktop::Window,
+    alpha: f32,
+) -> Vec<(usize, smithay::backend::renderer::gles::element::TextureShaderElement)> {
+    let Some(config) = state.configured_background_effect.clone() else {
+        return Vec::new();
+    };
+    let Some(decoration) = state.window_decorations.get(window).cloned() else {
+        return Vec::new();
+    };
+    let rects = protocol_background_effect_rects_for_window(state, window);
+    if rects.is_empty() {
+        return Vec::new();
+    }
+
+    rects
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, rect)| {
+            let stable_key = format!("__protocol_background_effect_{}", index);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            stable_key.hash(&mut hasher);
+            match config.invalidate {
+                crate::ssd::EffectInvalidationMode::OnSourceDamage => {
+                    state.scene_generation.hash(&mut hasher);
+                }
+                crate::ssd::EffectInvalidationMode::Always => {}
+                crate::ssd::EffectInvalidationMode::Manual => {}
+            }
+            let effect_rect = crate::backend::visual::transformed_rect(
+                rect,
+                decoration.layout.root.rect,
+                decoration.visual_transform,
+            );
+            (
+                effect_rect.x,
+                effect_rect.y,
+                effect_rect.width,
+                effect_rect.height,
+                output_geo.loc.x,
+                output_geo.loc.y,
+                output_geo.size.w,
+                output_geo.size.h,
+            )
+                .hash(&mut hasher);
+            let blur_padding = config
+                .effect
+                .blur_stage()
+                .map(|blur| {
+                    let radius = blur.radius.max(1);
+                    let passes = blur.passes.max(1);
+                    (radius * passes * 24 + 32).max(32)
+                })
+                .unwrap_or(0);
+            blur_padding.hash(&mut hasher);
+            format!("{:?}", config.effect).hash(&mut hasher);
+            let capture_geo = Rectangle::new(
+                smithay::utils::Point::from((
+                    effect_rect.x - blur_padding,
+                    effect_rect.y - blur_padding,
+                )),
+                (
+                    effect_rect.width + blur_padding * 2,
+                    effect_rect.height + blur_padding * 2,
+                )
+                    .into(),
+            );
+            (
+                capture_geo.loc.x,
+                capture_geo.loc.y,
+                capture_geo.size.w,
+                capture_geo.size.h,
+            )
+                .hash(&mut hasher);
+            if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Manual) {
+                for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+                    if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                        lower_decoration.snapshot.id.hash(&mut hasher);
+                        if let Some(commit) = state.window_commit_times.get(lower_window) {
+                            commit.as_nanos().hash(&mut hasher);
+                        }
+                        lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+                    }
+                }
+            }
+            let signature = hasher.finish();
+
+            if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
+                if let Some(existing) = state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .filter(|existing| existing.signature == signature)
+                    .cloned()
+                {
+                    let local_rect = Rectangle::new(
+                        smithay::utils::Point::from((
+                            effect_rect.x - output_geo.loc.x,
+                            effect_rect.y - output_geo.loc.y,
+                        )),
+                        (effect_rect.width, effect_rect.height).into(),
+                    );
+                    return crate::backend::shader_effect::backdrop_shader_element(
+                        renderer,
+                        existing.texture,
+                        local_rect,
+                        local_rect,
+                        local_rect,
+                        &config.effect,
+                        alpha,
+                        scale.x as f32,
+                        None,
+                        0,
+                    )
+                    .ok()
+                    .map(|element| (index, element));
+                }
+            }
+
+            let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+            for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+                backdrop_scene.extend(window_scene_elements_for_capture(
+                    renderer,
+                    state,
+                    capture_geo,
+                    scale,
+                    lower_window,
+                ));
+            }
+            let (_, lower_layer_elements) =
+                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+            let capture_offset = capture_geo.loc - output_geo.loc;
+            let capture_visual = WindowVisualState {
+                origin: smithay::utils::Point::from((0, 0)),
+                scale: smithay::utils::Scale::from((1.0, 1.0)),
+                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
+                opacity: 1.0,
+            };
+            backdrop_scene.extend(
+                transform_window_elements(
+                    lower_layer_elements,
+                    capture_visual,
+                    WinitRenderElements::Window,
+                    WinitRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
+            if backdrop_scene.is_empty() {
+                return None;
+            }
+            let snapshot = snapshot::capture_snapshot(
+                renderer,
+                None,
+                crate::ssd::LogicalRect::new(
+                    capture_geo.loc.x,
+                    capture_geo.loc.y,
+                    capture_geo.size.w,
+                    capture_geo.size.h,
+                ),
+                0,
+                true,
+                scale,
+                &backdrop_scene,
+            )
+            .ok()
+            .flatten()?;
+            let texture = crate::backend::shader_effect::apply_effect_pipeline(
+                renderer,
+                snapshot.texture,
+                (capture_geo.size.w, capture_geo.size.h),
+                Some(Rectangle::new(
+                    Point::from((
+                        effect_rect.x - capture_geo.loc.x,
+                        effect_rect.y - capture_geo.loc.y,
+                    )),
+                    (effect_rect.width, effect_rect.height).into(),
+                )),
+                Some((effect_rect.width, effect_rect.height)),
+                &config.effect,
+            )
+            .ok()?;
+            if let Some(window_decoration) = state.window_decorations.get_mut(window) {
+                window_decoration.backdrop_cache.insert(
+                    stable_key,
+                    crate::backend::shader_effect::CachedBackdropTexture {
+                        signature,
+                        texture: texture.clone(),
+                    },
+                );
+            }
+            let local_rect = Rectangle::new(
+                smithay::utils::Point::from((
+                    effect_rect.x - output_geo.loc.x,
+                    effect_rect.y - output_geo.loc.y,
+                )),
+                (effect_rect.width, effect_rect.height).into(),
+            );
+            crate::backend::shader_effect::backdrop_shader_element(
+                renderer,
+                texture,
+                local_rect,
+                local_rect,
+                local_rect,
+                &config.effect,
+                alpha,
+                scale.x as f32,
+                None,
+                0,
+            )
+            .ok()
+            .map(|element| (index, element))
         })
         .collect()
 }

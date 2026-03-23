@@ -10,8 +10,8 @@ use std::{
 use tracing::{debug, warn};
 
 use super::{
-    DecorationBridgeError, DecorationLayoutError, DecorationNode, DecorationTree, WindowTransform,
-    decode_tree_json,
+    BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
+    DecorationTree, WindowTransform, WireBackgroundEffectConfig, decode_tree_json,
 };
 use super::window_model::{WaylandWindowAction, WaylandWindowSnapshot};
 
@@ -294,6 +294,10 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "windowId")]
         window_id: &'a str,
     },
+    GetEffectConfig {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -373,6 +377,17 @@ struct RuntimeFailureResponse {
     request_id: i64,
     ok: bool,
     error: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeEffectConfigResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    ok: bool,
+    #[serde(rename = "backgroundEffect")]
+    background_effect: Option<WireBackgroundEffectConfig>,
+    error: Option<String>,
 }
 
 impl std::fmt::Debug for NodeDecorationEvaluator {
@@ -554,6 +569,77 @@ impl NodeDecorationEvaluator {
             next_request_id: 1,
             stderr_log,
         })
+    }
+
+    pub fn background_effect_config(
+        &self,
+    ) -> Result<Option<BackgroundEffectConfig>, DecorationEvaluationError> {
+        let mut runtime_guard = self
+            .runtime
+            .lock()
+            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+
+        let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig { request_id })
+            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let mut line = String::new();
+        let bytes = match &mut runtime.connection {
+            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
+            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
+        };
+        if bytes == 0 {
+            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let stderr = runtime
+                .stderr_log
+                .lock()
+                .map(|stderr| stderr.clone())
+                .unwrap_or_default();
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+        }
+
+        let trimmed = line.trim();
+        let response: RuntimeEffectConfigResponse = match serde_json::from_str(trimmed) {
+            Ok(response) => response,
+            Err(err) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::InvalidResponse(format!(
+                    "{err}; payload={trimmed}"
+                )));
+            }
+        };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if response.kind != "getEffectConfig" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for getEffectConfig: {}",
+                response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+
+        response
+            .background_effect
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(DecorationEvaluationError::Bridge)
     }
 
 }

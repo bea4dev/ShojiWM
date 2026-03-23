@@ -22,6 +22,7 @@ use smithay::{
         commit_timing::CommitTimingManagerState,
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufGlobal, DmabufState},
+        background_effect::BackgroundEffectState,
         cursor_shape::CursorShapeManagerState,
         fixes::FixesState,
         fifo::FifoManagerState,
@@ -55,7 +56,7 @@ use crate::{
     drawing::PointerElement,
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
-use crate::ssd::{DecorationEvaluator, DecorationInteractionSnapshot, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot};
+use crate::ssd::{BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot};
 use tracing::{debug, info, warn};
 
 pub struct ShojiWM {
@@ -103,6 +104,7 @@ pub struct ShojiWM {
     pub decoration_evaluator: DecorationRuntimeEvaluator,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
+    pub background_effect_state: BackgroundEffectState,
     pub damage_blink_enabled: bool,
     pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
     pub damage_blink_pending: HashMap<String, Vec<LogicalRect>>,
@@ -111,6 +113,7 @@ pub struct ShojiWM {
     pub runtime_scheduler_enabled: bool,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
+    pub configured_background_effect: Option<BackgroundEffectConfig>,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -148,6 +151,7 @@ impl ShojiWM {
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
         let clock = Clock::<Monotonic>::new();
         let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
+        let background_effect_state = BackgroundEffectState::new::<Self>(&dh);
 
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let fifo_manager_state = FifoManagerState::new::<Self>(&dh);
@@ -191,13 +195,22 @@ impl ShojiWM {
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
-        let decoration_evaluator = if std::path::Path::new("node_modules/.bin/tsx").exists() {
-            DecorationRuntimeEvaluator::Node(
-                NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
-                    .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into())),
+        let (decoration_evaluator, configured_background_effect) = if std::path::Path::new("node_modules/.bin/tsx").exists() {
+            let evaluator = NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
+                .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let configured_background_effect = match evaluator.background_effect_config() {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(?error, "failed to load configured background effect");
+                    None
+                }
+            };
+            (
+                DecorationRuntimeEvaluator::Node(evaluator),
+                configured_background_effect,
             )
         } else {
-            DecorationRuntimeEvaluator::Static(Default::default())
+            (DecorationRuntimeEvaluator::Static(Default::default()), None)
         };
 
         let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
@@ -286,6 +299,7 @@ impl ShojiWM {
             decoration_evaluator,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
+            background_effect_state,
             damage_blink_enabled,
             damage_blink_visible: HashMap::new(),
             damage_blink_pending: HashMap::new(),
@@ -294,6 +308,7 @@ impl ShojiWM {
             runtime_scheduler_enabled: false,
             suggested_window_offset: None,
             async_asset_dirty: false,
+            configured_background_effect,
 
             is_running: true,
             needs_redraw: true,

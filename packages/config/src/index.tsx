@@ -35,7 +35,7 @@ const backgroundShader = compileEffect({
     input: backdropSource(),
     pipeline: [
         //noise({ kind: "salt", amount: 0.01 }),
-        dualKawaseBlur({ radius: 4, passes: 3 }),
+        //dualKawaseBlur({ radius: 4, passes: 3 }),
         shaderStage(loadShader("./liquid-glass.frag"), {
             uniforms: {
                 inset_px: 0.0,
@@ -50,6 +50,16 @@ const backgroundShader = compileEffect({
         }),
     ],
 });
+
+WINDOW_MANAGER.effect.background_effect = {
+    effect: compileEffect({
+        input: backdropSource(),
+        pipeline: [
+            dualKawaseBlur({ radius: 4, passes: 3 }),
+        ],
+    }),
+    invalidate: "on-source-damage",
+};
 
 WINDOW_MANAGER.event.onOpen((window) => {
     window.setCloseAnimationDuration(seconds(0.5));

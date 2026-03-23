@@ -11,7 +11,9 @@ import type {
   DecorationNodeType,
   DisplayConfig,
   DisplayModePreference,
+  EffectInvalidationMode,
   BoxProps,
+  BackgroundEffectConfig,
   ButtonProps,
   InteractionState,
   InteractionStyleVariants,
@@ -41,6 +43,7 @@ import type {
   WindowActionType,
   WindowBorderProps,
   WindowManagerDefinition,
+  WindowManagerEffectConfig,
   WindowPosition,
   ClientWindowProps,
   WindowProps,
@@ -151,7 +154,9 @@ export type {
   DecorationNodeType,
   DisplayConfig,
   DisplayModePreference,
+  EffectInvalidationMode,
   LabelProps,
+  BackgroundEffectConfig,
   MaybeSignal,
   InteractionState,
   InteractionStyleVariants,
@@ -179,6 +184,7 @@ export type {
   WindowActionType,
   WindowBorderProps,
   WindowManagerDefinition,
+  WindowManagerEffectConfig,
   WindowPosition,
   ClientWindowProps,
   WindowProps,
@@ -212,6 +218,9 @@ export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowB
 export const WINDOW_MANAGER: WindowManagerDefinition = {
   decoration: null,
   event: createWindowManagerEventController(),
+  effect: {
+    background_effect: null,
+  },
 };
 
 export function windowAction(

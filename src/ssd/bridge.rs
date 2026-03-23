@@ -1,10 +1,11 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BackdropBlur, BlendMode, BorderStyle, BoxNode, ButtonNode, Color, CompiledEffect,
-    DecorationNode, DecorationNodeKind, DecorationStyle, Edges, EffectInput, EffectStage,
-    JustifyContent, LayoutDirection, LabelNode, NoiseKind, NoiseStage, ShaderEffectNode,
-    ShaderModule, ShaderStage, ShaderUniformValue, WindowAction,
+    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderStyle, BoxNode, ButtonNode,
+    Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
+    EffectInput, EffectInvalidationMode, EffectStage, JustifyContent, LayoutDirection, LabelNode,
+    NoiseKind, NoiseStage, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
+    WindowAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -118,6 +119,13 @@ pub struct WireBlendStageFields {
 #[serde(rename_all = "camelCase")]
 pub struct WireUnitStageFields {
     pub effect: WireCompiledEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireBackgroundEffectConfig {
+    pub effect: WireCompiledEffect,
+    pub invalidate: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -363,6 +371,24 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
         Ok(CompiledEffect {
             input,
             pipeline: stages,
+        })
+    }
+}
+
+impl TryFrom<WireBackgroundEffectConfig> for BackgroundEffectConfig {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireBackgroundEffectConfig) -> Result<Self, Self::Error> {
+        let invalidate = match value.invalidate.as_deref().unwrap_or("on-source-damage") {
+            "on-source-damage" => EffectInvalidationMode::OnSourceDamage,
+            "always" => EffectInvalidationMode::Always,
+            "manual" => EffectInvalidationMode::Manual,
+            other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+        };
+
+        Ok(BackgroundEffectConfig {
+            effect: value.effect.try_into()?,
+            invalidate,
         })
     }
 }

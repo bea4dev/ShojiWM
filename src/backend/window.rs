@@ -73,6 +73,33 @@ where
     (upper_elements, lower_elements)
 }
 
+pub fn layer_surface_elements<R>(
+    renderer: &mut R,
+    output: &smithay::output::Output,
+    layer_surface: &LayerSurface,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Vec<WaylandSurfaceRenderElement<R>>
+where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    let map = layer_map_for_output(output);
+    map.layer_geometry(layer_surface)
+        .map(|geo| (geo.loc - layer_surface.geometry().loc, layer_surface))
+        .into_iter()
+        .flat_map(|(loc, surface)| {
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+                surface,
+                renderer,
+                loc.to_physical_precise_round(scale),
+                scale,
+                alpha,
+            )
+        })
+        .collect()
+}
+
 pub fn surface_elements<R>(
     window: &Window,
     renderer: &mut R,

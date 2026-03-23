@@ -4,6 +4,7 @@ import { Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
 import {
+  type BackgroundEffectConfig,
   createWindowAnimationControllerWithStore,
   createDecorationEvaluationCache,
   createManagedPoll,
@@ -61,13 +62,19 @@ interface InvokeHandlerRequest {
   nowMs: number;
 }
 
+interface GetEffectConfigRequest {
+  requestId: number;
+  kind: "getEffectConfig";
+}
+
 type RuntimeRequest =
   | EvaluateRequest
   | SchedulerTickRequest
   | WindowClosedRequest
   | StartCloseRequest
   | EvaluateCachedRequest
-  | InvokeHandlerRequest;
+  | InvokeHandlerRequest
+  | GetEffectConfigRequest;
 
 interface EvaluateSuccess {
   requestId: number;
@@ -121,6 +128,13 @@ interface StartCloseSuccess {
   dirtyWindowIds: string[];
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
+}
+
+interface GetEffectConfigSuccess {
+  requestId: number;
+  ok: true;
+  kind: "getEffectConfig";
+  backgroundEffect?: BackgroundEffectConfig | null;
 }
 
 interface RuntimeFailure {
@@ -182,6 +196,7 @@ async function main() {
   const loaded = await import(moduleUrl);
   const decoration = resolveDecoration(loaded);
   const events = resolveEvents(loaded);
+  const effectConfig = resolveEffectConfig(loaded);
 
   const socket = await connectSocket(socketPath);
   const rl = createInterface({
@@ -255,6 +270,13 @@ async function main() {
             serialized: result.serialized,
             transform: result.transform,
             nextPollInMs: result.nextPollInMs,
+          });
+        } else if (request.kind === "getEffectConfig") {
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "getEffectConfig",
+            backgroundEffect: effectConfig.background_effect,
           });
         } else {
           currentSchedulerTimeMs = request.nowMs;
@@ -630,6 +652,19 @@ function resolveEvents(
   return maybeEvents;
 }
 
+function resolveEffectConfig(
+  loaded: Record<string, unknown>,
+): { background_effect: BackgroundEffectConfig | null } {
+  const maybeEffect =
+    (loaded.WINDOW_MANAGER as { effect?: { background_effect?: BackgroundEffectConfig | null } } | undefined)
+      ?.effect ??
+    (loaded.default as { effect?: { background_effect?: BackgroundEffectConfig | null } } | undefined)?.effect;
+
+  return {
+    background_effect: maybeEffect?.background_effect ?? null,
+  };
+}
+
 async function connectSocket(socketPath: string): Promise<Socket> {
   return await new Promise((resolveSocket, reject) => {
     const socket = createConnection(socketPath);
@@ -646,6 +681,7 @@ function writeResponse(
     | WindowClosedSuccess
     | StartCloseSuccess
     | InvokeHandlerSuccess
+    | GetEffectConfigSuccess
     | RuntimeFailure,
 ) {
   socket.write(`${JSON.stringify(response)}\n`);

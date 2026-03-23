@@ -104,6 +104,7 @@ export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
 export type NoiseKind = "salt";
 export type BlendMode = "normal" | "add" | "screen" | "multiply";
+export type EffectInvalidationMode = "on-source-damage" | "always" | "manual";
 export type ShaderUniformScalar = MaybeSignal<number>;
 export type ShaderUniformValue =
   | ShaderUniformScalar
@@ -193,6 +194,15 @@ export interface CompiledEffectHandle {
   kind: "compiled-effect";
   input: EffectInputHandle;
   pipeline: EffectStageHandle[];
+}
+
+export interface BackgroundEffectConfig {
+  effect: CompiledEffectHandle;
+  invalidate?: EffectInvalidationMode;
+}
+
+export interface WindowManagerEffectConfig {
+  background_effect: BackgroundEffectConfig | null;
 }
 
 export interface BorderValue {
@@ -301,6 +311,7 @@ export type DecorationFunction = (window: WaylandWindow) => DecorationChild;
 export interface WindowManagerDefinition {
   decoration: DecorationFunction | null;
   event: import("./events").WindowManagerEventController;
+  effect: WindowManagerEffectConfig;
   display?: DisplayConfig;
 }
 
