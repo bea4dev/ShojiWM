@@ -104,7 +104,23 @@ export type FontWeight = "normal" | "medium" | "semibold" | "bold" | number;
 export type FontFamily = string | string[];
 export type NoiseKind = "salt";
 export type BlendMode = "normal" | "add" | "screen" | "multiply";
-export type EffectInvalidationMode = "on-source-damage" | "always" | "manual";
+export interface OnSourceDamageBoxInvalidationHandle {
+  kind: "on-source-damage-box";
+  antiArtifactMargin: MaybeSignal<number>;
+}
+
+export interface AlwaysInvalidationHandle {
+  kind: "always";
+}
+
+export interface ManualInvalidationHandle {
+  kind: "manual";
+}
+
+export type EffectInvalidationPolicyHandle =
+  | OnSourceDamageBoxInvalidationHandle
+  | AlwaysInvalidationHandle
+  | ManualInvalidationHandle;
 export type ShaderUniformScalar = MaybeSignal<number>;
 export type ShaderUniformValue =
   | ShaderUniformScalar
@@ -193,12 +209,12 @@ export type EffectStageHandle =
 export interface CompiledEffectHandle {
   kind: "compiled-effect";
   input: EffectInputHandle;
+  invalidate: EffectInvalidationPolicyHandle;
   pipeline: EffectStageHandle[];
 }
 
 export interface BackgroundEffectConfig {
   effect: CompiledEffectHandle;
-  invalidate?: EffectInvalidationMode;
 }
 
 export interface WindowManagerEffectConfig {

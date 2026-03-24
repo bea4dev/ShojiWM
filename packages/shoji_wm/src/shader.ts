@@ -17,12 +17,14 @@ import type {
   ImageSourceHandle,
   NamedTextureHandle,
   ShaderUniformMap,
+  EffectInvalidationPolicyHandle,
 } from "./types";
 
 let shaderBaseDir = process.cwd();
 
 export interface CompileEffectOptions {
   input: EffectInputHandle;
+  invalidate?: EffectInvalidationPolicyHandle;
   pipeline: Array<
     | ShaderStageHandle
     | NoiseStageHandle
@@ -123,6 +125,10 @@ export function compileEffect(options: CompileEffectOptions): CompiledEffectHand
   return {
     kind: "compiled-effect",
     input: options.input,
+    invalidate: options.invalidate ?? {
+      kind: "on-source-damage-box",
+      antiArtifactMargin: 0,
+    },
     pipeline: options.pipeline,
   };
 }

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use super::{
     AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderStyle, BoxNode, ButtonNode,
     Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
-    EffectInput, EffectInvalidationMode, EffectStage, JustifyContent, LayoutDirection, LabelNode,
+    EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LayoutDirection, LabelNode,
     NoiseKind, NoiseStage, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
     WindowAction,
 };
@@ -82,8 +82,19 @@ pub enum WireEffectStage {
 pub struct WireCompiledEffect {
     pub kind: String,
     pub input: Option<WireEffectInput>,
+    pub invalidate: Option<WireEffectInvalidationPolicy>,
     #[serde(default)]
     pub pipeline: Vec<WireEffectStage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+pub enum WireEffectInvalidationPolicy {
+    OnSourceDamageBox {
+        anti_artifact_margin: i32,
+    },
+    Always,
+    Manual,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -125,7 +136,6 @@ pub struct WireUnitStageFields {
 #[serde(rename_all = "camelCase")]
 pub struct WireBackgroundEffectConfig {
     pub effect: WireCompiledEffect,
-    pub invalidate: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -368,8 +378,24 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
             return Err(DecorationBridgeError::InvalidShaderDescriptor);
         }
 
+        let invalidate = match value
+            .invalidate
+            .unwrap_or(WireEffectInvalidationPolicy::OnSourceDamageBox {
+                anti_artifact_margin: 0,
+            })
+        {
+            WireEffectInvalidationPolicy::OnSourceDamageBox {
+                anti_artifact_margin,
+            } => EffectInvalidationPolicy::OnSourceDamageBox {
+                anti_artifact_margin: anti_artifact_margin.max(0),
+            },
+            WireEffectInvalidationPolicy::Always => EffectInvalidationPolicy::Always,
+            WireEffectInvalidationPolicy::Manual => EffectInvalidationPolicy::Manual,
+        };
+
         Ok(CompiledEffect {
             input,
+            invalidate,
             pipeline: stages,
         })
     }
@@ -379,16 +405,8 @@ impl TryFrom<WireBackgroundEffectConfig> for BackgroundEffectConfig {
     type Error = DecorationBridgeError;
 
     fn try_from(value: WireBackgroundEffectConfig) -> Result<Self, Self::Error> {
-        let invalidate = match value.invalidate.as_deref().unwrap_or("on-source-damage") {
-            "on-source-damage" => EffectInvalidationMode::OnSourceDamage,
-            "always" => EffectInvalidationMode::Always,
-            "manual" => EffectInvalidationMode::Manual,
-            other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
-        };
-
         Ok(BackgroundEffectConfig {
             effect: value.effect.try_into()?,
-            invalidate,
         })
     }
 }

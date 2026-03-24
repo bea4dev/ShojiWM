@@ -31,7 +31,7 @@ use smithay::{
 };
 use tracing::{trace, warn};
 
-use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
+use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectInvalidationPolicy, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
 
 #[derive(Debug, Clone)]
 pub struct CachedShaderEffect {
@@ -1332,6 +1332,49 @@ pub fn apply_effect_pipeline(
         named: HashMap::new(),
     };
     run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)
+}
+
+pub fn invalidation_sample_rect(
+    effect: &CompiledEffect,
+    visible_rect: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    match effect.invalidate_policy() {
+        EffectInvalidationPolicy::OnSourceDamageBox { anti_artifact_margin } => {
+            let margin = anti_artifact_margin.max(0);
+            Rectangle::new(
+                Point::from((visible_rect.loc.x - margin, visible_rect.loc.y - margin)),
+                (
+                    visible_rect.size.w.saturating_add(margin.saturating_mul(2)),
+                    visible_rect.size.h.saturating_add(margin.saturating_mul(2)),
+                )
+                    .into(),
+            )
+        }
+        EffectInvalidationPolicy::Always | EffectInvalidationPolicy::Manual => visible_rect,
+    }
+}
+
+pub fn source_damage_intersects_rect(
+    effect: &CompiledEffect,
+    visible_rect: Rectangle<i32, Logical>,
+    source_damage: &[crate::state::OwnedDamageRect],
+) -> bool {
+    match effect.invalidate_policy() {
+        EffectInvalidationPolicy::Always => true,
+        EffectInvalidationPolicy::Manual => false,
+        EffectInvalidationPolicy::OnSourceDamageBox { .. } => {
+            let sample_rect = invalidation_sample_rect(effect, visible_rect);
+            source_damage.iter().any(|damage| {
+                let left = sample_rect.loc.x.max(damage.rect.x);
+                let top = sample_rect.loc.y.max(damage.rect.y);
+                let right =
+                    (sample_rect.loc.x + sample_rect.size.w).min(damage.rect.x + damage.rect.width);
+                let bottom =
+                    (sample_rect.loc.y + sample_rect.size.h).min(damage.rect.y + damage.rect.height);
+                right > left && bottom > top
+            })
+        }
+    }
 }
 
 fn run_effect_pipeline(

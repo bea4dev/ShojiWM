@@ -33,10 +33,13 @@ const focusAnimation = animationVariable("window.focus");
 
 const backgroundShader = compileEffect({
     input: backdropSource(),
+    invalidate: {
+        kind: "on-source-damage-box",
+        antiArtifactMargin: 0,
+    },
     pipeline: [
-        //noise({ kind: "salt", amount: 0.01 }),
-        //dualKawaseBlur({ radius: 4, passes: 3 }),
-        /*
+        noise({ kind: "salt", amount: 0.01 }),
+        dualKawaseBlur({ radius: 4, passes: 3 }),
         shaderStage(loadShader("./liquid-glass.frag"), {
             uniforms: {
                 inset_px: 0.0,
@@ -48,19 +51,22 @@ const backgroundShader = compileEffect({
                 white_tint: 0.0,
                 edge_highlight: 0.0,
             },
-        }),*/
-        shaderStage(loadShader("./blur.frag"))
+        }),
+        //shaderStage(loadShader("./blur.frag"))
     ],
 });
 
 WINDOW_MANAGER.effect.background_effect = {
     effect: compileEffect({
         input: backdropSource(),
+        invalidate: {
+            kind: "on-source-damage-box",
+            antiArtifactMargin: 12,
+        },
         pipeline: [
             dualKawaseBlur({ radius: 4, passes: 3 }),
         ],
     }),
-    invalidate: "on-source-damage",
 };
 
 WINDOW_MANAGER.event.onOpen((window) => {

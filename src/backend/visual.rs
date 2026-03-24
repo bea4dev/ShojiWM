@@ -144,11 +144,13 @@ pub fn transformed_rect(
 
     let left = origin_x + (rect.x as f64 - origin_x) * transform.scale_x + transform.translate_x;
     let top = origin_y + (rect.y as f64 - origin_y) * transform.scale_y + transform.translate_y;
+    let rect_right = rect.x.saturating_add(rect.width);
+    let rect_bottom = rect.y.saturating_add(rect.height);
     let right = origin_x
-        + ((rect.x + rect.width) as f64 - origin_x) * transform.scale_x
+        + (rect_right as f64 - origin_x) * transform.scale_x
         + transform.translate_x;
     let bottom = origin_y
-        + ((rect.y + rect.height) as f64 - origin_y) * transform.scale_y
+        + (rect_bottom as f64 - origin_y) * transform.scale_y
         + transform.translate_y;
 
     let x = left.min(right).floor() as i32;

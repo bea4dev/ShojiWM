@@ -491,6 +491,7 @@ pub fn init_winit(
                     state.space.refresh();
                     state.popups.cleanup();
                     state.pending_decoration_damage.clear();
+                    state.clear_source_damage();
                     state.finish_damage_blink_frame();
                     let _ = state.display_handle.flush_clients();
 
@@ -675,6 +676,17 @@ fn backdrop_shader_elements_for_window(
     let Some(decoration) = state.window_decorations.get(window).cloned() else {
         return Vec::new();
     };
+    let lower_windows = windows_top_to_bottom
+        .iter()
+        .skip(window_index + 1)
+        .cloned()
+        .collect::<Vec<_>>();
+    let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
+    let relevant_source_damage = {
+        let mut entries = collect_window_source_damage(state, lower_windows.iter().cloned());
+        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+        entries
+    };
 
     decoration
         .shader_buffers
@@ -684,7 +696,6 @@ fn backdrop_shader_elements_for_window(
         .filter_map(|cached| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
-            state.lower_layer_scene_generation.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
@@ -730,12 +741,9 @@ fn backdrop_shader_elements_for_window(
                 capture_geo.size.h,
             )
                 .hash(&mut hasher);
-            for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+            for lower_window in &lower_windows {
                 if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
                     lower_decoration.snapshot.id.hash(&mut hasher);
-                    if let Some(commit) = state.window_commit_times.get(lower_window) {
-                        commit.as_nanos().hash(&mut hasher);
-                    }
                     lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
                     lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
                     lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
@@ -744,17 +752,30 @@ fn backdrop_shader_elements_for_window(
                 }
             }
             let signature = hasher.finish();
+            let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+                &cached.shader,
+                Rectangle::new(
+                    smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+                    (effect_rect.width, effect_rect.height).into(),
+                ),
+                &relevant_source_damage,
+            );
 
-            if let Some(existing) = state
-                .window_decorations
-                .get(window)
-                .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
-                .filter(|existing| existing.signature == signature)
-                .cloned()
+            if !matches!(
+                cached.shader.invalidate_policy(),
+                crate::ssd::EffectInvalidationPolicy::Always
+            ) && !source_damage_hit
             {
-                let local_rect = Rectangle::new(
-                    smithay::utils::Point::from((
-                        effect_rect.x - output_geo.loc.x,
+                if let Some(existing) = state
+                    .window_decorations
+                    .get(window)
+                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                    .filter(|existing| existing.signature == signature)
+                    .cloned()
+                {
+                    let local_rect = Rectangle::new(
+                        smithay::utils::Point::from((
+                            effect_rect.x - output_geo.loc.x,
                         effect_rect.y - output_geo.loc.y,
                     )),
                     (effect_rect.width, effect_rect.height).into(),
@@ -789,12 +810,13 @@ fn backdrop_shader_elements_for_window(
                     clip_rect,
                     cached.clip_radius,
                     format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
-                )
-                .ok()
-                .map(|element| (cached.order, element));
+                    )
+                    .ok()
+                    .map(|element| (cached.order, element));
+                }
             }
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-            for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+            for lower_window in &lower_windows {
                 backdrop_scene.extend(window_scene_elements_for_capture(
                     renderer,
                     state,
@@ -1011,6 +1033,43 @@ fn protocol_background_effect_rects_for_layer(
     .collect()
 }
 
+fn collect_window_source_damage(
+    state: &ShojiWM,
+    windows: impl IntoIterator<Item = smithay::desktop::Window>,
+) -> Vec<crate::state::OwnedDamageRect> {
+    let owners = windows
+        .into_iter()
+        .filter_map(|window| state.window_decorations.get(&window).map(|decoration| decoration.snapshot.id.clone()))
+        .collect::<std::collections::HashSet<_>>();
+    state
+        .window_source_damage
+        .iter()
+        .filter(|entry| owners.contains(&entry.owner))
+        .cloned()
+        .collect()
+}
+
+fn collect_layer_source_damage(
+    state: &ShojiWM,
+    layers: impl IntoIterator<Item = smithay::desktop::LayerSurface>,
+    lower: bool,
+) -> Vec<crate::state::OwnedDamageRect> {
+    let owners = layers
+        .into_iter()
+        .map(|layer| layer.wl_surface().id().protocol_id().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    let entries = if lower {
+        &state.lower_layer_source_damage
+    } else {
+        &state.upper_layer_source_damage
+    };
+    entries
+        .iter()
+        .filter(|entry| owners.contains(&entry.owner))
+        .cloned()
+        .collect()
+}
+
 fn layer_surface_scene_elements_for_capture(
     renderer: &mut GlesRenderer,
     output: &Output,
@@ -1095,16 +1154,9 @@ fn lower_layer_scene_elements(
             )
                 .into(),
         );
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        stable_key.hash(&mut hasher);
-        match config.invalidate {
-            crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                state.lower_layer_scene_generation.hash(&mut hasher);
-            }
-            crate::ssd::EffectInvalidationMode::Always => {}
-            crate::ssd::EffectInvalidationMode::Manual => {}
-        }
-        format!("{:?}", config.effect).hash(&mut hasher);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            stable_key.hash(&mut hasher);
+            format!("{:?}", config.effect).hash(&mut hasher);
         (
             effect_rect.x,
             effect_rect.y,
@@ -1114,19 +1166,36 @@ fn lower_layer_scene_elements(
             capture_geo.loc.y,
             capture_geo.size.w,
             capture_geo.size.h,
-        )
-            .hash(&mut hasher);
-        let signature = hasher.finish();
-        let captured_local_rect = Rectangle::new(
+            )
+                .hash(&mut hasher);
+            let signature = hasher.finish();
+            let relevant_source_damage = collect_layer_source_damage(
+                state,
+                lower_layers.iter().skip(index + 1).cloned(),
+                true,
+            );
+            let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+                &config.effect,
+                Rectangle::new(
+                    smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+                    (effect_rect.width, effect_rect.height).into(),
+                ),
+                &relevant_source_damage,
+            );
+            let captured_local_rect = Rectangle::new(
             smithay::utils::Point::from((
                 effect_rect.x - output_geo.loc.x,
                 effect_rect.y - output_geo.loc.y,
             )),
             (effect_rect.width, effect_rect.height).into(),
         );
-        if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
-            if let Some(existing) = state
-                .layer_backdrop_cache
+            if !matches!(
+                config.effect.invalidate_policy(),
+                crate::ssd::EffectInvalidationPolicy::Always
+            ) && !source_damage_hit
+            {
+                if let Some(existing) = state
+                    .layer_backdrop_cache
                 .get(&stable_key)
                 .filter(|existing| existing.signature == signature)
                 .cloned()
@@ -1340,6 +1409,12 @@ fn configured_background_effect_elements_for_layer(
         )
             .into(),
     );
+    let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
+    let relevant_source_damage = {
+        let mut entries = collect_window_source_damage(state, windows_top_to_bottom.iter().cloned());
+        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+        entries
+    };
 
     let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
     for lower_window in windows_top_to_bottom {
@@ -1403,12 +1478,15 @@ fn configured_background_effect_elements_for_layer(
     );
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     stable_key.hash(&mut hasher);
-    match config.invalidate {
-        crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-            state.lower_layer_scene_generation.hash(&mut hasher);
+    for lower_window in windows_top_to_bottom {
+        if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+            lower_decoration.snapshot.id.hash(&mut hasher);
+            lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+            lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+            lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+            lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+            lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
         }
-        crate::ssd::EffectInvalidationMode::Always => {}
-        crate::ssd::EffectInvalidationMode::Manual => {}
     }
     format!("{:?}", config.effect).hash(&mut hasher);
     (
@@ -1423,6 +1501,14 @@ fn configured_background_effect_elements_for_layer(
     )
         .hash(&mut hasher);
     let signature = hasher.finish();
+    let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+        &config.effect,
+        Rectangle::new(
+            smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+            (effect_rect.width, effect_rect.height).into(),
+        ),
+        &relevant_source_damage,
+    );
     let captured_local_rect = Rectangle::new(
         smithay::utils::Point::from((
             effect_rect.x - output_geo.loc.x,
@@ -1430,7 +1516,11 @@ fn configured_background_effect_elements_for_layer(
         )),
         (effect_rect.width, effect_rect.height).into(),
     );
-    if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
+    if !matches!(
+        config.effect.invalidate_policy(),
+        crate::ssd::EffectInvalidationPolicy::Always
+    ) && !source_damage_hit
+    {
         if let Some(existing) = state
             .layer_backdrop_cache
             .get(&stable_key)
@@ -1636,6 +1726,17 @@ fn configured_background_effect_elements_for_window(
     if rects.is_empty() {
         return Vec::new();
     }
+    let lower_windows = windows_top_to_bottom
+        .iter()
+        .skip(window_index + 1)
+        .cloned()
+        .collect::<Vec<_>>();
+    let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
+    let relevant_source_damage = {
+        let mut entries = collect_window_source_damage(state, lower_windows.iter().cloned());
+        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+        entries
+    };
 
     rects
         .into_iter()
@@ -1644,13 +1745,6 @@ fn configured_background_effect_elements_for_window(
             let stable_key = format!("__protocol_background_effect_{}", index);
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             stable_key.hash(&mut hasher);
-            match config.invalidate {
-                crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                    state.lower_layer_scene_generation.hash(&mut hasher);
-                }
-                crate::ssd::EffectInvalidationMode::Always => {}
-                crate::ssd::EffectInvalidationMode::Manual => {}
-            }
             let effect_rect = crate::backend::visual::transformed_rect(
                 rect,
                 decoration.layout.root.rect,
@@ -1696,24 +1790,31 @@ fn configured_background_effect_elements_for_window(
                 capture_geo.size.h,
             )
                 .hash(&mut hasher);
-            if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Manual) {
-                for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
-                    if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
-                        lower_decoration.snapshot.id.hash(&mut hasher);
-                        if let Some(commit) = state.window_commit_times.get(lower_window) {
-                            commit.as_nanos().hash(&mut hasher);
-                        }
-                        lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
-                        lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
-                        lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
-                        lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
-                        lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
-                    }
+            for lower_window in &lower_windows {
+                if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                    lower_decoration.snapshot.id.hash(&mut hasher);
+                    lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                    lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
                 }
             }
             let signature = hasher.finish();
+            let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+                &config.effect,
+                Rectangle::new(
+                    smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+                    (effect_rect.width, effect_rect.height).into(),
+                ),
+                &relevant_source_damage,
+            );
 
-            if !matches!(config.invalidate, crate::ssd::EffectInvalidationMode::Always) {
+            if !matches!(
+                config.effect.invalidate_policy(),
+                crate::ssd::EffectInvalidationPolicy::Always
+            ) && !source_damage_hit
+            {
                 if let Some(existing) = state
                     .window_decorations
                     .get(window)
@@ -1749,7 +1850,7 @@ fn configured_background_effect_elements_for_window(
             }
 
             let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-            for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
+            for lower_window in &lower_windows {
                 backdrop_scene.extend(window_scene_elements_for_capture(
                     renderer,
                     state,

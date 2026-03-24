@@ -89,18 +89,32 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     }
 
     if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+        let layer_rect = map.layer_geometry(&layer).map(|geo| {
+            crate::ssd::LogicalRect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h)
+        });
+        let owner = format!("{}", layer_surface_id(surface));
         match layer.layer() {
             Layer::Background | Layer::Bottom => {
                 state.lower_layer_scene_generation =
                     state.lower_layer_scene_generation.wrapping_add(1);
+                if let Some(rect) = layer_rect {
+                    state.lower_layer_source_damage.push(crate::state::OwnedDamageRect { owner, rect });
+                }
             }
             Layer::Top | Layer::Overlay => {
                 state.upper_layer_scene_generation =
                     state.upper_layer_scene_generation.wrapping_add(1);
+                if let Some(rect) = layer_rect {
+                    state.upper_layer_source_damage.push(crate::state::OwnedDamageRect { owner, rect });
+                }
             }
         }
     }
 
     drop(map);
     state.schedule_redraw();
+}
+
+fn layer_surface_id(surface: &WlSurface) -> u32 {
+    surface.id().protocol_id()
 }

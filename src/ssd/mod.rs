@@ -365,8 +365,8 @@ pub enum BlendMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EffectInvalidationMode {
-    OnSourceDamage,
+pub enum EffectInvalidationPolicy {
+    OnSourceDamageBox { anti_artifact_margin: i32 },
     Always,
     Manual,
 }
@@ -394,13 +394,13 @@ pub enum EffectStage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledEffect {
     pub input: EffectInput,
+    pub invalidate: EffectInvalidationPolicy,
     pub pipeline: Vec<EffectStage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundEffectConfig {
     pub effect: CompiledEffect,
-    pub invalidate: EffectInvalidationMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +426,10 @@ impl CompiledEffect {
             EffectStage::Shader(shader) => Some(shader),
             _ => None,
         })
+    }
+
+    pub fn invalidate_policy(&self) -> EffectInvalidationPolicy {
+        self.invalidate
     }
 }
 
