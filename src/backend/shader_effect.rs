@@ -133,6 +133,7 @@ pub struct StableBackdropTextureElement {
     clip_radius: i32,
     uv_offset: [f32; 2],
     uv_scale: [f32; 2],
+    debug_label: String,
     kind: Kind,
 }
 
@@ -628,6 +629,12 @@ impl RenderElement<GlesRenderer> for StableBackdropTextureElement {
                 Uniform::new("clip_radius", [radius, radius, radius, radius]),
             ],
         )
+    }
+}
+
+impl StableBackdropTextureElement {
+    pub fn debug_label(&self) -> &str {
+        &self.debug_label
     }
 }
 
@@ -1275,6 +1282,7 @@ pub fn backdrop_shader_element(
     render_scale: f32,
     clip_rect: Option<Rectangle<i32, Logical>>,
     clip_radius: i32,
+    debug_label: String,
 ) -> Result<StableBackdropTextureElement, ShaderEffectError> {
     let program = compile_display_texture_program(renderer)?;
     let src = Rectangle::new(
@@ -1305,6 +1313,7 @@ pub fn backdrop_shader_element(
         clip_radius,
         uv_offset,
         uv_scale,
+        debug_label,
         kind: Kind::Unspecified,
     })
 }

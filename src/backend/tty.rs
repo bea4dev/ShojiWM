@@ -14,6 +14,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
+                Element,
                 memory::MemoryRenderBuffer,
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
@@ -65,6 +66,21 @@ fn high_refresh_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn damage_profile_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_DAMAGE_PROFILE")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn element_damage_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ELEMENT_DAMAGE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn frame_callback_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 type GbmDrmOutput =
     DrmOutput<
         GbmAllocator<DrmDeviceFd>,
@@ -78,10 +94,10 @@ struct SurfaceData {
     drm_output: GbmDrmOutput,
     blink_damage_tracker: OutputDamageTracker,
     frame_pending: bool,
-    repaint_scheduled: bool,
     frame_callback_timer_armed: bool,
     frame_callback_timer_generation: u64,
     frame_callback_sequence: u32,
+    redraw_state: TtyRedrawState,
     frame_duration: Duration,
     next_frame_target: Option<Duration>,
     estimated_render_duration: Duration,
@@ -90,8 +106,16 @@ struct SurfaceData {
 }
 
 enum RenderSurfaceOutcome {
-    SkippedPending,
+    Skipped,
     Processed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TtyRedrawState {
+    Idle,
+    Queued,
+    WaitingForVBlank { redraw_needed: bool },
+    WaitingForEstimatedVBlank { queued: bool, generation: u64 },
 }
 
 pub struct BackendData {
@@ -205,7 +229,7 @@ pub fn device_added(
 
 fn frame_finish(
     state: &mut ShojiWM,
-    loop_handle: &LoopHandle<'_, ShojiWM>,
+    _loop_handle: &LoopHandle<'_, ShojiWM>,
     node: DrmNode,
     crtc: crtc::Handle,
     metadata: &mut Option<DrmEventMetadata>,
@@ -281,36 +305,17 @@ fn frame_finish(
     }
 
     surface.frame_pending = false;
-
-    if surface.repaint_scheduled {
-        return;
-    }
-
-    let Some(repaint_delay) = repaint_delay(surface) else {
-        return;
+    let redraw_needed = match surface.redraw_state {
+        TtyRedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+        _ => false,
     };
-    let repaint_target = presentation_clock + repaint_delay;
-    let repaint_delay = repaint_target.saturating_sub(Duration::from(state.clock.now()));
-
-    surface.repaint_scheduled = true;
-    if loop_handle
-        .insert_source(Timer::from_duration(repaint_delay), move |_, _, state| {
-            if let Some(backend) = state.tty_backends.get_mut(&node)
-                && let Some(surface) = backend.surfaces.get_mut(&crtc)
-            {
-                surface.repaint_scheduled = false;
-            }
-            state.schedule_redraw();
-            TimeoutAction::Drop
-        })
-        .is_err()
-    {
-        if let Some(backend) = state.tty_backends.get_mut(&node)
-            && let Some(surface) = backend.surfaces.get_mut(&crtc)
-        {
-            surface.repaint_scheduled = false;
-        }
-        warn!(?node, ?crtc, "failed to schedule tty repaint timer");
+    surface.redraw_state = if redraw_needed {
+        TtyRedrawState::Queued
+    } else {
+        TtyRedrawState::Idle
+    };
+    if redraw_needed {
+        state.schedule_redraw();
     }
 }
 
@@ -330,8 +335,9 @@ pub fn render_if_needed(
         "rendering pending redraw"
     );
     state.needs_redraw = false;
-    let mut skipped_for_pending_frame = false;
     let mut processed_outputs: Vec<String> = Vec::new();
+
+    queue_tty_redraws(state);
 
     let nodes: Vec<_> = state.tty_backends.keys().copied().collect();
     for node in nodes {
@@ -346,7 +352,7 @@ pub fn render_if_needed(
 
         for crtc in crtcs {
             match render_surface(state, loop_handle, node, crtc)? {
-                RenderSurfaceOutcome::SkippedPending => skipped_for_pending_frame = true,
+                RenderSurfaceOutcome::Skipped => {}
                 RenderSurfaceOutcome::Processed => {
                     let output_name = state
                         .tty_backends
@@ -360,12 +366,10 @@ pub fn render_if_needed(
         }
     }
 
-    if skipped_for_pending_frame {
-        state.needs_redraw = true;
+    if !processed_outputs.is_empty() {
+        state.pending_decoration_damage.clear();
+        state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
     }
-
-    state.pending_decoration_damage.clear();
-    state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
 
     Ok(())
 }
@@ -389,6 +393,64 @@ render_elements! {
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
+fn tty_render_element_kind_name(element: &TtyRenderElements) -> &'static str {
+    match element {
+        TtyRenderElements::Window(_) => "window",
+        TtyRenderElements::TransformedWindow(_) => "transformed-window",
+        TtyRenderElements::Clipped(_) => "clipped",
+        TtyRenderElements::TransformedClipped(_) => "transformed-clipped",
+        TtyRenderElements::Text(_) => "text",
+        TtyRenderElements::TransformedText(_) => "transformed-text",
+        TtyRenderElements::Snapshot(_) => "snapshot",
+        TtyRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
+        TtyRenderElements::Damage(_) => "damage",
+        TtyRenderElements::Blink(_) => "blink",
+        TtyRenderElements::Decoration(_) => "decoration",
+        TtyRenderElements::TransformedDecoration(_) => "transformed-decoration",
+        TtyRenderElements::Backdrop(_) => "backdrop",
+        TtyRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
+        TtyRenderElements::Cursor(_) => "cursor",
+        TtyRenderElements::_GenericCatcher(_) => "generic",
+    }
+}
+
+fn tty_render_element_signature(
+    element: &TtyRenderElements,
+    scale: Scale<f64>,
+) -> String {
+    let debug_label = match element {
+        TtyRenderElements::Backdrop(element) => format!("|label={}", element.debug_label()),
+        _ => String::new(),
+    };
+    format!(
+        "{}|id={:?}|commit={:?}|geom={:?}{}",
+        tty_render_element_kind_name(element),
+        element.id(),
+        element.current_commit(),
+        element.geometry(scale),
+        debug_label,
+    )
+}
+
+fn queue_tty_redraws(state: &mut ShojiWM) {
+    for backend in state.tty_backends.values_mut() {
+        for surface in backend.surfaces.values_mut() {
+            match &mut surface.redraw_state {
+                TtyRedrawState::Idle => {
+                    surface.redraw_state = TtyRedrawState::Queued;
+                }
+                TtyRedrawState::Queued => {}
+                TtyRedrawState::WaitingForVBlank { redraw_needed } => {
+                    *redraw_needed = true;
+                }
+                TtyRedrawState::WaitingForEstimatedVBlank { queued, .. } => {
+                    *queued = true;
+                }
+            }
+        }
+    }
+}
+
 fn render_surface(
     state: &mut ShojiWM,
     loop_handle: &LoopHandle<'_, ShojiWM>,
@@ -402,18 +464,14 @@ fn render_surface(
         .map(|surface| surface.output.clone())
         .unwrap();
 
-    if state
+    let redraw_state = state
         .tty_backends
         .get(&node)
         .and_then(|backend| backend.surfaces.get(&crtc))
-        .is_some_and(|surface| surface.frame_pending)
-    {
-        trace!(
-            ?node,
-            ?crtc,
-            output = %output.name(),
-            "skipping tty render while previous frame is pending"
-        );
+        .map(|surface| surface.redraw_state)
+        .unwrap_or(TtyRedrawState::Idle);
+
+    if redraw_state != TtyRedrawState::Queued {
         if high_refresh_debug_enabled() {
             let surface = state
                 .tty_backends
@@ -430,7 +488,7 @@ fn render_surface(
                 "tty high refresh skipped pending frame"
             );
         }
-        return Ok(RenderSurfaceOutcome::SkippedPending);
+        return Ok(RenderSurfaceOutcome::Skipped);
     }
 
     let frame_duration = state
@@ -452,6 +510,14 @@ fn render_surface(
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
     let output_geo = state.space.output_geometry(&output).unwrap();
     let mut extra_damage = state.pending_decoration_damage.clone();
+    if state.force_full_damage {
+        extra_damage.push(crate::ssd::LogicalRect::new(
+            output_geo.loc.x,
+            output_geo.loc.y,
+            output_geo.size.w,
+            output_geo.size.h,
+        ));
+    }
     if should_capture_blink && !blink_visible.is_empty() {
         extra_damage.push(crate::ssd::LogicalRect::new(
             output_geo.loc.x,
@@ -509,6 +575,26 @@ fn render_surface(
         let windows_top_to_bottom: Vec<_> = windows.iter().rev().cloned().collect();
         let all_windows: Vec<_> = space.elements().cloned().collect();
         let window_count = all_windows.len();
+        if frame_callback_debug_enabled() {
+            let window_stack = windows_top_to_bottom
+                .iter()
+                .filter_map(|window| {
+                    window_decorations.get(window).map(|decoration| {
+                        format!(
+                            "{}:{}:{:?}",
+                            decoration.snapshot.id,
+                            decoration.snapshot.title,
+                            decoration.snapshot.app_id
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            trace!(
+                output = %output.name(),
+                window_stack = ?window_stack,
+                "tty render window stack snapshot"
+            );
+        }
         let closing_snapshots = closing_window_snapshots
             .values()
             .cloned()
@@ -581,13 +667,11 @@ fn render_surface(
         }
 
         let mut scene_elements: Vec<TtyRenderElements> = Vec::new();
-        let window_backdrop_generation =
-            state.window_scene_generation ^ state.lower_layer_scene_generation.rotate_left(1);
         scene_elements.extend(upper_layer_scene_elements(
             &mut backend.renderer,
             space,
             window_decorations,
-            window_backdrop_generation,
+            state.lower_layer_scene_generation,
             state.configured_background_effect.as_ref(),
             &output,
             output_geo,
@@ -652,7 +736,8 @@ fn render_surface(
                     &mut backend.renderer,
                     space,
                     window_decorations,
-                    window_backdrop_generation,
+                    &state.window_commit_times,
+                    state.lower_layer_scene_generation,
                     &output,
                     output_geo,
                     scale,
@@ -667,7 +752,8 @@ fn render_surface(
                         &mut backend.renderer,
                         space,
                         window_decorations,
-                        window_backdrop_generation,
+                        &state.window_commit_times,
+                        state.lower_layer_scene_generation,
                         &output,
                         output_geo,
                         scale,
@@ -847,7 +933,45 @@ fn render_surface(
             &mut state.layer_backdrop_cache,
         )?);
 
-        let captured_blink_damage = if should_capture_blink {
+        if element_damage_debug_enabled() {
+            let output_key = format!("tty:{}", output.name());
+            let signatures = scene_elements
+                .iter()
+                .map(|element| tty_render_element_signature(element, scale))
+                .collect::<Vec<_>>();
+            let previous = state
+                .debug_previous_scene_signatures
+                .insert(output_key, signatures.clone())
+                .unwrap_or_default();
+            let previous_set = previous.iter().cloned().collect::<std::collections::HashSet<_>>();
+            let current_set = signatures
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            let added = current_set
+                .difference(&previous_set)
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>();
+            let removed = previous_set
+                .difference(&current_set)
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>();
+            trace!(
+                output = %output.name(),
+                previous_count = previous.len(),
+                current_count = signatures.len(),
+                added_count = current_set.difference(&previous_set).count(),
+                removed_count = previous_set.difference(&current_set).count(),
+                added = ?added,
+                removed = ?removed,
+                "tty scene element damage audit"
+            );
+        }
+
+        let should_profile_damage = should_capture_blink || damage_profile_debug_enabled();
+        let computed_damage = if should_profile_damage {
             match surface
                 .blink_damage_tracker
                 .damage_output(1, &scene_elements)
@@ -855,6 +979,39 @@ fn render_surface(
                 Ok((damage, _)) => damage.cloned(),
                 Err(_) => None,
             }
+        } else {
+            None
+        };
+
+        if damage_profile_debug_enabled() {
+            let rect_count = computed_damage.as_ref().map(|damage| damage.len()).unwrap_or(0);
+            let damage_area = computed_damage
+                .as_ref()
+                .map(|damage| {
+                    damage
+                        .iter()
+                        .map(|rect| i64::from(rect.size.w.max(0)) * i64::from(rect.size.h.max(0)))
+                        .sum::<i64>()
+                })
+                .unwrap_or(0);
+            let output_area = i64::from(output_geo.size.w.max(0)) * i64::from(output_geo.size.h.max(0));
+            trace!(
+                ?node,
+                ?crtc,
+                output = %output.name(),
+                window_count,
+                scene_element_count = scene_elements.len(),
+                extra_damage_rect_count = extra_damage.len(),
+                computed_damage_rect_count = rect_count,
+                computed_damage_area = damage_area,
+                output_area,
+                damage_to_output_ratio = if output_area > 0 { damage_area as f64 / output_area as f64 } else { 0.0 },
+                "tty damage profile"
+            );
+        }
+
+        let captured_blink_damage = if should_capture_blink {
+            computed_damage
         } else {
             None
         };
@@ -913,6 +1070,9 @@ fn render_surface(
             surface.frame_callback_timer_generation =
                 surface.frame_callback_timer_generation.wrapping_add(1);
             surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
+            surface.redraw_state = TtyRedrawState::WaitingForVBlank {
+                redraw_needed: false,
+            };
             let frame_callback_sequence = surface.frame_callback_sequence;
             trace!(
                 ?node,
@@ -965,6 +1125,12 @@ fn render_surface(
                     "tty high refresh no-damage stats"
                 );
             }
+            let generation = surface.frame_callback_timer_generation.wrapping_add(1);
+            surface.frame_callback_timer_generation = generation;
+            surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
+                queued: false,
+                generation,
+            };
             schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
         }
 
@@ -1112,7 +1278,8 @@ fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
-    scene_generation: u64,
+    window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
+    lower_layer_scene_generation: u64,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -1137,7 +1304,7 @@ fn backdrop_shader_elements_for_window(
         .filter_map(|cached| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
-            scene_generation.hash(&mut hasher);
+            lower_layer_scene_generation.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
@@ -1186,6 +1353,9 @@ fn backdrop_shader_elements_for_window(
             for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
                 if let Some(lower_decoration) = window_decorations.get(lower_window) {
                     lower_decoration.snapshot.id.hash(&mut hasher);
+                    if let Some(commit) = window_commit_times.get(lower_window) {
+                        commit.as_nanos().hash(&mut hasher);
+                    }
                     lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
                     lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
                     lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
@@ -1237,6 +1407,7 @@ fn backdrop_shader_elements_for_window(
                     scale.x as f32,
                     clip_rect,
                     cached.clip_radius,
+                    format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
                 )
                 .ok()
                 .map(|element| (cached.order, element));
@@ -1373,6 +1544,7 @@ fn backdrop_shader_elements_for_window(
                 scale.x as f32,
                 clip_rect,
                 cached.clip_radius,
+                format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
             )
             .ok()
             .map(|element| (cached.order, element))
@@ -1647,6 +1819,7 @@ fn configured_background_effect_elements_for_layer(
                     scale.x as f32,
                     None,
                     0,
+                    format!("layer-top:{}:{}", output.name(), rect_key),
                 )?,
             ));
         }
@@ -1715,6 +1888,7 @@ fn configured_background_effect_elements_for_layer(
                 scale.x as f32,
                 None,
                 0,
+                format!("layer-top:{}:{}", output.name(), rect_key),
             )?,
         ));
     }
@@ -1838,6 +2012,7 @@ fn lower_layer_scene_elements(
                             scale.x as f32,
                             None,
                             0,
+                            format!("layer-lower:{}:{}", output.name(), rect_key),
                         )?,
                     ));
                 }
@@ -1950,6 +2125,7 @@ fn lower_layer_scene_elements(
                         scale.x as f32,
                         None,
                         0,
+                        format!("layer-lower:{}:{}", output.name(), rect_key),
                     )?,
                 ));
             }
@@ -2011,7 +2187,8 @@ fn configured_background_effect_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
-    scene_generation: u64,
+    window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
+    lower_layer_scene_generation: u64,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -2038,7 +2215,7 @@ fn configured_background_effect_elements_for_window(
             stable_key.hash(&mut hasher);
             match effect_config.invalidate {
                 crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                    scene_generation.hash(&mut hasher);
+                    lower_layer_scene_generation.hash(&mut hasher);
                 }
                 crate::ssd::EffectInvalidationMode::Always => {}
                 crate::ssd::EffectInvalidationMode::Manual => {}
@@ -2092,6 +2269,9 @@ fn configured_background_effect_elements_for_window(
                 for lower_window in windows_top_to_bottom.iter().skip(window_index + 1) {
                     if let Some(lower_decoration) = window_decorations.get(lower_window) {
                         lower_decoration.snapshot.id.hash(&mut hasher);
+                        if let Some(commit) = window_commit_times.get(lower_window) {
+                            commit.as_nanos().hash(&mut hasher);
+                        }
                         lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
                         lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
                         lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
@@ -2129,6 +2309,7 @@ fn configured_background_effect_elements_for_window(
                         scale.x as f32,
                         None,
                         0,
+                        format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
                     )
                     .ok()
                     .map(|element| (index, element));
@@ -2251,6 +2432,7 @@ fn configured_background_effect_elements_for_window(
                 scale.x as f32,
                 None,
                 0,
+                format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
             )
             .ok()
             .map(|element| (index, element))
@@ -2580,10 +2762,10 @@ fn connector_connected(
         drm_output,
         blink_damage_tracker: OutputDamageTracker::from_output(&output),
         frame_pending: false,
-        repaint_scheduled: false,
         frame_callback_timer_armed: false,
         frame_callback_timer_generation: 0,
         frame_callback_sequence: 0,
+        redraw_state: TtyRedrawState::Idle,
         frame_duration,
         next_frame_target: None,
         estimated_render_duration: Duration::from_millis(4),
@@ -2665,6 +2847,9 @@ fn render_now(
     if !result.is_empty {
         surface.drm_output.queue_frame(None)?;
         surface.frame_pending = true;
+        surface.redraw_state = TtyRedrawState::WaitingForVBlank {
+            redraw_needed: false,
+        };
     }
 
     Ok(())
@@ -2703,42 +2888,57 @@ fn schedule_estimated_vblank_callback(
     let Some(surface) = backend.surfaces.get_mut(&crtc) else {
         return;
     };
+    let generation = match surface.redraw_state {
+        TtyRedrawState::WaitingForEstimatedVBlank { generation, .. } => generation,
+        _ => return,
+    };
     if surface.frame_callback_timer_armed {
         return;
     }
 
     let delay = surface.frame_duration;
-    let generation = surface.frame_callback_timer_generation.wrapping_add(1);
-    surface.frame_callback_timer_generation = generation;
     surface.frame_callback_timer_armed = true;
     let output = surface.output.clone();
 
     if loop_handle
         .insert_source(Timer::from_duration(delay), move |_, _, state| {
-            let sequence = {
-            let Some(backend) = state.tty_backends.get_mut(&node) else {
-                return TimeoutAction::Drop;
+            let outcome = {
+                let Some(backend) = state.tty_backends.get_mut(&node) else {
+                    return TimeoutAction::Drop;
+                };
+                let Some(surface) = backend.surfaces.get_mut(&crtc) else {
+                    return TimeoutAction::Drop;
+                };
+                match surface.redraw_state {
+                    TtyRedrawState::WaitingForEstimatedVBlank {
+                        queued,
+                        generation: current_generation,
+                    } if surface.frame_callback_timer_armed && current_generation == generation => {
+                        surface.frame_callback_timer_armed = false;
+                        surface.frame_callback_sequence =
+                            surface.frame_callback_sequence.wrapping_add(1);
+                        let sequence = surface.frame_callback_sequence;
+                        if queued {
+                            surface.redraw_state = TtyRedrawState::Queued;
+                            Some((sequence, true))
+                        } else {
+                            surface.redraw_state = TtyRedrawState::Idle;
+                            Some((sequence, false))
+                        }
+                    }
+                    _ => None,
+                }
             };
-            let Some(surface) = backend.surfaces.get_mut(&crtc) else {
+            let Some((sequence, should_redraw)) = outcome else {
                 return TimeoutAction::Drop;
-            };
-            if !surface.frame_callback_timer_armed
-                || surface.frame_callback_timer_generation != generation
-            {
-                return TimeoutAction::Drop;
-            }
-
-            surface.frame_callback_timer_armed = false;
-            surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
-            surface.frame_callback_sequence
             };
             let callback_time = frame_time.saturating_add(delay);
-            state.send_frame_callbacks_for_output(
-                &output,
-                callback_time,
-                Some(sequence),
-            );
-            state.signal_post_repaint_barriers(&output);
+            if should_redraw {
+                state.schedule_redraw();
+            } else {
+                state.send_frame_callbacks_for_output(&output, callback_time, Some(sequence));
+                state.signal_post_repaint_barriers(&output);
+            }
             TimeoutAction::Drop
         })
         .is_err()

@@ -107,7 +107,15 @@ pub fn init_winit(
                             state.space.elements_for_output(&output).cloned().collect();
                         let windows_top_to_bottom: Vec<_> =
                             windows.iter().rev().cloned().collect();
-                        let extra_damage = state.pending_decoration_damage.clone();
+                        let mut extra_damage = state.pending_decoration_damage.clone();
+                        if state.force_full_damage {
+                            extra_damage.push(crate::ssd::LogicalRect::new(
+                                output_geo.loc.x,
+                                output_geo.loc.y,
+                                output_geo.size.w,
+                                output_geo.size.h,
+                            ));
+                        }
                         let (_, _lower_layer_elements) =
                             window_render::layer_elements_for_output(renderer, &output, scale, 1.0);
 
@@ -676,7 +684,6 @@ fn backdrop_shader_elements_for_window(
         .filter_map(|cached| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
-            state.window_scene_generation.hash(&mut hasher);
             state.lower_layer_scene_generation.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
@@ -781,6 +788,7 @@ fn backdrop_shader_elements_for_window(
                     scale.x as f32,
                     clip_rect,
                     cached.clip_radius,
+                    format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
                 )
                 .ok()
                 .map(|element| (cached.order, element));
@@ -926,6 +934,7 @@ fn backdrop_shader_elements_for_window(
                 scale.x as f32,
                 clip_rect,
                 cached.clip_radius,
+                format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
             )
             .ok()
             .map(|element| (cached.order, element))
@@ -1090,7 +1099,6 @@ fn lower_layer_scene_elements(
         stable_key.hash(&mut hasher);
         match config.invalidate {
             crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                state.window_scene_generation.hash(&mut hasher);
                 state.lower_layer_scene_generation.hash(&mut hasher);
             }
             crate::ssd::EffectInvalidationMode::Always => {}
@@ -1153,6 +1161,7 @@ fn lower_layer_scene_elements(
                         scale.x as f32,
                         None,
                         0,
+                        format!("layer-lower:{}:{}", output.name(), rect_key),
                     ) {
                         elements.push(WinitRenderElements::Backdrop(element));
                     }
@@ -1281,6 +1290,7 @@ fn lower_layer_scene_elements(
                 scale.x as f32,
                 None,
                 0,
+                format!("layer-lower:{}:{}", output.name(), rect_key),
             ) {
                 elements.push(WinitRenderElements::Backdrop(element));
             }
@@ -1459,6 +1469,7 @@ fn configured_background_effect_elements_for_layer(
                         scale.x as f32,
                         None,
                         0,
+                        format!("layer-lower:{}:{}", output.name(), rect_key),
                     )
                     .ok()
                     .map(WinitRenderElements::Backdrop)
@@ -1557,6 +1568,7 @@ fn configured_background_effect_elements_for_layer(
                 scale.x as f32,
                 None,
                 0,
+                format!("layer-lower:{}:{}", output.name(), rect_key),
             )
             .ok()
             .map(WinitRenderElements::Backdrop)
@@ -1634,7 +1646,6 @@ fn configured_background_effect_elements_for_window(
             stable_key.hash(&mut hasher);
             match config.invalidate {
                 crate::ssd::EffectInvalidationMode::OnSourceDamage => {
-                    state.window_scene_generation.hash(&mut hasher);
                     state.lower_layer_scene_generation.hash(&mut hasher);
                 }
                 crate::ssd::EffectInvalidationMode::Always => {}
@@ -1730,6 +1741,7 @@ fn configured_background_effect_elements_for_window(
                         scale.x as f32,
                         None,
                         0,
+                        format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
                     )
                     .ok()
                     .map(|element| (index, element));
@@ -1852,6 +1864,7 @@ fn configured_background_effect_elements_for_window(
                 scale.x as f32,
                 None,
                 0,
+                format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
             )
             .ok()
             .map(|element| (index, element))

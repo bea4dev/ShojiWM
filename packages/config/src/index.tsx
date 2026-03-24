@@ -36,6 +36,7 @@ const backgroundShader = compileEffect({
     pipeline: [
         //noise({ kind: "salt", amount: 0.01 }),
         //dualKawaseBlur({ radius: 4, passes: 3 }),
+        /*
         shaderStage(loadShader("./liquid-glass.frag"), {
             uniforms: {
                 inset_px: 0.0,
@@ -47,7 +48,8 @@ const backgroundShader = compileEffect({
                 white_tint: 0.0,
                 edge_highlight: 0.0,
             },
-        }),
+        }),*/
+        shaderStage(loadShader("./blur.frag"))
     ],
 });
 

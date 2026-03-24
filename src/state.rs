@@ -118,6 +118,8 @@ pub struct ShojiWM {
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    pub force_full_damage: bool,
+    pub debug_previous_scene_signatures: HashMap<String, Vec<String>>,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -220,6 +222,9 @@ impl ShojiWM {
         let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
             || std::env::var_os("SHOJI_DAMAGE_BLINK")
                 .is_some_and(|value| value != "0" && !value.is_empty());
+        let force_full_damage = std::env::args().any(|arg| arg == "--force-full-damage")
+            || std::env::var_os("SHOJI_FORCE_FULL_DAMAGE")
+                .is_some_and(|value| value != "0" && !value.is_empty());
 
         let (async_asset_tx, async_asset_rx) = channel();
         let async_asset_job_sender = spawn_async_asset_worker(async_asset_tx);
@@ -317,6 +322,8 @@ impl ShojiWM {
             async_asset_dirty: false,
             configured_background_effect,
             layer_backdrop_cache: HashMap::new(),
+            force_full_damage,
+            debug_previous_scene_signatures: HashMap::new(),
 
             is_running: true,
             needs_redraw: true,

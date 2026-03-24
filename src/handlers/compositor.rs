@@ -17,6 +17,11 @@ use smithay::{
 };
 use tracing::{debug, trace};
 
+fn frame_callback_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 impl CompositorHandler for ShojiWM {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -53,6 +58,15 @@ impl CompositorHandler for ShojiWM {
                         app_id = snapshot.app_id,
                         commit_delta_ms = (commit_time.saturating_sub(previous_commit_time).as_secs_f64() * 1000.0),
                         "mapped window commit cadence"
+                    );
+                }
+                if frame_callback_debug_enabled() {
+                    trace!(
+                        window_id = snapshot.id,
+                        title = snapshot.title,
+                        app_id = snapshot.app_id,
+                        commit_time_ms = commit_time.as_secs_f64() * 1000.0,
+                        "mapped window commit"
                     );
                 }
                 self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
