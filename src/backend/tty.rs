@@ -3126,11 +3126,10 @@ fn connector_connected(
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");
-
-    render_now(
-        backend.surfaces.get_mut(&crtc).unwrap(),
-        &mut backend.renderer,
-    )?;
+    if let Some(surface) = backend.surfaces.get_mut(&crtc) {
+        surface.redraw_state = TtyRedrawState::Queued;
+    }
+    state.schedule_redraw();
     Ok(())
 }
 
@@ -3182,29 +3181,6 @@ fn select_output_mode(
             }
         }
     }
-}
-
-fn render_now(
-    surface: &mut SurfaceData,
-    renderer: &mut GlesRenderer,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let elements: Vec<crate::backend::rounded::StableRoundedElement> = Vec::new();
-
-    debug!(output = %surface.output.name(), "rendering initial tty frame");
-    let result =
-        surface
-            .drm_output
-            .render_frame(renderer, &elements, CLEAR_COLOR, TTY_FRAME_FLAGS)?;
-
-    if !result.is_empty {
-        surface.drm_output.queue_frame(None)?;
-        surface.frame_pending = true;
-        surface.redraw_state = TtyRedrawState::WaitingForVBlank {
-            redraw_needed: false,
-        };
-    }
-
-    Ok(())
 }
 
 fn repaint_delay(surface: &SurfaceData) -> Option<Duration> {

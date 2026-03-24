@@ -33,7 +33,7 @@ const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
 const backgroundShader = compileEffect({
-    input: xrayBackdropSource(),
+    input: backdropSource(),
     invalidate: {
         kind: "on-source-damage-box",
         antiArtifactMargin: 0,
@@ -59,7 +59,7 @@ const backgroundShader = compileEffect({
 
 WINDOW_MANAGER.effect.background_effect = {
     effect: compileEffect({
-        input: xrayBackdropSource(),
+        input: backdropSource(),
         invalidate: {
             kind: "on-source-damage-box",
             antiArtifactMargin: 12,
@@ -136,8 +136,8 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                 background: "#101319",
             }}
         >
-            <ShaderEffect shader={backgroundShader} direction="column">
-                <Box direction="row" style={titlebarStyle}>
+            <Box direction="column">
+                <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
                     <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
                     <Label
                         text={window.title()}
@@ -167,9 +167,9 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         )}
                         onClick={() => window.close()}
                     />
-                </Box>
+                </ShaderEffect>
                 <ClientWindow />
-            </ShaderEffect>
+            </Box>
         </WindowBorder>
     );
 };
