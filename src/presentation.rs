@@ -29,11 +29,6 @@ struct SurfaceFrameThrottlingState {
     last_sent_at: RefCell<Option<(Output, u32)>>,
 }
 
-fn frame_callback_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
 pub fn update_primary_scanout_output(
     space: &Space<Window>,
     output: &Output,
@@ -131,44 +126,11 @@ impl ShojiWM {
         frame_callback_sequence: Option<u32>,
     ) {
         let throttle = Some(Duration::from_secs(1));
-        let frame_callback_debug = frame_callback_debug_enabled();
-
-        if frame_callback_debug {
-            let visible_windows = self
-                .space
-                .elements_for_output(output)
-                .filter_map(|window| {
-                    self.window_decorations.get(window).map(|decoration| {
-                        format!(
-                            "{}:{}:{:?}",
-                            decoration.snapshot.id,
-                            decoration.snapshot.title,
-                            decoration.snapshot.app_id
-                        )
-                    })
-                })
-                .collect::<Vec<_>>();
-            tracing::trace!(
-                output = %output.name(),
-                sequence = frame_callback_sequence,
-                visible_windows = ?visible_windows,
-                "frame callback output window snapshot"
-            );
-        }
 
         let should_send = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
                            states: &smithay::wayland::compositor::SurfaceData| {
             let current_primary_output = surface_primary_scanout_output(surface, states);
             if current_primary_output.as_ref() != Some(output) {
-                if frame_callback_debug {
-                    tracing::trace!(
-                        output = %output.name(),
-                        sequence = frame_callback_sequence,
-                        surface = ?surface.id(),
-                        primary_output = ?current_primary_output.as_ref().map(Output::name),
-                        "skipping frame callback because primary output does not match"
-                    );
-                }
                 return None;
             }
 
@@ -181,44 +143,16 @@ impl ShojiWM {
                     && last_output == output
                     && *last_sequence == sequence
                 {
-                    if frame_callback_debug {
-                        tracing::trace!(
-                            output = %output.name(),
-                            sequence,
-                            surface = ?surface.id(),
-                            "skipping frame callback because it was already sent this refresh cycle"
-                        );
-                    }
                     return None;
                 }
                 *last_sent_at = Some((output.clone(), sequence));
             }
 
-            if frame_callback_debug {
-                tracing::trace!(
-                    output = %output.name(),
-                    sequence = frame_callback_sequence,
-                    surface = ?surface.id(),
-                    "sending frame callback to surface"
-                );
-            }
             Some(output.clone())
         };
 
         self.space.elements().for_each(|window| {
             if self.space.outputs_for_element(window).contains(output) {
-                if frame_callback_debug
-                    && let Some(decoration) = self.window_decorations.get(window)
-                {
-                    tracing::trace!(
-                        output = %output.name(),
-                        sequence = frame_callback_sequence,
-                        window_id = %decoration.snapshot.id,
-                        title = %decoration.snapshot.title,
-                        app_id = ?decoration.snapshot.app_id,
-                        "considering frame callbacks for window"
-                    );
-                }
                 window.send_frame(output, time, throttle, &should_send);
             }
         });

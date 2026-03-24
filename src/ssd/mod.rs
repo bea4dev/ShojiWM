@@ -365,11 +365,14 @@ pub enum BlendMode {
     Multiply,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectInvalidationPolicy {
     OnSourceDamageBox { anti_artifact_margin: i32 },
     Always,
-    Manual,
+    Manual {
+        dirty_when: bool,
+        base: Option<Box<EffectInvalidationPolicy>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -448,7 +451,7 @@ impl CompiledEffect {
     }
 
     pub fn invalidate_policy(&self) -> EffectInvalidationPolicy {
-        self.invalidate
+        self.invalidate.clone()
     }
 }
 

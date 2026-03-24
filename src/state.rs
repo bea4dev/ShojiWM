@@ -13,7 +13,6 @@ use smithay::{
         calloop::channel::{channel, Event as ChannelEvent},
         wayland_server::{
             Display, DisplayHandle,
-            Resource,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
         },
@@ -58,12 +57,7 @@ use crate::{
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
 use crate::ssd::{BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot};
-use tracing::{debug, info, trace, warn};
-
-fn source_damage_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedDamageRect {
@@ -633,30 +627,12 @@ impl ShojiWM {
         surface: &WlSurface,
     ) -> Vec<LogicalRect> {
         let Some(decoration) = self.window_decorations.get(window) else {
-            if source_damage_debug_enabled() {
-                trace!(surface = ?surface.id(), "source damage fallback: missing decoration");
-            }
             return self.logical_damage_rect_for_window(window).into_iter().collect();
         };
         let Some(root_surface) = window.toplevel().map(|surface| surface.wl_surface().clone()) else {
-            if source_damage_debug_enabled() {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    surface = ?surface.id(),
-                    "source damage fallback: missing toplevel root"
-                );
-            }
             return self.logical_damage_rect_for_window(window).into_iter().collect();
         };
         if surface != &root_surface {
-            if source_damage_debug_enabled() {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    surface = ?surface.id(),
-                    root_surface = ?root_surface.id(),
-                    "source damage fallback: non-root surface commit"
-                );
-            }
             return self.logical_damage_rect_for_window(window).into_iter().collect();
         }
 
@@ -687,13 +663,6 @@ impl ShojiWM {
         });
 
         if damage_rects.is_empty() {
-            if source_damage_debug_enabled() {
-                trace!(
-                    window_id = decoration.snapshot.id,
-                    surface = ?surface.id(),
-                    "source damage fallback: root surface had no damage rects"
-                );
-            }
             return self.logical_damage_rect_for_window(window).into_iter().collect();
         }
 
@@ -712,16 +681,6 @@ impl ShojiWM {
                 )
             })
             .collect::<Vec<_>>();
-
-        if source_damage_debug_enabled() {
-            trace!(
-                window_id = decoration.snapshot.id,
-                surface = ?surface.id(),
-                rect_count = mapped.len(),
-                rects = ?mapped,
-                "source damage used root surface damage rects"
-            );
-        }
 
         mapped
     }
@@ -767,7 +726,9 @@ impl ShojiWM {
             .collect::<Vec<_>>();
 
         self.damage_blink_pending
-            .insert(output.name().to_string(), rects);
+            .entry(output.name().to_string())
+            .or_default()
+            .extend(rects);
     }
 
     pub fn finish_damage_blink_frame(&mut self) {

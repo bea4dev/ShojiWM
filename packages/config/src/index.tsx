@@ -32,34 +32,9 @@ import {
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
-const backgroundShader = compileEffect({
-    input: backdropSource(),
-    invalidate: {
-        kind: "on-source-damage-box",
-        antiArtifactMargin: 0,
-    },
-    pipeline: [
-        noise({ kind: "salt", amount: 0.01 }),
-        dualKawaseBlur({ radius: 4, passes: 3 }),
-        shaderStage(loadShader("./liquid-glass.frag"), {
-            uniforms: {
-                inset_px: 0.0,
-                border_radius_px: 20.0,
-                edge_width_px: 15.0,
-                edge_softness_px: 0.0,
-                max_warp_px: 40.0,
-                interior_warp_px: 0.0,
-                white_tint: 0.0,
-                edge_highlight: 0.0,
-            },
-        }),
-        //shaderStage(loadShader("./blur.frag"))
-    ],
-});
-
 WINDOW_MANAGER.effect.background_effect = {
     effect: compileEffect({
-        input: backdropSource(),
+        input: xrayBackdropSource(),
         invalidate: {
             kind: "on-source-damage-box",
             antiArtifactMargin: 12,
@@ -78,6 +53,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
     window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
+    window.animation.start(testAnimation, { duration: seconds(100) })
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
@@ -99,6 +75,8 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
 });
+
+const testAnimation = animationVariable("test")
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const isFocused = window.isFocused();
@@ -127,6 +105,33 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         alignItems: "center",
         background: titlebarBackground,
     };
+
+    const test = window.animation.signal(testAnimation)
+
+    const backgroundShader = compileEffect({
+        input: xrayBackdropSource(),
+        invalidate: {
+            kind: "manual",
+            dirtyWhen: test(test => Math.floor(test * 100) % 2 == 0)
+        },
+        pipeline: [
+            noise({ kind: "salt", amount: 0.01 }),
+            dualKawaseBlur({ radius: 4, passes: 3 }),
+            shaderStage(loadShader("./liquid-glass.frag"), {
+                uniforms: {
+                    inset_px: 0.0,
+                    border_radius_px: 20.0,
+                    edge_width_px: 15.0,
+                    edge_softness_px: 0.0,
+                    max_warp_px: 40.0,
+                    interior_warp_px: 0.0,
+                    white_tint: 0.0,
+                    edge_highlight: 0.0,
+                },
+            }),
+            //shaderStage(loadShader("./blur.frag"))
+        ],
+    });
 
     return (
         <WindowBorder

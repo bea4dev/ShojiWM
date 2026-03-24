@@ -5,7 +5,7 @@ use smithay::{
         wayland_server::{Resource, protocol::{wl_output, wl_surface::WlSurface}},
     },
     wayland::{
-        compositor::with_states,
+        compositor::{get_parent, with_states},
         shell::wlr_layer::{
             Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
         },
@@ -61,9 +61,14 @@ impl WlrLayerShellHandler for ShojiWM {
 }
 
 pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+
     let Some(output) = state.space.outputs().find(|output| {
         let map = layer_map_for_output(output);
-        map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL).is_some()
+        map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL).is_some()
     }).cloned() else {
         return;
     };
@@ -88,11 +93,11 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         }
     }
 
-    if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+    if let Some(layer) = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL) {
         let layer_rect = map.layer_geometry(&layer).map(|geo| {
             crate::ssd::LogicalRect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h)
         });
-        let owner = format!("{}", layer_surface_id(surface));
+        let owner = format!("{}", layer_surface_id(&root));
         match layer.layer() {
             Layer::Background | Layer::Bottom => {
                 state.lower_layer_scene_generation =

@@ -445,8 +445,14 @@ impl ShojiWM {
                 } else if force_runtime_reevaluate
                     || self.runtime_dirty_window_ids.contains(&snapshot.id)
                 {
+                    let started_at = Instant::now();
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
+                    let previous_transform = cached.visual_transform;
+                    let previous_buffers = cached.buffers.clone();
+                    let previous_shader_buffers = cached.shader_buffers.clone();
+                    let previous_text_buffers = cached.text_buffers.clone();
+                    let previous_icon_buffers = cached.icon_buffers.clone();
                     let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
                         Ok(evaluation) => evaluation,
                         Err(error) => {
@@ -461,16 +467,57 @@ impl ShojiWM {
                         }
                     };
 
-                    if cached.visual_transform != evaluation.transform {
+                    cached.tree = DecorationTree::new(evaluation.node);
+                    cached.layout = cached
+                        .tree
+                        .layout_for_client(client_rect)
+                        .map_err(super::DecorationEvaluationError::Layout)?;
+                    cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                    let order_map = build_render_order_map(&cached.layout);
+                    cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                    cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                    cached.text_buffers =
+                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
+                    cached.icon_buffers =
+                        build_icon_buffers(&cached.layout, &order_map, &snapshot, &mut self.icon_rasterizer);
+                    self.suggested_window_offset = suggested_window_offset(&cached.layout);
+                    cached.visual_transform = evaluation.transform;
+                    cached.snapshot = snapshot;
+                    let next_root =
+                        transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
+                    if previous_transform != cached.visual_transform || previous_root != next_root {
                         push_damage_pair(
                             &mut self.pending_decoration_damage,
                             Some(previous_root),
-                            transformed_root_rect(cached.layout.root.rect, evaluation.transform),
+                            next_root,
                         );
-                        cached.visual_transform = evaluation.transform;
-                        cached.snapshot = snapshot;
-                        self.schedule_redraw();
+                    } else {
+                        self.pending_decoration_damage.extend(runtime_dirty_damage_rects(
+                            &previous_buffers,
+                            &cached.buffers,
+                            &previous_shader_buffers,
+                            &cached.shader_buffers,
+                            &previous_text_buffers,
+                            &cached.text_buffers,
+                            &previous_icon_buffers,
+                            &cached.icon_buffers,
+                        ));
                     }
+                    debug!(
+                        window_id = cached.snapshot.id,
+                        title = cached.snapshot.title,
+                        text_buffer_count = cached.text_buffers.len(),
+                        elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+                        "recomputed window decoration tree from runtime dirty state"
+                    );
+                    log_decoration_refresh(
+                        "runtime-dirty",
+                        &cached.snapshot,
+                        client_rect,
+                        &cached.layout,
+                        &cached.buffers,
+                    );
+                    self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 } else if force_async_asset_refresh {
                     let order_map = build_render_order_map(&cached.layout);
@@ -1199,6 +1246,134 @@ fn push_damage_pair(
         }
     }
     damage.push(new_rect);
+}
+
+fn runtime_dirty_damage_rects(
+    previous_buffers: &[CachedDecorationBuffer],
+    next_buffers: &[CachedDecorationBuffer],
+    previous_shader_buffers: &[CachedShaderEffect],
+    next_shader_buffers: &[CachedShaderEffect],
+    previous_text_buffers: &[CachedDecorationLabel],
+    next_text_buffers: &[CachedDecorationLabel],
+    previous_icon_buffers: &[CachedDecorationIcon],
+    next_icon_buffers: &[CachedDecorationIcon],
+) -> Vec<LogicalRect> {
+    let mut damage = Vec::new();
+
+    collect_keyed_rect_damage(
+        previous_buffers.iter().map(|item| {
+            (
+                item.stable_key.clone(),
+                (
+                    item.rect,
+                    format!(
+                        "{:?}:{:?}:{}:{}:{:?}:{}",
+                        item.color,
+                        item.source_kind,
+                        item.radius,
+                        item.border_width,
+                        item.clip_rect,
+                        item.clip_radius
+                    ),
+                ),
+            )
+        }),
+        next_buffers.iter().map(|item| {
+            (
+                item.stable_key.clone(),
+                (
+                    item.rect,
+                    format!(
+                        "{:?}:{:?}:{}:{}:{:?}:{}",
+                        item.color,
+                        item.source_kind,
+                        item.radius,
+                        item.border_width,
+                        item.clip_rect,
+                        item.clip_radius
+                    ),
+                ),
+            )
+        }),
+        &mut damage,
+    );
+    collect_keyed_rect_damage(
+        previous_shader_buffers
+            .iter()
+            .map(|item| (item.stable_key.clone(), (item.rect, format!("{:?}", item.shader)))),
+        next_shader_buffers
+            .iter()
+            .map(|item| (item.stable_key.clone(), (item.rect, format!("{:?}", item.shader)))),
+        &mut damage,
+    );
+    collect_keyed_rect_damage(
+        previous_text_buffers.iter().map(|item| {
+            (
+                format!(
+                    "text:{}:{}:{}:{}:{}:{}",
+                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height, item.text
+                ),
+                (item.rect, format!("{:?}", item.color)),
+            )
+        }),
+        next_text_buffers.iter().map(|item| {
+            (
+                format!(
+                    "text:{}:{}:{}:{}:{}:{}",
+                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height, item.text
+                ),
+                (item.rect, format!("{:?}", item.color)),
+            )
+        }),
+        &mut damage,
+    );
+    collect_keyed_rect_damage(
+        previous_icon_buffers.iter().map(|item| {
+            (
+                format!("icon:{}:{}:{}:{}:{}", item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height),
+                (item.rect, String::new()),
+            )
+        }),
+        next_icon_buffers.iter().map(|item| {
+            (
+                format!("icon:{}:{}:{}:{}:{}", item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height),
+                (item.rect, String::new()),
+            )
+        }),
+        &mut damage,
+    );
+
+    damage
+}
+
+fn collect_keyed_rect_damage<K>(
+    previous: impl IntoIterator<Item = (K, (LogicalRect, String))>,
+    next: impl IntoIterator<Item = (K, (LogicalRect, String))>,
+    damage: &mut Vec<LogicalRect>,
+)
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    let previous_map: std::collections::HashMap<K, (LogicalRect, String)> =
+        previous.into_iter().collect();
+    let next_map: std::collections::HashMap<K, (LogicalRect, String)> = next.into_iter().collect();
+
+    for (key, (old_rect, old_sig)) in &previous_map {
+        match next_map.get(key) {
+            Some((new_rect, new_sig)) if new_rect == old_rect && new_sig == old_sig => {}
+            Some((new_rect, _)) => {
+                damage.push(*old_rect);
+                damage.push(*new_rect);
+            }
+            None => damage.push(*old_rect),
+        }
+    }
+
+    for (key, (new_rect, _)) in &next_map {
+        if !previous_map.contains_key(key) {
+            damage.push(*new_rect);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1341,9 +1341,24 @@ pub fn invalidation_sample_rect(
     effect: &CompiledEffect,
     visible_rect: Rectangle<i32, Logical>,
 ) -> Rectangle<i32, Logical> {
-    match effect.invalidate_policy() {
+    invalidation_sample_rect_for_policy(&effect.invalidate, visible_rect)
+}
+
+pub fn source_damage_intersects_rect(
+    effect: &CompiledEffect,
+    visible_rect: Rectangle<i32, Logical>,
+    source_damage: &[crate::state::OwnedDamageRect],
+) -> bool {
+    source_damage_intersects_policy(&effect.invalidate, visible_rect, source_damage)
+}
+
+fn invalidation_sample_rect_for_policy(
+    policy: &EffectInvalidationPolicy,
+    visible_rect: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    match policy {
         EffectInvalidationPolicy::OnSourceDamageBox { anti_artifact_margin } => {
-            let margin = anti_artifact_margin.max(0);
+            let margin = (*anti_artifact_margin).max(0);
             Rectangle::new(
                 Point::from((visible_rect.loc.x - margin, visible_rect.loc.y - margin)),
                 (
@@ -1353,20 +1368,23 @@ pub fn invalidation_sample_rect(
                     .into(),
             )
         }
-        EffectInvalidationPolicy::Always | EffectInvalidationPolicy::Manual => visible_rect,
+        EffectInvalidationPolicy::Always => visible_rect,
+        EffectInvalidationPolicy::Manual { base, .. } => base
+            .as_deref()
+            .map(|policy| invalidation_sample_rect_for_policy(policy, visible_rect))
+            .unwrap_or(visible_rect),
     }
 }
 
-pub fn source_damage_intersects_rect(
-    effect: &CompiledEffect,
+fn source_damage_intersects_policy(
+    policy: &EffectInvalidationPolicy,
     visible_rect: Rectangle<i32, Logical>,
     source_damage: &[crate::state::OwnedDamageRect],
 ) -> bool {
-    match effect.invalidate_policy() {
+    match policy {
         EffectInvalidationPolicy::Always => true,
-        EffectInvalidationPolicy::Manual => false,
         EffectInvalidationPolicy::OnSourceDamageBox { .. } => {
-            let sample_rect = invalidation_sample_rect(effect, visible_rect);
+            let sample_rect = invalidation_sample_rect_for_policy(policy, visible_rect);
             source_damage.iter().any(|damage| {
                 let left = sample_rect.loc.x.max(damage.rect.x);
                 let top = sample_rect.loc.y.max(damage.rect.y);
@@ -1376,6 +1394,12 @@ pub fn source_damage_intersects_rect(
                     (sample_rect.loc.y + sample_rect.size.h).min(damage.rect.y + damage.rect.height);
                 right > left && bottom > top
             })
+        }
+        EffectInvalidationPolicy::Manual { dirty_when, base } => {
+            *dirty_when
+                || base.as_deref().is_some_and(|policy| {
+                    source_damage_intersects_policy(policy, visible_rect, source_damage)
+                })
         }
     }
 }

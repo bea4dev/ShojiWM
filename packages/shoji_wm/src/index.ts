@@ -12,6 +12,7 @@ import type {
   DisplayConfig,
   DisplayModePreference,
   EffectInvalidationPolicyHandle,
+  AutomaticEffectInvalidationPolicyHandle,
   BoxProps,
   BackgroundEffectConfig,
   ButtonProps,
@@ -58,12 +59,15 @@ import { createWindowManagerEventController } from "./events";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
 export {
+  createAnimationControllerWithStore,
+  createAnimationController,
   animationVariable,
   createWindowAnimationControllerWithStore,
   createWindowAnimationController,
   milliseconds,
   seconds,
   type AnimationStartOptions,
+  type AnimationController,
   type AnimationVariable,
   type WindowAnimationController,
 } from "./animation";
@@ -157,6 +161,7 @@ export type {
   DisplayConfig,
   DisplayModePreference,
   EffectInvalidationPolicyHandle,
+  AutomaticEffectInvalidationPolicyHandle,
   LabelProps,
   BackgroundEffectConfig,
   MaybeSignal,

@@ -94,7 +94,19 @@ pub enum WireEffectInvalidationPolicy {
         anti_artifact_margin: i32,
     },
     Always,
-    Manual,
+    Manual {
+        dirty_when: bool,
+        base: Option<Box<WireAutomaticEffectInvalidationPolicy>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+pub enum WireAutomaticEffectInvalidationPolicy {
+    OnSourceDamageBox {
+        anti_artifact_margin: i32,
+    },
+    Always,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -391,7 +403,12 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                 anti_artifact_margin: anti_artifact_margin.max(0),
             },
             WireEffectInvalidationPolicy::Always => EffectInvalidationPolicy::Always,
-            WireEffectInvalidationPolicy::Manual => EffectInvalidationPolicy::Manual,
+            WireEffectInvalidationPolicy::Manual { dirty_when, base } => {
+                EffectInvalidationPolicy::Manual {
+                    dirty_when,
+                    base: base.map(|policy| Box::new(decode_automatic_invalidation_policy(*policy))),
+                }
+            }
         };
 
         Ok(CompiledEffect {
@@ -429,6 +446,19 @@ fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, Decoration
             EffectInput::Named(name)
         }
     })
+}
+
+fn decode_automatic_invalidation_policy(
+    value: WireAutomaticEffectInvalidationPolicy,
+) -> EffectInvalidationPolicy {
+    match value {
+        WireAutomaticEffectInvalidationPolicy::OnSourceDamageBox {
+            anti_artifact_margin,
+        } => EffectInvalidationPolicy::OnSourceDamageBox {
+            anti_artifact_margin: anti_artifact_margin.max(0),
+        },
+        WireAutomaticEffectInvalidationPolicy::Always => EffectInvalidationPolicy::Always,
+    }
 }
 
 impl TryFrom<WireDecorationChild> for DecorationNode {

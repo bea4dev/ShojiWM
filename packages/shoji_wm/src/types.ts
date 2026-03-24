@@ -20,7 +20,7 @@ export interface WaylandWindow {
   readonly appId: import("./signals").ReadonlySignal<string | undefined>;
   readonly position: WindowPosition;
   readonly transform: WindowTransform;
-  readonly animation: import("./animation").WindowAnimationController;
+  readonly animation: import("./animation").AnimationController;
   readonly isFocused: import("./signals").ReadonlySignal<boolean>;
   readonly isFloating: import("./signals").ReadonlySignal<boolean>;
   readonly isMaximized: import("./signals").ReadonlySignal<boolean>;
@@ -113,13 +113,18 @@ export interface AlwaysInvalidationHandle {
   kind: "always";
 }
 
+export type AutomaticEffectInvalidationPolicyHandle =
+  | OnSourceDamageBoxInvalidationHandle
+  | AlwaysInvalidationHandle;
+
 export interface ManualInvalidationHandle {
   kind: "manual";
+  dirtyWhen: MaybeSignal<boolean>;
+  base?: AutomaticEffectInvalidationPolicyHandle;
 }
 
 export type EffectInvalidationPolicyHandle =
-  | OnSourceDamageBoxInvalidationHandle
-  | AlwaysInvalidationHandle
+  | AutomaticEffectInvalidationPolicyHandle
   | ManualInvalidationHandle;
 export type ShaderUniformScalar = MaybeSignal<number>;
 export type ShaderUniformValue =

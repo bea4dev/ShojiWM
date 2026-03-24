@@ -43,7 +43,7 @@ export interface AnimationStartOptions {
  * The same {@link AnimationVariable} can be used across many windows; each
  * window keeps its own progress value and scheduled task.
  */
-export interface WindowAnimationController {
+export interface AnimationController {
   /**
    * Returns a readonly progress signal for the given animation variable.
    *
@@ -109,6 +109,8 @@ export interface WindowAnimationController {
   running(variable: AnimationVariable): boolean;
 }
 
+export type WindowAnimationController = AnimationController;
+
 interface AnimationEntry {
   progress: Signal<number>;
   poll?: PollHandle;
@@ -155,14 +157,14 @@ export function seconds(value: number): number {
  *
  * Consumers usually receive this indirectly through `window.animation`.
  */
-export function createWindowAnimationController(windowId: string): WindowAnimationController {
-  return createWindowAnimationControllerWithStore(windowId, new Map());
+export function createAnimationController(markDirty: () => void): AnimationController {
+  return createAnimationControllerWithStore(markDirty, new Map());
 }
 
-export function createWindowAnimationControllerWithStore(
-  windowId: string,
+export function createAnimationControllerWithStore(
+  markDirty: () => void,
   entries: Map<symbol, AnimationEntry>,
-): WindowAnimationController {
+): AnimationController {
 
   const ensureEntry = (variable: AnimationVariable): AnimationEntry => {
     let entry = entries.get(variable.id);
@@ -190,7 +192,7 @@ export function createWindowAnimationControllerWithStore(
       const to = options.to ?? 1;
 
       entry.progress.value = from;
-      markWindowDirty(windowId);
+      markDirty();
 
       let startedAt: number | null = null;
       const startPoll = createManagedPoll(intervalMs, (handle) => {
@@ -202,11 +204,11 @@ export function createWindowAnimationControllerWithStore(
         const progress = Math.min(1, elapsed / duration);
         const eased = normalizeEasedProgress(easing(progress), progress);
         entry.progress.value = from + (to - from) * eased;
-        markWindowDirty(windowId);
+        markDirty();
 
         if (progress >= 1) {
           entry.progress.value = to;
-          markWindowDirty(windowId);
+          markDirty();
           handle.cancel();
           entry.poll = undefined;
         }
@@ -218,7 +220,7 @@ export function createWindowAnimationControllerWithStore(
       entry?.poll?.cancel();
       if (entry) {
         entry.poll = undefined;
-        markWindowDirty(windowId);
+        markDirty();
       }
     },
     set(variable, value) {
@@ -226,12 +228,23 @@ export function createWindowAnimationControllerWithStore(
       entry.poll?.cancel();
       entry.poll = undefined;
       entry.progress.value = value;
-      markWindowDirty(windowId);
+      markDirty();
     },
     running(variable) {
       return entries.get(variable.id)?.poll !== undefined;
     },
   };
+}
+
+export function createWindowAnimationController(windowId: string): WindowAnimationController {
+  return createWindowAnimationControllerWithStore(windowId, new Map());
+}
+
+export function createWindowAnimationControllerWithStore(
+  windowId: string,
+  entries: Map<symbol, AnimationEntry>,
+): WindowAnimationController {
+  return createAnimationControllerWithStore(() => markWindowDirty(windowId), entries);
 }
 
 function clampUnit(value: number): number {

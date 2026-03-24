@@ -14,7 +14,6 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                Element,
                 memory::MemoryRenderBuffer,
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
@@ -60,31 +59,6 @@ use smithay::wayland::presentation::Refresh;
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
-
-fn high_refresh_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_HIGH_REFRESH_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn render_timing_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_RENDER_TIMING_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn damage_profile_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_DAMAGE_PROFILE")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn element_damage_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_ELEMENT_DAMAGE_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn frame_callback_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
 
 type GbmDrmOutput =
     DrmOutput<
@@ -286,50 +260,7 @@ fn frame_finish(
         }
     }
 
-    if let Some(previous_presented) = surface.last_presented_at.replace(presentation_clock) {
-        trace!(
-            ?node,
-            ?crtc,
-            output = %surface.output.name(),
-            presented_delta_ms = (presentation_clock.saturating_sub(previous_presented).as_secs_f64() * 1000.0),
-            refresh_mhz = surface.output.current_mode().map(|mode| mode.refresh),
-            "tty presentation cadence"
-        );
-    }
-
-    if high_refresh_debug_enabled() {
-        let repaint_budget = repaint_delay(surface);
-        trace!(
-            ?node,
-            ?crtc,
-            output = %surface.output.name(),
-            presentation_clock_ms = presentation_clock.as_secs_f64() * 1000.0,
-            frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-            next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
-            repaint_delay_ms = repaint_budget.map(|delay| delay.as_secs_f64() * 1000.0),
-            estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-            "tty high refresh frame_finish"
-        );
-    }
-
-    if render_timing_debug_enabled() {
-        trace!(
-            ?node,
-            ?crtc,
-            output = %surface.output.name(),
-            queued_to_finish_ms = surface
-                .queued_at
-                .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0),
-            queued_cpu_ms = surface.queued_cpu_duration.as_secs_f64() * 1000.0,
-            presented_delta_ms = surface
-                .last_presented_at
-                .map(|previous| presentation_clock.saturating_sub(previous).as_secs_f64() * 1000.0),
-            frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-            skipped_while_pending_count = surface.skipped_while_pending_count,
-            redraw_state = ?surface.redraw_state,
-            "tty present timing frame_finish"
-        );
-    }
+    surface.last_presented_at = Some(presentation_clock);
 
     surface.frame_pending = false;
     surface.queued_at = None;
@@ -424,45 +355,6 @@ render_elements! {
     Cursor=PointerRenderElement<GlesRenderer>,
 }
 
-fn tty_render_element_kind_name(element: &TtyRenderElements) -> &'static str {
-    match element {
-        TtyRenderElements::Window(_) => "window",
-        TtyRenderElements::TransformedWindow(_) => "transformed-window",
-        TtyRenderElements::Clipped(_) => "clipped",
-        TtyRenderElements::TransformedClipped(_) => "transformed-clipped",
-        TtyRenderElements::Text(_) => "text",
-        TtyRenderElements::TransformedText(_) => "transformed-text",
-        TtyRenderElements::Snapshot(_) => "snapshot",
-        TtyRenderElements::TransformedSnapshot(_) => "transformed-snapshot",
-        TtyRenderElements::Damage(_) => "damage",
-        TtyRenderElements::Blink(_) => "blink",
-        TtyRenderElements::Decoration(_) => "decoration",
-        TtyRenderElements::TransformedDecoration(_) => "transformed-decoration",
-        TtyRenderElements::Backdrop(_) => "backdrop",
-        TtyRenderElements::TransformedBackdrop(_) => "transformed-backdrop",
-        TtyRenderElements::Cursor(_) => "cursor",
-        TtyRenderElements::_GenericCatcher(_) => "generic",
-    }
-}
-
-fn tty_render_element_signature(
-    element: &TtyRenderElements,
-    scale: Scale<f64>,
-) -> String {
-    let debug_label = match element {
-        TtyRenderElements::Backdrop(element) => format!("|label={}", element.debug_label()),
-        _ => String::new(),
-    };
-    format!(
-        "{}|id={:?}|commit={:?}|geom={:?}{}",
-        tty_render_element_kind_name(element),
-        element.id(),
-        element.current_commit(),
-        element.geometry(scale),
-        debug_label,
-    )
-}
-
 fn capture_scene_texture_for_effect(
     renderer: &mut GlesRenderer,
     capture_geo: smithay::utils::Rectangle<i32, Logical>,
@@ -542,40 +434,6 @@ fn render_surface(
                     surface.skipped_while_pending_count.saturating_add(1);
             }
         }
-        if high_refresh_debug_enabled() {
-            let surface = state
-                .tty_backends
-                .get(&node)
-                .and_then(|backend| backend.surfaces.get(&crtc))
-                .unwrap();
-            trace!(
-                ?node,
-                ?crtc,
-                output = %output.name(),
-                next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
-                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-                estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                "tty high refresh skipped pending frame"
-            );
-        }
-        if render_timing_debug_enabled() {
-            let surface = state
-                .tty_backends
-                .get(&node)
-                .and_then(|backend| backend.surfaces.get(&crtc))
-                .unwrap();
-            trace!(
-                ?node,
-                ?crtc,
-                output = %output.name(),
-                redraw_state = ?redraw_state,
-                frame_pending = surface.frame_pending,
-                next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
-                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-                estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                "tty render timing skipped frame"
-            );
-        }
         return Ok(RenderSurfaceOutcome::Skipped);
     }
 
@@ -642,17 +500,7 @@ fn render_surface(
             .next_frame_target
             .take()
             .unwrap_or(fallback_frame_time);
-        if let Some(previous_callback) = surface.last_frame_callback_at.replace(frame_time) {
-            trace!(
-                ?node,
-                ?crtc,
-                output = %output.name(),
-                callback_delta_ms = (frame_time.saturating_sub(previous_callback).as_secs_f64() * 1000.0),
-                frame_time_ms = frame_time.as_secs_f64() * 1000.0,
-                target_refresh_mhz = output.current_mode().map(|mode| mode.refresh),
-                "tty frame callback cadence"
-            );
-        }
+        surface.last_frame_callback_at = Some(frame_time);
 
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
 
@@ -663,26 +511,6 @@ fn render_surface(
         let windows_top_to_bottom: Vec<_> = windows.iter().rev().cloned().collect();
         let all_windows: Vec<_> = space.elements().cloned().collect();
         let window_count = all_windows.len();
-        if frame_callback_debug_enabled() {
-            let window_stack = windows_top_to_bottom
-                .iter()
-                .filter_map(|window| {
-                    window_decorations.get(window).map(|decoration| {
-                        format!(
-                            "{}:{}:{:?}",
-                            decoration.snapshot.id,
-                            decoration.snapshot.title,
-                            decoration.snapshot.app_id
-                        )
-                    })
-                })
-                .collect::<Vec<_>>();
-            trace!(
-                output = %output.name(),
-                window_stack = ?window_stack,
-                "tty render window stack snapshot"
-            );
-        }
         let closing_snapshots = closing_window_snapshots
             .values()
             .cloned()
@@ -761,6 +589,7 @@ fn render_surface(
             window_decorations,
             &state.window_source_damage,
             &state.lower_layer_source_damage,
+            state.lower_layer_scene_generation,
             state.configured_background_effect.as_ref(),
             &output,
             output_geo,
@@ -828,6 +657,7 @@ fn render_surface(
                     &state.window_commit_times,
                     &state.window_source_damage,
                     &state.lower_layer_source_damage,
+                    state.lower_layer_scene_generation,
                     &output,
                     output_geo,
                     scale,
@@ -845,6 +675,7 @@ fn render_surface(
                         &state.window_commit_times,
                         &state.window_source_damage,
                         &state.lower_layer_source_damage,
+                        state.lower_layer_scene_generation,
                         &output,
                         output_geo,
                         scale,
@@ -1021,50 +852,11 @@ fn render_surface(
             scale,
             state.configured_background_effect.as_ref(),
             &state.lower_layer_source_damage,
+            state.lower_layer_scene_generation,
             &mut state.layer_backdrop_cache,
         )?);
 
-        let scene_build_elapsed = frame_started_at.elapsed();
-
-        if element_damage_debug_enabled() {
-            let output_key = format!("tty:{}", output.name());
-            let signatures = scene_elements
-                .iter()
-                .map(|element| tty_render_element_signature(element, scale))
-                .collect::<Vec<_>>();
-            let previous = state
-                .debug_previous_scene_signatures
-                .insert(output_key, signatures.clone())
-                .unwrap_or_default();
-            let previous_set = previous.iter().cloned().collect::<std::collections::HashSet<_>>();
-            let current_set = signatures
-                .iter()
-                .cloned()
-                .collect::<std::collections::HashSet<_>>();
-            let added = current_set
-                .difference(&previous_set)
-                .take(12)
-                .cloned()
-                .collect::<Vec<_>>();
-            let removed = previous_set
-                .difference(&current_set)
-                .take(12)
-                .cloned()
-                .collect::<Vec<_>>();
-            trace!(
-                output = %output.name(),
-                previous_count = previous.len(),
-                current_count = signatures.len(),
-                added_count = current_set.difference(&previous_set).count(),
-                removed_count = previous_set.difference(&current_set).count(),
-                added = ?added,
-                removed = ?removed,
-                "tty scene element damage audit"
-            );
-        }
-
-        let should_profile_damage = should_capture_blink || damage_profile_debug_enabled();
-        let damage_profile_started_at = Instant::now();
+        let should_profile_damage = should_capture_blink;
         let computed_damage = if should_profile_damage {
             match surface
                 .blink_damage_tracker
@@ -1076,45 +868,6 @@ fn render_surface(
         } else {
             None
         };
-        let damage_profile_elapsed = damage_profile_started_at.elapsed();
-        let (computed_damage_rect_count, computed_damage_area, damage_to_output_ratio) =
-            if let Some(damage) = computed_damage.as_ref() {
-                let damage_area = damage
-                    .iter()
-                    .map(|rect| i64::from(rect.size.w.max(0)) * i64::from(rect.size.h.max(0)))
-                    .sum::<i64>();
-                let output_area =
-                    i64::from(output_geo.size.w.max(0)) * i64::from(output_geo.size.h.max(0));
-                (
-                    damage.len(),
-                    damage_area,
-                    if output_area > 0 {
-                        damage_area as f64 / output_area as f64
-                    } else {
-                        0.0
-                    },
-                )
-            } else {
-                (0, 0, 0.0)
-            };
-
-        if damage_profile_debug_enabled() {
-            let output_area =
-                i64::from(output_geo.size.w.max(0)) * i64::from(output_geo.size.h.max(0));
-            trace!(
-                ?node,
-                ?crtc,
-                output = %output.name(),
-                window_count,
-                scene_element_count = scene_elements.len(),
-                extra_damage_rect_count = extra_damage.len(),
-                computed_damage_rect_count,
-                computed_damage_area,
-                output_area,
-                damage_to_output_ratio,
-                "tty damage profile"
-            );
-        }
 
         let captured_blink_damage = if should_capture_blink {
             computed_damage
@@ -1122,10 +875,17 @@ fn render_surface(
             None
         };
 
+        let mut content_elements: Vec<TtyRenderElements> = Vec::new();
+        content_elements.extend(
+            damage::elements_for_output(&extra_damage, output_geo)
+                .into_iter()
+                .map(TtyRenderElements::Damage),
+        );
+        content_elements.extend(scene_elements);
+
         let cursor_status_for_log = cursor_override
             .map(CursorImageStatus::Named)
             .unwrap_or_else(|| cursor_status.clone());
-        let scene_element_count = scene_elements.len();
         let mut elements: Vec<TtyRenderElements> = Vec::new();
         elements.extend(
             damage_blink::elements_for_output(&blink_visible, output_geo, scale)
@@ -1133,12 +893,7 @@ fn render_surface(
                 .map(TtyRenderElements::Blink),
         );
         elements.extend(cursor_elements);
-        elements.extend(
-            damage::elements_for_output(&extra_damage, output_geo)
-                .into_iter()
-                .map(TtyRenderElements::Damage),
-        );
-        elements.extend(scene_elements);
+        elements.extend(content_elements);
 
         trace!(
             ?node,
@@ -1185,52 +940,6 @@ fn render_surface(
                 redraw_needed: false,
             };
             let frame_callback_sequence = surface.frame_callback_sequence;
-            trace!(
-                ?node,
-                ?crtc,
-                output = %output.name(),
-                frame_time_ms = frame_time.as_secs_f64() * 1000.0,
-                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-                render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
-                estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                next_frame_target_ms = surface.next_frame_target.map(|tp| tp.as_secs_f64() * 1000.0),
-                "queued tty frame"
-            );
-            if high_refresh_debug_enabled() {
-                let frame_budget = surface.frame_duration.as_secs_f64() * 1000.0;
-                let render_ms = render_elapsed.as_secs_f64() * 1000.0;
-                trace!(
-                    ?node,
-                    ?crtc,
-                    output = %output.name(),
-                    frame_budget_ms = frame_budget,
-                    render_elapsed_ms = render_ms,
-                    estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                    budget_utilization = if frame_budget > 0.0 { render_ms / frame_budget } else { 0.0 },
-                    element_count = elements.len(),
-                    "tty high refresh queued frame stats"
-                );
-            }
-            if render_timing_debug_enabled() {
-                trace!(
-                    ?node,
-                    ?crtc,
-                    output = %output.name(),
-                    window_count,
-                    scene_element_count,
-                    render_element_count = elements.len(),
-                    extra_damage_rect_count = extra_damage.len(),
-                    computed_damage_rect_count,
-                    computed_damage_area,
-                    damage_to_output_ratio,
-                    scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
-                    damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
-                    render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
-                    total_cpu_ms = total_cpu_elapsed.as_secs_f64() * 1000.0,
-                    frame_pending = surface.frame_pending,
-                    "tty render timing queued frame"
-                );
-            }
             let _ = surface;
             let _ = backend;
             state.post_repaint_with_sequence(
@@ -1241,41 +950,6 @@ fn render_surface(
             );
         } else {
             trace!(output = %output.name(), "tty frame had no damage");
-            if high_refresh_debug_enabled() {
-                let frame_budget = surface.frame_duration.as_secs_f64() * 1000.0;
-                let render_ms = render_elapsed.as_secs_f64() * 1000.0;
-                trace!(
-                    ?node,
-                    ?crtc,
-                    output = %output.name(),
-                    frame_budget_ms = frame_budget,
-                    render_elapsed_ms = render_ms,
-                    estimated_render_ms = surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                    budget_utilization = if frame_budget > 0.0 { render_ms / frame_budget } else { 0.0 },
-                    element_count = elements.len(),
-                    "tty high refresh no-damage stats"
-                );
-            }
-            if render_timing_debug_enabled() {
-                trace!(
-                    ?node,
-                    ?crtc,
-                    output = %output.name(),
-                    window_count,
-                    scene_element_count,
-                    render_element_count = elements.len(),
-                    extra_damage_rect_count = extra_damage.len(),
-                    computed_damage_rect_count,
-                    computed_damage_area,
-                    damage_to_output_ratio,
-                    scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
-                    damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
-                    render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
-                    total_cpu_ms = total_cpu_elapsed.as_secs_f64() * 1000.0,
-                    frame_pending = surface.frame_pending,
-                    "tty render timing no-damage frame"
-                );
-            }
             let generation = surface.frame_callback_timer_generation.wrapping_add(1);
             surface.frame_callback_timer_generation = generation;
             surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
@@ -1432,6 +1106,7 @@ fn backdrop_shader_elements_for_window(
     _window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
+    lower_layer_scene_generation: u64,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -1502,6 +1177,9 @@ fn backdrop_shader_elements_for_window(
                 })
                 .unwrap_or(0);
             (blur_padding, cached.clip_radius).hash(&mut hasher);
+            if uses_backdrop || uses_xray {
+                lower_layer_scene_generation.hash(&mut hasher);
+            }
             format!("{:?}", cached.shader).hash(&mut hasher);
             let capture_geo = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
@@ -1881,6 +1559,7 @@ fn configured_background_effect_elements_for_layer(
     window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
+    lower_layer_scene_generation: u64,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -2024,6 +1703,9 @@ fn configured_background_effect_elements_for_layer(
     );
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     stable_key.hash(&mut hasher);
+    if uses_backdrop || uses_xray {
+        lower_layer_scene_generation.hash(&mut hasher);
+    }
     if uses_backdrop {
         for lower_window in windows_top_to_bottom {
             if let Some(lower_decoration) = window_decorations.get(lower_window) {
@@ -2189,6 +1871,7 @@ fn lower_layer_scene_elements(
     scale: smithay::utils::Scale<f64>,
     effect_config: Option<&crate::ssd::BackgroundEffectConfig>,
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
+    lower_layer_scene_generation: u64,
     layer_backdrop_cache: &mut std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
@@ -2238,6 +1921,7 @@ fn lower_layer_scene_elements(
             );
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             stable_key.hash(&mut hasher);
+            lower_layer_scene_generation.hash(&mut hasher);
             format!("{:?}", effect_config.effect).hash(&mut hasher);
             (
                 effect_rect.x,
@@ -2454,6 +2138,7 @@ fn upper_layer_scene_elements(
     window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
+    lower_layer_scene_generation: u64,
     effect_config: Option<&crate::ssd::BackgroundEffectConfig>,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
@@ -2485,6 +2170,7 @@ fn upper_layer_scene_elements(
                 window_decorations,
                 window_source_damage,
                 lower_layer_source_damage,
+                lower_layer_scene_generation,
                 output,
                 output_geo,
                 scale,
@@ -2506,6 +2192,7 @@ fn configured_background_effect_elements_for_window(
     _window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
+    lower_layer_scene_generation: u64,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -2564,6 +2251,9 @@ fn configured_background_effect_elements_for_window(
                 })
                 .unwrap_or(0);
             blur_padding.hash(&mut hasher);
+            if uses_backdrop || uses_xray {
+                lower_layer_scene_generation.hash(&mut hasher);
+            }
             format!("{:?}", effect_config.effect).hash(&mut hasher);
             let capture_geo = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
@@ -3181,26 +2871,6 @@ fn select_output_mode(
             }
         }
     }
-}
-
-fn repaint_delay(surface: &SurfaceData) -> Option<Duration> {
-    let refresh_mhz = surface.output.current_mode()?.refresh;
-    if refresh_mhz <= 0 {
-        return None;
-    }
-
-    let frame_duration = Duration::from_secs_f64(1_000f64 / refresh_mhz as f64);
-    let min_budget = Duration::from_millis(2);
-    let max_budget = Duration::from_millis(3);
-    let compositor_budget = std::cmp::max(
-        surface
-            .estimated_render_duration
-            .saturating_add(Duration::from_millis(1)),
-        min_budget,
-    );
-    let compositor_budget = std::cmp::min(compositor_budget, max_budget);
-
-    Some(frame_duration.saturating_sub(compositor_budget))
 }
 
 fn schedule_estimated_vblank_callback(

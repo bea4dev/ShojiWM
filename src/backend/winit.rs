@@ -1,5 +1,5 @@
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smithay::{
     backend::{
@@ -22,7 +22,7 @@ use smithay::{
         compositor,
     },
 };
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
@@ -32,13 +32,8 @@ use crate::{
 };
 use smithay::wayland::presentation::Refresh;
 
-fn render_timing_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_RENDER_TIMING_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn damage_profile_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_DAMAGE_PROFILE")
+fn manual_invalidate_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_MANUAL_INVALIDATE_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
@@ -111,7 +106,6 @@ pub fn init_winit(
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut blink_damage_tracker = OutputDamageTracker::from_output(&output);
-    let mut last_redraw_started_at: Option<Instant> = None;
     event_loop
         .handle()
         .insert_source(winit, move |event, _, state| {
@@ -129,14 +123,6 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
-                    let redraw_started_at = Instant::now();
-                    let redraw_delta_ms = last_redraw_started_at.map(|last| {
-                        redraw_started_at
-                            .saturating_duration_since(last)
-                            .as_secs_f64()
-                            * 1000.0
-                    });
-                    last_redraw_started_at = Some(redraw_started_at);
                     if let Err(err) = state.refresh_window_decorations() {
                         warn!(error = ?err, "failed to refresh window decorations for winit");
                     }
@@ -449,12 +435,7 @@ pub fn init_winit(
                             &windows_top_to_bottom,
                         ));
 
-                        let scene_build_elapsed = redraw_started_at.elapsed();
-
-                        let should_profile_damage =
-                            state.damage_blink_enabled || damage_profile_debug_enabled();
-                        let damage_profile_started_at = Instant::now();
-                        let computed_damage = if should_profile_damage {
+                        let computed_damage = if state.damage_blink_enabled {
                             match blink_damage_tracker.damage_output(1, &scene_elements) {
                                 Ok((damage, _)) => damage.cloned(),
                                 Err(_) => None,
@@ -462,53 +443,29 @@ pub fn init_winit(
                         } else {
                             None
                         };
-                        let damage_profile_elapsed = damage_profile_started_at.elapsed();
-                        let (computed_damage_rect_count, computed_damage_area, damage_to_output_ratio) =
-                            if let Some(damage) = computed_damage.as_ref() {
-                                let damage_area = damage
-                                    .iter()
-                                    .map(|rect| {
-                                        i64::from(rect.size.w.max(0)) * i64::from(rect.size.h.max(0))
-                                    })
-                                    .sum::<i64>();
-                                let output_area = i64::from(output_geo.size.w.max(0))
-                                    * i64::from(output_geo.size.h.max(0));
-                                (
-                                    damage.len(),
-                                    damage_area,
-                                    if output_area > 0 {
-                                        damage_area as f64 / output_area as f64
-                                    } else {
-                                        0.0
-                                    },
-                                )
-                            } else {
-                                (0, 0, 0.0)
-                            };
-
-                        if damage_profile_debug_enabled() {
-                            let output_area = i64::from(output_geo.size.w.max(0))
-                                * i64::from(output_geo.size.h.max(0));
-                            trace!(
-                                output = %output.name(),
-                                window_count = state.space.elements().count(),
-                                scene_element_count = scene_elements.len(),
-                                extra_damage_rect_count = extra_damage.len(),
-                                computed_damage_rect_count,
-                                computed_damage_area,
-                                output_area,
-                                damage_to_output_ratio,
-                                "winit damage profile"
-                            );
-                        }
 
                         if state.damage_blink_enabled {
                             if let Some(damage) = computed_damage.as_deref() {
                                 state.record_damage_blink(&output, damage);
                             }
+                            if manual_invalidate_debug_enabled() {
+                                info!(
+                                    output = %output.name(),
+                                    extra_damage = ?extra_damage,
+                                    blink_visible = ?state.damage_blink_rects_for_output(&output),
+                                    "manual invalidate blink inputs"
+                                );
+                            }
                         }
 
-                        let scene_element_count = scene_elements.len();
+                        let mut content_elements: Vec<WinitRenderElements> = Vec::new();
+                        content_elements.extend(
+                            damage::elements_for_output(&extra_damage, output_geo)
+                                .into_iter()
+                                .map(WinitRenderElements::Damage),
+                        );
+                        content_elements.extend(scene_elements);
+
                         let mut elements: Vec<WinitRenderElements> = Vec::new();
                         elements.extend(
                             damage_blink::elements_for_output(
@@ -519,12 +476,7 @@ pub fn init_winit(
                             .into_iter()
                             .map(WinitRenderElements::Blink),
                         );
-                        elements.extend(
-                            damage::elements_for_output(&extra_damage, output_geo)
-                                .into_iter()
-                                .map(WinitRenderElements::Damage),
-                        );
-                        elements.extend(scene_elements);
+                        elements.extend(content_elements);
 
                         trace!(
                             output = %output.name(),
@@ -534,7 +486,6 @@ pub fn init_winit(
                         );
 
                         if !elements.is_empty() {
-                            let render_started_at = Instant::now();
                             let frame_target = state.clock.now()
                                 + output
                                     .current_mode()
@@ -550,8 +501,13 @@ pub fn init_winit(
                                 [0.1, 0.1, 0.1, 1.0],
                             );
                             if let Ok(render_output_result) = render_output_result {
-                                let render_elapsed = render_started_at.elapsed();
-                                let total_cpu_elapsed = redraw_started_at.elapsed();
+                                if manual_invalidate_debug_enabled() {
+                                    info!(
+                                        output = %output.name(),
+                                        final_damage = ?render_output_result.damage,
+                                        "manual invalidate render output damage"
+                                    );
+                                }
                                 should_submit_frame = true;
                                 update_primary_scanout_output(
                                     &state.space,
@@ -581,43 +537,7 @@ pub fn init_winit(
                                 }
 
                                 state.post_repaint(&output, frame_time, &render_output_result.states);
-
-                                if render_timing_debug_enabled() {
-                                    trace!(
-                                        output = %output.name(),
-                                        redraw_delta_ms,
-                                        window_count = state.space.elements().count(),
-                                        scene_element_count,
-                                        render_element_count = elements.len(),
-                                        extra_damage_rect_count = extra_damage.len(),
-                                        computed_damage_rect_count,
-                                        computed_damage_area,
-                                        damage_to_output_ratio,
-                                        scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
-                                        damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
-                                        render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
-                                        total_cpu_ms = total_cpu_elapsed.as_secs_f64() * 1000.0,
-                                        submitted_damage = render_output_result.damage.is_some(),
-                                        "winit render timing frame"
-                                    );
-                                }
                             }
-                        } else if render_timing_debug_enabled() {
-                            trace!(
-                                output = %output.name(),
-                                redraw_delta_ms,
-                                window_count = state.space.elements().count(),
-                                scene_element_count,
-                                render_element_count = elements.len(),
-                                extra_damage_rect_count = extra_damage.len(),
-                                computed_damage_rect_count,
-                                computed_damage_area,
-                                damage_to_output_ratio,
-                                scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
-                                damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
-                                total_cpu_ms = redraw_started_at.elapsed().as_secs_f64() * 1000.0,
-                                "winit render timing empty frame"
-                            );
                         }
                     }
                     if should_submit_frame {
@@ -855,6 +775,9 @@ fn backdrop_shader_elements_for_window(
                 })
                 .unwrap_or(0);
             (blur_padding, cached.clip_radius).hash(&mut hasher);
+            if uses_backdrop || uses_xray {
+                state.lower_layer_scene_generation.hash(&mut hasher);
+            }
             format!("{:?}", cached.shader).hash(&mut hasher);
             let capture_geo = Rectangle::new(
                 smithay::utils::Point::from((
@@ -1304,9 +1227,10 @@ fn lower_layer_scene_elements(
             )
                 .into(),
         );
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            stable_key.hash(&mut hasher);
-            format!("{:?}", config.effect).hash(&mut hasher);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stable_key.hash(&mut hasher);
+        state.lower_layer_scene_generation.hash(&mut hasher);
+        format!("{:?}", config.effect).hash(&mut hasher);
         (
             effect_rect.x,
             effect_rect.y,
@@ -1653,6 +1577,9 @@ fn configured_background_effect_elements_for_layer(
     );
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     stable_key.hash(&mut hasher);
+    if uses_backdrop || uses_xray {
+        state.lower_layer_scene_generation.hash(&mut hasher);
+    }
     if uses_backdrop {
         for lower_window in windows_top_to_bottom {
             if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
@@ -1949,6 +1876,9 @@ fn configured_background_effect_elements_for_window(
                 })
                 .unwrap_or(0);
             blur_padding.hash(&mut hasher);
+            if uses_backdrop || uses_xray {
+                state.lower_layer_scene_generation.hash(&mut hasher);
+            }
             format!("{:?}", config.effect).hash(&mut hasher);
             let capture_geo = Rectangle::new(
                 smithay::utils::Point::from((
