@@ -101,6 +101,7 @@ pub enum WireEffectInvalidationPolicy {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WireEffectInput {
     BackdropSource,
+    XrayBackdropSource,
     ImageSource { path: String },
     NamedTexture { name: String },
 }
@@ -414,6 +415,7 @@ impl TryFrom<WireBackgroundEffectConfig> for BackgroundEffectConfig {
 fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, DecorationBridgeError> {
     Ok(match value {
         WireEffectInput::BackdropSource => EffectInput::Backdrop,
+        WireEffectInput::XrayBackdropSource => EffectInput::XrayBackdrop,
         WireEffectInput::ImageSource { path } => {
             if path.is_empty() {
                 return Err(DecorationBridgeError::InvalidEffectInput);

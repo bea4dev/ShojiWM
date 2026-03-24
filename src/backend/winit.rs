@@ -1,5 +1,5 @@
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{
@@ -31,6 +31,44 @@ use crate::{
     ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
+
+fn render_timing_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_RENDER_TIMING_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn damage_profile_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_DAMAGE_PROFILE")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn capture_scene_texture_for_effect(
+    renderer: &mut GlesRenderer,
+    capture_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    scene: &[WinitRenderElements],
+) -> Option<GlesTexture> {
+    if scene.is_empty() {
+        return None;
+    }
+    snapshot::capture_snapshot(
+        renderer,
+        None,
+        crate::ssd::LogicalRect::new(
+            capture_geo.loc.x,
+            capture_geo.loc.y,
+            capture_geo.size.w,
+            capture_geo.size.h,
+        ),
+        0,
+        true,
+        scale,
+        scene,
+    )
+    .ok()
+    .flatten()
+    .map(|snapshot| snapshot.texture)
+}
 
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
@@ -73,6 +111,7 @@ pub fn init_winit(
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut blink_damage_tracker = OutputDamageTracker::from_output(&output);
+    let mut last_redraw_started_at: Option<Instant> = None;
     event_loop
         .handle()
         .insert_source(winit, move |event, _, state| {
@@ -90,6 +129,14 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    let redraw_started_at = Instant::now();
+                    let redraw_delta_ms = last_redraw_started_at.map(|last| {
+                        redraw_started_at
+                            .saturating_duration_since(last)
+                            .as_secs_f64()
+                            * 1000.0
+                    });
+                    last_redraw_started_at = Some(redraw_started_at);
                     if let Err(err) = state.refresh_window_decorations() {
                         warn!(error = ?err, "failed to refresh window decorations for winit");
                     }
@@ -402,16 +449,66 @@ pub fn init_winit(
                             &windows_top_to_bottom,
                         ));
 
+                        let scene_build_elapsed = redraw_started_at.elapsed();
+
+                        let should_profile_damage =
+                            state.damage_blink_enabled || damage_profile_debug_enabled();
+                        let damage_profile_started_at = Instant::now();
+                        let computed_damage = if should_profile_damage {
+                            match blink_damage_tracker.damage_output(1, &scene_elements) {
+                                Ok((damage, _)) => damage.cloned(),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let damage_profile_elapsed = damage_profile_started_at.elapsed();
+                        let (computed_damage_rect_count, computed_damage_area, damage_to_output_ratio) =
+                            if let Some(damage) = computed_damage.as_ref() {
+                                let damage_area = damage
+                                    .iter()
+                                    .map(|rect| {
+                                        i64::from(rect.size.w.max(0)) * i64::from(rect.size.h.max(0))
+                                    })
+                                    .sum::<i64>();
+                                let output_area = i64::from(output_geo.size.w.max(0))
+                                    * i64::from(output_geo.size.h.max(0));
+                                (
+                                    damage.len(),
+                                    damage_area,
+                                    if output_area > 0 {
+                                        damage_area as f64 / output_area as f64
+                                    } else {
+                                        0.0
+                                    },
+                                )
+                            } else {
+                                (0, 0, 0.0)
+                            };
+
+                        if damage_profile_debug_enabled() {
+                            let output_area = i64::from(output_geo.size.w.max(0))
+                                * i64::from(output_geo.size.h.max(0));
+                            trace!(
+                                output = %output.name(),
+                                window_count = state.space.elements().count(),
+                                scene_element_count = scene_elements.len(),
+                                extra_damage_rect_count = extra_damage.len(),
+                                computed_damage_rect_count,
+                                computed_damage_area,
+                                output_area,
+                                damage_to_output_ratio,
+                                "winit damage profile"
+                            );
+                        }
+
                         if state.damage_blink_enabled {
-                            if let Ok((damage, _)) =
-                                blink_damage_tracker.damage_output(1, &scene_elements)
-                            {
-                                if let Some(damage) = damage {
-                                    state.record_damage_blink(&output, damage);
-                                }
+                            if let Some(damage) = computed_damage.as_deref() {
+                                state.record_damage_blink(&output, damage);
                             }
                         }
 
+                        let scene_element_count = scene_elements.len();
                         let mut elements: Vec<WinitRenderElements> = Vec::new();
                         elements.extend(
                             damage_blink::elements_for_output(
@@ -437,6 +534,7 @@ pub fn init_winit(
                         );
 
                         if !elements.is_empty() {
+                            let render_started_at = Instant::now();
                             let frame_target = state.clock.now()
                                 + output
                                     .current_mode()
@@ -452,6 +550,8 @@ pub fn init_winit(
                                 [0.1, 0.1, 0.1, 1.0],
                             );
                             if let Ok(render_output_result) = render_output_result {
+                                let render_elapsed = render_started_at.elapsed();
+                                let total_cpu_elapsed = redraw_started_at.elapsed();
                                 should_submit_frame = true;
                                 update_primary_scanout_output(
                                     &state.space,
@@ -481,7 +581,43 @@ pub fn init_winit(
                                 }
 
                                 state.post_repaint(&output, frame_time, &render_output_result.states);
+
+                                if render_timing_debug_enabled() {
+                                    trace!(
+                                        output = %output.name(),
+                                        redraw_delta_ms,
+                                        window_count = state.space.elements().count(),
+                                        scene_element_count,
+                                        render_element_count = elements.len(),
+                                        extra_damage_rect_count = extra_damage.len(),
+                                        computed_damage_rect_count,
+                                        computed_damage_area,
+                                        damage_to_output_ratio,
+                                        scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
+                                        damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
+                                        render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0,
+                                        total_cpu_ms = total_cpu_elapsed.as_secs_f64() * 1000.0,
+                                        submitted_damage = render_output_result.damage.is_some(),
+                                        "winit render timing frame"
+                                    );
+                                }
                             }
+                        } else if render_timing_debug_enabled() {
+                            trace!(
+                                output = %output.name(),
+                                redraw_delta_ms,
+                                window_count = state.space.elements().count(),
+                                scene_element_count,
+                                render_element_count = elements.len(),
+                                extra_damage_rect_count = extra_damage.len(),
+                                computed_damage_rect_count,
+                                computed_damage_area,
+                                damage_to_output_ratio,
+                                scene_build_ms = scene_build_elapsed.as_secs_f64() * 1000.0,
+                                damage_profile_ms = damage_profile_elapsed.as_secs_f64() * 1000.0,
+                                total_cpu_ms = redraw_started_at.elapsed().as_secs_f64() * 1000.0,
+                                "winit render timing empty frame"
+                            );
                         }
                     }
                     if should_submit_frame {
@@ -682,11 +818,6 @@ fn backdrop_shader_elements_for_window(
         .cloned()
         .collect::<Vec<_>>();
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
-    let relevant_source_damage = {
-        let mut entries = collect_window_source_damage(state, lower_windows.iter().cloned());
-        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
-        entries
-    };
 
     decoration
         .shader_buffers
@@ -694,6 +825,8 @@ fn backdrop_shader_elements_for_window(
         .iter()
         .filter(|cached| cached.shader.is_backdrop())
         .filter_map(|cached| {
+            let uses_backdrop = cached.shader.uses_backdrop_input();
+            let uses_xray = cached.shader.uses_xray_backdrop_input();
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
@@ -741,14 +874,16 @@ fn backdrop_shader_elements_for_window(
                 capture_geo.size.h,
             )
                 .hash(&mut hasher);
-            for lower_window in &lower_windows {
-                if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
-                    lower_decoration.snapshot.id.hash(&mut hasher);
-                    lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+            if uses_backdrop {
+                for lower_window in &lower_windows {
+                    if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                        lower_decoration.snapshot.id.hash(&mut hasher);
+                        lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+                    }
                 }
             }
             let signature = hasher.finish();
@@ -758,7 +893,23 @@ fn backdrop_shader_elements_for_window(
                     smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
                     (effect_rect.width, effect_rect.height).into(),
                 ),
-                &relevant_source_damage,
+                &{
+                    let mut entries = Vec::new();
+                    if uses_backdrop {
+                        entries.extend(collect_window_source_damage(
+                            state,
+                            lower_windows.iter().cloned(),
+                        ));
+                    }
+                    if uses_backdrop || uses_xray {
+                        entries.extend(collect_layer_source_damage(
+                            state,
+                            lower_layers.iter().cloned(),
+                            true,
+                        ));
+                    }
+                    entries
+                },
             );
 
             if !matches!(
@@ -815,63 +966,62 @@ fn backdrop_shader_elements_for_window(
                     .map(|element| (cached.order, element));
                 }
             }
-            let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-            for lower_window in &lower_windows {
-                backdrop_scene.extend(window_scene_elements_for_capture(
-                    renderer,
-                    state,
-                    capture_geo,
-                    scale,
-                    lower_window,
-                ));
-            }
-            let (_, lower_layer_elements) =
-                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-            let capture_offset = capture_geo.loc - output_geo.loc;
-            let capture_visual = WindowVisualState {
-                origin: smithay::utils::Point::from((0, 0)),
-                scale: smithay::utils::Scale::from((1.0, 1.0)),
-                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                    .to_f64()
-                    .to_physical_precise_round(scale),
-                opacity: 1.0,
+            let backdrop_texture = if uses_backdrop {
+                let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+                for lower_window in &lower_windows {
+                    backdrop_scene.extend(window_scene_elements_for_capture(
+                        renderer,
+                        state,
+                        capture_geo,
+                        scale,
+                        lower_window,
+                    ));
+                }
+                let (_, lower_layer_elements) =
+                    window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+                let capture_offset = capture_geo.loc - output_geo.loc;
+                let capture_visual = WindowVisualState {
+                    origin: smithay::utils::Point::from((0, 0)),
+                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                        .to_f64()
+                        .to_physical_precise_round(scale),
+                    opacity: 1.0,
+                };
+                backdrop_scene.extend(
+                    transform_window_elements(
+                        lower_layer_elements,
+                        capture_visual,
+                        WinitRenderElements::Window,
+                        WinitRenderElements::TransformedWindow,
+                    )
+                    .into_iter(),
+                );
+                capture_scene_texture_for_effect(renderer, capture_geo, scale, &backdrop_scene)
+            } else {
+                None
             };
-            backdrop_scene.extend(
-                transform_window_elements(
-                    lower_layer_elements,
-                    capture_visual,
-                    WinitRenderElements::Window,
-                    WinitRenderElements::TransformedWindow,
-                )
-                .into_iter(),
-            );
-            if backdrop_scene.is_empty() {
-                return None;
-            }
-            let snapshot = snapshot::capture_snapshot(
-                renderer,
-                None,
-                crate::ssd::LogicalRect::new(
-                    capture_geo.loc.x,
-                    capture_geo.loc.y,
-                    capture_geo.size.w,
-                    capture_geo.size.h,
-                ),
-                0,
-                true,
-                scale,
-                &backdrop_scene,
-            )
-            .ok()
-            .flatten();
-            if snapshot.is_none() {
-                return None;
-            }
-            let snapshot = snapshot?;
-            let source_texture = snapshot.texture;
+            let xray_texture = if uses_xray {
+                let mut xray_scene: Vec<WinitRenderElements> = Vec::new();
+                for lower_layer in &lower_layers {
+                    xray_scene.extend(layer_surface_scene_elements_for_capture(
+                        renderer,
+                        output,
+                        capture_geo,
+                        scale,
+                        lower_layer,
+                    ));
+                }
+                capture_scene_texture_for_effect(renderer, capture_geo, scale, &xray_scene)
+            } else {
+                None
+            };
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                source_texture,
+                backdrop_texture
+                    .clone()
+                    .or_else(|| xray_texture.clone())?,
+                xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(
                     Point::from((
@@ -1270,9 +1420,23 @@ fn lower_layer_scene_elements(
         let Some(snapshot) = snapshot else {
             continue;
         };
+        let backdrop_texture = if config.effect.uses_backdrop_input() {
+            Some(snapshot.texture.clone())
+        } else {
+            None
+        };
+        let xray_texture = if config.effect.uses_xray_backdrop_input() {
+            Some(snapshot.texture.clone())
+        } else {
+            None
+        };
         let texture = crate::backend::shader_effect::apply_effect_pipeline(
             renderer,
-            snapshot.texture,
+            backdrop_texture
+                .clone()
+                .or_else(|| xray_texture.clone())
+                .unwrap_or(snapshot.texture),
+            xray_texture,
             (capture_geo.size.w, capture_geo.size.h),
             Some(Rectangle::new(
                 Point::from((
@@ -1410,64 +1574,75 @@ fn configured_background_effect_elements_for_layer(
             .into(),
     );
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
+    let uses_backdrop = config.effect.uses_backdrop_input();
+    let uses_xray = config.effect.uses_xray_backdrop_input();
     let relevant_source_damage = {
-        let mut entries = collect_window_source_damage(state, windows_top_to_bottom.iter().cloned());
-        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+        let mut entries = Vec::new();
+        if uses_backdrop {
+            entries.extend(collect_window_source_damage(
+                state,
+                windows_top_to_bottom.iter().cloned(),
+            ));
+        }
+        if uses_backdrop || uses_xray {
+            entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+        }
         entries
     };
 
-    let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-    for lower_window in windows_top_to_bottom {
-        backdrop_scene.extend(window_scene_elements_for_capture(
-            renderer,
-            state,
-            capture_geo,
-            scale,
-            lower_window,
-        ));
-    }
-    let (_, lower_layer_elements) =
-        window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-    let capture_offset = capture_geo.loc - output_geo.loc;
-    let capture_visual = WindowVisualState {
-        origin: smithay::utils::Point::from((0, 0)),
-        scale: smithay::utils::Scale::from((1.0, 1.0)),
-        translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-            .to_f64()
-            .to_physical_precise_round(scale),
-        opacity: 1.0,
+    let backdrop_texture = if config.effect.uses_backdrop_input() {
+        let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+        for lower_window in windows_top_to_bottom {
+            backdrop_scene.extend(window_scene_elements_for_capture(
+                renderer,
+                state,
+                capture_geo,
+                scale,
+                lower_window,
+            ));
+        }
+        let (_, lower_layer_elements) =
+            window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+        let capture_offset = capture_geo.loc - output_geo.loc;
+        let capture_visual = WindowVisualState {
+            origin: smithay::utils::Point::from((0, 0)),
+            scale: smithay::utils::Scale::from((1.0, 1.0)),
+            translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                .to_f64()
+                .to_physical_precise_round(scale),
+            opacity: 1.0,
+        };
+        backdrop_scene.extend(
+            transform_window_elements(
+                lower_layer_elements,
+                capture_visual,
+                WinitRenderElements::Window,
+                WinitRenderElements::TransformedWindow,
+            )
+            .into_iter(),
+        );
+        capture_scene_texture_for_effect(renderer, capture_geo, scale, &backdrop_scene)
+    } else {
+        None
     };
-    backdrop_scene.extend(
-        transform_window_elements(
-            lower_layer_elements,
-            capture_visual,
-            WinitRenderElements::Window,
-            WinitRenderElements::TransformedWindow,
-        )
-        .into_iter(),
-    );
-    if backdrop_scene.is_empty() {
+    let xray_texture = if config.effect.uses_xray_backdrop_input() {
+        let mut xray_scene: Vec<WinitRenderElements> = Vec::new();
+        for lower_layer in &lower_layers {
+            xray_scene.extend(layer_surface_scene_elements_for_capture(
+                renderer,
+                output,
+                capture_geo,
+                scale,
+                lower_layer,
+            ));
+        }
+        capture_scene_texture_for_effect(renderer, capture_geo, scale, &xray_scene)
+    } else {
+        None
+    };
+    if backdrop_texture.is_none() && xray_texture.is_none() {
         return Vec::new();
     }
-    let snapshot = snapshot::capture_snapshot(
-        renderer,
-        None,
-        crate::ssd::LogicalRect::new(
-            capture_geo.loc.x,
-            capture_geo.loc.y,
-            capture_geo.size.w,
-            capture_geo.size.h,
-        ),
-        0,
-        true,
-        scale,
-        &backdrop_scene,
-    )
-    .ok()
-    .flatten();
-    let Some(snapshot) = snapshot else {
-        return Vec::new();
-    };
     let layer_id = layer_surface.wl_surface().id().protocol_id();
     let stable_key = format!(
         "__layer_background_effect_{}_{}_top_{}x{}",
@@ -1478,14 +1653,16 @@ fn configured_background_effect_elements_for_layer(
     );
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     stable_key.hash(&mut hasher);
-    for lower_window in windows_top_to_bottom {
-        if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
-            lower_decoration.snapshot.id.hash(&mut hasher);
-            lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
-            lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
-            lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
-            lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
-            lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+    if uses_backdrop {
+        for lower_window in windows_top_to_bottom {
+            if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                lower_decoration.snapshot.id.hash(&mut hasher);
+                lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+            }
         }
     }
     format!("{:?}", config.effect).hash(&mut hasher);
@@ -1569,7 +1746,11 @@ fn configured_background_effect_elements_for_layer(
     }
     let texture = crate::backend::shader_effect::apply_effect_pipeline(
         renderer,
-        snapshot.texture,
+        backdrop_texture
+            .clone()
+            .or_else(|| xray_texture.clone())
+            .unwrap(),
+        xray_texture,
         (capture_geo.size.w, capture_geo.size.h),
         Some(Rectangle::new(
             Point::from((
@@ -1732,16 +1913,13 @@ fn configured_background_effect_elements_for_window(
         .cloned()
         .collect::<Vec<_>>();
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
-    let relevant_source_damage = {
-        let mut entries = collect_window_source_damage(state, lower_windows.iter().cloned());
-        entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
-        entries
-    };
 
     rects
         .into_iter()
         .enumerate()
         .filter_map(|(index, rect)| {
+            let uses_backdrop = config.effect.uses_backdrop_input();
+            let uses_xray = config.effect.uses_xray_backdrop_input();
             let stable_key = format!("__protocol_background_effect_{}", index);
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             stable_key.hash(&mut hasher);
@@ -1790,14 +1968,16 @@ fn configured_background_effect_elements_for_window(
                 capture_geo.size.h,
             )
                 .hash(&mut hasher);
-            for lower_window in &lower_windows {
-                if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
-                    lower_decoration.snapshot.id.hash(&mut hasher);
-                    lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
-                    lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+            if uses_backdrop {
+                for lower_window in &lower_windows {
+                    if let Some(lower_decoration) = state.window_decorations.get(lower_window) {
+                        lower_decoration.snapshot.id.hash(&mut hasher);
+                        lower_decoration.visual_transform.translate_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.translate_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_x.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.scale_y.to_bits().hash(&mut hasher);
+                        lower_decoration.visual_transform.opacity.to_bits().hash(&mut hasher);
+                    }
                 }
             }
             let signature = hasher.finish();
@@ -1807,7 +1987,23 @@ fn configured_background_effect_elements_for_window(
                     smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
                     (effect_rect.width, effect_rect.height).into(),
                 ),
-                &relevant_source_damage,
+                &{
+                    let mut entries = Vec::new();
+                    if uses_backdrop {
+                        entries.extend(collect_window_source_damage(
+                            state,
+                            lower_windows.iter().cloned(),
+                        ));
+                    }
+                    if uses_backdrop || uses_xray {
+                        entries.extend(collect_layer_source_damage(
+                            state,
+                            lower_layers.iter().cloned(),
+                            true,
+                        ));
+                    }
+                    entries
+                },
             );
 
             if !matches!(
@@ -1849,58 +2045,62 @@ fn configured_background_effect_elements_for_window(
                 }
             }
 
-            let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-            for lower_window in &lower_windows {
-                backdrop_scene.extend(window_scene_elements_for_capture(
-                    renderer,
-                    state,
-                    capture_geo,
-                    scale,
-                    lower_window,
-                ));
-            }
-            let (_, lower_layer_elements) =
-                window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-            let capture_offset = capture_geo.loc - output_geo.loc;
-            let capture_visual = WindowVisualState {
-                origin: smithay::utils::Point::from((0, 0)),
-                scale: smithay::utils::Scale::from((1.0, 1.0)),
-                translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                    .to_f64()
-                    .to_physical_precise_round(scale),
-                opacity: 1.0,
+            let backdrop_texture = if uses_backdrop {
+                let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
+                for lower_window in &lower_windows {
+                    backdrop_scene.extend(window_scene_elements_for_capture(
+                        renderer,
+                        state,
+                        capture_geo,
+                        scale,
+                        lower_window,
+                    ));
+                }
+                let (_, lower_layer_elements) =
+                    window_render::layer_elements_for_output(renderer, output, scale, 1.0);
+                let capture_offset = capture_geo.loc - output_geo.loc;
+                let capture_visual = WindowVisualState {
+                    origin: smithay::utils::Point::from((0, 0)),
+                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
+                        .to_f64()
+                        .to_physical_precise_round(scale),
+                    opacity: 1.0,
+                };
+                backdrop_scene.extend(
+                    transform_window_elements(
+                        lower_layer_elements,
+                        capture_visual,
+                        WinitRenderElements::Window,
+                        WinitRenderElements::TransformedWindow,
+                    )
+                    .into_iter(),
+                );
+                capture_scene_texture_for_effect(renderer, capture_geo, scale, &backdrop_scene)
+            } else {
+                None
             };
-            backdrop_scene.extend(
-                transform_window_elements(
-                    lower_layer_elements,
-                    capture_visual,
-                    WinitRenderElements::Window,
-                    WinitRenderElements::TransformedWindow,
-                )
-                .into_iter(),
-            );
-            if backdrop_scene.is_empty() {
-                return None;
-            }
-            let snapshot = snapshot::capture_snapshot(
-                renderer,
-                None,
-                crate::ssd::LogicalRect::new(
-                    capture_geo.loc.x,
-                    capture_geo.loc.y,
-                    capture_geo.size.w,
-                    capture_geo.size.h,
-                ),
-                0,
-                true,
-                scale,
-                &backdrop_scene,
-            )
-            .ok()
-            .flatten()?;
+            let xray_texture = if uses_xray {
+                let mut xray_scene: Vec<WinitRenderElements> = Vec::new();
+                for lower_layer in &lower_layers {
+                    xray_scene.extend(layer_surface_scene_elements_for_capture(
+                        renderer,
+                        output,
+                        capture_geo,
+                        scale,
+                        lower_layer,
+                    ));
+                }
+                capture_scene_texture_for_effect(renderer, capture_geo, scale, &xray_scene)
+            } else {
+                None
+            };
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                snapshot.texture,
+                backdrop_texture
+                    .clone()
+                    .or_else(|| xray_texture.clone())?,
+                xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(
                     Point::from((

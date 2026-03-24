@@ -25,14 +25,15 @@ import {
     save,
     unit,
     get,
-    blend
+    blend,
+    xrayBackdropSource
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
 const backgroundShader = compileEffect({
-    input: backdropSource(),
+    input: xrayBackdropSource(),
     invalidate: {
         kind: "on-source-damage-box",
         antiArtifactMargin: 0,
@@ -58,7 +59,7 @@ const backgroundShader = compileEffect({
 
 WINDOW_MANAGER.effect.background_effect = {
     effect: compileEffect({
-        input: backdropSource(),
+        input: xrayBackdropSource(),
         invalidate: {
             kind: "on-source-damage-box",
             antiArtifactMargin: 12,

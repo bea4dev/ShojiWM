@@ -168,6 +168,7 @@ struct ImageTextureCache(Mutex<HashMap<(String, i32, i32), GlesTexture>>);
 
 struct EffectExecutionContext {
     backdrop: GlesTexture,
+    xray_backdrop: Option<GlesTexture>,
     size: (i32, i32),
     named: HashMap<String, GlesTexture>,
 }
@@ -1321,6 +1322,7 @@ pub fn backdrop_shader_element(
 pub fn apply_effect_pipeline(
     renderer: &mut GlesRenderer,
     texture: GlesTexture,
+    xray_texture: Option<GlesTexture>,
     size: (i32, i32),
     sample_region: Option<Rectangle<i32, Buffer>>,
     output_size: Option<(i32, i32)>,
@@ -1328,6 +1330,7 @@ pub fn apply_effect_pipeline(
 ) -> Result<GlesTexture, ShaderEffectError> {
     let mut ctx = EffectExecutionContext {
         backdrop: texture,
+        xray_backdrop: xray_texture,
         size,
         named: HashMap::new(),
     };
@@ -1450,6 +1453,10 @@ fn resolve_effect_input(
 ) -> Result<GlesTexture, ShaderEffectError> {
     match input {
         EffectInput::Backdrop => Ok(ctx.backdrop.clone()),
+        EffectInput::XrayBackdrop => ctx
+            .xray_backdrop
+            .clone()
+            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
         EffectInput::Named(name) => ctx
             .named
             .get(name)

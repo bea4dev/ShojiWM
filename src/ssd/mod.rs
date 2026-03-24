@@ -347,6 +347,7 @@ pub struct ShaderStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectInput {
     Backdrop,
+    XrayBackdrop,
     Image(String),
     Named(String),
 }
@@ -411,7 +412,25 @@ pub struct BackdropBlur {
 
 impl CompiledEffect {
     pub fn is_backdrop(&self) -> bool {
-        matches!(self.input, EffectInput::Backdrop)
+        matches!(self.input, EffectInput::Backdrop | EffectInput::XrayBackdrop)
+    }
+
+    pub fn uses_backdrop_input(&self) -> bool {
+        self.input == EffectInput::Backdrop
+            || self.pipeline.iter().any(|stage| match stage {
+                EffectStage::Blend { input, .. } => *input == EffectInput::Backdrop,
+                EffectStage::Unit(effect) => effect.uses_backdrop_input(),
+                _ => false,
+            })
+    }
+
+    pub fn uses_xray_backdrop_input(&self) -> bool {
+        self.input == EffectInput::XrayBackdrop
+            || self.pipeline.iter().any(|stage| match stage {
+                EffectStage::Blend { input, .. } => *input == EffectInput::XrayBackdrop,
+                EffectStage::Unit(effect) => effect.uses_xray_backdrop_input(),
+                _ => false,
+            })
     }
 
     pub fn blur_stage(&self) -> Option<BackdropBlur> {

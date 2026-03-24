@@ -21,6 +21,7 @@ import type {
   MaybeSignal,
   SSDStyle,
   BackdropSourceHandle,
+  XrayBackdropSourceHandle,
   BlendMode,
   BlendStageHandle,
   ShaderEffectProps,
@@ -79,6 +80,7 @@ export {
   save,
   shaderStage,
   unit,
+  xrayBackdropSource,
   type CompileEffectOptions,
 } from "./shader";
 export {
@@ -162,6 +164,7 @@ export type {
   InteractionStyleVariants,
   SSDStyle,
   BackdropSourceHandle,
+  XrayBackdropSourceHandle,
   BlendMode,
   BlendStageHandle,
   ShaderEffectProps,

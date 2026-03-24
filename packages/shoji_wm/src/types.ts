@@ -154,6 +154,10 @@ export interface BackdropSourceHandle {
   kind: "backdrop-source";
 }
 
+export interface XrayBackdropSourceHandle {
+  kind: "xray-backdrop-source";
+}
+
 export interface ImageSourceHandle {
   kind: "image-source";
   path: string;
@@ -195,6 +199,7 @@ export interface UnitStageHandle {
 
 export type EffectInputHandle =
   | BackdropSourceHandle
+  | XrayBackdropSourceHandle
   | ImageSourceHandle
   | NamedTextureHandle;
 

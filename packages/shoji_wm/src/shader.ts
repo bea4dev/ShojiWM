@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type {
   BackdropBlurOptions,
   BackdropSourceHandle,
+  XrayBackdropSourceHandle,
   BlendMode,
   BlendStageHandle,
   CompiledEffectHandle,
@@ -52,6 +53,10 @@ export function loadShader(path: string): ShaderModuleHandle {
 
 export function backdropSource(): BackdropSourceHandle {
   return { kind: "backdrop-source" };
+}
+
+export function xrayBackdropSource(): XrayBackdropSourceHandle {
+  return { kind: "xray-backdrop-source" };
 }
 
 export function imageSource(path: string): ImageSourceHandle {
