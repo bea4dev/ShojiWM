@@ -1,7 +1,7 @@
 use std::{
     cmp::max,
     collections::HashMap,
-    env, fs,
+    fs,
     io::Cursor,
     sync::{
         Mutex,
@@ -24,12 +24,12 @@ use smithay::{
                 UniformName,
             },
             utils::{CommitCounter, OpaqueRegions},
-            Bind, ExportMem, Frame as _, FrameContext as _, ImportMem, Offscreen, Renderer, Texture, ContextId,
+            Bind, Frame as _, FrameContext as _, ImportMem, Offscreen, Renderer, Texture, ContextId,
         },
     },
     utils::{user_data::UserDataMap, Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
-use tracing::{trace, warn};
+use tracing::warn;
 
 use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectInvalidationPolicy, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
 
@@ -739,7 +739,7 @@ pub fn compile_backdrop_shader_program(
     renderer: &mut GlesRenderer,
     shader: &ShaderModule,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(renderer, &shader.path, "display", true, false, None)
+    compile_texture_program(renderer, &shader.path, "display", true, None)
 }
 
 fn compile_display_texture_program(
@@ -923,28 +923,7 @@ fn compile_texture_stage_program(
     renderer: &mut GlesRenderer,
     stage: &ShaderStage,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(
-        renderer,
-        &stage.shader.path,
-        "stage",
-        false,
-        false,
-        Some(&stage.uniforms),
-    )
-}
-
-fn compile_shader_input_program(
-    renderer: &mut GlesRenderer,
-    stage: &ShaderStage,
-) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(
-        renderer,
-        &stage.shader.path,
-        "shader-input",
-        false,
-        true,
-        Some(&stage.uniforms),
-    )
+    compile_texture_program(renderer, &stage.shader.path, "stage", false, Some(&stage.uniforms))
 }
 
 fn compile_texture_program(
@@ -952,7 +931,6 @@ fn compile_texture_program(
     path: &str,
     namespace: &str,
     with_clip: bool,
-    normalize_uv: bool,
     uniforms: Option<&std::collections::BTreeMap<String, ShaderUniformValue>>,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
     if renderer
@@ -967,7 +945,7 @@ fn compile_texture_program(
             .insert_if_missing(TextureStageProgramCache::default);
     }
 
-    let mut cache_key = format!("{namespace}:{path}:{with_clip}:{normalize_uv}");
+    let mut cache_key = format!("{namespace}:{path}:{with_clip}");
     if let Some(uniforms) = uniforms {
         for (name, value) in uniforms {
             let kind = match value {
@@ -1002,8 +980,6 @@ fn compile_texture_program(
     })?;
     let wrapped = if with_clip {
         wrap_backdrop_shader_source(&source)
-    } else if normalize_uv {
-        wrap_shader_input_source(&source)
     } else {
         wrap_texture_stage_source(&source)
     };
@@ -1292,37 +1268,6 @@ void main() {{
     )
 }
 
-fn wrap_shader_input_source(source: &str) -> String {
-    format!(
-        r#"
-//_DEFINES_
-
-#if defined(EXTERNAL)
-#extension GL_OES_EGL_image_external : require
-#endif
-
-precision mediump float;
-
-#if defined(EXTERNAL)
-uniform samplerExternalOES tex;
-#else
-uniform sampler2D tex;
-#endif
-
-uniform vec2 rect_size;
-
-varying vec2 v_coords;
-
-{source}
-
-void main() {{
-    vec2 uv = v_coords / max(rect_size, vec2(0.0001));
-    gl_FragColor = shader_main(uv, rect_size);
-}}
-"#
-    )
-}
-
 fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
     let clip_rect = spec
         .clip_rect
@@ -1399,18 +1344,6 @@ pub fn backdrop_shader_element(
         sample_rect.size.w as f32 / captured_rect.size.w.max(1) as f32,
         sample_rect.size.h as f32 / captured_rect.size.h.max(1) as f32,
     ];
-    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
-        tracing::info!(
-            debug_label = %debug_label,
-            display_rect = ?display_rect,
-            sample_rect = ?sample_rect,
-            captured_rect = ?captured_rect,
-            src = ?src,
-            uv_offset = ?uv_offset,
-            uv_scale = ?uv_scale,
-            "texture-backed shader element geometry"
-        );
-    }
     Ok(StableBackdropTextureElement {
         texture,
         program,
@@ -1438,30 +1371,13 @@ pub fn apply_effect_pipeline(
     output_size: Option<(i32, i32)>,
     effect: &CompiledEffect,
 ) -> Result<GlesTexture, ShaderEffectError> {
-    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
-        tracing::info!(
-            input_size = ?size,
-            sample_region = ?sample_region,
-            output_size = ?output_size,
-            shader_input = matches!(effect.input, EffectInput::Shader(_)),
-            pipeline_len = effect.pipeline.len(),
-            "apply effect pipeline"
-        );
-    }
     let mut ctx = EffectExecutionContext {
         backdrop: texture,
         xray_backdrop: xray_texture,
         size,
         named: HashMap::new(),
     };
-    let mut result = run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)?;
-    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some()
-        && matches!(effect.input, EffectInput::Shader(_))
-    {
-        let readback_size = output_size.unwrap_or(size);
-        debug_texture_readback(renderer, &mut result, readback_size, "shader-input-output");
-    }
-    Ok(result)
+    run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)
 }
 
 pub fn invalidation_sample_rect(
@@ -1609,12 +1525,7 @@ fn resolve_effect_input(
             .clone()
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
         EffectInput::Shader(stage) => {
-            let texture = solid_white_texture(renderer)?;
-            let mut texture = apply_shader_input_stage(renderer, texture, ctx.size, stage)?;
-            if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
-                debug_texture_readback(renderer, &mut texture, ctx.size, "shader-input-source");
-            }
-            Ok(texture)
+            apply_shader_input_stage(renderer, ctx.size, stage)
         }
         EffectInput::Named(name) => ctx
             .named
@@ -1647,22 +1558,32 @@ fn apply_texture_shader_stage(
 
 fn apply_shader_input_stage(
     renderer: &mut GlesRenderer,
-    texture: GlesTexture,
     size: (i32, i32),
     stage: &ShaderStage,
 ) -> Result<GlesTexture, ShaderEffectError> {
-    let program = compile_shader_input_program(renderer, stage)?;
-    let mut uniforms = vec![Uniform::new("rect_size", [size.0 as f32, size.1 as f32])];
-    for (name, value) in &stage.uniforms {
-        let uniform = match value {
-            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
-        };
-        uniforms.push(uniform);
-    }
-    apply_texture_program(renderer, texture, size, program, uniforms)
+    let effect = CompiledEffect {
+        input: EffectInput::Shader(stage.clone()),
+        invalidate: EffectInvalidationPolicy::Always,
+        pipeline: Vec::new(),
+    };
+    let spec = ShaderEffectSpec {
+        rect: Rectangle::new(Point::from((0, 0)), size.into()),
+        shader: effect,
+        alpha_bits: 1.0f32.to_bits(),
+        render_scale: 1.0,
+        clip_rect: None,
+        clip_radius: 0,
+    };
+    let mut state = ShaderEffectElementState::default();
+    let element = state.element(renderer, spec)?;
+    let mut target = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size.into())?;
+    let mut framebuffer = renderer.bind(&mut target)?;
+    let mut damage_tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+    let _ = damage_tracker
+        .render_output(renderer, &mut framebuffer, 0, &[element], [0.0, 0.0, 0.0, 0.0])
+        .map_err(|_| GlesError::FramebufferBindingError)?;
+    drop(framebuffer);
+    Ok(target)
 }
 
 fn apply_noise_stage(
@@ -1873,7 +1794,7 @@ pub fn solid_white_texture(renderer: &mut GlesRenderer) -> Result<GlesTexture, S
         return Ok(texture);
     }
 
-    let rgba = [255u8, 255u8, 255u8, 255u8];
+    let rgba = [16u8, 19u8, 25u8, 255u8];
     let texture = renderer.import_memory(&rgba, Fourcc::Abgr8888, (1, 1).into(), false)?;
     *renderer
         .egl_context()
@@ -2031,7 +1952,6 @@ pub fn preblur_backdrop_texture(
     let programs = blur_shader_programs(renderer)?;
     let passes = passes.clamp(1, 8) as usize;
     let offset = radius.max(1) as f32;
-    let debug = env::var_os("SHOJI_BACKDROP_DEBUG").is_some();
     if programs.renderer_context_id != renderer.context_id() {
         return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
     }
@@ -2039,9 +1959,6 @@ pub fn preblur_backdrop_texture(
     let mut levels = Vec::with_capacity(passes + 1);
     let mut current = texture;
     let mut current_size = size;
-    if debug {
-        debug_texture_readback(renderer, &mut current, size, "backdrop-source");
-    }
     levels.push((current.clone(), current_size));
 
     for _ in 0..passes {
@@ -2073,10 +1990,6 @@ pub fn preblur_backdrop_texture(
             offset,
         )?;
         levels[idx - 1].0 = current.clone();
-    }
-
-    if debug {
-        debug_texture_readback(renderer, &mut current, size, "backdrop-blurred");
     }
 
     Ok(current)
@@ -2144,69 +2057,4 @@ fn blur_texture_pass(
     })?;
 
     Ok(target)
-}
-
-fn debug_texture_readback(
-    renderer: &mut GlesRenderer,
-    texture: &mut GlesTexture,
-    size: (i32, i32),
-    label: &str,
-) {
-    let debug = std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some();
-    let framebuffer = match renderer.bind(texture) {
-        Ok(framebuffer) => framebuffer,
-        Err(error) => {
-            if debug {
-                tracing::info!(label, ?error, "shader texture readback bind failed");
-            }
-            return;
-        }
-    };
-    let mapping = match renderer.copy_framebuffer(
-        &framebuffer,
-        Rectangle::from_size((size.0, size.1).into()),
-        Fourcc::Abgr8888,
-    ) {
-        Ok(mapping) => mapping,
-        Err(error) => {
-            if debug {
-                tracing::info!(label, ?error, "shader texture readback copy failed");
-            }
-            return;
-        }
-    };
-    let copy: &[u8] = match renderer.map_texture(&mapping) {
-        Ok(copy) => copy,
-        Err(error) => {
-            if debug {
-                tracing::info!(label, ?error, "shader texture readback map failed");
-            }
-            return;
-        }
-    };
-
-    if size.0 <= 0 || size.1 <= 0 {
-        if debug {
-            tracing::info!(label, ?size, "shader texture readback skipped empty size");
-        }
-        return;
-    }
-
-    let cx = (size.0 / 2).max(0) as usize;
-    let cy = (size.1 / 2).max(0) as usize;
-    let idx = (cy * size.0 as usize + cx) * 4;
-    if idx + 3 >= copy.len() {
-        if debug {
-            tracing::info!(label, ?size, buffer_len = copy.len(), idx, "shader texture readback out of range");
-        }
-        return;
-    }
-
-    tracing::info!(
-        label,
-        width = size.0,
-        height = size.1,
-        center = ?[copy[idx], copy[idx + 1], copy[idx + 2], copy[idx + 3]],
-        "shader texture readback"
-    );
 }

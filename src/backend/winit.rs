@@ -756,7 +756,6 @@ fn backdrop_shader_elements_for_window(
         .filter_map(|cached| {
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
-            let is_shader_input = matches!(cached.shader.input, crate::ssd::EffectInput::Shader(_));
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
@@ -820,18 +819,6 @@ fn backdrop_shader_elements_for_window(
                 }
             }
             let signature = hasher.finish();
-            if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() && is_shader_input {
-                tracing::info!(
-                    stable_key = %cached.stable_key,
-                    effect_rect = ?effect_rect,
-                    output_geo = ?output_geo,
-                    capture_geo = ?capture_geo,
-                    signature,
-                    uses_backdrop,
-                    uses_xray,
-                    "winit texture-backed shader-input decision"
-                );
-            }
             let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
                 &cached.shader,
                 Rectangle::new(
