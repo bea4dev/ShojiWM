@@ -109,11 +109,12 @@ pub enum WireAutomaticEffectInvalidationPolicy {
     Always,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WireEffectInput {
     BackdropSource,
     XrayBackdropSource,
+    ShaderInput(WireShaderStageFields),
     ImageSource { path: String },
     NamedTexture { name: String },
 }
@@ -387,7 +388,7 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
             }
         }
 
-        if stages.is_empty() {
+        if stages.is_empty() && !matches!(input, EffectInput::Shader(_)) {
             return Err(DecorationBridgeError::InvalidShaderDescriptor);
         }
 
@@ -433,6 +434,30 @@ fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, Decoration
     Ok(match value {
         WireEffectInput::BackdropSource => EffectInput::Backdrop,
         WireEffectInput::XrayBackdropSource => EffectInput::XrayBackdrop,
+        WireEffectInput::ShaderInput(stage) => {
+            if stage.shader.kind != "shader-module" || stage.shader.path.is_empty() {
+                return Err(DecorationBridgeError::InvalidEffectInput);
+            }
+            let mut uniforms = std::collections::BTreeMap::new();
+            for (name, value) in stage.uniforms {
+                let value = match value {
+                    WireShaderUniformValue::Float(value) => ShaderUniformValue::Float(value),
+                    WireShaderUniformValue::Vec(value) => match value.as_slice() {
+                        [x, y] => ShaderUniformValue::Vec2([*x, *y]),
+                        [x, y, z] => ShaderUniformValue::Vec3([*x, *y, *z]),
+                        [x, y, z, w] => ShaderUniformValue::Vec4([*x, *y, *z, *w]),
+                        _ => return Err(DecorationBridgeError::InvalidEffectInput),
+                    },
+                };
+                uniforms.insert(name, value);
+            }
+            EffectInput::Shader(ShaderStage {
+                shader: ShaderModule {
+                    path: stage.shader.path,
+                },
+                uniforms,
+            })
+        }
         WireEffectInput::ImageSource { path } => {
             if path.is_empty() {
                 return Err(DecorationBridgeError::InvalidEffectInput);

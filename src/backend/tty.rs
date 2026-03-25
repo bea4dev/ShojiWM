@@ -1117,7 +1117,16 @@ fn backdrop_shader_elements_for_window(
     has_backdrop_source: bool,
 ) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
     if !has_backdrop_source {
-        return Vec::new();
+        let Some(decoration) = window_decorations.get(window) else {
+            return Vec::new();
+        };
+        if !decoration
+            .shader_buffers
+            .iter()
+            .any(|cached| cached.shader.is_texture_backed())
+        {
+            return Vec::new();
+        }
     }
     let Some(decoration) = window_decorations.get(window).cloned() else {
         return Vec::new();
@@ -1145,8 +1154,9 @@ fn backdrop_shader_elements_for_window(
         .shader_buffers
         .clone()
         .iter()
-        .filter(|cached| cached.shader.is_backdrop())
+        .filter(|cached| cached.shader.is_texture_backed())
         .filter_map(|cached| {
+            let cache_key = format!("{}@{}", cached.stable_key, output.name());
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1233,17 +1243,19 @@ fn backdrop_shader_elements_for_window(
                     entries
                 },
             );
+            let existing_cache = window_decorations
+                .get(window)
+                .and_then(|d| d.backdrop_cache.get(&cache_key))
+                .cloned();
 
             if !matches!(
                 cached.shader.invalidate_policy(),
                 crate::ssd::EffectInvalidationPolicy::Always
             ) && !source_damage_hit
             {
-                if let Some(existing) = window_decorations
-                    .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                if let Some(existing) = existing_cache
+                    .clone()
                     .filter(|existing| existing.signature == signature)
-                    .cloned()
                 {
                     let local_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
@@ -1342,11 +1354,13 @@ fn backdrop_shader_elements_for_window(
             } else {
                 None
             };
+            let input_texture = backdrop_texture
+                .clone()
+                .or_else(|| xray_texture.clone())
+                .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                backdrop_texture
-                    .clone()
-                    .or_else(|| xray_texture.clone())?,
+                input_texture,
                 xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(
@@ -1362,7 +1376,7 @@ fn backdrop_shader_elements_for_window(
             .ok()?;
             let commit_counter = window_decorations
                 .get(window)
-                .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                .and_then(|d| d.backdrop_cache.get(&cache_key))
                 .map(|existing| {
                     let mut counter = existing.commit_counter;
                     counter.increment();
@@ -1371,7 +1385,7 @@ fn backdrop_shader_elements_for_window(
                 .unwrap_or_default();
             if let Some(window_decoration) = window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
-                    cached.stable_key.clone(),
+                    cache_key.clone(),
                     crate::backend::shader_effect::CachedBackdropTexture {
                         signature,
                         texture: texture.clone(),
@@ -1408,12 +1422,12 @@ fn backdrop_shader_elements_for_window(
                 renderer,
                 window_decorations
                     .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                    .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .map(|cached| cached.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
                 window_decorations
                     .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&cached.stable_key))
+                    .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .map(|cached| cached.commit_counter)
                     .unwrap_or_default(),
                 texture,
@@ -2223,6 +2237,7 @@ fn configured_background_effect_elements_for_window(
             let uses_backdrop = effect_config.effect.uses_backdrop_input();
             let uses_xray = effect_config.effect.uses_xray_backdrop_input();
             let stable_key = format!("__protocol_background_effect_{}", index);
+            let cache_key = format!("{}@{}", stable_key, output.name());
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             stable_key.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
@@ -2318,7 +2333,7 @@ fn configured_background_effect_elements_for_window(
             {
                 if let Some(existing) = window_decorations
                     .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .filter(|existing| existing.signature == signature)
                     .cloned()
                 {
@@ -2404,11 +2419,13 @@ fn configured_background_effect_elements_for_window(
             } else {
                 None
             };
+            let input_texture = backdrop_texture
+                .clone()
+                .or_else(|| xray_texture.clone())
+                .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                backdrop_texture
-                    .clone()
-                    .or_else(|| xray_texture.clone())?,
+                input_texture,
                 xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(
@@ -2424,7 +2441,7 @@ fn configured_background_effect_elements_for_window(
             .ok()?;
             let commit_counter = window_decorations
                 .get(window)
-                .and_then(|d| d.backdrop_cache.get(&stable_key))
+                .and_then(|d| d.backdrop_cache.get(&cache_key))
                 .map(|existing| {
                     let mut counter = existing.commit_counter;
                     counter.increment();
@@ -2433,7 +2450,7 @@ fn configured_background_effect_elements_for_window(
                 .unwrap_or_default();
             if let Some(window_decoration) = window_decorations.get_mut(window) {
                 window_decoration.backdrop_cache.insert(
-                    stable_key.clone(),
+                    cache_key.clone(),
                     crate::backend::shader_effect::CachedBackdropTexture {
                         signature,
                         texture: texture.clone(),
@@ -2454,12 +2471,12 @@ fn configured_background_effect_elements_for_window(
                 renderer,
                 window_decorations
                     .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .map(|cached| cached.id.clone())
                     .unwrap_or_else(smithay::backend::renderer::element::Id::new),
                 window_decorations
                     .get(window)
-                    .and_then(|d| d.backdrop_cache.get(&stable_key))
+                    .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .map(|cached| cached.commit_counter)
                     .unwrap_or_default(),
                 texture,

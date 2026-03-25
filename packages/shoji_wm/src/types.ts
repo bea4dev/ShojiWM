@@ -155,6 +155,12 @@ export interface ShaderStageHandle {
   uniforms?: ShaderUniformMap;
 }
 
+export interface ShaderInputHandle {
+  kind: "shader-input";
+  shader: ShaderModuleHandle;
+  uniforms?: ShaderUniformMap;
+}
+
 export interface BackdropSourceHandle {
   kind: "backdrop-source";
 }
@@ -205,6 +211,7 @@ export interface UnitStageHandle {
 export type EffectInputHandle =
   | BackdropSourceHandle
   | XrayBackdropSourceHandle
+  | ShaderInputHandle
   | ImageSourceHandle
   | NamedTextureHandle;
 

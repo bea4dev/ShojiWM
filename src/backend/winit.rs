@@ -727,7 +727,16 @@ fn backdrop_shader_elements_for_window(
     has_backdrop_source: bool,
 ) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
     if !has_backdrop_source {
-        return Vec::new();
+        let Some(decoration) = state.window_decorations.get(window) else {
+            return Vec::new();
+        };
+        if !decoration
+            .shader_buffers
+            .iter()
+            .any(|cached| cached.shader.is_texture_backed())
+        {
+            return Vec::new();
+        }
     }
     let Some(decoration) = state.window_decorations.get(window).cloned() else {
         return Vec::new();
@@ -743,7 +752,7 @@ fn backdrop_shader_elements_for_window(
         .shader_buffers
         .clone()
         .iter()
-        .filter(|cached| cached.shader.is_backdrop())
+        .filter(|cached| cached.shader.is_texture_backed())
         .filter_map(|cached| {
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
@@ -939,11 +948,13 @@ fn backdrop_shader_elements_for_window(
             } else {
                 None
             };
+            let input_texture = backdrop_texture
+                .clone()
+                .or_else(|| xray_texture.clone())
+                .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                backdrop_texture
-                    .clone()
-                    .or_else(|| xray_texture.clone())?,
+                input_texture,
                 xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(
@@ -2025,11 +2036,13 @@ fn configured_background_effect_elements_for_window(
             } else {
                 None
             };
+            let input_texture = backdrop_texture
+                .clone()
+                .or_else(|| xray_texture.clone())
+                .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
-                backdrop_texture
-                    .clone()
-                    .or_else(|| xray_texture.clone())?,
+                input_texture,
                 xray_texture,
                 (capture_geo.size.w, capture_geo.size.h),
                 Some(Rectangle::new(

@@ -26,7 +26,8 @@ import {
     unit,
     get,
     blend,
-    xrayBackdropSource
+    xrayBackdropSource,
+    shaderInput
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
@@ -109,7 +110,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const test = window.animation.signal(testAnimation)
 
     const backgroundShader = compileEffect({
-        input: xrayBackdropSource(),
+        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         invalidate: {
             kind: "on-source-damage-box",
             antiArtifactMargin: 0,
@@ -131,7 +132,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                 },
             }),*/
             //shaderStage(loadShader("./blur.frag"))
-            shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: 0, speed: 100 } }),
+            //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         ],
     });
 

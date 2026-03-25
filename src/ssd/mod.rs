@@ -344,10 +344,11 @@ pub struct ShaderStage {
     pub uniforms: std::collections::BTreeMap<String, ShaderUniformValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EffectInput {
     Backdrop,
     XrayBackdrop,
+    Shader(ShaderStage),
     Image(String),
     Named(String),
 }
@@ -418,6 +419,13 @@ impl CompiledEffect {
         matches!(self.input, EffectInput::Backdrop | EffectInput::XrayBackdrop)
     }
 
+    pub fn is_texture_backed(&self) -> bool {
+        matches!(
+            self.input,
+            EffectInput::Backdrop | EffectInput::XrayBackdrop | EffectInput::Shader(_)
+        )
+    }
+
     pub fn uses_backdrop_input(&self) -> bool {
         self.input == EffectInput::Backdrop
             || self.pipeline.iter().any(|stage| match stage {
@@ -444,10 +452,17 @@ impl CompiledEffect {
     }
 
     pub fn last_shader_stage(&self) -> Option<&ShaderStage> {
-        self.pipeline.iter().rev().find_map(|stage| match stage {
-            EffectStage::Shader(shader) => Some(shader),
-            _ => None,
-        })
+        self.pipeline
+            .iter()
+            .rev()
+            .find_map(|stage| match stage {
+                EffectStage::Shader(shader) => Some(shader),
+                _ => None,
+            })
+            .or_else(|| match &self.input {
+                EffectInput::Shader(shader) => Some(shader),
+                _ => None,
+            })
     }
 
     pub fn invalidate_policy(&self) -> EffectInvalidationPolicy {

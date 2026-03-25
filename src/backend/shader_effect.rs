@@ -201,6 +201,9 @@ struct BlendPrograms {
 #[derive(Debug, Default)]
 struct BlendProgramCache(Mutex<Option<BlendPrograms>>);
 
+#[derive(Debug, Default)]
+struct SolidWhiteTextureCache(Mutex<Option<GlesTexture>>);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShaderEffectError {
     #[error("failed to read shader source at {path}: {source}")]
@@ -658,7 +661,19 @@ fn compile_shader_program(
     let shader_module = shader
         .last_shader_stage()
         .expect("pixel shader effects should always have a final shader stage");
-    let cache_key = format!("pixel:{}", shader_module.shader.path);
+    let mut cache_key = format!("pixel:{}", shader_module.shader.path);
+    for (name, value) in &shader_module.uniforms {
+        let kind = match value {
+            ShaderUniformValue::Float(_) => "f1",
+            ShaderUniformValue::Vec2(_) => "f2",
+            ShaderUniformValue::Vec3(_) => "f3",
+            ShaderUniformValue::Vec4(_) => "f4",
+        };
+        cache_key.push(':');
+        cache_key.push_str(name);
+        cache_key.push(':');
+        cache_key.push_str(kind);
+    }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -677,26 +692,36 @@ fn compile_shader_program(
         path: shader_module.shader.path.clone(),
         source,
     })?;
+    let mut uniform_names = vec![
+        UniformName::new(
+            "render_scale",
+            smithay::backend::renderer::gles::UniformType::_1f,
+        ),
+        UniformName::new(
+            "clip_enabled",
+            smithay::backend::renderer::gles::UniformType::_1f,
+        ),
+        UniformName::new(
+            "clip_rect",
+            smithay::backend::renderer::gles::UniformType::_4f,
+        ),
+        UniformName::new(
+            "clip_radius",
+            smithay::backend::renderer::gles::UniformType::_4f,
+        ),
+    ];
+    for (name, value) in &shader_module.uniforms {
+        let ty = match value {
+            ShaderUniformValue::Float(_) => smithay::backend::renderer::gles::UniformType::_1f,
+            ShaderUniformValue::Vec2(_) => smithay::backend::renderer::gles::UniformType::_2f,
+            ShaderUniformValue::Vec3(_) => smithay::backend::renderer::gles::UniformType::_3f,
+            ShaderUniformValue::Vec4(_) => smithay::backend::renderer::gles::UniformType::_4f,
+        };
+        uniform_names.push(UniformName::new(name.clone(), ty));
+    }
     let program = renderer.compile_custom_pixel_shader(
         wrap_pixel_shader_source(&source),
-        &[
-            UniformName::new(
-                "render_scale",
-                smithay::backend::renderer::gles::UniformType::_1f,
-            ),
-            UniformName::new(
-                "clip_enabled",
-                smithay::backend::renderer::gles::UniformType::_1f,
-            ),
-            UniformName::new(
-                "clip_rect",
-                smithay::backend::renderer::gles::UniformType::_4f,
-            ),
-            UniformName::new(
-                "clip_radius",
-                smithay::backend::renderer::gles::UniformType::_4f,
-            ),
-        ],
+        &uniform_names,
     )?;
     renderer
         .egl_context()
@@ -1256,7 +1281,7 @@ fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
         })
         .unwrap_or([0.0f32, 0.0f32, 0.0f32, 0.0f32]);
     let clip_radius = spec.clip_radius.max(0) as f32;
-    vec![
+    let mut uniforms = vec![
         Uniform::new("render_scale", spec.render_scale.max(1.0)),
         Uniform::new(
             "clip_enabled",
@@ -1267,7 +1292,25 @@ fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
             "clip_radius",
             [clip_radius, clip_radius, clip_radius, clip_radius],
         ),
-    ]
+    ];
+    if let Some(stage) = spec.shader.last_shader_stage() {
+        uniforms.extend(uniforms_for_shader_stage(stage));
+    }
+    uniforms
+}
+
+fn uniforms_for_shader_stage(stage: &ShaderStage) -> Vec<Uniform<'static>> {
+    let mut uniforms = Vec::with_capacity(stage.uniforms.len());
+    for (name, value) in &stage.uniforms {
+        let uniform = match value {
+            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
+        };
+        uniforms.push(uniform);
+    }
+    uniforms
 }
 
 pub fn backdrop_shader_element(
@@ -1481,6 +1524,10 @@ fn resolve_effect_input(
             .xray_backdrop
             .clone()
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+        EffectInput::Shader(stage) => {
+            let texture = solid_white_texture(renderer)?;
+            apply_texture_shader_stage(renderer, texture, ctx.size, stage)
+        }
         EffectInput::Named(name) => ctx
             .named
             .get(name)
@@ -1690,6 +1737,45 @@ fn apply_texture_program(
         .map_err(|_| GlesError::FramebufferBindingError)?;
     drop(framebuffer);
     Ok(target)
+}
+
+pub fn solid_white_texture(renderer: &mut GlesRenderer) -> Result<GlesTexture, ShaderEffectError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<SolidWhiteTextureCache>()
+        .is_none()
+    {
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(SolidWhiteTextureCache::default);
+    }
+
+    if let Some(texture) = renderer
+        .egl_context()
+        .user_data()
+        .get::<SolidWhiteTextureCache>()
+        .expect("solid white texture cache should exist")
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+    {
+        return Ok(texture);
+    }
+
+    let rgba = [255u8, 255u8, 255u8, 255u8];
+    let texture = renderer.import_memory(&rgba, Fourcc::Abgr8888, (1, 1).into(), false)?;
+    *renderer
+        .egl_context()
+        .user_data()
+        .get::<SolidWhiteTextureCache>()
+        .expect("solid white texture cache should exist")
+        .0
+        .lock()
+        .unwrap() = Some(texture.clone());
+    Ok(texture)
 }
 
 fn load_image_texture(

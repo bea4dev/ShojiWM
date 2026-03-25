@@ -134,7 +134,7 @@ pub fn ordered_background_elements_for_window(
     }
 
     for cached in decoration.shader_buffers.clone() {
-        if cached.shader.is_backdrop() {
+        if cached.shader.is_texture_backed() {
             continue;
         }
         if let Some(element) =

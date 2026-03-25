@@ -14,6 +14,7 @@ import type {
   SaveStageHandle,
   ShaderModuleHandle,
   ShaderStageHandle,
+  ShaderInputHandle,
   UnitStageHandle,
   ImageSourceHandle,
   NamedTextureHandle,
@@ -79,6 +80,17 @@ export function shaderStage(
 ): ShaderStageHandle {
   return {
     kind: "shader-stage",
+    shader: typeof shader === "string" ? loadShader(shader) : shader,
+    uniforms: options.uniforms,
+  };
+}
+
+export function shaderInput(
+  shader: string | ShaderModuleHandle,
+  options: { uniforms?: ShaderUniformMap } = {},
+): ShaderInputHandle {
+  return {
+    kind: "shader-input",
     shader: typeof shader === "string" ? loadShader(shader) : shader,
     uniforms: options.uniforms,
   };
