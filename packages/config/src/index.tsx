@@ -111,10 +111,11 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const backgroundShader = compileEffect({
         input: xrayBackdropSource(),
         invalidate: {
-            kind: "manual",
-            dirtyWhen: test(test => Math.floor(test * 100) % 2 == 0)
+            kind: "on-source-damage-box",
+            antiArtifactMargin: 0,
         },
         pipeline: [
+            /*
             noise({ kind: "salt", amount: 0.01 }),
             dualKawaseBlur({ radius: 4, passes: 3 }),
             shaderStage(loadShader("./liquid-glass.frag"), {
@@ -128,8 +129,9 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                     white_tint: 0.0,
                     edge_highlight: 0.0,
                 },
-            }),
+            }),*/
             //shaderStage(loadShader("./blur.frag"))
+            shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: 0, speed: 100 } }),
         ],
     });
 
