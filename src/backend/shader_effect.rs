@@ -739,7 +739,7 @@ pub fn compile_backdrop_shader_program(
     renderer: &mut GlesRenderer,
     shader: &ShaderModule,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(renderer, &shader.path, "display", true, None)
+    compile_texture_program(renderer, &shader.path, "display", true, false, None)
 }
 
 fn compile_display_texture_program(
@@ -923,7 +923,28 @@ fn compile_texture_stage_program(
     renderer: &mut GlesRenderer,
     stage: &ShaderStage,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
-    compile_texture_program(renderer, &stage.shader.path, "stage", false, Some(&stage.uniforms))
+    compile_texture_program(
+        renderer,
+        &stage.shader.path,
+        "stage",
+        false,
+        false,
+        Some(&stage.uniforms),
+    )
+}
+
+fn compile_shader_input_program(
+    renderer: &mut GlesRenderer,
+    stage: &ShaderStage,
+) -> Result<GlesTexProgram, ShaderEffectError> {
+    compile_texture_program(
+        renderer,
+        &stage.shader.path,
+        "shader-input",
+        false,
+        true,
+        Some(&stage.uniforms),
+    )
 }
 
 fn compile_texture_program(
@@ -931,6 +952,7 @@ fn compile_texture_program(
     path: &str,
     namespace: &str,
     with_clip: bool,
+    normalize_uv: bool,
     uniforms: Option<&std::collections::BTreeMap<String, ShaderUniformValue>>,
 ) -> Result<GlesTexProgram, ShaderEffectError> {
     if renderer
@@ -945,7 +967,7 @@ fn compile_texture_program(
             .insert_if_missing(TextureStageProgramCache::default);
     }
 
-    let mut cache_key = format!("{namespace}:{path}:{with_clip}");
+    let mut cache_key = format!("{namespace}:{path}:{with_clip}:{normalize_uv}");
     if let Some(uniforms) = uniforms {
         for (name, value) in uniforms {
             let kind = match value {
@@ -980,6 +1002,8 @@ fn compile_texture_program(
     })?;
     let wrapped = if with_clip {
         wrap_backdrop_shader_source(&source)
+    } else if normalize_uv {
+        wrap_shader_input_source(&source)
     } else {
         wrap_texture_stage_source(&source)
     };
@@ -1239,6 +1263,36 @@ void main() {{
 }
 
 fn wrap_texture_stage_source(source: &str) -> String {
+    format!(
+        r#"
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform vec2 rect_size;
+
+varying vec2 v_coords;
+
+{source}
+
+void main() {{
+    gl_FragColor = shader_main(v_coords, rect_size);
+}}
+"#
+    )
+}
+
+fn wrap_shader_input_source(source: &str) -> String {
     format!(
         r#"
 //_DEFINES_
@@ -1556,7 +1610,7 @@ fn resolve_effect_input(
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
         EffectInput::Shader(stage) => {
             let texture = solid_white_texture(renderer)?;
-            let mut texture = apply_texture_shader_stage(renderer, texture, ctx.size, stage)?;
+            let mut texture = apply_shader_input_stage(renderer, texture, ctx.size, stage)?;
             if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
                 debug_texture_readback(renderer, &mut texture, ctx.size, "shader-input-source");
             }
@@ -1578,6 +1632,26 @@ fn apply_texture_shader_stage(
     stage: &ShaderStage,
 ) -> Result<GlesTexture, ShaderEffectError> {
     let program = compile_texture_stage_program(renderer, stage)?;
+    let mut uniforms = vec![Uniform::new("rect_size", [size.0 as f32, size.1 as f32])];
+    for (name, value) in &stage.uniforms {
+        let uniform = match value {
+            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
+            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
+        };
+        uniforms.push(uniform);
+    }
+    apply_texture_program(renderer, texture, size, program, uniforms)
+}
+
+fn apply_shader_input_stage(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    size: (i32, i32),
+    stage: &ShaderStage,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let program = compile_shader_input_program(renderer, stage)?;
     let mut uniforms = vec![Uniform::new("rect_size", [size.0 as f32, size.1 as f32])];
     for (name, value) in &stage.uniforms {
         let uniform = match value {

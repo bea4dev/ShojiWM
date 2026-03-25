@@ -96,7 +96,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.opacity = opacity;
 
     const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
-    const titlebarBackground = isFocused ? "#1f243000" : "#2a2f3a00";
+    const titlebarBackground = isFocused ? "#1f243080" : "#2a2f3a80";
     const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
 
     const titlebarStyle: SSDStyle = {
@@ -110,12 +110,13 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const test = window.animation.signal(testAnimation)
 
     const backgroundShader = compileEffect({
-        input: backdropSource(),
+        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         invalidate: {
             kind: "on-source-damage-box",
             antiArtifactMargin: 0,
         },
         pipeline: [
+            /*
             noise({ kind: "salt", amount: 0.01 }),
             dualKawaseBlur({ radius: 4, passes: 3 }),
             shaderStage(loadShader("./liquid-glass.frag"), {
@@ -129,7 +130,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                     white_tint: 0.0,
                     edge_highlight: 0.0,
                 },
-            }),
+            }),*/
             //shaderStage(loadShader("./blur.frag"))
             //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         ],
