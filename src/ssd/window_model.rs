@@ -1,12 +1,13 @@
 use serde::Serialize;
 use smithay::{
-    desktop::Window,
+    desktop::{LayerSurface, Window, layer_map_for_output},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::Resource,
     },
     wayland::{
         compositor::with_states,
+        shell::wlr_layer::Layer as WlrLayer,
         shell::xdg::XdgToplevelSurfaceData,
     },
 };
@@ -45,6 +46,34 @@ pub struct WindowPositionSnapshot {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaylandLayerSnapshot {
+    pub id: String,
+    pub namespace: Option<String>,
+    pub layer: LayerKindSnapshot,
+    pub output_name: String,
+    pub position: LayerPositionSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerPositionSnapshot {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayerKindSnapshot {
+    Background,
+    Bottom,
+    Top,
+    Overlay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
@@ -178,6 +207,55 @@ impl ShojiWM {
             .map(|window| self.snapshot_window(window))
             .collect()
     }
+
+    pub fn snapshot_layer_surface(
+        &self,
+        output_name: &str,
+        layer: &LayerSurface,
+        geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> WaylandLayerSnapshot {
+        WaylandLayerSnapshot {
+            id: layer_runtime_id(layer),
+            namespace: Some(layer.namespace().to_string()),
+            layer: match layer.layer() {
+                WlrLayer::Background => LayerKindSnapshot::Background,
+                WlrLayer::Bottom => LayerKindSnapshot::Bottom,
+                WlrLayer::Top => LayerKindSnapshot::Top,
+                WlrLayer::Overlay => LayerKindSnapshot::Overlay,
+            },
+            output_name: output_name.to_string(),
+            position: LayerPositionSnapshot {
+                x: geometry.loc.x,
+                y: geometry.loc.y,
+                width: geometry.size.w,
+                height: geometry.size.h,
+            },
+        }
+    }
+
+    pub fn snapshot_layers(&self) -> Vec<WaylandLayerSnapshot> {
+        let mut layers = Vec::new();
+        for output in self.space.outputs() {
+            let output_name = output.name().to_string();
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if let Some(geometry) = map.layer_geometry(layer) {
+                    layers.push(self.snapshot_layer_surface(&output_name, layer, geometry));
+                }
+            }
+        }
+        layers
+    }
+}
+
+pub fn layer_runtime_id(layer: &LayerSurface) -> String {
+    let surface = layer.wl_surface();
+    let protocol_id = surface.id().protocol_id();
+    let client_id = surface
+        .client()
+        .map(|client| format!("{:?}", client.id()))
+        .unwrap_or_else(|| "unknown-client".to_string());
+    format!("{client_id}:{protocol_id}")
 }
 
 #[cfg(test)]

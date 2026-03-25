@@ -55,6 +55,13 @@ import type {
   WaylandWindowActions,
   WaylandWindowSnapshot,
   WaylandWindow,
+  LayerPosition,
+  ReactiveWaylandLayer,
+  ReactiveWaylandLayerHandle,
+  ReactiveWaylandLayerSignals,
+  WaylandLayer,
+  WaylandLayerKind,
+  WaylandLayerSnapshot,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
 import { createElementNode } from "./runtime";
@@ -75,6 +82,7 @@ export {
   type WindowAnimationController,
 } from "./animation";
 export {
+  createEffect,
   backdropSource,
   blend,
   compileEffect,
@@ -105,6 +113,8 @@ export {
 } from "./easing";
 export {
   createWindowManagerEventController,
+  type LayerCreateListener,
+  type LayerDestroyListener,
   type WindowCloseListener,
   type WindowFocusListener,
   type WindowManagerEventController,
@@ -112,6 +122,7 @@ export {
   type WindowStartCloseListener,
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
+export { createReactiveLayer } from "./reactive-layer";
 export {
   createDecorationEvaluationCache,
   diffWindowSnapshot,
@@ -139,10 +150,14 @@ export {
   type PollHandle,
 } from "./scheduler";
 export {
+  dropLayerDependencies,
   dropWindowDependencies,
+  enterLayerDependencyScope,
   enterWindowDependencyScope,
   installRuntimeHooks,
+  leaveLayerDependencyScope,
   leaveWindowDependencyScope,
+  markLayerDirty,
   markRuntimeDirty,
   markWindowDirty,
   trackSignalRead,
@@ -206,6 +221,13 @@ export type {
   WaylandWindowActions,
   WaylandWindowSnapshot,
   WaylandWindow,
+  LayerPosition,
+  ReactiveWaylandLayer,
+  ReactiveWaylandLayerHandle,
+  ReactiveWaylandLayerSignals,
+  WaylandLayer,
+  WaylandLayerKind,
+  WaylandLayerSnapshot,
 } from "./types";
 export { DecorationSerializationError, serializeDecorationTree } from "./serialize";
 

@@ -7,12 +7,18 @@ import {
   advanceAnimationFrame,
   hasActiveAnimations,
   type BackgroundEffectConfig,
+  createReactiveLayer,
   createWindowAnimationControllerWithStore,
   createDecorationEvaluationCache,
   createManagedPoll,
+  dropLayerDependencies,
   dropWindowDependencies,
+  enterLayerDependencyScope,
+  isSignal,
   installShaderResolverBridge,
   installRuntimeHooks,
+  leaveLayerDependencyScope,
+  read,
   type WindowManagerEventController,
   installSchedulerBridge,
   type DecorationEvaluationCache,
@@ -20,6 +26,8 @@ import {
   type PollCallback,
   type PollDirtyMode,
   type PollHandle,
+  type WaylandLayerSnapshot,
+  type WaylandLayer,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
   type WindowTransform,
@@ -71,6 +79,14 @@ interface GetEffectConfigRequest {
   kind: "getEffectConfig";
 }
 
+interface EvaluateLayerEffectsRequest {
+  requestId: number;
+  kind: "evaluateLayerEffects";
+  outputName: string;
+  nowMs: number;
+  layers: WaylandLayerSnapshot[];
+}
+
 type RuntimeRequest =
   | EvaluateRequest
   | SchedulerTickRequest
@@ -78,7 +94,8 @@ type RuntimeRequest =
   | StartCloseRequest
   | EvaluateCachedRequest
   | InvokeHandlerRequest
-  | GetEffectConfigRequest;
+  | GetEffectConfigRequest
+  | EvaluateLayerEffectsRequest;
 
 interface EvaluateSuccess {
   requestId: number;
@@ -141,17 +158,34 @@ interface GetEffectConfigSuccess {
   backgroundEffect?: BackgroundEffectConfig | null;
 }
 
+interface EvaluateLayerEffectsSuccess {
+  requestId: number;
+  ok: true;
+  kind: "evaluateLayerEffects";
+  effects: RuntimeLayerEffectAssignment[];
+  nextPollInMs?: number;
+}
+
 interface RuntimeFailure {
   requestId: number;
   ok: false;
   error: string;
 }
 
+interface RuntimeLayerEffectAssignment {
+  layerId: string;
+  effect: BackgroundEffectConfig | null;
+}
+
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
 const openedWindowIds = new Set<string>();
 const animationEntriesByWindowId = new Map<string, Map<symbol, unknown>>();
+const cacheByLayerId = new Map<string, RuntimeLayerEntry>();
+const openedLayerIds = new Set<string>();
+const animationEntriesByLayerId = new Map<string, Map<symbol, unknown>>();
 const polls = new Map<number, RuntimePoll>();
 const dirtyWindowIds = new Set<string>();
+const dirtyLayerIds = new Set<string>();
 let runtimeDirty = false;
 let nextPollId = 1;
 let currentSchedulerTimeMs = 0;
@@ -163,6 +197,12 @@ interface RuntimeCacheEntry {
   closeAnimationDurationMs: number;
   closeStarted: boolean;
   closePoll?: PollHandle;
+}
+
+interface RuntimeLayerEntry {
+  latestSnapshot: WaylandLayerSnapshot;
+  layer: ReturnType<typeof createReactiveLayer>["layer"];
+  update(snapshot: WaylandLayerSnapshot): void;
 }
 
 interface RuntimePoll {
@@ -192,6 +232,9 @@ async function main() {
     },
     markWindowDirty(windowId) {
       dirtyWindowIds.add(windowId);
+    },
+    markLayerDirty(layerId) {
+      dirtyLayerIds.add(layerId);
     },
   });
 
@@ -285,6 +328,17 @@ async function main() {
             ok: true,
             kind: "getEffectConfig",
             backgroundEffect: effectConfig.background_effect,
+          });
+        } else if (request.kind === "evaluateLayerEffects") {
+          currentSchedulerTimeMs = request.nowMs;
+          advanceAnimationFrame(request.nowMs);
+          const result = evaluateLayerEffects(events, request.outputName, request.layers);
+          writeResponse(socket, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "evaluateLayerEffects",
+            effects: result.effects,
+            nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
           });
         } else {
           currentSchedulerTimeMs = request.nowMs;
@@ -399,6 +453,122 @@ function createRuntimeCacheEntry(
   return entry;
 }
 
+function createRuntimeLayerEntry(
+  snapshot: WaylandLayerSnapshot,
+): RuntimeLayerEntry {
+  const animationEntries =
+    animationEntriesByLayerId.get(snapshot.id) ?? new Map();
+  animationEntriesByLayerId.set(snapshot.id, animationEntries);
+  const handle = createReactiveLayer(
+    snapshot,
+    createWindowAnimationControllerWithStore(
+      snapshot.id,
+      animationEntries as Map<symbol, never>,
+    ),
+  );
+  return {
+    latestSnapshot: snapshot,
+    layer: handle.layer,
+    update(nextSnapshot) {
+      this.latestSnapshot = nextSnapshot;
+      handle.update(nextSnapshot);
+    },
+  };
+}
+
+function evaluateLayerEffects(
+  events: WindowManagerEventController,
+  outputName: string,
+  snapshots: WaylandLayerSnapshot[],
+): {
+  effects: RuntimeLayerEffectAssignment[];
+  nextPollInMs?: number;
+} {
+  syncLayerSnapshots(events, snapshots);
+
+  const effects: RuntimeLayerEffectAssignment[] = [];
+  for (const snapshot of snapshots) {
+    if (snapshot.outputName !== outputName) {
+      continue;
+    }
+    const entry = cacheByLayerId.get(snapshot.id);
+    if (!entry) {
+      continue;
+    }
+    effects.push({
+      layerId: snapshot.id,
+      effect: snapshotLayerEffect(entry.layer),
+    });
+  }
+
+  return {
+    effects,
+    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+  };
+}
+
+function syncLayerSnapshots(
+  events: WindowManagerEventController,
+  snapshots: WaylandLayerSnapshot[],
+): void {
+  const nextIds = new Set(snapshots.map((snapshot) => snapshot.id));
+
+  for (const snapshot of snapshots) {
+    const existing = cacheByLayerId.get(snapshot.id);
+    if (!existing) {
+      const entry = createRuntimeLayerEntry(snapshot);
+      cacheByLayerId.set(snapshot.id, entry);
+      if (!openedLayerIds.has(snapshot.id)) {
+        openedLayerIds.add(snapshot.id);
+        events.emitCreateLayer(entry.layer);
+      }
+      continue;
+    }
+    existing.update(snapshot);
+  }
+
+  for (const [layerId, existing] of cacheByLayerId) {
+    if (nextIds.has(layerId)) {
+      continue;
+    }
+    events.emitDestroyLayer(existing.layer);
+    cacheByLayerId.delete(layerId);
+    openedLayerIds.delete(layerId);
+    animationEntriesByLayerId.delete(layerId);
+    dirtyLayerIds.delete(layerId);
+    dropLayerDependencies(layerId);
+  }
+}
+
+function snapshotLayerEffect(layer: WaylandLayer): BackgroundEffectConfig | null {
+  enterLayerDependencyScope(layer.id);
+  try {
+    if (layer.effect == null) {
+      return null;
+    }
+    return resolveSignals(layer.effect) as BackgroundEffectConfig;
+  } finally {
+    leaveLayerDependencyScope();
+  }
+}
+
+function resolveSignals<T>(value: T): T {
+  if (isSignal(value)) {
+    return read(value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveSignals(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    const resolved: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      resolved[key] = resolveSignals(entry);
+    }
+    return resolved as T;
+  }
+  return value;
+}
+
 function identityTransform(): WindowTransform {
   return {
     origin: { x: 0.5, y: 0.5 },
@@ -491,8 +661,10 @@ function processSchedulerTick(nowMs: number): {
 
   const nextDirtyWindowIds = Array.from(dirtyWindowIds);
   dirtyWindowIds.clear();
+  const nextDirtyLayerIds = Array.from(dirtyLayerIds);
+  dirtyLayerIds.clear();
   const actions = drainPendingActions();
-  const dirty = runtimeDirty || nextDirtyWindowIds.length > 0;
+  const dirty = runtimeDirty || nextDirtyWindowIds.length > 0 || nextDirtyLayerIds.length > 0;
   runtimeDirty = false;
 
   return {
@@ -696,6 +868,7 @@ function writeResponse(
     | StartCloseSuccess
     | InvokeHandlerSuccess
     | GetEffectConfigSuccess
+    | EvaluateLayerEffectsSuccess
     | RuntimeFailure,
 ) {
   socket.write(`${JSON.stringify(response)}\n`);

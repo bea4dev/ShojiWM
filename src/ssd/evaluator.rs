@@ -13,7 +13,7 @@ use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
     DecorationTree, WindowTransform, WireBackgroundEffectConfig, decode_tree_json,
 };
-use super::window_model::{WaylandWindowAction, WaylandWindowSnapshot};
+use super::window_model::{WaylandLayerSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
 
 /// Dynamic decoration evaluation boundary.
 ///
@@ -62,6 +62,15 @@ pub trait DecorationEvaluator {
     ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
         Ok(DecorationHandlerInvocation::default())
     }
+
+    fn evaluate_layer_effects(
+        &self,
+        _output_name: &str,
+        _layers: &[WaylandLayerSnapshot],
+        _now_ms: u64,
+    ) -> Result<LayerEffectEvaluationResult, DecorationEvaluationError> {
+        Ok(LayerEffectEvaluationResult::default())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +96,18 @@ pub struct DecorationHandlerInvocation {
     pub dirty_window_ids: Vec<String>,
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LayerEffectEvaluationResult {
+    pub effects: Vec<RuntimeLayerEffectAssignment>,
+    pub next_poll_in_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeLayerEffectAssignment {
+    pub layer_id: String,
+    pub effect: Option<BackgroundEffectConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -302,6 +323,15 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "requestId")]
         request_id: u64,
     },
+    EvaluateLayerEffects {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "outputName")]
+        output_name: &'a str,
+        layers: &'a [WaylandLayerSnapshot],
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -391,6 +421,25 @@ struct RuntimeEffectConfigResponse {
     ok: bool,
     #[serde(rename = "backgroundEffect")]
     background_effect: Option<WireBackgroundEffectConfig>,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeLayerEffectAssignmentResponse {
+    #[serde(rename = "layerId")]
+    layer_id: String,
+    effect: Option<WireBackgroundEffectConfig>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeLayerEffectsResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    ok: bool,
+    effects: Option<Vec<RuntimeLayerEffectAssignmentResponse>>,
+    #[serde(rename = "nextPollInMs")]
+    next_poll_in_ms: Option<u64>,
     error: Option<String>,
 }
 
@@ -1240,6 +1289,95 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             transform: response.transform,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
+            next_poll_in_ms: response.next_poll_in_ms,
+        })
+    }
+
+    fn evaluate_layer_effects(
+        &self,
+        output_name: &str,
+        layers: &[WaylandLayerSnapshot],
+        now_ms: u64,
+    ) -> Result<LayerEffectEvaluationResult, DecorationEvaluationError> {
+        let mut runtime_guard = self
+            .runtime
+            .lock()
+            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+
+        let request = serde_json::to_string(&RuntimeRequest::EvaluateLayerEffects {
+            request_id,
+            output_name,
+            layers,
+            now_ms,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let mut line = String::new();
+        let bytes = match &mut runtime.connection {
+            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
+            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
+        };
+        if bytes == 0 {
+            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let stderr = runtime
+                .stderr_log
+                .lock()
+                .map(|stderr| stderr.clone())
+                .unwrap_or_default();
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+        }
+
+        let trimmed = line.trim();
+        let response: RuntimeLayerEffectsResponse = match serde_json::from_str(trimmed) {
+            Ok(response) => response,
+            Err(err) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::InvalidResponse(format!(
+                    "{err}; payload={trimmed}"
+                )));
+            }
+        };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if response.kind != "evaluateLayerEffects" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for evaluateLayerEffects: {}",
+                response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+
+        Ok(LayerEffectEvaluationResult {
+            effects: response
+                .effects
+                .unwrap_or_default()
+                .into_iter()
+                .map(|assignment| {
+                    Ok(RuntimeLayerEffectAssignment {
+                        layer_id: assignment.layer_id,
+                        effect: assignment.effect.map(TryInto::try_into).transpose()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, DecorationBridgeError>>()
+                .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
         })
     }

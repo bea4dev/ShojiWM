@@ -126,6 +126,9 @@ pub fn init_winit(
                     if let Err(err) = state.refresh_window_decorations_for_output(Some(output.name().as_str())) {
                         warn!(error = ?err, "failed to refresh window decorations for winit");
                     }
+                    if let Err(err) = state.refresh_layer_effects_for_output(output.name().as_str()) {
+                        warn!(error = ?err, "failed to refresh layer effects for winit");
+                    }
 
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
@@ -1477,7 +1480,12 @@ fn configured_background_effect_elements_for_layer(
     layer_surface: &smithay::desktop::LayerSurface,
     alpha: f32,
 ) -> Vec<WinitRenderElements> {
-    let Some(config) = state.configured_background_effect.clone() else {
+    let layer_id = crate::ssd::layer_runtime_id(layer_surface);
+    let Some(config) = state
+        .configured_layer_effects
+        .get(&layer_id)
+        .cloned()
+        .or_else(|| state.configured_background_effect.clone()) else {
         return Vec::new();
     };
     let rects = protocol_background_effect_rects_for_layer(output, layer_surface);

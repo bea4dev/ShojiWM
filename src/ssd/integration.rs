@@ -17,8 +17,9 @@ use crate::backend::rounded::RoundedElementState;
 
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
-    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LogicalPoint, LogicalRect,
-    StaticDecorationEvaluator, WaylandWindowSnapshot, WindowTransform,
+    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
+    LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot,
+    WaylandWindowSnapshot, WindowTransform,
 };
 
 #[derive(Debug, Clone)]
@@ -137,6 +138,18 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         match self {
             Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
             Self::Node(evaluator) => evaluator.start_close(window_id, now_ms),
+        }
+    }
+
+    fn evaluate_layer_effects(
+        &self,
+        output_name: &str,
+        layers: &[WaylandLayerSnapshot],
+        now_ms: u64,
+    ) -> Result<LayerEffectEvaluationResult, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(LayerEffectEvaluationResult::default()),
+            Self::Node(evaluator) => evaluator.evaluate_layer_effects(output_name, layers, now_ms),
         }
     }
 }
@@ -293,6 +306,34 @@ impl ShojiWM {
 
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
         self.refresh_window_decorations_for_output(None)
+    }
+
+    pub fn refresh_layer_effects_for_output(
+        &mut self,
+        output_name: &str,
+    ) -> Result<(), DecorationEvaluationError> {
+        let snapshots = self.snapshot_layers();
+        let output_layer_ids = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.output_name == output_name)
+            .map(|snapshot| snapshot.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let evaluation = self
+            .decoration_evaluator
+            .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
+
+        self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+        for layer_id in output_layer_ids {
+            self.configured_layer_effects.remove(&layer_id);
+        }
+        for assignment in evaluation.effects {
+            if let Some(effect) = assignment.effect {
+                self.configured_layer_effects.insert(assignment.layer_id, effect);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn refresh_window_decorations_for_output(

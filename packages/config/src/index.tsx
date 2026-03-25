@@ -27,24 +27,44 @@ import {
     get,
     blend,
     xrayBackdropSource,
-    shaderInput
+    shaderInput,
+    createEffect
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
-WINDOW_MANAGER.effect.background_effect = {
-    effect: compileEffect({
-        input: xrayBackdropSource(),
+WINDOW_MANAGER.event.onCreateLayer((layer) => {
+    layer.animation.start(testAnimation, { duration: seconds(100) })
+    const test = layer.animation.signal(testAnimation)
+
+    layer.effect = createEffect(compileEffect({
+        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         invalidate: {
-            kind: "on-source-damage-box",
-            antiArtifactMargin: 12,
+            kind: "manual",
+            dirtyWhen: test(t => Math.floor(t * 100) % 2 == 0)
         },
         pipeline: [
+            /*
+            noise({ kind: "salt", amount: 0.01 }),
             dualKawaseBlur({ radius: 4, passes: 3 }),
+            shaderStage(loadShader("./liquid-glass.frag"), {
+                uniforms: {
+                    inset_px: 0.0,
+                    border_radius_px: 20.0,
+                    edge_width_px: 15.0,
+                    edge_softness_px: 0.0,
+                    max_warp_px: 40.0,
+                    interior_warp_px: 0.0,
+                    white_tint: 0.0,
+                    edge_highlight: 0.0,
+                },
+                }),*/
+            //shaderStage(loadShader("./blur.frag"))
+            //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         ],
-    }),
-};
+    }))
+})
 
 WINDOW_MANAGER.event.onOpen((window) => {
     window.setCloseAnimationDuration(seconds(0.5));

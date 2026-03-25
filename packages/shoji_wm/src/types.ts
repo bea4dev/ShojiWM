@@ -12,6 +12,20 @@ export interface WaylandWindowSnapshot {
   readonly interaction: DecorationInteractionSnapshot;
 }
 
+export type WaylandLayerKind =
+  | "background"
+  | "bottom"
+  | "top"
+  | "overlay";
+
+export interface WaylandLayerSnapshot {
+  readonly id: string;
+  readonly namespace?: string;
+  readonly layer: WaylandLayerKind;
+  readonly outputName: string;
+  readonly position: LayerPosition;
+}
+
 export type MaybeSignal<T> = T | import("./signals").ReadonlySignal<T>;
 
 export interface WaylandWindow {
@@ -34,7 +48,24 @@ export interface WaylandWindow {
   isXWayland(): boolean;
 }
 
+export interface WaylandLayer {
+  readonly id: string;
+  readonly namespace: import("./signals").ReadonlySignal<string | undefined>;
+  readonly layer: import("./signals").ReadonlySignal<WaylandLayerKind>;
+  readonly outputName: import("./signals").ReadonlySignal<string>;
+  readonly position: LayerPosition;
+  readonly animation: import("./animation").AnimationController;
+  effect: BackgroundEffectConfig | null;
+}
+
 export interface WindowPosition {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface LayerPosition {
   x: number;
   y: number;
   width: number;
@@ -383,8 +414,23 @@ export interface ReactiveWaylandWindowSignals {
   transformOpacity: import("./signals").Signal<number>;
 }
 
+export interface ReactiveWaylandLayerSignals {
+  id: import("./signals").ReadonlySignal<string>;
+  namespace: import("./signals").ReadonlySignal<string | undefined>;
+  layer: import("./signals").ReadonlySignal<WaylandLayerKind>;
+  outputName: import("./signals").ReadonlySignal<string>;
+  positionX: import("./signals").ReadonlySignal<number>;
+  positionY: import("./signals").ReadonlySignal<number>;
+  positionWidth: import("./signals").ReadonlySignal<number>;
+  positionHeight: import("./signals").ReadonlySignal<number>;
+}
+
 export interface ReactiveWaylandWindow extends WaylandWindow {
   readonly signals: ReactiveWaylandWindowSignals;
+}
+
+export interface ReactiveWaylandLayer extends WaylandLayer {
+  readonly signals: ReactiveWaylandLayerSignals;
 }
 
 export interface WaylandWindowActions {
@@ -399,6 +445,11 @@ export interface ReactiveWaylandWindowHandle {
   readonly window: ReactiveWaylandWindow;
   readonly transform: WindowTransform;
   update(snapshot: WaylandWindowSnapshot): void;
+}
+
+export interface ReactiveWaylandLayerHandle {
+  readonly layer: ReactiveWaylandLayer;
+  update(snapshot: WaylandLayerSnapshot): void;
 }
 
 export type WindowActionType = "close" | "maximize" | "minimize";

@@ -415,6 +415,7 @@ fn render_surface(
         .unwrap();
 
     state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
+    state.refresh_layer_effects_for_output(output.name().as_str())?;
 
     let redraw_state = state
         .tty_backends
@@ -590,6 +591,7 @@ fn render_surface(
             &state.window_source_damage,
             &state.lower_layer_source_damage,
             state.lower_layer_scene_generation,
+            &state.configured_layer_effects,
             state.configured_background_effect.as_ref(),
             &output,
             output_geo,
@@ -1580,9 +1582,16 @@ fn configured_background_effect_elements_for_layer(
     windows_top_to_bottom: &[smithay::desktop::Window],
     layer_surface: &smithay::desktop::LayerSurface,
     alpha: f32,
-    effect_config: &crate::ssd::BackgroundEffectConfig,
     layer_backdrop_cache: &mut std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    configured_layer_effects: &std::collections::HashMap<String, crate::ssd::BackgroundEffectConfig>,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    let layer_id = crate::ssd::layer_runtime_id(layer_surface);
+    let Some(effect_config) = configured_layer_effects
+        .get(&layer_id)
+        .or(configured_background_effect) else {
+        return Ok(Vec::new());
+    };
     let rects = protocol_background_effect_rects_for_layer(output, layer_surface);
     if rects.is_empty() {
         return Ok(Vec::new());
@@ -2153,7 +2162,8 @@ fn upper_layer_scene_elements(
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_scene_generation: u64,
-    effect_config: Option<&crate::ssd::BackgroundEffectConfig>,
+    configured_layer_effects: &std::collections::HashMap<String, crate::ssd::BackgroundEffectConfig>,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
@@ -2177,24 +2187,23 @@ fn upper_layer_scene_elements(
                 .into_iter()
                 .map(TtyRenderElements::Window),
         );
-        if let Some(effect_config) = effect_config {
-            elements.extend(configured_background_effect_elements_for_layer(
-                renderer,
-                space,
-                window_decorations,
-                window_source_damage,
-                lower_layer_source_damage,
-                lower_layer_scene_generation,
-                output,
-                output_geo,
-                scale,
-                windows_top_to_bottom,
-                &layer_surface,
-                1.0,
-                effect_config,
-                layer_backdrop_cache,
-            )?);
-        }
+        elements.extend(configured_background_effect_elements_for_layer(
+            renderer,
+            space,
+            window_decorations,
+            window_source_damage,
+            lower_layer_source_damage,
+            lower_layer_scene_generation,
+            output,
+            output_geo,
+            scale,
+            windows_top_to_bottom,
+            &layer_surface,
+            1.0,
+            layer_backdrop_cache,
+            configured_layer_effects,
+            configured_background_effect,
+        )?);
     }
     Ok(elements)
 }
