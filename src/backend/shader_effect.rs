@@ -1139,7 +1139,7 @@ float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {{
 
 void main() {{
     vec2 coords = v_coords * size;
-    vec4 color = shader_main(coords, size);
+    vec4 color = shader_main(v_coords, size);
     color.a *= alpha;
     color.rgb *= color.a;
     if (clip_enabled > 0.5) {{
