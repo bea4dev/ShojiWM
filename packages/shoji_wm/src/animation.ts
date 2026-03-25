@@ -1,6 +1,5 @@
 import { computed, signal, type ReadonlySignal, type Signal } from "./signals";
 import { markWindowDirty } from "./runtime-hooks";
-import { createManagedPoll, type PollHandle } from "./scheduler";
 
 /**
  * Stable token used to address a logical animation track on a per-window basis.
@@ -31,8 +30,6 @@ export interface AnimationStartOptions {
   from?: number;
   /** Target value. Defaults to `1`. */
   to?: number;
-  /** Scheduler tick interval in milliseconds. Defaults to `16`. */
-  intervalMs?: number;
   /** Optional easing function applied to normalized progress before interpolation. */
   easing?: (progress: number) => number;
 }
@@ -113,10 +110,20 @@ export type WindowAnimationController = AnimationController;
 
 interface AnimationEntry {
   progress: Signal<number>;
-  poll?: PollHandle;
+  timeline?: AnimationTimeline;
+}
+
+interface AnimationTimeline {
+  startedAtMs: number;
+  durationMs: number;
+  from: number;
+  to: number;
+  easing: (progress: number) => number;
 }
 
 const linear = (value: number) => value;
+const activeAnimationEntries = new Set<AnimationEntry>();
+let currentAnimationFrameMs = 0;
 
 /**
  * Creates a stable animation token.
@@ -162,7 +169,7 @@ export function createAnimationController(markDirty: () => void): AnimationContr
 }
 
 export function createAnimationControllerWithStore(
-  markDirty: () => void,
+  _markDirty: () => void,
   entries: Map<symbol, AnimationEntry>,
 ): AnimationController {
 
@@ -183,55 +190,37 @@ export function createAnimationControllerWithStore(
     signal: variableSignal,
     start(variable, options) {
       const entry = ensureEntry(variable);
-      entry.poll?.cancel();
 
       const duration = Math.max(1, Math.floor(options.duration));
       const easing = options.easing ?? linear;
-      const intervalMs = Math.max(1, Math.floor(options.intervalMs ?? 16));
       const from = options.from ?? entry.progress.peek();
       const to = options.to ?? 1;
 
       entry.progress.value = from;
-      markDirty();
-
-      let startedAt: number | null = null;
-      const startPoll = createManagedPoll(intervalMs, (handle) => {
-        if (startedAt === null) {
-          startedAt = handle.nowMs;
-        }
-
-        const elapsed = Math.max(0, handle.nowMs - startedAt);
-        const progress = Math.min(1, elapsed / duration);
-        const eased = normalizeEasedProgress(easing(progress), progress);
-        entry.progress.value = from + (to - from) * eased;
-        markDirty();
-
-        if (progress >= 1) {
-          entry.progress.value = to;
-          markDirty();
-          handle.cancel();
-          entry.poll = undefined;
-        }
-      }, "none");
-      entry.poll = startPoll;
+      entry.timeline = {
+        startedAtMs: currentAnimationFrameMs,
+        durationMs: duration,
+        from,
+        to,
+        easing,
+      };
+      activeAnimationEntries.add(entry);
     },
     stop(variable) {
       const entry = entries.get(variable.id);
-      entry?.poll?.cancel();
       if (entry) {
-        entry.poll = undefined;
-        markDirty();
+        entry.timeline = undefined;
+        activeAnimationEntries.delete(entry);
       }
     },
     set(variable, value) {
       const entry = ensureEntry(variable);
-      entry.poll?.cancel();
-      entry.poll = undefined;
+      entry.timeline = undefined;
+      activeAnimationEntries.delete(entry);
       entry.progress.value = value;
-      markDirty();
     },
     running(variable) {
-      return entries.get(variable.id)?.poll !== undefined;
+      return entries.get(variable.id)?.timeline !== undefined;
     },
   };
 }
@@ -245,6 +234,38 @@ export function createWindowAnimationControllerWithStore(
   entries: Map<symbol, AnimationEntry>,
 ): WindowAnimationController {
   return createAnimationControllerWithStore(() => markWindowDirty(windowId), entries);
+}
+
+export function advanceAnimationFrame(nowMs: number): boolean {
+  currentAnimationFrameMs = nowMs;
+  if (activeAnimationEntries.size === 0) {
+    return false;
+  }
+
+  for (const entry of Array.from(activeAnimationEntries)) {
+    const timeline = entry.timeline;
+    if (!timeline) {
+      activeAnimationEntries.delete(entry);
+      continue;
+    }
+
+    const elapsed = Math.max(0, nowMs - timeline.startedAtMs);
+    const progress = Math.min(1, elapsed / timeline.durationMs);
+    const eased = normalizeEasedProgress(timeline.easing(progress), progress);
+    entry.progress.value = timeline.from + (timeline.to - timeline.from) * eased;
+
+    if (progress >= 1) {
+      entry.progress.value = timeline.to;
+      entry.timeline = undefined;
+      activeAnimationEntries.delete(entry);
+    }
+  }
+
+  return activeAnimationEntries.size > 0;
+}
+
+export function hasActiveAnimations(): boolean {
+  return activeAnimationEntries.size > 0;
 }
 
 function clampUnit(value: number): number {

@@ -304,10 +304,24 @@ impl ShojiWM {
             let needs_tree = force_runtime_reevaluate
                 || self.runtime_dirty_window_ids.contains(&snapshot.id)
                 || self
-                .window_decorations
-                .get(&window)
-                .map(|cached| cached.snapshot != snapshot)
-                .unwrap_or(true);
+                    .window_decorations
+                    .get(&window)
+                    .map(|cached| cached.snapshot != snapshot)
+                    .unwrap_or(true);
+            if std::env::var_os("SHOJI_ANIMATION_DEBUG").is_some() {
+                tracing::info!(
+                    window_id = %snapshot.id,
+                    force_runtime_reevaluate,
+                    runtime_dirty = self.runtime_dirty_window_ids.contains(&snapshot.id),
+                    snapshot_changed = self
+                        .window_decorations
+                        .get(&window)
+                        .map(|cached| cached.snapshot != snapshot)
+                        .unwrap_or(true),
+                    needs_tree,
+                    "window decoration rebuild decision"
+                );
+            }
 
             if needs_tree {
                 let started_at = Instant::now();
@@ -340,9 +354,12 @@ impl ShojiWM {
                 let content_clip = content_clip_for_layout(&tree, &layout);
                 let order_map = build_render_order_map(&layout);
                 let buffers = build_cached_buffers(&layout, &order_map);
-                let shader_buffers = build_shader_buffers(&layout, &order_map);
+                let mut shader_buffers = build_shader_buffers(&layout, &order_map);
                 let text_buffers = build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
                 let icon_buffers = build_icon_buffers(&layout, &order_map, &snapshot, &mut self.icon_rasterizer);
+                if let Some(previous) = self.window_decorations.get(&window) {
+                    freeze_manual_shader_buffers(&previous.shader_buffers, &mut shader_buffers);
+                }
                 self.suggested_window_offset = suggested_window_offset(&layout);
                 rebuilt += 1;
                 debug!(
@@ -359,12 +376,12 @@ impl ShojiWM {
                     &layout,
                     &buffers,
                 );
-                let rounded_cache = self
+                let caches = self
                     .window_decorations
                     .remove(&window)
-                    .map(|cached| (cached.rounded_cache, cached.backdrop_cache))
+                    .map(|cached| (cached.rounded_cache, cached.shader_cache, cached.backdrop_cache))
                     .unwrap_or_default();
-                let (rounded_cache, backdrop_cache) = rounded_cache;
+                let (rounded_cache, shader_cache, backdrop_cache) = caches;
                 self.window_decorations.insert(
                     window,
                     WindowDecorationState {
@@ -379,7 +396,7 @@ impl ShojiWM {
                         text_buffers,
                         icon_buffers,
                         rounded_cache,
-                        shader_cache: std::collections::HashMap::new(),
+                        shader_cache,
                         backdrop_cache,
                     },
                 );
@@ -476,6 +493,7 @@ impl ShojiWM {
                     let order_map = build_render_order_map(&cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                     cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                    freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
                     cached.text_buffers =
                         build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
                     cached.icon_buffers =
@@ -1344,6 +1362,30 @@ fn runtime_dirty_damage_rects(
     );
 
     damage
+}
+
+fn freeze_manual_shader_buffers(
+    previous_shader_buffers: &[CachedShaderEffect],
+    next_shader_buffers: &mut [CachedShaderEffect],
+) {
+    let previous_by_key = previous_shader_buffers
+        .iter()
+        .map(|item| (item.stable_key.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for next in next_shader_buffers.iter_mut() {
+        let Some(previous) = previous_by_key.get(next.stable_key.as_str()) else {
+            continue;
+        };
+        if matches!(
+            next.shader.invalidate_policy(),
+            crate::ssd::EffectInvalidationPolicy::Manual { dirty_when: false, .. }
+        ) {
+            let invalidate = next.shader.invalidate.clone();
+            next.shader = previous.shader.clone();
+            next.shader.invalidate = invalidate;
+        }
+    }
 }
 
 fn collect_keyed_rect_damage<K>(

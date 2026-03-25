@@ -112,8 +112,8 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const backgroundShader = compileEffect({
         input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         invalidate: {
-            kind: "on-source-damage-box",
-            antiArtifactMargin: 0,
+            kind: "manual",
+            dirtyWhen: test(t => Math.floor(t * 100) % 2 == 0)
         },
         pipeline: [
             /*
@@ -130,7 +130,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                     white_tint: 0.0,
                     edge_highlight: 0.0,
                 },
-            }),*/
+                }),*/
             //shaderStage(loadShader("./blur.frag"))
             //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
         ],

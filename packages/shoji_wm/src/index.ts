@@ -60,6 +60,8 @@ import { createWindowManagerEventController } from "./events";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
 export {
+  advanceAnimationFrame,
+  hasActiveAnimations,
   createAnimationControllerWithStore,
   createAnimationController,
   animationVariable,

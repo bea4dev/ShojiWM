@@ -146,6 +146,21 @@ pub struct ShojiWM {
 }
 
 impl ShojiWM {
+    fn runtime_frame_sync_interval_ms(&self) -> u64 {
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                output.current_mode().map(|mode| {
+                    let secs = 1_000f64 / mode.refresh as f64;
+                    (secs * 1000.0).round() as u64
+                })
+            })
+            .filter(|ms| *ms > 0)
+            .min()
+            .unwrap_or(8)
+            .clamp(1, 250)
+    }
+
     pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
@@ -414,6 +429,14 @@ impl ShojiWM {
                         return TimeoutAction::ToDuration(Duration::from_millis(250));
                     }
                 };
+                if std::env::var_os("SHOJI_ANIMATION_DEBUG").is_some() {
+                    tracing::info!(
+                        dirty = tick.dirty,
+                        dirty_window_ids = ?tick.dirty_window_ids,
+                        next_poll_in_ms = tick.next_poll_in_ms,
+                        "runtime scheduler tick"
+                    );
+                }
                 if tick.dirty {
                     state.runtime_poll_dirty = true;
                     state.runtime_dirty_window_ids
@@ -427,8 +450,13 @@ impl ShojiWM {
                 }
 
                 state.runtime_scheduler_enabled = tick.next_poll_in_ms.is_some();
+                let next_interval_ms = match tick.next_poll_in_ms {
+                    Some(0) => state.runtime_frame_sync_interval_ms(),
+                    Some(ms) => ms.clamp(1, 250),
+                    None => 250,
+                };
                 TimeoutAction::ToDuration(Duration::from_millis(
-                    tick.next_poll_in_ms.unwrap_or(250).clamp(8, 250),
+                    next_interval_ms,
                 ))
             })
             .expect("Failed to init runtime scheduler.");

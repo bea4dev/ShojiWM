@@ -257,6 +257,8 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "requestId")]
         request_id: u64,
         snapshot: &'a WaylandWindowSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
     },
     SchedulerTick {
         #[serde(rename = "requestId")]
@@ -293,6 +295,8 @@ enum RuntimeRequest<'a> {
         request_id: u64,
         #[serde(rename = "windowId")]
         window_id: &'a str,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
     },
     GetEffectConfig {
         #[serde(rename = "requestId")]
@@ -738,6 +742,10 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let request = serde_json::to_string(&RuntimeRequest::Evaluate {
             request_id,
             snapshot: window,
+            now_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
         })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -821,6 +829,10 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let request = serde_json::to_string(&RuntimeRequest::EvaluateCached {
             request_id,
             window_id,
+            now_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;

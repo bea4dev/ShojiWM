@@ -4,6 +4,8 @@ import { Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
 import {
+  advanceAnimationFrame,
+  hasActiveAnimations,
   type BackgroundEffectConfig,
   createWindowAnimationControllerWithStore,
   createDecorationEvaluationCache,
@@ -27,6 +29,7 @@ interface EvaluateRequest {
   requestId: number;
   kind: "evaluate";
   snapshot: WaylandWindowSnapshot;
+  nowMs: number;
 }
 
 interface SchedulerTickRequest {
@@ -52,6 +55,7 @@ interface EvaluateCachedRequest {
   requestId: number;
   kind: "evaluateCached";
   windowId: string;
+  nowMs: number;
 }
 
 interface InvokeHandlerRequest {
@@ -223,6 +227,8 @@ async function main() {
 
     try {
       if (request.kind === "evaluate") {
+        currentSchedulerTimeMs = request.nowMs;
+        advanceAnimationFrame(request.nowMs);
         const serialized = evaluateSnapshot(decoration, events, request.snapshot);
         writeResponse(socket, {
           requestId: request.requestId,
@@ -231,7 +237,7 @@ async function main() {
           serialized,
           transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
             identityTransform(),
-          nextPollInMs: peekNextPollDelay(),
+          nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
         });
       } else {
         if (request.kind === "schedulerTick") {
@@ -262,6 +268,8 @@ async function main() {
             ...result,
           });
         } else if (request.kind === "evaluateCached") {
+          currentSchedulerTimeMs = request.nowMs;
+          advanceAnimationFrame(request.nowMs);
           const result = evaluateCached(request.windowId);
           writeResponse(socket, {
             requestId: request.requestId,
@@ -269,7 +277,7 @@ async function main() {
             kind: "evaluateCached",
             serialized: result.serialized,
             transform: result.transform,
-            nextPollInMs: result.nextPollInMs,
+            nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
           });
         } else if (request.kind === "getEffectConfig") {
           writeResponse(socket, {
@@ -313,7 +321,7 @@ function evaluateCached(windowId: string): {
   return {
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
-    nextPollInMs: peekNextPollDelay(),
+    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
 }
 
@@ -443,6 +451,7 @@ function processSchedulerTick(nowMs: number): {
   nextPollInMs?: number;
 } {
   currentSchedulerTimeMs = nowMs;
+  const animationsActive = advanceAnimationFrame(nowMs);
 
   for (const [pollId, poll] of polls) {
     if (poll.handle.cancelled) {
@@ -476,7 +485,12 @@ function processSchedulerTick(nowMs: number): {
       nextPollInMs === undefined ? delay : Math.min(nextPollInMs, delay);
   }
 
+  if (animationsActive) {
+    nextPollInMs = nextPollInMs === undefined ? 0 : Math.min(nextPollInMs, 0);
+  }
+
   const nextDirtyWindowIds = Array.from(dirtyWindowIds);
+  dirtyWindowIds.clear();
   const actions = drainPendingActions();
   const dirty = runtimeDirty || nextDirtyWindowIds.length > 0;
   runtimeDirty = false;
@@ -514,7 +528,7 @@ function startClose(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
-      nextPollInMs: peekNextPollDelay(),
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
 
@@ -553,7 +567,7 @@ function startClose(
     transform: entry.cache.lastTransform,
     dirtyWindowIds: [windowId],
     actions,
-    nextPollInMs: peekNextPollDelay(),
+    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
 }
 
@@ -567,7 +581,7 @@ function invokeHandler(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
-      nextPollInMs: peekNextPollDelay(),
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
 
@@ -577,7 +591,7 @@ function invokeHandler(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
-      nextPollInMs: peekNextPollDelay(),
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
 
@@ -590,7 +604,7 @@ function invokeHandler(
     transform: entry.cache.lastTransform,
     dirtyWindowIds: [windowId],
     actions,
-    nextPollInMs: peekNextPollDelay(),
+    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
 }
 
