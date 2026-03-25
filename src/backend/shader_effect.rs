@@ -1262,6 +1262,7 @@ varying vec2 v_coords;
 {source}
 
 void main() {{
+    vec2 uv = v_coords / max(rect_size, vec2(0.0001));
     gl_FragColor = shader_main(v_coords, rect_size);
 }}
 "#
@@ -1344,6 +1345,18 @@ pub fn backdrop_shader_element(
         sample_rect.size.w as f32 / captured_rect.size.w.max(1) as f32,
         sample_rect.size.h as f32 / captured_rect.size.h.max(1) as f32,
     ];
+    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
+        tracing::info!(
+            debug_label = %debug_label,
+            display_rect = ?display_rect,
+            sample_rect = ?sample_rect,
+            captured_rect = ?captured_rect,
+            src = ?src,
+            uv_offset = ?uv_offset,
+            uv_scale = ?uv_scale,
+            "texture-backed shader element geometry"
+        );
+    }
     Ok(StableBackdropTextureElement {
         texture,
         program,
@@ -1371,13 +1384,30 @@ pub fn apply_effect_pipeline(
     output_size: Option<(i32, i32)>,
     effect: &CompiledEffect,
 ) -> Result<GlesTexture, ShaderEffectError> {
+    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
+        tracing::info!(
+            input_size = ?size,
+            sample_region = ?sample_region,
+            output_size = ?output_size,
+            shader_input = matches!(effect.input, EffectInput::Shader(_)),
+            pipeline_len = effect.pipeline.len(),
+            "apply effect pipeline"
+        );
+    }
     let mut ctx = EffectExecutionContext {
         backdrop: texture,
         xray_backdrop: xray_texture,
         size,
         named: HashMap::new(),
     };
-    run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)
+    let mut result = run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)?;
+    if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some()
+        && matches!(effect.input, EffectInput::Shader(_))
+    {
+        let readback_size = output_size.unwrap_or(size);
+        debug_texture_readback(renderer, &mut result, readback_size, "shader-input-output");
+    }
+    Ok(result)
 }
 
 pub fn invalidation_sample_rect(
@@ -1526,7 +1556,11 @@ fn resolve_effect_input(
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
         EffectInput::Shader(stage) => {
             let texture = solid_white_texture(renderer)?;
-            apply_texture_shader_stage(renderer, texture, ctx.size, stage)
+            let mut texture = apply_texture_shader_stage(renderer, texture, ctx.size, stage)?;
+            if std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some() {
+                debug_texture_readback(renderer, &mut texture, ctx.size, "shader-input-source");
+            }
+            Ok(texture)
         }
         EffectInput::Named(name) => ctx
             .named
@@ -2044,21 +2078,43 @@ fn debug_texture_readback(
     size: (i32, i32),
     label: &str,
 ) {
-    let Ok(framebuffer) = renderer.bind(texture) else {
-        return;
+    let debug = std::env::var_os("SHOJI_SHADER_INPUT_DEBUG").is_some();
+    let framebuffer = match renderer.bind(texture) {
+        Ok(framebuffer) => framebuffer,
+        Err(error) => {
+            if debug {
+                tracing::info!(label, ?error, "shader texture readback bind failed");
+            }
+            return;
+        }
     };
-    let Ok(mapping) = renderer.copy_framebuffer(
+    let mapping = match renderer.copy_framebuffer(
         &framebuffer,
         Rectangle::from_size((size.0, size.1).into()),
         Fourcc::Abgr8888,
-    ) else {
-        return;
+    ) {
+        Ok(mapping) => mapping,
+        Err(error) => {
+            if debug {
+                tracing::info!(label, ?error, "shader texture readback copy failed");
+            }
+            return;
+        }
     };
-    let Ok(copy): Result<&[u8], _> = renderer.map_texture(&mapping) else {
-        return;
+    let copy: &[u8] = match renderer.map_texture(&mapping) {
+        Ok(copy) => copy,
+        Err(error) => {
+            if debug {
+                tracing::info!(label, ?error, "shader texture readback map failed");
+            }
+            return;
+        }
     };
 
     if size.0 <= 0 || size.1 <= 0 {
+        if debug {
+            tracing::info!(label, ?size, "shader texture readback skipped empty size");
+        }
         return;
     }
 
@@ -2066,10 +2122,13 @@ fn debug_texture_readback(
     let cy = (size.1 / 2).max(0) as usize;
     let idx = (cy * size.0 as usize + cx) * 4;
     if idx + 3 >= copy.len() {
+        if debug {
+            tracing::info!(label, ?size, buffer_len = copy.len(), idx, "shader texture readback out of range");
+        }
         return;
     }
 
-    trace!(
+    tracing::info!(
         label,
         width = size.0,
         height = size.1,
