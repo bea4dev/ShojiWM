@@ -257,7 +257,48 @@ impl ShojiWM {
         Ok(location)
     }
 
+    fn primary_output_name_for_window(&self, window: &Window) -> Option<String> {
+        let center = if let Some(decoration) = self.window_decorations.get(window) {
+            let root =
+                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+            Point::from((root.x + root.width / 2, root.y + root.height / 2))
+        } else if let Some(client_rect) = self.window_client_rect(window) {
+            Point::from((
+                client_rect.x + client_rect.width / 2,
+                client_rect.y + client_rect.height / 2,
+            ))
+        } else {
+            return self
+                .space
+                .outputs_for_element(window)
+                .first()
+                .map(|output| output.name());
+        };
+
+        self.space
+            .outputs()
+            .find(|output| {
+                self.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.contains(center))
+            })
+            .map(|output| output.name())
+            .or_else(|| {
+                self.space
+                    .outputs_for_element(window)
+                    .first()
+                    .map(|output| output.name())
+            })
+    }
+
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
+        self.refresh_window_decorations_for_output(None)
+    }
+
+    pub fn refresh_window_decorations_for_output(
+        &mut self,
+        target_output_name: Option<&str>,
+    ) -> Result<(), DecorationEvaluationError> {
         let refresh_started_at = Instant::now();
         let force_runtime_reevaluate = self.runtime_poll_dirty;
         let force_async_asset_refresh = self.async_asset_dirty;
@@ -293,8 +334,20 @@ impl ShojiWM {
             }
         }
         self.window_decorations.retain(|window, _| windows.contains(window));
+        self.window_primary_output_names
+            .retain(|window, _| windows.contains(window));
 
         for window in windows {
+            let primary_output_name = self.primary_output_name_for_window(&window);
+            if let Some(target_output_name) = target_output_name {
+                if primary_output_name.as_deref() != Some(target_output_name) {
+                    continue;
+                }
+            }
+            if let Some(primary_output_name) = primary_output_name {
+                self.window_primary_output_names
+                    .insert(window.clone(), primary_output_name);
+            }
             let client_rect = match self.window_client_rect(&window) {
                 Some(rect) => rect,
                 None => continue,
@@ -308,20 +361,6 @@ impl ShojiWM {
                     .get(&window)
                     .map(|cached| cached.snapshot != snapshot)
                     .unwrap_or(true);
-            if std::env::var_os("SHOJI_ANIMATION_DEBUG").is_some() {
-                tracing::info!(
-                    window_id = %snapshot.id,
-                    force_runtime_reevaluate,
-                    runtime_dirty = self.runtime_dirty_window_ids.contains(&snapshot.id),
-                    snapshot_changed = self
-                        .window_decorations
-                        .get(&window)
-                        .map(|cached| cached.snapshot != snapshot)
-                        .unwrap_or(true),
-                    needs_tree,
-                    "window decoration rebuild decision"
-                );
-            }
 
             if needs_tree {
                 let started_at = Instant::now();

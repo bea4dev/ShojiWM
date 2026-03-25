@@ -99,6 +99,7 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub window_primary_output_names: HashMap<Window, String>,
     pub windows_ready_for_decoration: HashSet<String>,
     pub live_window_snapshots: HashMap<String, LiveWindowSnapshot>,
     pub complete_window_snapshots: HashMap<String, LiveWindowSnapshot>,
@@ -321,6 +322,7 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             window_decorations: HashMap::new(),
+            window_primary_output_names: HashMap::new(),
             windows_ready_for_decoration: HashSet::new(),
             live_window_snapshots: HashMap::new(),
             complete_window_snapshots: HashMap::new(),
@@ -429,14 +431,6 @@ impl ShojiWM {
                         return TimeoutAction::ToDuration(Duration::from_millis(250));
                     }
                 };
-                if std::env::var_os("SHOJI_ANIMATION_DEBUG").is_some() {
-                    tracing::info!(
-                        dirty = tick.dirty,
-                        dirty_window_ids = ?tick.dirty_window_ids,
-                        next_poll_in_ms = tick.next_poll_in_ms,
-                        "runtime scheduler tick"
-                    );
-                }
                 if tick.dirty {
                     state.runtime_poll_dirty = true;
                     state.runtime_dirty_window_ids

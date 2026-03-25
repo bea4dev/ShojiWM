@@ -288,8 +288,6 @@ pub fn render_if_needed(
         return Ok(());
     }
 
-    state.refresh_window_decorations()?;
-
     trace!(
         backend_count = state.tty_backends.len(),
         window_count = state.space.elements().count(),
@@ -415,6 +413,8 @@ fn render_surface(
         .and_then(|backend| backend.surfaces.get(&crtc))
         .map(|surface| surface.output.clone())
         .unwrap();
+
+    state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
 
     let redraw_state = state
         .tty_backends

@@ -123,7 +123,7 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
-                    if let Err(err) = state.refresh_window_decorations() {
+                    if let Err(err) = state.refresh_window_decorations_for_output(Some(output.name().as_str())) {
                         warn!(error = ?err, "failed to refresh window decorations for winit");
                     }
 
