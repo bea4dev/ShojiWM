@@ -1263,7 +1263,7 @@ varying vec2 v_coords;
 
 void main() {{
     vec2 uv = v_coords / max(rect_size, vec2(0.0001));
-    gl_FragColor = shader_main(v_coords, rect_size);
+    gl_FragColor = shader_main(uv, rect_size);
 }}
 "#
     )
