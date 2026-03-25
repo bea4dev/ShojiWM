@@ -420,10 +420,8 @@ impl CompiledEffect {
     }
 
     pub fn is_texture_backed(&self) -> bool {
-        matches!(
-            self.input,
-            EffectInput::Backdrop | EffectInput::XrayBackdrop | EffectInput::Shader(_)
-        )
+        matches!(self.input, EffectInput::Backdrop | EffectInput::XrayBackdrop)
+            || matches!(self.input, EffectInput::Shader(_)) && !self.pipeline.is_empty()
     }
 
     pub fn uses_backdrop_input(&self) -> bool {
