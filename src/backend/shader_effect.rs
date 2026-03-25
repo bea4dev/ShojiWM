@@ -1139,7 +1139,7 @@ float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {{
 
 void main() {{
     vec2 coords = v_coords * size;
-    vec4 color = shader_main(v_coords, size);
+    vec4 color = shader_main(coords, size);
     color.a *= alpha;
     color.rgb *= color.a;
     if (clip_enabled > 0.5) {{
@@ -1494,13 +1494,12 @@ fn run_effect_pipeline(
         };
     }
 
-    if let Some(region) = pending_sample_region.take() {
-        let target_size = output_size.unwrap_or((region.size.w, region.size.h));
-        current = crop_texture_region(renderer, current, current_size, region, target_size)?;
-        current_size = target_size;
-    }
-
     if effect.is_backdrop() {
+        if let Some(region) = pending_sample_region.take() {
+            let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+            current = crop_texture_region(renderer, current, current_size, region, target_size)?;
+            current_size = target_size;
+        }
         let program = compile_opaque_finish_program(renderer)?;
         current = apply_texture_program(
             renderer,

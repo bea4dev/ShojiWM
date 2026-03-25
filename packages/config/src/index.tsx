@@ -96,7 +96,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.opacity = opacity;
 
     const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
-    const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
+    const titlebarBackground = isFocused ? "#1f243080" : "#2a2f3a80";
     const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
 
     const titlebarStyle: SSDStyle = {
@@ -141,7 +141,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             style={{
                 border: { px: 2, color: borderColor },
                 borderRadius: 20,
-                //background: "#101319",
+                background: "#101319",
             }}
         >
             <Box direction="column">
