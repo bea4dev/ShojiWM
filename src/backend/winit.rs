@@ -1583,9 +1583,12 @@ fn configured_background_effect_elements_for_layer(
     } else {
         None
     };
-    if backdrop_texture.is_none() && xray_texture.is_none() {
+    let Some(input_texture) = backdrop_texture
+        .clone()
+        .or_else(|| xray_texture.clone())
+        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok()) else {
         return Vec::new();
-    }
+    };
     let layer_id = layer_surface.wl_surface().id().protocol_id();
     let stable_key = format!(
         "__layer_background_effect_{}_{}_top_{}x{}",
@@ -1692,10 +1695,7 @@ fn configured_background_effect_elements_for_layer(
     }
     let texture = crate::backend::shader_effect::apply_effect_pipeline(
         renderer,
-        backdrop_texture
-            .clone()
-            .or_else(|| xray_texture.clone())
-            .unwrap(),
+        input_texture,
         xray_texture,
         (capture_geo.size.w, capture_geo.size.h),
         Some(Rectangle::new(

@@ -1687,15 +1687,15 @@ fn configured_background_effect_elements_for_layer(
     } else {
         None
     };
-    if backdrop_texture.is_none() && xray_texture.is_none() {
+    let Some(input_texture) = backdrop_texture
+        .clone()
+        .or_else(|| xray_texture.clone())
+        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok()) else {
         return Ok(Vec::new());
-    }
+    };
     let texture = crate::backend::shader_effect::apply_effect_pipeline(
         renderer,
-        backdrop_texture
-            .clone()
-            .or_else(|| xray_texture.clone())
-            .ok_or("missing backdrop snapshot")?,
+        input_texture,
         xray_texture,
         (capture_geo.size.w, capture_geo.size.h),
         Some(Rectangle::new(
