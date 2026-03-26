@@ -27,44 +27,20 @@ import {
     get,
     blend,
     xrayBackdropSource,
-    shaderInput,
-    createEffect
+    shaderInput
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
-WINDOW_MANAGER.event.onCreateLayer((layer) => {
-    layer.animation.start(testAnimation, { duration: seconds(100) })
-    const test = layer.animation.signal(testAnimation)
 
-    layer.effect = createEffect(compileEffect({
-        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
-        invalidate: {
-            kind: "manual",
-            dirtyWhen: test(t => Math.floor(t * 100) % 2 == 0)
-        },
-        pipeline: [
-            /*
-            noise({ kind: "salt", amount: 0.01 }),
-            dualKawaseBlur({ radius: 4, passes: 3 }),
-            shaderStage(loadShader("./liquid-glass.frag"), {
-                uniforms: {
-                    inset_px: 0.0,
-                    border_radius_px: 20.0,
-                    edge_width_px: 15.0,
-                    edge_softness_px: 0.0,
-                    max_warp_px: 40.0,
-                    interior_warp_px: 0.0,
-                    white_tint: 0.0,
-                    edge_highlight: 0.0,
-                },
-                }),*/
-            //shaderStage(loadShader("./blur.frag"))
-            //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
-        ],
-    }))
-})
+WINDOW_MANAGER.effect.background_effect = compileEffect({
+    input: backdropSource(),
+    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 12 },
+    pipeline: [
+        dualKawaseBlur({ radius: 4, passes: 3 }),
+    ]
+});
 
 WINDOW_MANAGER.event.onOpen((window) => {
     window.setCloseAnimationDuration(seconds(0.5));
@@ -74,7 +50,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
     window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
-    window.animation.start(testAnimation, { duration: seconds(100) })
+    window.animation.start(testAnimation, { duration: seconds(1), repeat: "loop" })
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
@@ -130,10 +106,10 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const test = window.animation.signal(testAnimation)
 
     const backgroundShader = compileEffect({
-        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
+        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test, speed: 1 } }),
         invalidate: {
             kind: "manual",
-            dirtyWhen: test(t => Math.floor(t * 100) % 2 == 0)
+            dirtyWhen: true
         },
         pipeline: [
             /*

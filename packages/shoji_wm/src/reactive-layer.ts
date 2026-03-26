@@ -2,7 +2,7 @@ import { markLayerDirty } from "./runtime-hooks";
 import { signal, type Signal } from "./signals";
 import { createAnimationController, type AnimationController } from "./animation";
 import type {
-  BackgroundEffectConfig,
+  CompiledEffectHandle,
   LayerPosition,
   ReactiveWaylandLayer,
   ReactiveWaylandLayerHandle,
@@ -36,7 +36,7 @@ export function createReactiveLayer(
     positionHeight: signal(snapshot.position.height),
   };
 
-  let effect: BackgroundEffectConfig | null = null;
+  let effect: CompiledEffectHandle | null = null;
 
   const position: LayerPosition = {
     get x() {

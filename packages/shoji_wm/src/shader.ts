@@ -6,7 +6,6 @@ import type {
   XrayBackdropSourceHandle,
   BlendMode,
   BlendStageHandle,
-  BackgroundEffectConfig,
   CompiledEffectHandle,
   DualKawaseBlurStageHandle,
   EffectInputHandle,
@@ -36,10 +35,6 @@ export interface CompileEffectOptions {
     | BlendStageHandle
     | UnitStageHandle
   >;
-}
-
-export function createEffect(effect: CompiledEffectHandle): BackgroundEffectConfig {
-  return { effect };
 }
 
 export function installShaderResolverBridge(configPath: string): void {

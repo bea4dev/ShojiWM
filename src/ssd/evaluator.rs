@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
-    DecorationTree, WindowTransform, WireBackgroundEffectConfig, decode_tree_json,
+    DecorationTree, WindowTransform, WireCompiledEffect, decode_tree_json,
 };
 use super::window_model::{WaylandLayerSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
 
@@ -424,7 +424,7 @@ struct RuntimeEffectConfigResponse {
     kind: String,
     ok: bool,
     #[serde(rename = "backgroundEffect")]
-    background_effect: Option<WireBackgroundEffectConfig>,
+    background_effect: Option<WireCompiledEffect>,
     error: Option<String>,
 }
 
@@ -432,7 +432,7 @@ struct RuntimeEffectConfigResponse {
 struct RuntimeLayerEffectAssignmentResponse {
     #[serde(rename = "layerId")]
     layer_id: String,
-    effect: Option<WireBackgroundEffectConfig>,
+    effect: Option<WireCompiledEffect>,
 }
 
 #[derive(serde::Deserialize)]

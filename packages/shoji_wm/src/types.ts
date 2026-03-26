@@ -55,7 +55,7 @@ export interface WaylandLayer {
   readonly outputName: import("./signals").ReadonlySignal<string>;
   readonly position: LayerPosition;
   readonly animation: import("./animation").AnimationController;
-  effect: BackgroundEffectConfig | null;
+  effect: CompiledEffectHandle | null;
 }
 
 export interface WindowPosition {
@@ -261,12 +261,8 @@ export interface CompiledEffectHandle {
   pipeline: EffectStageHandle[];
 }
 
-export interface BackgroundEffectConfig {
-  effect: CompiledEffectHandle;
-}
-
 export interface WindowManagerEffectConfig {
-  background_effect: BackgroundEffectConfig | null;
+  background_effect: CompiledEffectHandle | null;
 }
 
 export interface BorderValue {

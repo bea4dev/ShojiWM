@@ -146,11 +146,7 @@ pub struct WireUnitStageFields {
     pub effect: WireCompiledEffect,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WireBackgroundEffectConfig {
-    pub effect: WireCompiledEffect,
-}
+pub type WireBackgroundEffectConfig = WireCompiledEffect;
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -425,7 +421,7 @@ impl TryFrom<WireBackgroundEffectConfig> for BackgroundEffectConfig {
 
     fn try_from(value: WireBackgroundEffectConfig) -> Result<Self, Self::Error> {
         Ok(BackgroundEffectConfig {
-            effect: value.effect.try_into()?,
+            effect: value.try_into()?,
         })
     }
 }

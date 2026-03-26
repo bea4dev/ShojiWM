@@ -21,7 +21,7 @@ use crate::backend::text::{LabelSpec, measure_label_intrinsic};
 
 pub use bridge::{
     DecorationBridgeError, WireDecorationChild, WireDecorationNode, WireProps, WireStyle,
-    WireWindowAction, WireBackgroundEffectConfig, decode_tree_json,
+    WireCompiledEffect, WireWindowAction, decode_tree_json,
 };
 pub use evaluator::{
     DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,

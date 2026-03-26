@@ -17,6 +17,8 @@ export interface AnimationVariable {
   readonly debugName?: string;
 }
 
+export type AnimationRepeatMode = "loop" | "ping-pong";
+
 /**
  * Parameters describing how an animation should advance from `from` to `to`.
  *
@@ -32,6 +34,8 @@ export interface AnimationStartOptions {
   to?: number;
   /** Optional easing function applied to normalized progress before interpolation. */
   easing?: (progress: number) => number;
+  /** Repeat behavior after reaching the target value. */
+  repeat?: AnimationRepeatMode;
 }
 
 /**
@@ -119,6 +123,7 @@ interface AnimationTimeline {
   from: number;
   to: number;
   easing: (progress: number) => number;
+  repeat?: AnimationRepeatMode;
 }
 
 const linear = (value: number) => value;
@@ -203,6 +208,7 @@ export function createAnimationControllerWithStore(
         from,
         to,
         easing,
+        repeat: options.repeat,
       };
       activeAnimationEntries.add(entry);
     },
@@ -250,12 +256,13 @@ export function advanceAnimationFrame(nowMs: number): boolean {
     }
 
     const elapsed = Math.max(0, nowMs - timeline.startedAtMs);
-    const progress = Math.min(1, elapsed / timeline.durationMs);
+    const rawProgress = elapsed / timeline.durationMs;
+    const progress = repeatedProgress(rawProgress, timeline.repeat);
     const eased = normalizeEasedProgress(timeline.easing(progress), progress);
     const nextValue = timeline.from + (timeline.to - timeline.from) * eased;
     entry.progress.value = nextValue;
 
-    if (progress >= 1) {
+    if (!timeline.repeat && rawProgress >= 1) {
       entry.progress.value = timeline.to;
       entry.timeline = undefined;
       activeAnimationEntries.delete(entry);
@@ -291,4 +298,21 @@ function normalizeEasedProgress(value: number, fallback: number): number {
   }
 
   return value;
+}
+
+function repeatedProgress(progress: number, repeat: AnimationRepeatMode | undefined): number {
+  if (!Number.isFinite(progress) || progress <= 0) {
+    return 0;
+  }
+
+  if (!repeat) {
+    return clampUnit(progress);
+  }
+
+  if (repeat === "loop") {
+    return progress - Math.floor(progress);
+  }
+
+  const cycle = progress % 2;
+  return cycle <= 1 ? cycle : 2 - cycle;
 }

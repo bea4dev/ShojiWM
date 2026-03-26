@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import {
   advanceAnimationFrame,
   hasActiveAnimations,
-  type BackgroundEffectConfig,
+  type CompiledEffectHandle,
   createReactiveLayer,
   createWindowAnimationControllerWithStore,
   createDecorationEvaluationCache,
@@ -155,7 +155,7 @@ interface GetEffectConfigSuccess {
   requestId: number;
   ok: true;
   kind: "getEffectConfig";
-  backgroundEffect?: BackgroundEffectConfig | null;
+  backgroundEffect?: CompiledEffectHandle | null;
 }
 
 interface EvaluateLayerEffectsSuccess {
@@ -174,7 +174,7 @@ interface RuntimeFailure {
 
 interface RuntimeLayerEffectAssignment {
   layerId: string;
-  effect: BackgroundEffectConfig | null;
+  effect: CompiledEffectHandle | null;
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
@@ -540,13 +540,13 @@ function syncLayerSnapshots(
   }
 }
 
-function snapshotLayerEffect(layer: WaylandLayer): BackgroundEffectConfig | null {
+function snapshotLayerEffect(layer: WaylandLayer): CompiledEffectHandle | null {
   enterLayerDependencyScope(layer.id);
   try {
     if (layer.effect == null) {
       return null;
     }
-    return resolveSignals(layer.effect) as BackgroundEffectConfig;
+    return resolveSignals(layer.effect) as CompiledEffectHandle;
   } finally {
     leaveLayerDependencyScope();
   }
@@ -840,11 +840,11 @@ function resolveEvents(
 
 function resolveEffectConfig(
   loaded: Record<string, unknown>,
-): { background_effect: BackgroundEffectConfig | null } {
+) : { background_effect: CompiledEffectHandle | null } {
   const maybeEffect =
-    (loaded.WINDOW_MANAGER as { effect?: { background_effect?: BackgroundEffectConfig | null } } | undefined)
+    (loaded.WINDOW_MANAGER as { effect?: { background_effect?: CompiledEffectHandle | null } } | undefined)
       ?.effect ??
-    (loaded.default as { effect?: { background_effect?: BackgroundEffectConfig | null } } | undefined)?.effect;
+    (loaded.default as { effect?: { background_effect?: CompiledEffectHandle | null } } | undefined)?.effect;
 
   return {
     background_effect: maybeEffect?.background_effect ?? null,
