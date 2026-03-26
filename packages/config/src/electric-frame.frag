@@ -4,16 +4,39 @@ uniform float radius_px;
 uniform float frame_width_px;
 uniform float glow_px;
 uniform float intensity;
+uniform float noise_scale;
+uniform float edge_width;
+uniform float noise_seed;
 
 float rounded_rect_sdf(vec2 p, vec2 rect_size, float radius) {
     vec2 q = abs(p - rect_size * 0.5) - (rect_size * 0.5 - vec2(radius));
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
 
-float hash21(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float value_noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    float a = hash12(i + vec2(0.0, 0.0));
+    float b = hash12(i + vec2(1.0, 0.0));
+    float c = hash12(i + vec2(0.0, 1.0));
+    float d = hash12(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float combined_noise(vec2 noise_uv) {
+    vec2 seed_offset = vec2(noise_seed * 17.0, noise_seed * -23.0);
+    float coarse = value_noise(noise_uv + seed_offset);
+    float fine = value_noise(noise_uv * 3.7 + vec2(17.0, -9.0) + seed_offset * 1.7);
+    return coarse * 0.82 + fine * 0.18;
 }
 
 vec4 shader_main(vec2 uv, vec2 rect_size) {
@@ -26,22 +49,26 @@ vec4 shader_main(vec2 uv, vec2 rect_size) {
     float inner = rounded_rect_sdf(px - inner_origin, inner_size, inner_radius);
 
     float ring = (1.0 - smoothstep(-1.0, 1.0, outer)) * smoothstep(-1.0, 1.0, inner);
-    float edge_band = exp(-abs(outer) / max(glow_px, 0.001));
 
+    float threshold = clamp(0.5 + (edge_width - 1.0) * 0.12, 0.05, 0.95);
     float t = phase_01 * speed;
-    float perimeter_wave = sin(px.x * 0.18 - t * 18.0)
-        + sin(px.y * 0.24 + t * 13.0)
-        + sin((px.x + px.y) * 0.11 - t * 23.0)
-        + sin((px.x - px.y) * 0.15 + t * 29.0);
-    float spark_noise = hash21(floor(px * 0.12) + vec2(floor(t * 24.0), floor(t * 13.0)));
-    float sparks = pow(clamp(0.5 + perimeter_wave * 0.125 + spark_noise * 0.7, 0.0, 1.0), 5.5);
+    float scale = exp2(clamp(noise_scale, 0.0, 1.0) * 8.0 - 4.0);
+    vec2 noise_uv = (uv * 2.0 - 1.0) * scale * 12.0 + vec2(t * 2.0, -t * 1.5);
+    float n = combined_noise(noise_uv);
+    float dist = abs(n - threshold);
+    float deriv = max(0.0025, 0.018 / max(scale, 0.0001));
 
-    float bolt = ring * (0.24 + sparks * 1.9) * intensity;
-    float aura = edge_band * (0.12 + sparks * 0.7) * intensity;
+    // Thin contour line around the threshold.
+    float line = 1.0 - smoothstep(0.0, deriv * max(edge_width, 0.05) * 4.6, dist);
+    // Wider continuous aura around the same contour, not shifted copies.
+    float aura = 1.0 - smoothstep(0.0, deriv * (6.0 + glow_px * 0.5), dist);
+    aura = max(aura - line, 0.0);
 
-    vec3 electric = mix(vec3(0.15, 0.75, 1.0), vec3(0.92, 0.98, 1.0), clamp(sparks * 1.4, 0.0, 1.0));
-    vec3 glow = electric * (bolt + aura * 0.65);
-    float alpha = clamp(bolt + aura * 0.35, 0.0, 1.0);
+    line *= ring;
+    aura *= ring;
 
-    return vec4(glow, alpha);
+    float alpha = clamp((line + aura * 0.45) * intensity, 0.0, 1.0);
+    vec3 color = vec3(line + aura * 0.6);
+
+    return vec4(color, alpha);
 }

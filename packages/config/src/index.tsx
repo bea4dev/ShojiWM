@@ -27,7 +27,9 @@ import {
     get,
     blend,
     xrayBackdropSource,
-    shaderInput
+    shaderInput,
+    computed,
+    createPoll
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
@@ -51,7 +53,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
     window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
-    window.animation.start(electricAnimation, { duration: seconds(1.35), repeat: "loop" })
+    window.animation.start(electricAnimation, { duration: seconds(0.5), repeat: "loop" })
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
@@ -72,6 +74,12 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
         to: focused ? 1 : 0.9,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
+});
+
+const [state, setState] = signal(0);
+
+createPoll(seconds(0.5), () => {
+    setState((v) => v + 1);
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
@@ -103,17 +111,22 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     };
 
     const electric = window.animation.signal(electricAnimation);
+    const electricFinal = computed(() => state() + electric() * 0.1);
+
     const electricBorder = compileEffect({
         input: shaderInput(loadShader("./electric-frame.frag"), {
             uniforms: {
-                phase_01: electric,
-                speed: 1.0,
+                phase_01: 0,
+                speed: 1.45,
                 radius_px: 24.0,
-                frame_width_px: 4.0,
-                glow_px: 14.0,
+                frame_width_px: 78.0,
+                glow_px: 20.0,
+                noise_scale: 0.5,
+                edge_width: 0.1,
+                noise_seed: electricFinal,
                 intensity: scale(value => {
                     const normalized = Math.max(0, Math.min(1, (value - 0.9) / 0.1));
-                    return 0.45 + normalized * 0.55;
+                    return 0.55 + normalized * 0.75;
                 }),
             },
         }),
@@ -126,7 +139,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             shader={electricBorder}
             direction="column"
             style={{
-                padding: 6,
+                padding: 80,
                 borderRadius: 24,
                 background: "#00000000",
             }}
