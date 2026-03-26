@@ -670,30 +670,37 @@ fn render_surface(
                     decoration_ready,
                 );
                 if let Some(effect_config) = state.configured_background_effect.as_ref() {
-                    backdrop_items.extend(configured_background_effect_elements_for_window(
-                        &mut backend.renderer,
-                        space,
-                        window_decorations,
-                        &state.window_commit_times,
-                        &state.window_source_damage,
-                        &state.lower_layer_source_damage,
-                        state.lower_layer_scene_generation,
-                        &output,
-                        output_geo,
-                        scale,
-                        &windows_top_to_bottom,
-                        _window_index,
-                        window,
-                        visual_state.opacity,
-                        effect_config,
-                    ));
-                }
-                for (order, element) in backdrop_items.drain(..) {
-                    ordered_backdrop_elements.extend(
-                        transform_backdrop_elements(vec![element], visual_state)?
-                            .into_iter()
-                            .map(|item| (order, item)),
+                    backdrop_items.extend(
+                        configured_background_effect_elements_for_window(
+                            &mut backend.renderer,
+                            space,
+                            window_decorations,
+                            &state.window_commit_times,
+                            &state.window_source_damage,
+                            &state.lower_layer_source_damage,
+                            state.lower_layer_scene_generation,
+                            &output,
+                            output_geo,
+                            scale,
+                            &windows_top_to_bottom,
+                            _window_index,
+                            window,
+                            visual_state.opacity,
+                            effect_config,
+                        )
+                        .into_iter()
+                        .map(|(order, element)| (order, element, true)),
                     );
+                }
+                for (order, element, render_as_backdrop) in backdrop_items.drain(..) {
+                    let transformed = transform_backdrop_elements(vec![element], visual_state)?
+                        .into_iter()
+                        .map(|item| (order, item));
+                    if render_as_backdrop {
+                        ordered_backdrop_elements.extend(transformed);
+                    } else {
+                        ordered_ui_elements.extend(transformed);
+                    }
                 }
                 if let Some(decoration_state) = window_decorations.get_mut(window) {
                     let mut ordered_background_items = decoration::ordered_background_elements_for_window(
@@ -1117,7 +1124,7 @@ fn backdrop_shader_elements_for_window(
     window: &smithay::desktop::Window,
     alpha: f32,
     has_backdrop_source: bool,
-) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
+) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement, bool)> {
     if !has_backdrop_source {
         let Some(decoration) = window_decorations.get(window) else {
             return Vec::new();
@@ -1161,6 +1168,7 @@ fn backdrop_shader_elements_for_window(
             let cache_key = format!("{}@{}", cached.stable_key, output.name());
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
+            let render_as_backdrop = uses_backdrop || uses_xray;
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
             let effect_rect = crate::backend::visual::transformed_rect(
@@ -1298,7 +1306,7 @@ fn backdrop_shader_elements_for_window(
                         format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
                     )
                     .ok()
-                    .map(|element| (cached.order, element));
+                    .map(|element| (cached.order, element, render_as_backdrop));
                 }
             }
             let backdrop_texture = if uses_backdrop {
@@ -1444,7 +1452,7 @@ fn backdrop_shader_elements_for_window(
                 format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
             )
             .ok()
-            .map(|element| (cached.order, element))
+            .map(|element| (cached.order, element, render_as_backdrop))
         })
         .collect()
 }

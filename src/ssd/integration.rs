@@ -760,15 +760,14 @@ impl ShojiWM {
 }
 
 fn content_clip_for_layout(
-    tree: &DecorationTree,
+    _tree: &DecorationTree,
     layout: &ComputedDecorationTree,
 ) -> Option<ContentClip> {
-    let border = tree.root.style.border?;
-    if !matches!(tree.root.kind, super::DecorationNodeKind::WindowBorder) {
-        return None;
-    }
+    let border = layout.root.window_border_style()?;
+    let border_rect = layout.root.first_window_border_rect()?;
+    let border_radius = layout.root.first_window_border_radius().unwrap_or(0);
 
-    let inner_rect = layout.root.rect.inset(super::Edges {
+    let inner_rect = border_rect.inset(super::Edges {
         top: border.width.max(0),
         right: border.width.max(0),
         bottom: border.width.max(0),
@@ -779,7 +778,7 @@ fn content_clip_for_layout(
             Point::from((inner_rect.x, inner_rect.y)),
             (inner_rect.width, inner_rect.height).into(),
         ),
-        radius: (tree.root.style.border_radius.unwrap_or(0) - border.width.max(0)).max(0),
+        radius: (border_radius - border.width.max(0)).max(0),
     })
 }
 
@@ -789,48 +788,56 @@ impl DecorationTree {
         &self,
         client_rect: LogicalRect,
     ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
-        let initial = self.layout(LogicalRect::new(0, 0, client_rect.width, client_rect.height))?;
+        let initial = self.layout_with_window_slot_size(
+            LogicalRect::new(0, 0, client_rect.width, client_rect.height),
+            Some((client_rect.width, client_rect.height)),
+        )?;
         let slot = initial
             .window_slot_rect()
             .ok_or(super::DecorationLayoutError::MissingComputedWindowSlot)?;
+        let initial_bounds = initial.bounds_rect();
 
-        let extra_width = initial.root.rect.width - slot.width;
-        let extra_height = initial.root.rect.height - slot.height;
+        let extra_left = slot.x - initial_bounds.x;
+        let extra_top = slot.y - initial_bounds.y;
+        let extra_right =
+            (initial_bounds.x + initial_bounds.width) - (slot.x + slot.width);
+        let extra_bottom =
+            (initial_bounds.y + initial_bounds.height) - (slot.y + slot.height);
 
-        let desired = self.layout(LogicalRect::new(
-            0,
-            0,
-            client_rect.width + extra_width,
-            client_rect.height + extra_height,
-        ))?;
+        let desired = self.layout_with_window_slot_size(
+            LogicalRect::new(
+                0,
+                0,
+                client_rect.width + extra_left + extra_right,
+                client_rect.height + extra_top + extra_bottom,
+            ),
+            Some((client_rect.width, client_rect.height)),
+        )?;
 
         let desired_slot = desired
             .window_slot_rect()
             .ok_or(super::DecorationLayoutError::MissingComputedWindowSlot)?;
-
         let translated = desired.translated(
             client_rect.x - desired_slot.x,
             client_rect.y - desired_slot.y,
         );
-
-        debug!(
-            client_rect = %format_rect(client_rect),
-            initial_root = %format_rect(initial.root.rect),
-            initial_slot = %format_rect(slot),
-            extra_width,
-            extra_height,
-            desired_root = %format_rect(desired.root.rect),
-            desired_slot = %format_rect(desired_slot),
-            translated_root = %format_rect(translated.root.rect),
-            translated_slot = %format_rect(
-                translated
-                    .window_slot_rect()
-                    .ok_or(super::DecorationLayoutError::MissingComputedWindowSlot)?
-            ),
-            "computed decoration layout for client rect"
-        );
-
         Ok(translated)
+    }
+
+    fn layout_with_window_slot_size(
+        &self,
+        bounds: LogicalRect,
+        window_slot_size: Option<(i32, i32)>,
+    ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
+        self.validate()?;
+
+        let mut root = super::layout_node(&self.root, bounds, None, window_slot_size)?;
+        root.rect = root.bounds_rect();
+        if root.window_slot_rect().is_none() {
+            return Err(super::DecorationLayoutError::MissingComputedWindowSlot);
+        }
+
+        Ok(ComputedDecorationTree { root })
     }
 }
 

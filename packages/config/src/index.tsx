@@ -32,6 +32,7 @@ import {
 
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
+const electricAnimation = animationVariable("window.electric");
 
 
 WINDOW_MANAGER.effect.background_effect = compileEffect({
@@ -50,7 +51,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
     window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.8);
-    window.animation.start(testAnimation, { duration: seconds(1), repeat: "loop" })
+    window.animation.start(electricAnimation, { duration: seconds(1.35), repeat: "loop" })
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
@@ -72,8 +73,6 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
 });
-
-const testAnimation = animationVariable("test")
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const isFocused = window.isFocused();
@@ -103,78 +102,78 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         background: titlebarBackground,
     };
 
-    const test = window.animation.signal(testAnimation)
-
-    const backgroundShader = compileEffect({
-        input: shaderInput(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test, speed: 1 } }),
-        invalidate: {
-            kind: "manual",
-            dirtyWhen: true
-        },
-        pipeline: [
-            /*
-            noise({ kind: "salt", amount: 0.01 }),
-            dualKawaseBlur({ radius: 4, passes: 3 }),
-            shaderStage(loadShader("./liquid-glass.frag"), {
-                uniforms: {
-                    inset_px: 0.0,
-                    border_radius_px: 20.0,
-                    edge_width_px: 15.0,
-                    edge_softness_px: 0.0,
-                    max_warp_px: 40.0,
-                    interior_warp_px: 0.0,
-                    white_tint: 0.0,
-                    edge_highlight: 0.0,
-                },
-                }),*/
-            //shaderStage(loadShader("./blur.frag"))
-            //shaderStage(loadShader("./rainbow-test.frag"), { uniforms: { phase_01: test(t => t > 0.1 ? 1 : t), speed: 100 } }),
-        ],
+    const electric = window.animation.signal(electricAnimation);
+    const electricBorder = compileEffect({
+        input: shaderInput(loadShader("./electric-frame.frag"), {
+            uniforms: {
+                phase_01: electric,
+                speed: 1.0,
+                radius_px: 24.0,
+                frame_width_px: 4.0,
+                glow_px: 14.0,
+                intensity: scale(value => {
+                    const normalized = Math.max(0, Math.min(1, (value - 0.9) / 0.1));
+                    return 0.45 + normalized * 0.55;
+                }),
+            },
+        }),
+        invalidate: { kind: "always" },
+        pipeline: [],
     });
 
     return (
-        <WindowBorder
+        <ShaderEffect
+            shader={electricBorder}
+            direction="column"
             style={{
-                border: { px: 2, color: borderColor },
-                borderRadius: 20,
-                background: "#101319",
+                padding: 6,
+                borderRadius: 24,
+                background: "#00000000",
             }}
         >
-            <Box direction="column">
-                <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
-                    <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
-                    <Label
-                        text={window.title()}
-                        style={{
-                            color: titleColor,
-                            fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-                            fontSize: 13,
-                            fontWeight: 600,
-                        }}
-                    />
-                    <Box style={{ flexGrow: 1 }} />
-                    <Button
-                        id="window.close"
-                        style={applyInteractionStyle(
-                            {
-                                width: 18,
-                                height: 18,
-                                borderRadius: 9,
-                                background: "#8a1c1c",
-                            },
-                            {
-                                hovered: { background: "#b32626" },
-                                active: { background: "#d63b3b" },
-                                focused: { border: { px: 1, color: "#f5f7fa" } },
-                            },
-                            closeState,
-                        )}
-                        onClick={() => window.close()}
-                    />
-                </ShaderEffect>
-                <ClientWindow />
-            </Box>
-        </WindowBorder>
+            <WindowBorder
+                style={{
+                    border: { px: 2, color: borderColor },
+                    borderRadius: 20,
+                    background: "#101319",
+                }}
+            >
+                <Box direction="column">
+                    <Box direction="row" style={titlebarStyle}>
+                        <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
+                        <Label
+                            text={window.title()}
+                            style={{
+                                color: titleColor,
+                                fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
+                                fontSize: 13,
+                                fontWeight: 600,
+                            }}
+                        />
+                        <Box style={{ flexGrow: 1 }} />
+                        <Button
+                            id="window.close"
+                            style={applyInteractionStyle(
+                                {
+                                    width: 18,
+                                    height: 18,
+                                    borderRadius: 9,
+                                    background: "#8a1c1c",
+                                },
+                                {
+                                    hovered: { background: "#b32626" },
+                                    active: { background: "#d63b3b" },
+                                    focused: { border: { px: 1, color: "#f5f7fa" } },
+                                },
+                                closeState,
+                            )}
+                            onClick={() => window.close()}
+                        />
+                    </Box>
+                    <ClientWindow />
+                </Box>
+            </WindowBorder>
+        </ShaderEffect>
     );
 };
 

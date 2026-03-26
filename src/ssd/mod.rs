@@ -76,7 +76,8 @@ impl DecorationTree {
     ) -> Result<ComputedDecorationTree, DecorationLayoutError> {
         self.validate()?;
 
-        let root = layout_node(&self.root, bounds, None)?;
+        let mut root = layout_node(&self.root, bounds, None, None)?;
+        root.rect = root.bounds_rect();
         if root.window_slot_rect().is_none() {
             return Err(DecorationLayoutError::MissingComputedWindowSlot);
         }
@@ -99,6 +100,10 @@ pub struct ComputedDecorationTree {
 impl ComputedDecorationTree {
     pub fn window_slot_rect(&self) -> Option<LogicalRect> {
         self.root.window_slot_rect()
+    }
+
+    pub fn bounds_rect(&self) -> LogicalRect {
+        self.root.bounds_rect()
     }
 
     /// Lower the computed layout tree into minimal render primitives.
@@ -172,6 +177,52 @@ impl ComputedDecorationNode {
         }
 
         self.children.iter().find_map(Self::window_border_style)
+    }
+
+    fn first_window_border_rect(&self) -> Option<LogicalRect> {
+        if matches!(self.kind, DecorationNodeKind::WindowBorder) {
+            return Some(self.rect);
+        }
+
+        self.children.iter().find_map(Self::first_window_border_rect)
+    }
+
+    fn first_window_border_radius(&self) -> Option<i32> {
+        if matches!(self.kind, DecorationNodeKind::WindowBorder) {
+            return Some(self.style.border_radius.unwrap_or(0));
+        }
+
+        self.children.iter().find_map(Self::first_window_border_radius)
+    }
+
+    fn bounds_rect(&self) -> LogicalRect {
+        let mut min_x = self.rect.x;
+        let mut min_y = self.rect.y;
+        let mut max_x = self.rect.x + self.rect.width;
+        let mut max_y = self.rect.y + self.rect.height;
+
+        if !self.children.is_empty() {
+            let inset = self.style.content_inset();
+            let mut child_min_x = i32::MAX;
+            let mut child_min_y = i32::MAX;
+            let mut child_max_x = i32::MIN;
+            let mut child_max_y = i32::MIN;
+
+            for child in &self.children {
+                let child_bounds = child.bounds_rect();
+                child_min_x = child_min_x.min(child_bounds.x);
+                child_min_y = child_min_y.min(child_bounds.y);
+                child_max_x = child_max_x.max(child_bounds.x + child_bounds.width);
+                child_max_y = child_max_y.max(child_bounds.y + child_bounds.height);
+            }
+
+            min_x = min_x.min(child_min_x - inset.left);
+            min_y = min_y.min(child_min_y - inset.top);
+            max_x = max_x.max(child_max_x + inset.right);
+            max_y = max_y.max(child_max_y + inset.bottom);
+        }
+
+        LogicalRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
 }
 
@@ -666,26 +717,27 @@ impl From<DecorationValidationError> for DecorationLayoutError {
     }
 }
 
-fn layout_node(
+pub(super) fn layout_node(
     node: &DecorationNode,
     rect: LogicalRect,
     inherited_clip: Option<DecorationClip>,
+    window_slot_size: Option<(i32, i32)>,
 ) -> Result<ComputedDecorationNode, DecorationLayoutError> {
     let content_rect = rect.inset(node.style.content_inset());
     let effective_clip = effective_clip_for_node(node, inherited_clip, content_rect);
 
     let children = match &node.kind {
         DecorationNodeKind::Box(layout) => {
-            layout_box_children(node, content_rect, layout.direction, effective_clip)?
+            layout_box_children(node, content_rect, layout.direction, effective_clip, window_slot_size)?
         }
         DecorationNodeKind::ShaderEffect(effect) => {
-            layout_box_children(node, content_rect, effect.direction, effective_clip)?
+            layout_box_children(node, content_rect, effect.direction, effective_clip, window_slot_size)?
         }
         _ if node.children.is_empty() => Vec::new(),
         _ => node
             .children
             .iter()
-            .map(|child| layout_node(child, content_rect, effective_clip))
+            .map(|child| layout_node(child, content_rect, effective_clip, window_slot_size))
             .collect::<Result<Vec<_>, _>>()?,
     };
 
@@ -703,6 +755,7 @@ fn layout_box_children(
     content_rect: LogicalRect,
     direction: LayoutDirection,
     effective_clip: Option<DecorationClip>,
+    window_slot_size: Option<(i32, i32)>,
 ) -> Result<Vec<ComputedDecorationNode>, DecorationLayoutError> {
     if node.children.is_empty() {
         return Ok(Vec::new());
@@ -720,7 +773,7 @@ fn layout_box_children(
     let mut total_flex = 0.0f32;
 
     for child in &node.children {
-        let base = child.preferred_main_size(direction).max(0);
+        let base = child.preferred_main_size(direction, window_slot_size).max(0);
         let flex = child.flex_grow_for_layout();
         base_sizes.push(base);
         flexes.push(flex);
@@ -754,15 +807,21 @@ fn layout_box_children(
     let mut children = Vec::with_capacity(node.children.len());
 
     for (child, main_size) in node.children.iter().zip(allocated.into_iter()) {
-        let cross_size = child.preferred_cross_size(direction, cross_available);
+        let child_align = node.style.align_items;
+        let cross_size = child.preferred_cross_size(
+            direction,
+            cross_available,
+            child_align,
+            window_slot_size,
+        );
         let cross_origin = direction.cross_origin_for_child(
             content_rect,
-            child.style.align_items.or(node.style.align_items),
+            child_align,
             cross_size,
         );
 
         let child_rect = direction.rect(cursor, cross_origin, main_size, cross_size);
-        children.push(layout_node(child, child_rect, effective_clip)?);
+        children.push(layout_node(child, child_rect, effective_clip, window_slot_size)?);
         cursor += main_size + gap;
     }
 
@@ -770,14 +829,14 @@ fn layout_box_children(
 }
 
 impl DecorationNode {
-    fn preferred_main_size(&self, direction: LayoutDirection) -> i32 {
+    fn preferred_main_size(&self, direction: LayoutDirection, window_slot_size: Option<(i32, i32)>) -> i32 {
         let explicit = match direction {
             LayoutDirection::Row => self.style.width,
             LayoutDirection::Column => self.style.height,
         };
 
         let fallback = explicit.unwrap_or_else(|| {
-            self.intrinsic_size()
+            self.auto_size(window_slot_size)
                 .map(|(width, height)| match direction {
                     LayoutDirection::Row => width,
                     LayoutDirection::Column => height,
@@ -791,22 +850,29 @@ impl DecorationNode {
         self.style.clamp_main(direction, fallback)
     }
 
-    fn preferred_cross_size(&self, direction: LayoutDirection, available_cross: i32) -> i32 {
+    fn preferred_cross_size(
+        &self,
+        direction: LayoutDirection,
+        available_cross: i32,
+        align: Option<AlignItems>,
+        window_slot_size: Option<(i32, i32)>,
+    ) -> i32 {
         let explicit = match direction {
             LayoutDirection::Row => self.style.height,
             LayoutDirection::Column => self.style.width,
         };
 
         let fallback = explicit.unwrap_or_else(|| {
-            self.intrinsic_size()
+            if matches!(align.unwrap_or(AlignItems::Stretch), AlignItems::Stretch) && available_cross > 0 {
+                return available_cross;
+            }
+
+            self.auto_size(window_slot_size)
                 .map(|(width, height)| match direction {
                     LayoutDirection::Row => height,
                     LayoutDirection::Column => width,
                 })
-                .unwrap_or_else(|| match self.style.align_items.unwrap_or(AlignItems::Stretch) {
-                    AlignItems::Stretch => available_cross,
-                    _ => available_cross,
-                })
+                .unwrap_or(available_cross)
         });
 
         self.style.clamp_cross(direction, fallback)
@@ -822,7 +888,7 @@ impl DecorationNode {
         })
     }
 
-    fn intrinsic_size(&self) -> Option<(i32, i32)> {
+    fn intrinsic_size(&self, window_slot_size: Option<(i32, i32)>) -> Option<(i32, i32)> {
         match &self.kind {
             DecorationNodeKind::Label(label) => {
                 let font_size = self.style.font_size.unwrap_or(13).max(1);
@@ -839,8 +905,77 @@ impl DecorationNode {
                 };
                 Some(measure_label_intrinsic(&spec))
             }
+            DecorationNodeKind::WindowSlot => window_slot_size,
             _ => None,
         }
+    }
+
+    fn auto_size(&self, window_slot_size: Option<(i32, i32)>) -> Option<(i32, i32)> {
+        self.intrinsic_size(window_slot_size)
+            .or_else(|| self.content_based_size(window_slot_size))
+    }
+
+    fn content_based_size(&self, window_slot_size: Option<(i32, i32)>) -> Option<(i32, i32)> {
+        match &self.kind {
+            DecorationNodeKind::Box(layout) => Some(self.stack_content_size(layout.direction, window_slot_size)),
+            DecorationNodeKind::ShaderEffect(effect) => {
+                Some(self.stack_content_size(effect.direction, window_slot_size))
+            }
+            DecorationNodeKind::WindowBorder => Some(self.overlay_content_size(window_slot_size)),
+            _ => None,
+        }
+    }
+
+    fn stack_content_size(&self, direction: LayoutDirection, window_slot_size: Option<(i32, i32)>) -> (i32, i32) {
+        let inset = self.style.content_inset();
+        if self.children.is_empty() {
+            return (
+                inset.left + inset.right,
+                inset.top + inset.bottom,
+            );
+        }
+
+        let gap = self.style.gap.unwrap_or(0).max(0);
+        let mut main_sum = 0;
+        let mut cross_max = 0;
+
+        for child in &self.children {
+            let child_main = child.preferred_main_size(direction, window_slot_size).max(0);
+            let child_cross = child
+                .preferred_cross_size(direction, 0, child.style.align_items, window_slot_size)
+                .max(0);
+            main_sum += child_main;
+            cross_max = cross_max.max(child_cross);
+        }
+
+        main_sum += gap * self.children.len().saturating_sub(1) as i32;
+
+        match direction {
+            LayoutDirection::Row => (
+                main_sum + inset.left + inset.right,
+                cross_max + inset.top + inset.bottom,
+            ),
+            LayoutDirection::Column => (
+                cross_max + inset.left + inset.right,
+                main_sum + inset.top + inset.bottom,
+            ),
+        }
+    }
+
+    fn overlay_content_size(&self, window_slot_size: Option<(i32, i32)>) -> (i32, i32) {
+        let inset = self.style.content_inset();
+        let mut width = 0;
+        let mut height = 0;
+
+        for child in &self.children {
+            width = width.max(child.preferred_main_size(LayoutDirection::Row, window_slot_size).max(0));
+            height = height.max(child.preferred_main_size(LayoutDirection::Column, window_slot_size).max(0));
+        }
+
+        (
+            width + inset.left + inset.right,
+            height + inset.top + inset.bottom,
+        )
     }
 }
 
@@ -1264,6 +1399,165 @@ mod tests {
 
         assert_eq!(*spacer_rect, LogicalRect::new(104, 0, 84, 30));
         assert_eq!(*right_rect, LogicalRect::new(192, 0, 20, 30));
+    }
+
+    #[test]
+    fn shader_effect_root_preserves_child_window_border_auto_size() {
+        let titlebar = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(30),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+                text: "Title".into(),
+            })),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let bordered = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                background: Some(Color::BLACK),
+                ..Default::default()
+            })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Column,
+                }))
+                .with_children(vec![titlebar]),
+            ]);
+
+        let root = DecorationNode::new(DecorationNodeKind::ShaderEffect(ShaderEffectNode {
+            direction: LayoutDirection::Column,
+            shader: CompiledEffect {
+                input: EffectInput::Backdrop,
+                invalidate: EffectInvalidationPolicy::Always,
+                pipeline: Vec::new(),
+            },
+        }))
+        .with_style(DecorationStyle {
+            padding: Edges {
+                top: 6,
+                right: 6,
+                bottom: 6,
+                left: 6,
+            },
+            ..Default::default()
+        })
+        .with_children(vec![bordered]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 300, 200))
+            .expect("layout should succeed");
+
+        let border_rect = layout.root.children[0].rect;
+        assert!(border_rect.height > 0);
+        assert!(border_rect.width > 0);
+    }
+
+    #[test]
+    fn row_child_in_column_stretches_on_cross_axis_by_default() {
+        let titlebar = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(30),
+            ..Default::default()
+        })
+        .with_children(vec![DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+            text: "Title".into(),
+        }))]);
+
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![titlebar, DecorationNode::new(DecorationNodeKind::WindowSlot)]);
+
+        let layout = DecorationTree::new(root)
+            .layout_for_client(LogicalRect::new(50, 100, 800, 600))
+            .expect("layout should succeed");
+
+        let titlebar_rect = layout.root.children[0].rect;
+        assert_eq!(titlebar_rect.width, 800);
+        assert_eq!(titlebar_rect.height, 30);
+    }
+
+    #[test]
+    fn child_align_items_does_not_override_parent_cross_axis_stretch() {
+        let titlebar = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(30),
+            align_items: Some(AlignItems::Center),
+            ..Default::default()
+        })
+        .with_children(vec![DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+            text: "Title".into(),
+        }))]);
+
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![titlebar, DecorationNode::new(DecorationNodeKind::WindowSlot)]);
+
+        let layout = DecorationTree::new(root)
+            .layout_for_client(LogicalRect::new(50, 100, 800, 600))
+            .expect("layout should succeed");
+
+        let titlebar_rect = layout.root.children[0].rect;
+        assert_eq!(titlebar_rect.width, 800);
+        assert_eq!(titlebar_rect.height, 30);
+    }
+
+    #[test]
+    fn computed_bounds_include_overflowing_children() {
+        let child = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                background: Some(Color::BLACK),
+                ..Default::default()
+            })
+            .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]);
+
+        let root = DecorationNode::new(DecorationNodeKind::ShaderEffect(ShaderEffectNode {
+            direction: LayoutDirection::Column,
+            shader: CompiledEffect {
+                input: EffectInput::Backdrop,
+                invalidate: EffectInvalidationPolicy::Always,
+                pipeline: Vec::new(),
+            },
+        }))
+        .with_style(DecorationStyle {
+            padding: Edges {
+                top: 6,
+                right: 6,
+                bottom: 6,
+                left: 6,
+            },
+            ..Default::default()
+        })
+        .with_children(vec![child]);
+
+        let layout = DecorationTree::new(root)
+            .layout_for_client(LogicalRect::new(50, 100, 800, 600))
+            .expect("layout should succeed");
+
+        let bounds = layout.bounds_rect();
+        let slot = layout.window_slot_rect().expect("slot should exist");
+        assert!(bounds.x <= slot.x);
+        assert!(bounds.y <= slot.y);
+        assert!(bounds.x + bounds.width >= slot.x + slot.width);
+        assert!(bounds.y + bounds.height >= slot.y + slot.height);
     }
 
     #[test]
