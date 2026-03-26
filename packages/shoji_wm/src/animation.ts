@@ -111,9 +111,6 @@ export type WindowAnimationController = AnimationController;
 interface AnimationEntry {
   progress: Signal<number>;
   timeline?: AnimationTimeline;
-  debugOwnerId?: string;
-  debugVariableName?: string;
-  lastLoggedValue?: number;
 }
 
 interface AnimationTimeline {
@@ -174,7 +171,6 @@ export function createAnimationController(markDirty: () => void): AnimationContr
 export function createAnimationControllerWithStore(
   _markDirty: () => void,
   entries: Map<symbol, AnimationEntry>,
-  debugOwnerId?: string,
 ): AnimationController {
 
   const ensureEntry = (variable: AnimationVariable): AnimationEntry => {
@@ -200,8 +196,6 @@ export function createAnimationControllerWithStore(
       const from = options.from ?? entry.progress.peek();
       const to = options.to ?? 1;
 
-      entry.debugOwnerId = debugOwnerId;
-      entry.debugVariableName = variable.debugName;
       entry.progress.value = from;
       entry.timeline = {
         startedAtMs: currentAnimationFrameMs,
@@ -239,7 +233,7 @@ export function createWindowAnimationControllerWithStore(
   windowId: string,
   entries: Map<symbol, AnimationEntry>,
 ): WindowAnimationController {
-  return createAnimationControllerWithStore(() => markWindowDirty(windowId), entries, windowId);
+  return createAnimationControllerWithStore(() => markWindowDirty(windowId), entries);
 }
 
 export function advanceAnimationFrame(nowMs: number): boolean {
@@ -259,21 +253,10 @@ export function advanceAnimationFrame(nowMs: number): boolean {
     const progress = Math.min(1, elapsed / timeline.durationMs);
     const eased = normalizeEasedProgress(timeline.easing(progress), progress);
     const nextValue = timeline.from + (timeline.to - timeline.from) * eased;
-    if (process.env.SHOJI_ANIMATION_SIGNAL_DEBUG === "1") {
-      if (entry.lastLoggedValue === undefined || !Object.is(entry.lastLoggedValue, nextValue)) {
-        console.error(
-          `[animation-signal] owner=${entry.debugOwnerId ?? "unknown"} var=${entry.debugVariableName ?? "unknown"} nowMs=${nowMs} value=${nextValue}`,
-        );
-        entry.lastLoggedValue = nextValue;
-      }
-    }
     entry.progress.value = nextValue;
 
     if (progress >= 1) {
       entry.progress.value = timeline.to;
-      if (process.env.SHOJI_ANIMATION_SIGNAL_DEBUG === "1") {
-        entry.lastLoggedValue = timeline.to;
-      }
       entry.timeline = undefined;
       activeAnimationEntries.delete(entry);
     }

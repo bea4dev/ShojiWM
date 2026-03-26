@@ -397,16 +397,16 @@ impl ShojiWM {
                 None => continue,
             };
             let snapshot = self.snapshot_window(&window);
+            let had_cached_decoration = self.window_decorations.contains_key(&window);
+            let snapshot_changed = self
+                .window_decorations
+                .get(&window)
+                .map(|cached| cached.snapshot != snapshot)
+                .unwrap_or(true);
 
-            let needs_tree = force_runtime_reevaluate
-                || self.runtime_dirty_window_ids.contains(&snapshot.id)
-                || self
-                    .window_decorations
-                    .get(&window)
-                    .map(|cached| cached.snapshot != snapshot)
-                    .unwrap_or(true);
-
-            if needs_tree {
+            let runtime_dirty = force_runtime_reevaluate
+                || self.runtime_dirty_window_ids.contains(&snapshot.id);
+            if !had_cached_decoration || snapshot_changed {
                 let started_at = Instant::now();
                 let previous_root = self
                     .window_decorations
@@ -544,9 +544,7 @@ impl ShojiWM {
                     );
                     self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
-                } else if force_runtime_reevaluate
-                    || self.runtime_dirty_window_ids.contains(&snapshot.id)
-                {
+                } else if runtime_dirty {
                     let started_at = Instant::now();
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
@@ -556,7 +554,7 @@ impl ShojiWM {
                     let previous_text_buffers = cached.text_buffers.clone();
                     let previous_icon_buffers = cached.icon_buffers.clone();
                     let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                    let evaluation = match self.decoration_evaluator.evaluate_cached_window(&snapshot.id, now_ms) {
                         Ok(evaluation) => evaluation,
                         Err(error) => {
                             warn!(
@@ -564,29 +562,47 @@ impl ShojiWM {
                                 title = snapshot.title,
                                 app_id = snapshot.app_id,
                                 ?error,
-                                "decoration runtime evaluation failed during transform update, falling back to static decoration"
+                                "cached decoration runtime evaluation failed during transform update, falling back to full evaluation"
                             );
-                            StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                            match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                                Ok(evaluation) => evaluation,
+                                Err(error) => {
+                                    warn!(
+                                        window_id = snapshot.id,
+                                        title = snapshot.title,
+                                        app_id = snapshot.app_id,
+                                        ?error,
+                                        "decoration runtime evaluation failed during transform update, falling back to static decoration"
+                                    );
+                                    StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                                }
+                            }
                         }
                     };
-
-                    cached.tree = DecorationTree::new(evaluation.node);
-                    cached.layout = cached
-                        .tree
-                        .layout_for_client(client_rect)
-                        .map_err(super::DecorationEvaluationError::Layout)?;
-                    cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
-                    let order_map = build_render_order_map(&cached.layout);
-                    cached.buffers = build_cached_buffers(&cached.layout, &order_map);
-                    cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
-                    freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
-                    cached.text_buffers =
-                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                    cached.icon_buffers =
-                        build_icon_buffers(&cached.layout, &order_map, &snapshot, &mut self.icon_rasterizer);
-                    self.suggested_window_offset = suggested_window_offset(&cached.layout);
-                    cached.visual_transform = evaluation.transform;
+                    let next_tree = DecorationTree::new(evaluation.node);
+                    let next_transform = evaluation.transform;
                     cached.snapshot = snapshot;
+
+                    if next_tree == cached.tree {
+                        cached.visual_transform = next_transform;
+                    } else {
+                        cached.tree = next_tree;
+                        cached.layout = cached
+                            .tree
+                            .layout_for_client(client_rect)
+                            .map_err(super::DecorationEvaluationError::Layout)?;
+                        cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                        let order_map = build_render_order_map(&cached.layout);
+                        cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                        cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                        freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
+                        cached.text_buffers =
+                            build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
+                        cached.icon_buffers =
+                            build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                        self.suggested_window_offset = suggested_window_offset(&cached.layout);
+                        cached.visual_transform = next_transform;
+                    }
                     let next_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
                     if previous_transform != cached.visual_transform || previous_root != next_root {
