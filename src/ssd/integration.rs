@@ -82,10 +82,11 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
+        now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         match self {
-            Self::Static(evaluator) => evaluator.evaluate_window(window),
-            Self::Node(evaluator) => evaluator.evaluate_window(window),
+            Self::Static(evaluator) => evaluator.evaluate_window(window, now_ms),
+            Self::Node(evaluator) => evaluator.evaluate_window(window, now_ms),
         }
     }
 
@@ -102,12 +103,13 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     fn evaluate_cached_window(
         &self,
         window_id: &str,
+        now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Err(DecorationEvaluationError::RuntimeProtocol(
                 "cached window evaluation unsupported for static evaluator".into(),
             )),
-            Self::Node(evaluator) => evaluator.evaluate_cached_window(window_id),
+            Self::Node(evaluator) => evaluator.evaluate_cached_window(window_id, now_ms),
         }
     }
 
@@ -228,7 +230,8 @@ impl ShojiWM {
             return Ok(location);
         }
 
-        let evaluation = StaticDecorationEvaluator.evaluate_window(snapshot)?;
+        let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let evaluation = StaticDecorationEvaluator.evaluate_window(snapshot, now_ms)?;
         let tree = DecorationTree::new(evaluation.node);
         let layout = tree
             .layout_for_client(LogicalRect::new(0, 0, 0, 0))
@@ -409,7 +412,8 @@ impl ShojiWM {
                     .window_decorations
                     .get(&window)
                     .map(|cached| transformed_root_rect(cached.layout.root.rect, cached.visual_transform));
-                let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
                     Ok(evaluation) => evaluation,
                     Err(error) => {
                         warn!(
@@ -419,7 +423,7 @@ impl ShojiWM {
                             ?error,
                             "decoration runtime evaluation failed, falling back to static decoration"
                         );
-                        StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                        StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                     }
                 };
                 let tree = DecorationTree::new(evaluation.node);
@@ -487,7 +491,8 @@ impl ShojiWM {
                     let started_at = Instant::now();
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
-                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                    let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
                         Ok(evaluation) => evaluation,
                         Err(error) => {
                             warn!(
@@ -497,7 +502,7 @@ impl ShojiWM {
                                 ?error,
                                 "decoration runtime evaluation failed during relayout, falling back to static decoration"
                             );
-                            StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                            StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                         }
                     };
                     cached.tree = DecorationTree::new(evaluation.node);
@@ -550,7 +555,8 @@ impl ShojiWM {
                     let previous_shader_buffers = cached.shader_buffers.clone();
                     let previous_text_buffers = cached.text_buffers.clone();
                     let previous_icon_buffers = cached.icon_buffers.clone();
-                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot) {
+                    let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
                         Ok(evaluation) => evaluation,
                         Err(error) => {
                             warn!(
@@ -560,7 +566,7 @@ impl ShojiWM {
                                 ?error,
                                 "decoration runtime evaluation failed during transform update, falling back to static decoration"
                             );
-                            StaticDecorationEvaluator.evaluate_window(&snapshot)?
+                            StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                         }
                     };
 
@@ -637,7 +643,8 @@ impl ShojiWM {
             if let Some(closing) = self.closing_window_snapshots.get_mut(&window_id) {
                 let previous_root =
                     transformed_root_rect(closing.decoration.layout.root.rect, closing.transform);
-                let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id)?;
+                let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id, now_ms)?;
                 let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
                     .layout_for_client(closing.decoration.client_rect)

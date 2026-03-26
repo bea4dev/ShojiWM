@@ -24,11 +24,13 @@ pub trait DecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
+        now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError>;
 
     fn evaluate_cached_window(
         &self,
         _window_id: &str,
+        _now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         Err(DecorationEvaluationError::RuntimeProtocol(
             "cached window evaluation unsupported".into(),
@@ -131,6 +133,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
+        _now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         let border_color = if window.is_focused {
             "#ffff00"
@@ -210,9 +213,10 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
 pub fn evaluate_dynamic_decoration<E: DecorationEvaluator>(
     evaluator: &E,
     window: &WaylandWindowSnapshot,
+    now_ms: u64,
 ) -> Result<DecorationTree, DecorationEvaluationError> {
     evaluator
-        .evaluate_window(window)
+        .evaluate_window(window, now_ms)
         .map(|result| DecorationTree::new(result.node))
 }
 
@@ -779,6 +783,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
+        now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         let mut runtime_guard = self
             .runtime
@@ -791,10 +796,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let request = serde_json::to_string(&RuntimeRequest::Evaluate {
             request_id,
             snapshot: window,
-            now_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
+            now_ms,
         })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -866,6 +868,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
     fn evaluate_cached_window(
         &self,
         window_id: &str,
+        now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         let mut runtime_guard = self
             .runtime
@@ -878,10 +881,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let request = serde_json::to_string(&RuntimeRequest::EvaluateCached {
             request_id,
             window_id,
-            now_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
+            now_ms,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1468,7 +1468,7 @@ cat <<'JSON'
         );
 
         let node = evaluator
-            .evaluate_window(&make_window(false))
+            .evaluate_window(&make_window(false), 0)
             .expect("node evaluator should decode output");
 
         assert!(matches!(node.node.kind, DecorationNodeKind::WindowBorder));

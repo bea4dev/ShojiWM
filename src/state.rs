@@ -473,7 +473,8 @@ impl ShojiWM {
             interaction: DecorationInteractionSnapshot::default(),
         };
 
-        if let Err(error) = self.decoration_evaluator.evaluate_window(&snapshot) {
+        let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        if let Err(error) = self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
             warn!(?error, "failed to warm up decoration runtime");
             return;
         }
