@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
+import { format } from "node:util";
 
 import {
   advanceAnimationFrame,
@@ -214,12 +215,31 @@ interface RuntimePoll {
   dirtyMode: PollDirtyMode;
 }
 
+function installRuntimeConsoleBridge() {
+  const original = { ...console };
+  const emit = (level: "debug" | "info" | "warn" | "error", args: unknown[]) => {
+    const message = format(...args);
+    process.stderr.write(
+      `__SHOJI_RUNTIME_LOG__${JSON.stringify({ level, message })}\n`,
+    );
+  };
+
+  console.debug = (...args: unknown[]) => emit("debug", args);
+  console.log = (...args: unknown[]) => emit("info", args);
+  console.info = (...args: unknown[]) => emit("info", args);
+  console.warn = (...args: unknown[]) => emit("warn", args);
+  console.error = (...args: unknown[]) => emit("error", args);
+
+  return original;
+}
+
 async function main() {
   const configPath = process.argv[2];
   const socketPath = process.argv[3];
   if (!configPath || !socketPath) {
     throw new Error("usage: tsx tools/decoration-runtime.ts <config-path> <socket-path>");
   }
+  installRuntimeConsoleBridge();
 
   installSchedulerBridge({
     registerPoll(intervalMs, callback, dirtyMode) {
@@ -621,7 +641,7 @@ function processSchedulerTick(nowMs: number): {
   nextPollInMs?: number;
 } {
   currentSchedulerTimeMs = nowMs;
-  const animationsActive = advanceAnimationFrame(nowMs);
+  const animationsActive = hasActiveAnimations();
 
   for (const [pollId, poll] of polls) {
     if (poll.handle.cancelled) {
@@ -653,10 +673,6 @@ function processSchedulerTick(nowMs: number): {
     const delay = Math.max(1, poll.nextRunAtMs - nowMs);
     nextPollInMs =
       nextPollInMs === undefined ? delay : Math.min(nextPollInMs, delay);
-  }
-
-  if (animationsActive) {
-    nextPollInMs = nextPollInMs === undefined ? 0 : Math.min(nextPollInMs, 0);
   }
 
   const nextDirtyWindowIds = Array.from(dirtyWindowIds);

@@ -118,6 +118,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 self.update_decoration_cursor_icon(pos);
+                self.schedule_redraw();
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
@@ -425,6 +426,10 @@ impl ShojiWM {
 
     fn focus_window(&mut self, window: &smithay::desktop::Window, serial: Serial) {
         let started_at = Instant::now();
+        let window_id = window
+            .toplevel()
+            .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+            .unwrap_or_default();
         self.space.raise_element(window, true);
 
         for candidate in self.space.elements() {
@@ -445,10 +450,7 @@ impl ShojiWM {
 
         self.schedule_redraw();
         debug!(
-            window_id = window
-                .toplevel()
-                .map(|toplevel| toplevel.wl_surface().id().protocol_id())
-                .unwrap_or_default(),
+            window_id,
             elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
             "focus_window finished"
         );

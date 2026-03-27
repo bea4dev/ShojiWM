@@ -235,7 +235,6 @@ fn frame_finish(
         })
         .unwrap_or_else(|| Duration::from(state.clock.now()));
     surface.next_frame_target = Some(presentation_clock + surface.frame_duration);
-
     if let Ok(user_data) = submit_result {
         let clock = presentation_clock;
         let sequence = metadata.as_ref().map(|metadata| metadata.sequence).unwrap_or(0);
@@ -504,6 +503,7 @@ fn render_surface(
         surface.last_frame_callback_at = Some(frame_time);
 
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
+        let cursor_started_at = Instant::now();
 
         let pointer_pos = seat.get_pointer().unwrap().current_location();
         let output_geo = space.output_geometry(&output).unwrap();
@@ -582,8 +582,10 @@ fn render_surface(
                     .map(TtyRenderElements::Cursor),
             );
         }
+        let _cursor_elapsed_ms = cursor_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let mut scene_elements: Vec<TtyRenderElements> = Vec::new();
+        let upper_layers_started_at = Instant::now();
         scene_elements.extend(upper_layer_scene_elements(
             &mut backend.renderer,
             space,
@@ -599,8 +601,15 @@ fn render_surface(
             &windows_top_to_bottom,
             &mut state.layer_backdrop_cache,
         )?);
+        let _upper_layers_elapsed_ms = upper_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        let mut _window_loop_elapsed_ms = 0.0f64;
+        let mut max_window_elapsed_ms = 0.0f64;
+        let mut _max_window_id: Option<String> = None;
+        let mut _snapshot_capture_elapsed_ms = 0.0f64;
+        let mut snapshot_capture_count = 0usize;
 
         for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
+            let window_started_at = Instant::now();
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
@@ -829,6 +838,7 @@ fn render_surface(
                 })
                 .unwrap_or(false);
             if should_refresh_snapshot {
+                let snapshot_capture_started_at = Instant::now();
                 if capture_live_snapshot_for_window(
                     &mut backend.renderer,
                     window,
@@ -848,12 +858,25 @@ fn render_surface(
                         snapshot_dirty_window_ids.remove(&window_id);
                     }
                 }
+                _snapshot_capture_elapsed_ms +=
+                    snapshot_capture_started_at.elapsed().as_secs_f64() * 1000.0;
+                snapshot_capture_count = snapshot_capture_count.saturating_add(1);
+            }
+            let window_elapsed_ms = window_started_at.elapsed().as_secs_f64() * 1000.0;
+            _window_loop_elapsed_ms += window_elapsed_ms;
+            if window_elapsed_ms > max_window_elapsed_ms {
+                max_window_elapsed_ms = window_elapsed_ms;
+                _max_window_id = Some(window_id);
             }
         }
+        let closing_snapshots_started_at = Instant::now();
         scene_elements.extend(
             closing_snapshot_elements(&mut backend.renderer, &closing_snapshots, output_geo, scale)
                 .into_iter(),
         );
+        let _closing_snapshots_elapsed_ms =
+            closing_snapshots_started_at.elapsed().as_secs_f64() * 1000.0;
+        let lower_layers_started_at = Instant::now();
         scene_elements.extend(lower_layer_scene_elements(
             &mut backend.renderer,
             &output,
@@ -864,8 +887,10 @@ fn render_surface(
             state.lower_layer_scene_generation,
             &mut state.layer_backdrop_cache,
         )?);
+        let _lower_layers_elapsed_ms = lower_layers_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let should_profile_damage = should_capture_blink;
+        let damage_profile_started_at = Instant::now();
         let computed_damage = if should_profile_damage {
             match surface
                 .blink_damage_tracker
@@ -877,6 +902,8 @@ fn render_surface(
         } else {
             None
         };
+        let _damage_profile_elapsed_ms =
+            damage_profile_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let captured_blink_damage = if should_capture_blink {
             computed_damage
@@ -895,6 +922,8 @@ fn render_surface(
         let cursor_status_for_log = cursor_override
             .map(CursorImageStatus::Named)
             .unwrap_or_else(|| cursor_status.clone());
+        let _cursor_element_count = cursor_elements.len();
+        let _content_element_count = content_elements.len();
         let mut elements: Vec<TtyRenderElements> = Vec::new();
         elements.extend(
             damage_blink::elements_for_output(&blink_visible, output_geo, scale)
@@ -924,7 +953,6 @@ fn render_surface(
         let total_cpu_elapsed = frame_started_at.elapsed();
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
-
         if !result.is_empty {
             trace!(output = %output.name(), "queueing tty frame");
             // Update primary-scanout metadata before collecting presentation feedback.
@@ -946,7 +974,7 @@ fn render_surface(
                 surface.frame_callback_timer_generation.wrapping_add(1);
             surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
             surface.redraw_state = TtyRedrawState::WaitingForVBlank {
-                redraw_needed: false,
+                redraw_needed: true,
             };
             let frame_callback_sequence = surface.frame_callback_sequence;
             let _ = surface;

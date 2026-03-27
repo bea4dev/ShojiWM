@@ -327,6 +327,12 @@ impl ShojiWM {
             .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
 
         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+        if evaluation.next_poll_in_ms == Some(0) {
+            self.runtime_animation_outputs
+                .insert(output_name.to_string());
+        } else {
+            self.runtime_animation_outputs.remove(output_name);
+        }
         for layer_id in output_layer_ids {
             self.configured_layer_effects.remove(&layer_id);
         }
@@ -345,11 +351,14 @@ impl ShojiWM {
     ) -> Result<(), DecorationEvaluationError> {
         let refresh_started_at = Instant::now();
         let force_runtime_reevaluate = self.runtime_poll_dirty;
+        let force_output_animation_reevaluate = target_output_name
+            .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         let window_count = windows.len();
         let mut rebuilt = 0usize;
         let mut relayout = 0usize;
+        let mut animation_active_for_target = false;
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         let removed_windows = self
             .window_decorations
@@ -405,6 +414,7 @@ impl ShojiWM {
                 .unwrap_or(true);
 
             let runtime_dirty = force_runtime_reevaluate
+                || force_output_animation_reevaluate
                 || self.runtime_dirty_window_ids.contains(&snapshot.id);
             if !had_cached_decoration || snapshot_changed {
                 let started_at = Instant::now();
@@ -486,6 +496,7 @@ impl ShojiWM {
                 );
                 self.schedule_redraw();
                 self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
                 if cached.client_rect != client_rect {
                     let started_at = Instant::now();
@@ -544,6 +555,7 @@ impl ShojiWM {
                     );
                     self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                    animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
                 } else if runtime_dirty {
                     let started_at = Instant::now();
                     let previous_root =
@@ -581,9 +593,10 @@ impl ShojiWM {
                     };
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
+                    let tree_changed = next_tree != cached.tree;
                     cached.snapshot = snapshot;
 
-                    if next_tree == cached.tree {
+                    if !tree_changed {
                         cached.visual_transform = next_transform;
                     } else {
                         cached.tree = next_tree;
@@ -639,6 +652,7 @@ impl ShojiWM {
                     );
                     self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                    animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
                 } else if force_async_asset_refresh {
                     let order_map = build_render_order_map(&cached.layout);
                     cached.text_buffers =
@@ -650,9 +664,12 @@ impl ShojiWM {
         }
 
         let closing_dirty_ids = self
-            .runtime_dirty_window_ids
-            .iter()
-            .filter(|window_id| self.closing_window_snapshots.contains_key(*window_id))
+            .closing_window_snapshots
+            .keys()
+            .filter(|window_id| {
+                force_output_animation_reevaluate
+                    || self.runtime_dirty_window_ids.contains(*window_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         for window_id in closing_dirty_ids {
@@ -689,6 +706,16 @@ impl ShojiWM {
                 );
                 self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 self.schedule_redraw();
+                animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
+            }
+        }
+
+        if let Some(output_name) = target_output_name {
+            if animation_active_for_target {
+                self.runtime_animation_outputs
+                    .insert(output_name.to_string());
+            } else {
+                self.runtime_animation_outputs.remove(output_name);
             }
         }
 

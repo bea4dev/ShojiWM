@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
@@ -761,7 +761,37 @@ fn spawn_stderr_drain(child: &mut Child) -> Arc<Mutex<String>> {
 
                 let trimmed = line.trim_end();
                 if !trimmed.is_empty() {
-                    warn!(target: "shoji_wm::ssd::runtime", line = %trimmed, "decoration runtime stderr");
+                    if let Some(payload) = trimmed.strip_prefix("__SHOJI_RUNTIME_LOG__") {
+                        match serde_json::from_str::<RuntimeConsoleLog>(payload) {
+                            Ok(log) => match log.level.as_str() {
+                                "debug" => {
+                                    debug!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
+                                }
+                                "info" => {
+                                    info!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
+                                }
+                                "warn" => {
+                                    warn!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
+                                }
+                                "error" => {
+                                    error!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
+                                }
+                                _ => {
+                                    info!(target: "shoji_wm::ssd::runtime", message = %log.message, level = %log.level, "decoration runtime log");
+                                }
+                            },
+                            Err(error) => {
+                                warn!(
+                                    target: "shoji_wm::ssd::runtime",
+                                    line = %trimmed,
+                                    ?error,
+                                    "failed to decode decoration runtime structured log"
+                                );
+                            }
+                        }
+                    } else {
+                        warn!(target: "shoji_wm::ssd::runtime", line = %trimmed, "decoration runtime stderr");
+                    }
                 }
 
                 if let Ok(mut log) = stderr_log_clone.lock() {
@@ -777,6 +807,12 @@ fn spawn_stderr_drain(child: &mut Child) -> Arc<Mutex<String>> {
     }
 
     stderr_log
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeConsoleLog {
+    level: String,
+    message: String,
 }
 
 impl DecorationEvaluator for NodeDecorationEvaluator {
