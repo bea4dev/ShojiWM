@@ -6,6 +6,7 @@ import {
   leaveWindowDependencyScope,
 } from "./runtime-hooks";
 import {
+  patchSerializedDecorationTree,
   serializeDecorationTree,
   type DecorationSerializationContext,
 } from "./serialize";
@@ -47,7 +48,7 @@ export interface DecorationEvaluationCache {
   readonly lastTree: DecorationChild;
   readonly lastTransform: WindowTransform;
   update(snapshot: WaylandWindowSnapshot): DecorationEvaluationResult | null;
-  reevaluate(): DecorationEvaluationResult;
+  reevaluate(dirtyNodeIds?: readonly string[]): DecorationEvaluationResult;
   invokeHandler(handlerId: string): boolean;
 }
 
@@ -71,12 +72,10 @@ export function diffWindowSnapshot(
       title ||
       appId ||
       position ||
-      focus ||
       floating ||
       maximized ||
       fullscreen ||
       icon ||
-      interaction ||
       xwayland,
     title,
     appId,
@@ -94,9 +93,9 @@ export function diffWindowSnapshot(
 /**
  * Minimal policy for when a decoration needs reevaluation.
  *
- * This is intentionally coarse-grained:
- * if any user-visible property changed, reevaluate the whole decoration tree.
- * Later milestones can reduce this to subtree-level invalidation.
+ * This is intentionally structural:
+ * runtime-only state such as focus and interaction is expected to flow through
+ * signals and runtime dirty tracking rather than forcing a snapshot rebuild.
  */
 export function shouldReevaluateDecoration(
   previous: WaylandWindowSnapshot,
@@ -151,6 +150,34 @@ export function createDecorationEvaluationCache(
     };
   };
 
+  const patchCurrentTree = (dirtyNodeIds: readonly string[]): DecorationEvaluationResult => {
+    if (dirtyNodeIds.length === 0) {
+      return evaluateCurrentTree();
+    }
+
+    enterWindowDependencyScope(currentSnapshot.id);
+    try {
+      const dirtyNodeIdSet = new Set(dirtyNodeIds);
+      serialized = patchSerializedDecorationTree(
+        tree,
+        serialized,
+        dirtyNodeIdSet,
+        serializationContext,
+      );
+      transform = snapshotTransform(handle);
+    } finally {
+      leaveWindowDependencyScope();
+    }
+    version += 1;
+
+    return {
+      tree,
+      serialized,
+      transform,
+      version,
+    };
+  };
+
   const initial = evaluateCurrentTree();
   version = initial.version;
 
@@ -181,7 +208,10 @@ export function createDecorationEvaluationCache(
       currentSnapshot = nextSnapshot;
       return evaluateCurrentTree();
     },
-    reevaluate() {
+    reevaluate(dirtyNodeIds) {
+      if (dirtyNodeIds && dirtyNodeIds.length > 0) {
+        return patchCurrentTree(dirtyNodeIds);
+      }
       return evaluateCurrentTree();
     },
     invokeHandler(handlerId) {

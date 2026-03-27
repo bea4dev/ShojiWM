@@ -20,6 +20,8 @@ import {
   installRuntimeHooks,
   leaveLayerDependencyScope,
   read,
+  takeDirtyLayerNodeIds,
+  takeDirtyWindowNodeIds,
   type WindowManagerEventController,
   installSchedulerBridge,
   type DecorationEvaluationCache,
@@ -104,6 +106,7 @@ interface EvaluateSuccess {
   kind: "evaluate";
   serialized: unknown;
   transform: WindowTransform;
+  dirtyNodeIds?: string[];
   nextPollInMs?: number;
 }
 
@@ -113,6 +116,8 @@ interface SchedulerTickSuccess {
   kind: "schedulerTick";
   dirty: boolean;
   dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 }
@@ -136,6 +141,7 @@ interface InvokeHandlerSuccess {
   serialized?: unknown;
   transform?: WindowTransform;
   dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 }
@@ -148,6 +154,7 @@ interface StartCloseSuccess {
   serialized?: unknown;
   transform?: WindowTransform;
   dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 }
@@ -300,6 +307,7 @@ async function main() {
           serialized,
           transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
             identityTransform(),
+          dirtyNodeIds: takeDirtyWindowNodeIds(request.snapshot.id),
           nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
         });
       } else {
@@ -311,6 +319,8 @@ async function main() {
             kind: "schedulerTick",
             dirty: tick.dirty,
             dirtyWindowIds: tick.dirtyWindowIds,
+            dirtyWindowNodeIds: tick.dirtyWindowNodeIds,
+            dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
             actions: tick.actions,
             nextPollInMs: tick.nextPollInMs,
           });
@@ -340,6 +350,7 @@ async function main() {
             kind: "evaluateCached",
             serialized: result.serialized,
             transform: result.transform,
+            dirtyNodeIds: result.dirtyNodeIds,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
           });
         } else if (request.kind === "getEffectConfig") {
@@ -384,6 +395,7 @@ async function main() {
 function evaluateCached(windowId: string): {
   serialized: unknown;
   transform: WindowTransform;
+  dirtyNodeIds?: string[];
   nextPollInMs?: number;
 } {
   const entry = cacheByWindowId.get(windowId);
@@ -391,10 +403,12 @@ function evaluateCached(windowId: string): {
     throw new Error(`missing cache entry for closing window ${windowId}`);
   }
 
-  const reevaluated = entry.cache.reevaluate();
+  const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   return {
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
+    dirtyNodeIds,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
 }
@@ -414,19 +428,20 @@ function evaluateSnapshot(
     }
     events.emitFocus(entry.cache.window, snapshot.isFocused);
     dirtyWindowIds.delete(snapshot.id);
-    return entry.cache.reevaluate().serialized;
+    return entry.cache.reevaluate(takeDirtyWindowNodeIds(snapshot.id)).serialized;
   }
 
   const focusChanged = existing.latestSnapshot.isFocused !== snapshot.isFocused;
-  const wasDirty = dirtyWindowIds.delete(snapshot.id);
   existing.latestSnapshot = snapshot;
   const updated = existing.cache.update(snapshot);
   if (focusChanged) {
     events.emitFocus(existing.cache.window, snapshot.isFocused);
   }
 
-  if (focusChanged || wasDirty) {
-    return existing.cache.reevaluate().serialized;
+  const wasDirty = dirtyWindowIds.delete(snapshot.id);
+  if (wasDirty) {
+    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    return existing.cache.reevaluate(dirtyNodeIds).serialized;
   }
 
   return updated?.serialized ?? existing.cache.lastSerialized;
@@ -637,6 +652,8 @@ function registerPoll(
 function processSchedulerTick(nowMs: number): {
   dirty: boolean;
   dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 } {
@@ -679,6 +696,16 @@ function processSchedulerTick(nowMs: number): {
   dirtyWindowIds.clear();
   const nextDirtyLayerIds = Array.from(dirtyLayerIds);
   dirtyLayerIds.clear();
+  const dirtyWindowNodeIds = Object.fromEntries(
+    nextDirtyWindowIds
+      .map((windowId) => [windowId, takeDirtyWindowNodeIds(windowId)] as const)
+      .filter(([, nodeIds]) => nodeIds.length > 0),
+  );
+  const dirtyLayerNodeIds = Object.fromEntries(
+    nextDirtyLayerIds
+      .map((layerId) => [layerId, takeDirtyLayerNodeIds(layerId)] as const)
+      .filter(([, nodeIds]) => nodeIds.length > 0),
+  );
   const actions = drainPendingActions();
   const dirty = runtimeDirty || nextDirtyWindowIds.length > 0 || nextDirtyLayerIds.length > 0;
   runtimeDirty = false;
@@ -686,6 +713,10 @@ function processSchedulerTick(nowMs: number): {
   return {
     dirty,
     dirtyWindowIds: nextDirtyWindowIds,
+    dirtyWindowNodeIds:
+      Object.keys(dirtyWindowNodeIds).length > 0 ? dirtyWindowNodeIds : undefined,
+    dirtyLayerNodeIds:
+      Object.keys(dirtyLayerNodeIds).length > 0 ? dirtyLayerNodeIds : undefined,
     actions,
     nextPollInMs,
   };
@@ -747,13 +778,15 @@ function startClose(
     }
   }
 
-  const reevaluated = entry.cache.reevaluate();
+  const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
   return {
     invoked: true,
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
     dirtyWindowIds: [windowId],
+    dirtyWindowNodeIds: { [windowId]: dirtyNodeIds },
     actions,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
@@ -783,7 +816,8 @@ function invokeHandler(
     };
   }
 
-  const reevaluated = entry.cache.reevaluate();
+  const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
 
   return {
@@ -791,6 +825,7 @@ function invokeHandler(
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
     dirtyWindowIds: [windowId],
+    dirtyWindowNodeIds: { [windowId]: dirtyNodeIds },
     actions,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };

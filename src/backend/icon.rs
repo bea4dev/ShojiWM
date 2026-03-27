@@ -30,6 +30,7 @@ use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
+    pub owner_node_id: Option<String>,
     pub order: usize,
     pub rect: LogicalRect,
     pub clip_rect: Option<LogicalRect>,
@@ -98,6 +99,7 @@ impl IconRasterizer {
         if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationIcon {
+                owner_node_id: None,
                 order: 0,
                 rect: spec.rect,
                 clip_rect: None,
@@ -126,6 +128,7 @@ impl IconRasterizer {
             None,
         );
         Some(CachedDecorationIcon {
+            owner_node_id: None,
             order: 0,
             rect: spec.rect,
             clip_rect: None,

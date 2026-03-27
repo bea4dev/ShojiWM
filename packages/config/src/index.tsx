@@ -9,27 +9,14 @@ import {
     Label,
     WINDOW_MANAGER,
     WindowBorder,
-    windowAction,
     backdropSource,
     compileEffect,
     dualKawaseBlur,
-    loadShader,
-    noise,
-    shaderStage,
     type SSDStyle,
     type WaylandWindow,
-    signal,
     animationVariable,
     seconds,
     cubicBezier,
-    save,
-    unit,
-    get,
-    blend,
-    xrayBackdropSource,
-    shaderInput,
-    computed,
-    createPoll
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
@@ -74,7 +61,6 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
-    const isFocused = window.isFocused();
     const closeState = getInteractionState(window, "window.close");
 
     const scale = window.animation.signal(focusAnimation);
@@ -89,9 +75,9 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.scaleY = scale;
     window.transform.opacity = opacity;
 
-    const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
-    const titlebarBackground = isFocused ? "#1f243080" : "#2a2f3a80";
-    const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
+    const borderColor = window.isFocused(focused => focused ? "#d7ba7d" : "#4f5666");
+    const titlebarBackground = window.isFocused(focused => focused ? "#1f243080" : "#2a2f3a80");
+    const titleColor = window.isFocused(focused => focused ? "#f5f7fa" : "#c9d1d9");
 
     const titlebarStyle: SSDStyle = {
         height: 30,
@@ -119,9 +105,9 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         >
             <Box direction="column">
                 <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
-                    <AppIcon icon={window.icon()} style={{ width: 16, height: 16 }} />
+                    <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
                     <Label
-                        text={window.title()}
+                        text={window.title}
                         style={{
                             color: titleColor,
                             fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
@@ -146,7 +132,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                             },
                             closeState,
                         )}
-                        onClick={() => window.close()}
+                        onClick={window.close}
                     />
                 </ShaderEffect>
                 <ClientWindow />

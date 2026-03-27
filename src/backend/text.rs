@@ -35,6 +35,7 @@ thread_local! {
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationLabel {
+    pub owner_node_id: Option<String>,
     pub order: usize,
     pub rect: LogicalRect,
     pub clip_rect: Option<LogicalRect>,
@@ -101,6 +102,7 @@ impl TextRasterizer {
         if let Some(cached) = self.async_buffers.get_mut(&spec_hash) {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationLabel {
+                owner_node_id: None,
                 order: 0,
                 rect: spec.rect,
                 clip_rect: None,
@@ -123,6 +125,7 @@ impl TextRasterizer {
 
         let rendered = self.render_label_pixels(spec)?;
         Some(CachedDecorationLabel {
+            owner_node_id: None,
             order: 0,
             rect: spec.rect,
             clip_rect: None,

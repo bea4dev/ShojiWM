@@ -95,9 +95,9 @@ export interface DecorationInteractionSnapshot {
 }
 
 export interface InteractionState {
-  hovered: boolean;
-  active: boolean;
-  focused: boolean;
+  hovered: MaybeSignal<boolean>;
+  active: MaybeSignal<boolean>;
+  focused: MaybeSignal<boolean>;
 }
 
 export interface DecorationElementNode {
@@ -328,7 +328,7 @@ export interface BoxProps extends ComponentProps {
 }
 
 export interface LabelProps extends ComponentProps {
-  text?: string;
+  text?: MaybeSignal<string>;
   style?: SSDStyle;
   id?: string;
 }
@@ -340,7 +340,7 @@ export interface ButtonProps extends ComponentProps {
 }
 
 export interface AppIconProps extends ComponentProps {
-  icon?: WindowIcon;
+  icon?: MaybeSignal<WindowIcon | undefined>;
   style?: SSDStyle;
   id?: string;
 }
@@ -461,6 +461,7 @@ export type SerializableDecorationChild =
 
 export interface SerializedDecorationNode {
   kind: DecorationNodeType;
+  nodeId: string;
   props: Record<string, unknown>;
   children: SerializableDecorationChild[];
 }

@@ -20,6 +20,7 @@ use super::{
     DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
     LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot,
     WaylandWindowSnapshot, WindowTransform,
+    reapply_tree_preserving_layout,
 };
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,7 @@ pub enum DecorationRuntimeEvaluator {
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationBuffer {
+    pub owner_node_id: Option<String>,
     pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
@@ -407,14 +409,20 @@ impl ShojiWM {
             };
             let snapshot = self.snapshot_window(&window);
             let had_cached_decoration = self.window_decorations.contains_key(&window);
+            let runtime_state_changed = self
+                .window_decorations
+                .get(&window)
+                .map(|cached| window_snapshot_requires_runtime_refresh(&cached.snapshot, &snapshot))
+                .unwrap_or(false);
             let snapshot_changed = self
                 .window_decorations
                 .get(&window)
-                .map(|cached| cached.snapshot != snapshot)
+                .map(|cached| window_snapshot_requires_rebuild(&cached.snapshot, &snapshot))
                 .unwrap_or(true);
 
             let runtime_dirty = force_runtime_reevaluate
                 || force_output_animation_reevaluate
+                || runtime_state_changed
                 || self.runtime_dirty_window_ids.contains(&snapshot.id);
             if !had_cached_decoration || snapshot_changed {
                 let started_at = Instant::now();
@@ -561,59 +569,130 @@ impl ShojiWM {
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
                     let previous_transform = cached.visual_transform;
+                    let previous_layout = cached.layout.clone();
                     let previous_buffers = cached.buffers.clone();
                     let previous_shader_buffers = cached.shader_buffers.clone();
                     let previous_text_buffers = cached.text_buffers.clone();
                     let previous_icon_buffers = cached.icon_buffers.clone();
                     let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-                    let evaluation = match self.decoration_evaluator.evaluate_cached_window(&snapshot.id, now_ms) {
-                        Ok(evaluation) => evaluation,
-                        Err(error) => {
-                            warn!(
-                                window_id = snapshot.id,
-                                title = snapshot.title,
-                                app_id = snapshot.app_id,
-                                ?error,
-                                "cached decoration runtime evaluation failed during transform update, falling back to full evaluation"
-                            );
-                            match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
-                                Ok(evaluation) => evaluation,
-                                Err(error) => {
-                                    warn!(
-                                        window_id = snapshot.id,
-                                        title = snapshot.title,
-                                        app_id = snapshot.app_id,
-                                        ?error,
-                                        "decoration runtime evaluation failed during transform update, falling back to static decoration"
-                                    );
-                                    StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                    let evaluation = if runtime_state_changed {
+                        match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                            Ok(evaluation) => evaluation,
+                            Err(error) => {
+                                warn!(
+                                    window_id = snapshot.id,
+                                    title = snapshot.title,
+                                    app_id = snapshot.app_id,
+                                    ?error,
+                                    "decoration runtime evaluation failed during runtime state update, falling back to static decoration"
+                                );
+                                StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                            }
+                        }
+                    } else {
+                        match self.decoration_evaluator.evaluate_cached_window(&snapshot.id, now_ms) {
+                            Ok(evaluation) => evaluation,
+                            Err(error) => {
+                                warn!(
+                                    window_id = snapshot.id,
+                                    title = snapshot.title,
+                                    app_id = snapshot.app_id,
+                                    ?error,
+                                    "cached decoration runtime evaluation failed during transform update, falling back to full evaluation"
+                                );
+                                match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                                    Ok(evaluation) => evaluation,
+                                    Err(error) => {
+                                        warn!(
+                                            window_id = snapshot.id,
+                                            title = snapshot.title,
+                                            app_id = snapshot.app_id,
+                                            ?error,
+                                            "decoration runtime evaluation failed during transform update, falling back to static decoration"
+                                        );
+                                        StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                                    }
                                 }
                             }
                         }
                     };
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
+                    let dirty_node_ids = evaluation.dirty_node_ids;
                     let tree_changed = next_tree != cached.tree;
                     cached.snapshot = snapshot;
 
                     if !tree_changed {
                         cached.visual_transform = next_transform;
                     } else {
+                        let layout_equivalent = cached.tree.root.layout_equivalent(&next_tree.root);
                         cached.tree = next_tree;
-                        cached.layout = cached
-                            .tree
-                            .layout_for_client(client_rect)
-                            .map_err(super::DecorationEvaluationError::Layout)?;
-                        cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
-                        let order_map = build_render_order_map(&cached.layout);
-                        cached.buffers = build_cached_buffers(&cached.layout, &order_map);
-                        cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
-                        freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
-                        cached.text_buffers =
-                            build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                        cached.icon_buffers =
-                            build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
-                        self.suggested_window_offset = suggested_window_offset(&cached.layout);
+                        if layout_equivalent {
+                            reapply_tree_preserving_layout(&mut cached.layout.root, &cached.tree.root, None);
+                            cached.layout.root.rect = cached.layout.root.bounds_rect();
+                            cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                            let order_map = build_render_order_map(&cached.layout);
+                            if dirty_node_ids.is_empty() {
+                                cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                                cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                                freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
+                                cached.text_buffers =
+                                    build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
+                                cached.icon_buffers =
+                                    build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                            } else {
+                                let (rebuilt_buffers, rebuilt_shader_buffers) =
+                                    rebuild_partial_buffers(&cached.layout, &order_map, &dirty_node_ids);
+                                let mut merged_shader_buffers = merge_shader_buffers(
+                                    &previous_shader_buffers,
+                                    rebuilt_shader_buffers,
+                                    &dirty_node_ids,
+                                );
+                                freeze_manual_shader_buffers(&previous_shader_buffers, &mut merged_shader_buffers);
+                                cached.buffers = merge_cached_buffers(
+                                    &previous_buffers,
+                                    rebuilt_buffers,
+                                    &dirty_node_ids,
+                                );
+                                cached.shader_buffers = merged_shader_buffers;
+                                cached.text_buffers = merge_text_buffers(
+                                    &previous_text_buffers,
+                                    rebuild_partial_text_buffers(
+                                        &cached.layout,
+                                        &order_map,
+                                        &dirty_node_ids,
+                                        &mut self.text_rasterizer,
+                                    ),
+                                    &dirty_node_ids,
+                                );
+                                cached.icon_buffers = merge_icon_buffers(
+                                    &previous_icon_buffers,
+                                    rebuild_partial_icon_buffers(
+                                        &cached.layout,
+                                        &order_map,
+                                        &dirty_node_ids,
+                                        &cached.snapshot,
+                                        &mut self.icon_rasterizer,
+                                    ),
+                                    &dirty_node_ids,
+                                );
+                            }
+                        } else {
+                            cached.layout = cached
+                                .tree
+                                .layout_for_client(client_rect)
+                                .map_err(super::DecorationEvaluationError::Layout)?;
+                            cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                            let order_map = build_render_order_map(&cached.layout);
+                            cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                            cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                            freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
+                            cached.text_buffers =
+                                build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
+                            cached.icon_buffers =
+                                build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                            self.suggested_window_offset = suggested_window_offset(&cached.layout);
+                        }
                         cached.visual_transform = next_transform;
                     }
                     let next_root =
@@ -624,6 +703,14 @@ impl ShojiWM {
                             Some(previous_root),
                             next_root,
                         );
+                    } else if !dirty_node_ids.is_empty() {
+                        self.pending_decoration_damage.extend(runtime_dirty_node_damage_rects(
+                            &previous_layout,
+                            previous_transform,
+                            &cached.layout,
+                            cached.visual_transform,
+                            &dirty_node_ids,
+                        ));
                     } else {
                         self.pending_decoration_damage.extend(runtime_dirty_damage_rects(
                             &previous_buffers,
@@ -643,6 +730,13 @@ impl ShojiWM {
                         elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
                         "recomputed window decoration tree from runtime dirty state"
                     );
+                    if force_async_asset_refresh {
+                        let order_map = build_render_order_map(&cached.layout);
+                        cached.text_buffers =
+                            build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
+                        cached.icon_buffers =
+                            build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                    }
                     log_decoration_refresh(
                         "runtime-dirty",
                         &cached.snapshot,
@@ -676,34 +770,158 @@ impl ShojiWM {
             if let Some(closing) = self.closing_window_snapshots.get_mut(&window_id) {
                 let previous_root =
                     transformed_root_rect(closing.decoration.layout.root.rect, closing.transform);
+                let previous_layout = closing.decoration.layout.clone();
+                let previous_transform = closing.transform;
+                let previous_buffers = closing.decoration.buffers.clone();
+                let previous_shader_buffers = closing.decoration.shader_buffers.clone();
+                let previous_text_buffers = closing.decoration.text_buffers.clone();
+                let previous_icon_buffers = closing.decoration.icon_buffers.clone();
                 let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
                 let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id, now_ms)?;
-                let tree = DecorationTree::new(evaluation.node);
-                let layout = tree
-                    .layout_for_client(closing.decoration.client_rect)
-                    .map_err(super::DecorationEvaluationError::Layout)?;
-                let content_clip = content_clip_for_layout(&tree, &layout);
-                let order_map = build_render_order_map(&layout);
-                let buffers = build_cached_buffers(&layout, &order_map);
-                let shader_buffers = build_shader_buffers(&layout, &order_map);
-                let text_buffers = build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
-                let icon_buffers =
-                    build_icon_buffers(&layout, &order_map, &closing.decoration.snapshot, &mut self.icon_rasterizer);
-                closing.decoration.tree = tree;
-                closing.decoration.layout = layout;
-                closing.decoration.content_clip = content_clip;
-                closing.decoration.buffers = buffers;
-                closing.decoration.shader_buffers = shader_buffers;
-                closing.decoration.text_buffers = text_buffers;
-                closing.decoration.icon_buffers = icon_buffers;
-                self.suggested_window_offset = suggested_window_offset(&closing.decoration.layout);
+                let next_tree = DecorationTree::new(evaluation.node);
+                let dirty_node_ids = evaluation.dirty_node_ids;
+                let tree_changed = next_tree != closing.decoration.tree;
+                if !tree_changed {
+                    closing.decoration.visual_transform = evaluation.transform;
+                } else {
+                    let layout_equivalent =
+                        closing.decoration.tree.root.layout_equivalent(&next_tree.root);
+                    closing.decoration.tree = next_tree;
+                    if layout_equivalent {
+                        reapply_tree_preserving_layout(
+                            &mut closing.decoration.layout.root,
+                            &closing.decoration.tree.root,
+                            None,
+                        );
+                        closing.decoration.layout.root.rect = closing.decoration.layout.root.bounds_rect();
+                        closing.decoration.content_clip =
+                            content_clip_for_layout(&closing.decoration.tree, &closing.decoration.layout);
+                        let order_map = build_render_order_map(&closing.decoration.layout);
+                        if dirty_node_ids.is_empty() {
+                            closing.decoration.buffers =
+                                build_cached_buffers(&closing.decoration.layout, &order_map);
+                            closing.decoration.shader_buffers =
+                                build_shader_buffers(&closing.decoration.layout, &order_map);
+                            closing.decoration.text_buffers = build_text_buffers(
+                                &closing.decoration.layout,
+                                &order_map,
+                                &mut self.text_rasterizer,
+                            );
+                            closing.decoration.icon_buffers = build_icon_buffers(
+                                &closing.decoration.layout,
+                                &order_map,
+                                &closing.decoration.snapshot,
+                                &mut self.icon_rasterizer,
+                            );
+                        } else {
+                            let (rebuilt_buffers, rebuilt_shader_buffers) =
+                                rebuild_partial_buffers(&closing.decoration.layout, &order_map, &dirty_node_ids);
+                            let mut merged_shader_buffers = merge_shader_buffers(
+                                &previous_shader_buffers,
+                                rebuilt_shader_buffers,
+                                &dirty_node_ids,
+                            );
+                            freeze_manual_shader_buffers(&previous_shader_buffers, &mut merged_shader_buffers);
+                            closing.decoration.buffers = merge_cached_buffers(
+                                &previous_buffers,
+                                rebuilt_buffers,
+                                &dirty_node_ids,
+                            );
+                            closing.decoration.shader_buffers = merged_shader_buffers;
+                            closing.decoration.text_buffers = merge_text_buffers(
+                                &previous_text_buffers,
+                                rebuild_partial_text_buffers(
+                                    &closing.decoration.layout,
+                                    &order_map,
+                                    &dirty_node_ids,
+                                    &mut self.text_rasterizer,
+                                ),
+                                &dirty_node_ids,
+                            );
+                            closing.decoration.icon_buffers = merge_icon_buffers(
+                                &previous_icon_buffers,
+                                rebuild_partial_icon_buffers(
+                                    &closing.decoration.layout,
+                                    &order_map,
+                                    &dirty_node_ids,
+                                    &closing.decoration.snapshot,
+                                    &mut self.icon_rasterizer,
+                                ),
+                                &dirty_node_ids,
+                            );
+                        }
+                    } else {
+                        let layout = closing
+                            .decoration
+                            .tree
+                            .layout_for_client(closing.decoration.client_rect)
+                            .map_err(super::DecorationEvaluationError::Layout)?;
+                        let content_clip = content_clip_for_layout(&closing.decoration.tree, &layout);
+                        let order_map = build_render_order_map(&layout);
+                        let buffers = build_cached_buffers(&layout, &order_map);
+                        let shader_buffers = build_shader_buffers(&layout, &order_map);
+                        let text_buffers =
+                            build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
+                        let icon_buffers = build_icon_buffers(
+                            &layout,
+                            &order_map,
+                            &closing.decoration.snapshot,
+                            &mut self.icon_rasterizer,
+                        );
+                        closing.decoration.layout = layout;
+                        closing.decoration.content_clip = content_clip;
+                        closing.decoration.buffers = buffers;
+                        closing.decoration.shader_buffers = shader_buffers;
+                        closing.decoration.text_buffers = text_buffers;
+                        closing.decoration.icon_buffers = icon_buffers;
+                        self.suggested_window_offset = suggested_window_offset(&closing.decoration.layout);
+                    }
+                    closing.decoration.visual_transform = evaluation.transform;
+                }
                 closing.decoration.visual_transform = evaluation.transform;
                 closing.transform = evaluation.transform;
-                push_damage_pair(
-                    &mut self.pending_decoration_damage,
-                    Some(previous_root),
-                    transformed_root_rect(closing.decoration.layout.root.rect, closing.transform),
-                );
+                let next_root =
+                    transformed_root_rect(closing.decoration.layout.root.rect, closing.transform);
+                if previous_transform != closing.transform || previous_root != next_root {
+                    push_damage_pair(
+                        &mut self.pending_decoration_damage,
+                        Some(previous_root),
+                        next_root,
+                    );
+                } else if !dirty_node_ids.is_empty() {
+                    self.pending_decoration_damage.extend(runtime_dirty_node_damage_rects(
+                        &previous_layout,
+                        previous_transform,
+                        &closing.decoration.layout,
+                        closing.transform,
+                        &dirty_node_ids,
+                    ));
+                } else {
+                    self.pending_decoration_damage.extend(runtime_dirty_damage_rects(
+                        &previous_buffers,
+                        &closing.decoration.buffers,
+                        &previous_shader_buffers,
+                        &closing.decoration.shader_buffers,
+                        &previous_text_buffers,
+                        &closing.decoration.text_buffers,
+                        &previous_icon_buffers,
+                        &closing.decoration.icon_buffers,
+                    ));
+                }
+                if force_async_asset_refresh {
+                    let order_map = build_render_order_map(&closing.decoration.layout);
+                    closing.decoration.text_buffers = build_text_buffers(
+                        &closing.decoration.layout,
+                        &order_map,
+                        &mut self.text_rasterizer,
+                    );
+                    closing.decoration.icon_buffers = build_icon_buffers(
+                        &closing.decoration.layout,
+                        &order_map,
+                        &closing.decoration.snapshot,
+                        &mut self.icon_rasterizer,
+                    );
+                }
                 self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 self.schedule_redraw();
                 animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
@@ -879,6 +1097,7 @@ impl ComputedDecorationTree {
 impl super::ComputedDecorationNode {
     fn translated(&self, dx: i32, dy: i32) -> Self {
         Self {
+            stable_id: self.stable_id.clone(),
             kind: self.kind.clone(),
             style: self.style.clone(),
             rect: LogicalRect::new(
@@ -909,7 +1128,7 @@ fn build_cached_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedDecorationBuffer> {
-    let (buffers, _) = build_cached_buffers_and_shaders(layout, order_map);
+    let (buffers, _) = build_cached_buffers_and_shaders(layout, order_map, None);
     buffers
 }
 
@@ -917,13 +1136,14 @@ fn build_shader_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedShaderEffect> {
-    let (_, buffers) = build_cached_buffers_and_shaders(layout, order_map);
+    let (_, buffers) = build_cached_buffers_and_shaders(layout, order_map, None);
     buffers
 }
 
 fn build_cached_buffers_and_shaders(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: Option<&std::collections::HashSet<&str>>,
 ) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
     let mut buffers = Vec::new();
     let mut shader_buffers = Vec::new();
@@ -932,6 +1152,7 @@ fn build_cached_buffers_and_shaders(
         "root".to_string(),
         None,
         order_map,
+        dirty_node_ids,
         &mut buffers,
         &mut shader_buffers,
     );
@@ -950,7 +1171,7 @@ fn build_text_buffers(
     rasterizer: &mut crate::backend::text::TextRasterizer,
 ) -> Vec<CachedDecorationLabel> {
     let mut buffers = Vec::new();
-    collect_text_buffers(&layout.root, "root".into(), order_map, rasterizer, &mut buffers);
+    collect_text_buffers(&layout.root, "root".into(), order_map, None, rasterizer, &mut buffers);
     buffers
 }
 
@@ -961,7 +1182,7 @@ fn build_icon_buffers(
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
     let mut buffers = Vec::new();
-    collect_icon_buffers(&layout.root, "root".into(), order_map, snapshot, rasterizer, &mut buffers);
+    collect_icon_buffers(&layout.root, "root".into(), order_map, None, snapshot, rasterizer, &mut buffers);
     buffers
 }
 
@@ -972,6 +1193,141 @@ fn build_render_order_map(
     let mut order = 0usize;
     collect_render_orders(&layout.root, "root".into(), &mut order, &mut map);
     map
+}
+
+fn rebuild_partial_buffers(
+    layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: &[String],
+) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    build_cached_buffers_and_shaders(layout, order_map, Some(&dirty_node_ids))
+}
+
+fn rebuild_partial_text_buffers(
+    layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: &[String],
+    rasterizer: &mut crate::backend::text::TextRasterizer,
+) -> Vec<CachedDecorationLabel> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut buffers = Vec::new();
+    collect_text_buffers(&layout.root, "root".into(), order_map, Some(&dirty_node_ids), rasterizer, &mut buffers);
+    buffers
+}
+
+fn rebuild_partial_icon_buffers(
+    layout: &ComputedDecorationTree,
+    order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: &[String],
+    snapshot: &WaylandWindowSnapshot,
+    rasterizer: &mut crate::backend::icon::IconRasterizer,
+) -> Vec<CachedDecorationIcon> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut buffers = Vec::new();
+    collect_icon_buffers(&layout.root, "root".into(), order_map, Some(&dirty_node_ids), snapshot, rasterizer, &mut buffers);
+    buffers
+}
+
+fn merge_cached_buffers(
+    previous: &[CachedDecorationBuffer],
+    rebuilt: Vec<CachedDecorationBuffer>,
+    dirty_node_ids: &[String],
+) -> Vec<CachedDecorationBuffer> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut merged = previous
+        .iter()
+        .filter(|item| {
+            item.owner_node_id
+                .as_deref()
+                .is_none_or(|node_id| !dirty_node_ids.contains(node_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    merged.extend(rebuilt);
+    merged.sort_by_key(|item| item.order);
+    merged
+}
+
+fn merge_shader_buffers(
+    previous: &[CachedShaderEffect],
+    rebuilt: Vec<CachedShaderEffect>,
+    dirty_node_ids: &[String],
+) -> Vec<CachedShaderEffect> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut merged = previous
+        .iter()
+        .filter(|item| {
+            item.owner_node_id
+                .as_deref()
+                .is_none_or(|node_id| !dirty_node_ids.contains(node_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    merged.extend(rebuilt);
+    merged.sort_by_key(|item| item.order);
+    merged
+}
+
+fn merge_text_buffers(
+    previous: &[CachedDecorationLabel],
+    rebuilt: Vec<CachedDecorationLabel>,
+    dirty_node_ids: &[String],
+) -> Vec<CachedDecorationLabel> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut merged = previous
+        .iter()
+        .filter(|item| {
+            item.owner_node_id
+                .as_deref()
+                .is_none_or(|node_id| !dirty_node_ids.contains(node_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    merged.extend(rebuilt);
+    merged.sort_by_key(|item| item.order);
+    merged
+}
+
+fn merge_icon_buffers(
+    previous: &[CachedDecorationIcon],
+    rebuilt: Vec<CachedDecorationIcon>,
+    dirty_node_ids: &[String],
+) -> Vec<CachedDecorationIcon> {
+    let dirty_node_ids = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut merged = previous
+        .iter()
+        .filter(|item| {
+            item.owner_node_id
+                .as_deref()
+                .is_none_or(|node_id| !dirty_node_ids.contains(node_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    merged.extend(rebuilt);
+    merged.sort_by_key(|item| item.order);
+    merged
 }
 
 fn collect_render_orders(
@@ -1040,12 +1396,19 @@ fn collect_cached_buffers(
     path: String,
     ancestor_clip: Option<super::DecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     buffers: &mut Vec<CachedDecorationBuffer>,
     shader_buffers: &mut Vec<CachedShaderEffect>,
 ) {
     if node.style.visible == Some(false) {
         return;
     }
+
+    let include_node = dirty_node_ids.is_none_or(|dirty_node_ids| {
+        node.stable_id
+            .as_deref()
+            .is_some_and(|stable_id| dirty_node_ids.contains(stable_id))
+    });
 
     let node_radius = node.style.border_radius.unwrap_or(0).max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
@@ -1067,60 +1430,78 @@ fn collect_cached_buffers(
         | super::DecorationNodeKind::AppIcon
         | super::DecorationNodeKind::WindowSlot => {}
         _ => {
-            if let Some(border) = node.style.border {
-                let color = border.color.with_opacity(node.style.opacity);
-                if color.a > 0 && border.width > 0 {
+            if include_node {
+                if let Some(border) = node.style.border {
+                    let color = border.color.with_opacity(node.style.opacity);
+                    if color.a > 0 && border.width > 0 {
+                        let current_order =
+                            *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
+                        buffers.push(CachedDecorationBuffer {
+                            owner_node_id: node.stable_id.clone(),
+                            stable_key: format!("{path}:border"),
+                            order: current_order,
+                            rect: node.rect,
+                            color,
+                            buffer: SolidColorBuffer::new(
+                                (node.rect.width.max(1), node.rect.height.max(1)),
+                                [
+                                    color.r as f32 / 255.0,
+                                    color.g as f32 / 255.0,
+                                    color.b as f32 / 255.0,
+                                    color.a as f32 / 255.0,
+                                ],
+                            ),
+                            radius: node_radius,
+                            border_width: border.width.max(0),
+                            clip_rect: current_clip_rect,
+                            clip_radius: current_clip_radius,
+                            source_kind: node_kind_name(&node.kind),
+                        });
+                    }
+                }
+
+                if let super::DecorationNodeKind::ShaderEffect(effect) = &node.kind {
                     let current_order =
-                        *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
-                    buffers.push(CachedDecorationBuffer {
-                        stable_key: format!("{path}:border"),
+                        *order_map.get(&format!("{path}:shader")).unwrap_or(&usize::MAX);
+                    shader_buffers.push(CachedShaderEffect {
+                        owner_node_id: node.stable_id.clone(),
+                        stable_key: format!("{path}:shader"),
                         order: current_order,
                         rect: node.rect,
-                        color,
-                        buffer: SolidColorBuffer::new(
-                            (node.rect.width.max(1), node.rect.height.max(1)),
-                            [
-                                color.r as f32 / 255.0,
-                                color.g as f32 / 255.0,
-                                color.b as f32 / 255.0,
-                                color.a as f32 / 255.0,
-                            ],
-                        ),
-                        radius: node_radius,
-                        border_width: border.width.max(0),
+                        shader: effect.shader.clone(),
                         clip_rect: current_clip_rect,
                         clip_radius: current_clip_radius,
-                        source_kind: node_kind_name(&node.kind),
                     });
                 }
-            }
 
-            if let super::DecorationNodeKind::ShaderEffect(effect) = &node.kind {
-                let current_order =
-                    *order_map.get(&format!("{path}:shader")).unwrap_or(&usize::MAX);
-                shader_buffers.push(CachedShaderEffect {
-                    stable_key: format!("{path}:shader"),
-                    order: current_order,
-                    rect: node.rect,
-                    shader: effect.shader.clone(),
-                    clip_rect: current_clip_rect,
-                    clip_radius: current_clip_radius,
-                });
-            }
-
-            if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
-                if background.a > 0 {
-                    if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                        if let Some(inner_rect) = window_border_inner_rect {
-                            push_fill_rects_around_hole(
-                                buffers,
-                                order_map,
-                                &path,
-                                node.rect,
-                                inner_rect,
-                                background,
-                                node_radius,
-                            );
+                if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
+                    if background.a > 0 {
+                        if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+                            if let Some(inner_rect) = window_border_inner_rect {
+                                push_fill_rects_around_hole(
+                                    buffers,
+                                    order_map,
+                                    &path,
+                                    node.stable_id.clone(),
+                                    node.rect,
+                                    inner_rect,
+                                    background,
+                                    node_radius,
+                                );
+                            } else {
+                                push_cached_fill(
+                                    buffers,
+                                    *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
+                                    format!("{path}:fill"),
+                                    node.rect,
+                                    background,
+                                    node.stable_id.clone(),
+                                    node_radius,
+                                    0,
+                                    None,
+                                    0,
+                                );
+                            }
                         } else {
                             push_cached_fill(
                                 buffers,
@@ -1128,24 +1509,13 @@ fn collect_cached_buffers(
                                 format!("{path}:fill"),
                                 node.rect,
                                 background,
-                            node_radius,
-                            0,
-                            None,
-                            0,
+                                node.stable_id.clone(),
+                                node_radius,
+                                0,
+                                current_clip_rect,
+                                current_clip_radius,
                             );
                         }
-                    } else {
-                        push_cached_fill(
-                            buffers,
-                            *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
-                            format!("{path}:fill"),
-                            node.rect,
-                            background,
-                            node_radius,
-                            0,
-                            current_clip_rect,
-                            current_clip_radius,
-                        );
                     }
                 }
             }
@@ -1156,6 +1526,7 @@ fn collect_cached_buffers(
                     format!("{path}/child-{index}"),
                     child_clip,
                     order_map,
+                    dirty_node_ids,
                     buffers,
                     shader_buffers,
                 );
@@ -1168,6 +1539,7 @@ fn collect_text_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     buffers: &mut Vec<CachedDecorationLabel>,
 ) {
@@ -1176,7 +1548,16 @@ fn collect_text_buffers(
     }
 
     for (index, child) in node.children.iter().rev().enumerate() {
-        collect_text_buffers(child, format!("{path}/child-{index}"), order_map, rasterizer, buffers);
+        collect_text_buffers(child, format!("{path}/child-{index}"), order_map, dirty_node_ids, rasterizer, buffers);
+    }
+
+    if dirty_node_ids.is_some_and(|dirty_node_ids| {
+        !node
+            .stable_id
+            .as_deref()
+            .is_some_and(|stable_id| dirty_node_ids.contains(stable_id))
+    }) {
+        return;
     }
 
     let super::DecorationNodeKind::Label(label) = &node.kind else {
@@ -1200,6 +1581,7 @@ fn collect_text_buffers(
 
     if let Some(buffer) = rasterizer.render_label(&spec) {
         let mut buffer = buffer;
+        buffer.owner_node_id = node.stable_id.clone();
         buffer.order = *order_map.get(&format!("{path}:label")).unwrap_or(&usize::MAX);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
@@ -1211,6 +1593,7 @@ fn collect_icon_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
+    dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
     buffers: &mut Vec<CachedDecorationIcon>,
@@ -1220,7 +1603,16 @@ fn collect_icon_buffers(
     }
 
     for (index, child) in node.children.iter().rev().enumerate() {
-        collect_icon_buffers(child, format!("{path}/child-{index}"), order_map, snapshot, rasterizer, buffers);
+        collect_icon_buffers(child, format!("{path}/child-{index}"), order_map, dirty_node_ids, snapshot, rasterizer, buffers);
+    }
+
+    if dirty_node_ids.is_some_and(|dirty_node_ids| {
+        !node
+            .stable_id
+            .as_deref()
+            .is_some_and(|stable_id| dirty_node_ids.contains(stable_id))
+    }) {
+        return;
     }
 
     let super::DecorationNodeKind::AppIcon = &node.kind else {
@@ -1235,6 +1627,7 @@ fn collect_icon_buffers(
 
     if let Some(buffer) = rasterizer.render_icon(&spec) {
         let mut buffer = buffer;
+        buffer.owner_node_id = node.stable_id.clone();
         buffer.order = *order_map.get(&format!("{path}:icon")).unwrap_or(&usize::MAX);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
@@ -1246,6 +1639,7 @@ fn push_fill_rects_around_hole(
     buffers: &mut Vec<CachedDecorationBuffer>,
     order_map: &std::collections::HashMap<String, usize>,
     path: &str,
+    owner_node_id: Option<String>,
     rect: LogicalRect,
     hole: LogicalRect,
     color: super::Color,
@@ -1274,6 +1668,7 @@ fn push_fill_rects_around_hole(
             format!("{path}:{suffix}"),
             candidate,
             color,
+            owner_node_id.clone(),
             radius,
             0,
             None,
@@ -1288,6 +1683,7 @@ fn push_cached_fill(
     stable_key: String,
     rect: LogicalRect,
     color: super::Color,
+    owner_node_id: Option<String>,
     radius: i32,
     border_width: i32,
     clip_rect: Option<LogicalRect>,
@@ -1298,6 +1694,7 @@ fn push_cached_fill(
     }
 
     buffers.push(CachedDecorationBuffer {
+        owner_node_id,
         stable_key,
         order,
         rect,
@@ -1388,6 +1785,28 @@ fn format_color(color: super::Color) -> String {
         "rgba({}, {}, {}, {})",
         color.r, color.g, color.b, color.a
     )
+}
+
+fn window_snapshot_requires_rebuild(
+    previous: &WaylandWindowSnapshot,
+    next: &WaylandWindowSnapshot,
+) -> bool {
+    previous.id != next.id
+        || previous.title != next.title
+        || previous.app_id != next.app_id
+        || previous.position != next.position
+        || previous.is_floating != next.is_floating
+        || previous.is_maximized != next.is_maximized
+        || previous.is_fullscreen != next.is_fullscreen
+        || previous.is_xwayland != next.is_xwayland
+        || previous.icon != next.icon
+}
+
+fn window_snapshot_requires_runtime_refresh(
+    previous: &WaylandWindowSnapshot,
+    next: &WaylandWindowSnapshot,
+) -> bool {
+    previous.is_focused != next.is_focused || previous.interaction != next.interaction
 }
 
 fn push_damage_pair(
@@ -1498,6 +1917,36 @@ fn runtime_dirty_damage_rects(
         &mut damage,
     );
 
+    damage
+}
+
+fn runtime_dirty_node_damage_rects(
+    previous_layout: &ComputedDecorationTree,
+    previous_transform: WindowTransform,
+    next_layout: &ComputedDecorationTree,
+    next_transform: WindowTransform,
+    dirty_node_ids: &[String],
+) -> Vec<LogicalRect> {
+    let node_id_set = dirty_node_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let mut previous_rects = Vec::new();
+    let mut next_rects = Vec::new();
+    previous_layout
+        .root
+        .rects_for_stable_ids(&node_id_set, &mut previous_rects);
+    next_layout
+        .root
+        .rects_for_stable_ids(&node_id_set, &mut next_rects);
+
+    let mut damage = Vec::new();
+    for rect in previous_rects {
+        damage.push(transformed_root_rect(rect, previous_transform));
+    }
+    for rect in next_rects {
+        damage.push(transformed_root_rect(rect, next_transform));
+    }
     damage
 }
 

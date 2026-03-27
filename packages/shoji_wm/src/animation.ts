@@ -174,7 +174,7 @@ export function createAnimationController(markDirty: () => void): AnimationContr
 }
 
 export function createAnimationControllerWithStore(
-  _markDirty: () => void,
+  markDirty: () => void,
   entries: Map<symbol, AnimationEntry>,
 ): AnimationController {
 
@@ -211,19 +211,28 @@ export function createAnimationControllerWithStore(
         repeat: options.repeat,
       };
       activeAnimationEntries.add(entry);
+      markDirty();
     },
     stop(variable) {
       const entry = entries.get(variable.id);
       if (entry) {
+        const wasRunning = entry.timeline !== undefined;
         entry.timeline = undefined;
         activeAnimationEntries.delete(entry);
+        if (wasRunning) {
+          markDirty();
+        }
       }
     },
     set(variable, value) {
       const entry = ensureEntry(variable);
+      const changed = !Object.is(entry.progress.peek(), value);
       entry.timeline = undefined;
       activeAnimationEntries.delete(entry);
       entry.progress.value = value;
+      if (changed) {
+        markDirty();
+      }
     },
     running(variable) {
       return entries.get(variable.id)?.timeline !== undefined;

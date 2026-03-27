@@ -6,6 +6,10 @@ import type {
   WindowActionDescriptor,
 } from "./types";
 import { isSignal } from "./signals";
+import {
+  enterWindowNodeDependencyScope,
+  leaveWindowNodeDependencyScope,
+} from "./runtime-hooks";
 
 export class DecorationSerializationError extends Error {
   constructor(message: string) {
@@ -30,18 +34,58 @@ export function serializeDecorationTree(
   return serializeElementNode(node, context, path);
 }
 
+export function patchSerializedDecorationTree(
+  node: DecorationChild,
+  previous: SerializableDecorationChild,
+  dirtyNodeIds: ReadonlySet<string>,
+  context?: DecorationSerializationContext,
+  path = "root",
+): SerializableDecorationChild {
+  if (typeof node === "string" || typeof node === "number") {
+    return previous;
+  }
+  if (typeof previous === "string" || typeof previous === "number") {
+    return serializeDecorationTree(node, context, path);
+  }
+
+  const shouldReplaceSelf = dirtyNodeIds.has(path);
+  if (shouldReplaceSelf) {
+    return serializeElementNode(node, context, path);
+  }
+
+  return {
+    kind: previous.kind,
+    nodeId: previous.nodeId,
+    props: previous.props,
+    children: node.children.map((child, index) => {
+      const childPath = childNodePath(path, child, index);
+      const previousChild = previous.children[index];
+      if (previousChild === undefined) {
+        return serializeDecorationTree(child, context, childPath);
+      }
+      return patchSerializedDecorationTree(child, previousChild, dirtyNodeIds, context, childPath);
+    }),
+  };
+}
+
 function serializeElementNode(
   node: DecorationElementNode,
   context?: DecorationSerializationContext,
   path = "root",
 ): SerializedDecorationNode {
-  return {
-    kind: node.type,
-    props: serializeProps(node.props, context, path),
-    children: node.children.map((child, index) =>
-      serializeDecorationTree(child, context, `${path}.${node.type}[${index}]`)
-    ),
-  };
+  enterWindowNodeDependencyScope(path);
+  try {
+    return {
+      kind: node.type,
+      nodeId: path,
+      props: serializeProps(node.props, context, path),
+      children: node.children.map((child, index) =>
+        serializeDecorationTree(child, context, childNodePath(path, child, index))
+      ),
+    };
+  } finally {
+    leaveWindowNodeDependencyScope();
+  }
 }
 
 function serializeProps(
@@ -62,6 +106,11 @@ function serializeProps(
         context,
         typeof props.id === "string" ? `${path}#${props.id}` : `${path}.onClick`,
       );
+      continue;
+    }
+
+    if (isSignal(value)) {
+      serialized[key] = serializeValue(value);
       continue;
     }
 
@@ -155,6 +204,22 @@ function serializeValue(value: unknown): unknown {
   throw new DecorationSerializationError(
     `unsupported prop value type: ${typeof value}`,
   );
+}
+
+function childNodePath(
+  parentPath: string,
+  child: DecorationChild,
+  index: number,
+): string {
+  if (typeof child === "string" || typeof child === "number") {
+    return `${parentPath}.primitive[${index}]`;
+  }
+
+  if (child.key != null) {
+    return `${parentPath}.${child.type}#${String(child.key)}`;
+  }
+
+  return `${parentPath}.${child.type}[${index}]`;
 }
 
 function isWindowActionDescriptor(

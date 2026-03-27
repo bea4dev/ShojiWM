@@ -65,6 +65,7 @@ import type {
 import { createWindowManagerEventController } from "./events";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
+import { computed, read, isSignal } from "./signals";
 export {
   advanceAnimationFrame,
   hasActiveAnimations,
@@ -151,14 +152,20 @@ export {
 export {
   dropLayerDependencies,
   dropWindowDependencies,
+  enterLayerNodeDependencyScope,
   enterLayerDependencyScope,
+  enterWindowNodeDependencyScope,
   enterWindowDependencyScope,
   installRuntimeHooks,
+  leaveLayerNodeDependencyScope,
   leaveLayerDependencyScope,
+  leaveWindowNodeDependencyScope,
   leaveWindowDependencyScope,
   markLayerDirty,
   markRuntimeDirty,
   markWindowDirty,
+  takeDirtyLayerNodeIds,
+  takeDirtyWindowNodeIds,
   trackSignalRead,
   trackSignalWrite,
 } from "./runtime-hooks";
@@ -269,12 +276,10 @@ export function getInteractionState(
   window: WaylandWindow,
   id: string,
 ): InteractionState {
-  const interaction = window.interaction();
-
   return {
-    hovered: interaction.hoveredIds.includes(id),
-    active: interaction.activeIds.includes(id),
-    focused: window.isFocused(),
+    hovered: window.interaction((interaction) => interaction.hoveredIds.includes(id)),
+    active: window.interaction((interaction) => interaction.activeIds.includes(id)),
+    focused: window.isFocused,
   };
 }
 
@@ -287,16 +292,49 @@ export function applyInteractionStyle(
     return undefined;
   }
 
-  let style: SSDStyle = { ...(base ?? {}) };
+  const hasReactiveState =
+    isSignal(state.focused) || isSignal(state.hovered) || isSignal(state.active);
 
-  if (state.focused && variants?.focused) {
-    style = { ...style, ...variants.focused };
+  if (!hasReactiveState) {
+    let style: SSDStyle = { ...(base ?? {}) };
+
+    if (read(state.focused) && variants?.focused) {
+      style = { ...style, ...variants.focused };
+    }
+    if (read(state.hovered) && variants?.hovered) {
+      style = { ...style, ...variants.hovered };
+    }
+    if (read(state.active) && variants?.active) {
+      style = { ...style, ...variants.active };
+    }
+
+    return style;
   }
-  if (state.hovered && variants?.hovered) {
-    style = { ...style, ...variants.hovered };
-  }
-  if (state.active && variants?.active) {
-    style = { ...style, ...variants.active };
+
+  const keys = new Set<string>([
+    ...Object.keys(base ?? {}),
+    ...Object.keys(variants?.focused ?? {}),
+    ...Object.keys(variants?.hovered ?? {}),
+    ...Object.keys(variants?.active ?? {}),
+  ]);
+  const style: SSDStyle = {};
+
+  for (const key of keys) {
+    (style as Record<string, unknown>)[key] = computed(() => {
+      let merged: SSDStyle = { ...(base ?? {}) };
+
+      if (read(state.focused) && variants?.focused) {
+        merged = { ...merged, ...variants.focused };
+      }
+      if (read(state.hovered) && variants?.hovered) {
+        merged = { ...merged, ...variants.hovered };
+      }
+      if (read(state.active) && variants?.active) {
+        merged = { ...merged, ...variants.active };
+      }
+
+      return (merged as Record<string, unknown>)[key];
+    });
   }
 
   return style;

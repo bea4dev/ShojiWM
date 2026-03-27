@@ -18,6 +18,8 @@ pub enum WireDecorationChild {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WireDecorationNode {
     pub kind: String,
+    #[serde(rename = "nodeId")]
+    pub node_id: Option<String>,
     #[serde(default)]
     pub props: WireProps,
     #[serde(default)]
@@ -297,6 +299,7 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(DecorationNode {
+            stable_id: value.node_id,
             kind,
             style,
             children,

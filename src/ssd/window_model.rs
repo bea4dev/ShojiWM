@@ -149,7 +149,14 @@ impl ShojiWM {
             )
         });
 
-        let (is_focused, is_maximized, is_fullscreen) = toplevel.with_pending_state(|state| {
+        let focused_surface = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        let is_focused = focused_surface
+            .as_ref()
+            .is_some_and(|focused| focused == &toplevel.wl_surface().clone());
+        let (_pending_activated, is_maximized, is_fullscreen) = toplevel.with_pending_state(|state| {
             (
                 state.states.contains(xdg_toplevel::State::Activated),
                 state.states.contains(xdg_toplevel::State::Maximized),
@@ -173,13 +180,7 @@ impl ShojiWM {
         let runtime_id = if let Some(existing) = self.window_decorations.get(window) {
             existing.snapshot.id.clone()
         } else {
-            let protocol_id = toplevel.wl_surface().id().protocol_id();
-            let client_id = toplevel
-                .wl_surface()
-                .client()
-                .map(|client| format!("{:?}", client.id()))
-                .unwrap_or_else(|| "unknown-client".to_string());
-            format!("{client_id}:{protocol_id}")
+            runtime_id_for_window(window, toplevel.wl_surface().id().protocol_id())
         };
 
         WaylandWindowSnapshot {
@@ -246,6 +247,18 @@ impl ShojiWM {
         }
         layers
     }
+}
+
+fn runtime_id_for_window(window: &Window, protocol_id: u32) -> String {
+    window
+        .toplevel()
+        .and_then(|toplevel| {
+            toplevel
+                .wl_surface()
+                .client()
+                .map(|client| format!("{:?}:{}", client.id(), protocol_id))
+        })
+        .unwrap_or_else(|| format!("unknown-client:{protocol_id}"))
 }
 
 pub fn layer_runtime_id(layer: &LayerSurface) -> String {

@@ -149,6 +149,7 @@ impl ComputedDecorationTree {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedDecorationNode {
+    pub stable_id: Option<String>,
     pub kind: DecorationNodeKind,
     pub style: DecorationStyle,
     pub rect: LogicalRect,
@@ -195,7 +196,7 @@ impl ComputedDecorationNode {
         self.children.iter().find_map(Self::first_window_border_radius)
     }
 
-    fn bounds_rect(&self) -> LogicalRect {
+    pub(crate) fn bounds_rect(&self) -> LogicalRect {
         let mut min_x = self.rect.x;
         let mut min_y = self.rect.y;
         let mut max_x = self.rect.x + self.rect.width;
@@ -223,6 +224,24 @@ impl ComputedDecorationNode {
         }
 
         LogicalRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
+    pub fn rects_for_stable_ids(
+        &self,
+        node_ids: &std::collections::HashSet<&str>,
+        rects: &mut Vec<LogicalRect>,
+    ) {
+        if self
+            .stable_id
+            .as_deref()
+            .is_some_and(|stable_id| node_ids.contains(stable_id))
+        {
+            rects.push(self.rect);
+        }
+
+        for child in &self.children {
+            child.rects_for_stable_ids(node_ids, rects);
+        }
     }
 }
 
@@ -307,6 +326,7 @@ fn validate_node(
 /// A single node inside the decoration tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecorationNode {
+    pub stable_id: Option<String>,
     pub kind: DecorationNodeKind,
     pub style: DecorationStyle,
     pub children: Vec<DecorationNode>,
@@ -315,6 +335,7 @@ pub struct DecorationNode {
 impl DecorationNode {
     pub fn new(kind: DecorationNodeKind) -> Self {
         Self {
+            stable_id: None,
             kind,
             style: DecorationStyle::default(),
             children: Vec::new(),
@@ -333,6 +354,18 @@ impl DecorationNode {
 
     pub fn push_child(&mut self, child: DecorationNode) {
         self.children.push(child);
+    }
+
+    pub fn layout_equivalent(&self, other: &Self) -> bool {
+        self.stable_id == other.stable_id
+            && kind_layout_equivalent(&self.kind, &other.kind)
+            && layout_style_equivalent(&self.style, &other.style)
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(other.children.iter())
+                .all(|(left, right)| left.layout_equivalent(right))
     }
 }
 
@@ -742,12 +775,29 @@ pub(super) fn layout_node(
     };
 
     Ok(ComputedDecorationNode {
+        stable_id: node.stable_id.clone(),
         kind: node.kind.clone(),
         style: node.style.clone(),
         rect,
         effective_clip,
         children,
     })
+}
+
+pub(super) fn reapply_tree_preserving_layout(
+    computed: &mut ComputedDecorationNode,
+    node: &DecorationNode,
+    inherited_clip: Option<DecorationClip>,
+) {
+    computed.stable_id = node.stable_id.clone();
+    computed.kind = node.kind.clone();
+    computed.style = node.style.clone();
+    let content_rect = computed.rect.inset(node.style.content_inset());
+    computed.effective_clip = effective_clip_for_node(node, inherited_clip, content_rect);
+
+    for (computed_child, node_child) in computed.children.iter_mut().zip(node.children.iter()) {
+        reapply_tree_preserving_layout(computed_child, node_child, computed.effective_clip);
+    }
 }
 
 fn layout_box_children(
@@ -1003,6 +1053,47 @@ impl DecorationStyle {
             LayoutDirection::Column => clamp_size(value, self.min_width, self.max_width),
         }
     }
+}
+
+fn kind_layout_equivalent(left: &DecorationNodeKind, right: &DecorationNodeKind) -> bool {
+    match (left, right) {
+        (DecorationNodeKind::Box(left), DecorationNodeKind::Box(right)) => left.direction == right.direction,
+        (DecorationNodeKind::Label(left), DecorationNodeKind::Label(right)) => left.text == right.text,
+        (DecorationNodeKind::Button(_), DecorationNodeKind::Button(_)) => true,
+        (DecorationNodeKind::AppIcon, DecorationNodeKind::AppIcon) => true,
+        (DecorationNodeKind::ShaderEffect(left), DecorationNodeKind::ShaderEffect(right)) => {
+            left.direction == right.direction
+        }
+        (DecorationNodeKind::WindowBorder, DecorationNodeKind::WindowBorder) => true,
+        (DecorationNodeKind::WindowSlot, DecorationNodeKind::WindowSlot) => true,
+        _ => false,
+    }
+}
+
+fn layout_style_equivalent(left: &DecorationStyle, right: &DecorationStyle) -> bool {
+    left.width == right.width
+        && left.height == right.height
+        && left.min_width == right.min_width
+        && left.min_height == right.min_height
+        && left.max_width == right.max_width
+        && left.max_height == right.max_height
+        && left.flex_grow == right.flex_grow
+        && left.flex_shrink == right.flex_shrink
+        && left.padding == right.padding
+        && left.margin == right.margin
+        && left.gap == right.gap
+        && left.justify_content == right.justify_content
+        && left.align_items == right.align_items
+        && left.border.map(|border| border.width) == right.border.map(|border| border.width)
+        && left.border_top.map(|border| border.width) == right.border_top.map(|border| border.width)
+        && left.border_right.map(|border| border.width) == right.border_right.map(|border| border.width)
+        && left.border_bottom.map(|border| border.width) == right.border_bottom.map(|border| border.width)
+        && left.border_left.map(|border| border.width) == right.border_left.map(|border| border.width)
+        && left.font_size == right.font_size
+        && left.font_weight == right.font_weight
+        && left.font_family == right.font_family
+        && left.line_height == right.line_height
+        && left.visible == right.visible
 }
 
 fn clamp_size(value: i32, min: Option<i32>, max: Option<i32>) -> i32 {

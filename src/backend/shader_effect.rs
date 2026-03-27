@@ -35,6 +35,7 @@ use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectInvalidationPolic
 
 #[derive(Debug, Clone)]
 pub struct CachedShaderEffect {
+    pub owner_node_id: Option<String>,
     pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
