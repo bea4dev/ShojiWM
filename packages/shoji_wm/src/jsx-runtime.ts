@@ -1,11 +1,11 @@
-import { createElementNode, normalizeChildren } from "./runtime";
+import { createElementNode, normalizeChildren, renderComponent } from "./runtime";
 import type {
   Component,
   ComponentProps,
   ClientWindowProps,
   ShaderEffectProps,
   DecorationChild,
-  DecorationElementNode,
+  DecorationRenderable,
   DecorationNodeType,
 } from "./types";
 
@@ -13,7 +13,7 @@ export function jsx(
   type: DecorationNodeType | Component<any>,
   props: ComponentProps,
   key?: string,
-): DecorationElementNode {
+): DecorationRenderable {
   return createJsxNode(type, props, key);
 }
 
@@ -21,7 +21,7 @@ export function jsxs(
   type: DecorationNodeType | Component<any>,
   props: ComponentProps,
   key?: string,
-): DecorationElementNode {
+): DecorationRenderable {
   return createJsxNode(type, props, key);
 }
 
@@ -31,21 +31,21 @@ function createJsxNode(
   type: DecorationNodeType | Component<any>,
   props: ComponentProps = {},
   key?: string,
-): DecorationElementNode {
+): DecorationRenderable {
   const normalizedProps = {
     ...props,
     children: normalizeChildren(props.children),
   };
 
   if (typeof type === "function") {
-    return type(normalizedProps);
+    return renderComponent(type, normalizedProps, key ?? null);
   }
 
   return createElementNode(type, normalizedProps, key);
 }
 
 export namespace JSX {
-  export type Element = DecorationElementNode;
+  export type Element = DecorationRenderable;
   export type ElementType = DecorationNodeType | Component<any>;
   export interface ElementChildrenAttribute {
     children: {};

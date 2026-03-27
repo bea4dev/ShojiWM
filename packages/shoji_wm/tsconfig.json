@@ -6,6 +6,7 @@
     "jsxImportSource": "shoji_wm"
   },
   "include": [
+    "src/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.tsx"
   ]

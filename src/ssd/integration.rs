@@ -16,10 +16,11 @@ use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
 use crate::backend::rounded::RoundedElementState;
 
 use super::{
-    ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
-    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
-    LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot,
-    WaylandWindowSnapshot, WindowTransform,
+    ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult,
+    DecorationEvaluator, DecorationHandlerInvocation, DecorationHitTestResult,
+    DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult, LogicalPoint,
+    LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandWindowSnapshot,
+    WindowTransform,
     reapply_tree_preserving_layout,
 };
 
@@ -159,6 +160,56 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
 }
 
 impl ShojiWM {
+    pub fn apply_runtime_handler_invocation(
+        &mut self,
+        window: &Window,
+        invocation: &DecorationHandlerInvocation,
+    ) {
+        let Some(decoration) = self.window_decorations.get_mut(window) else {
+            return;
+        };
+
+        let previous_root =
+            transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+
+        if let Some(node) = invocation.node.clone() {
+            decoration.tree = crate::ssd::DecorationTree::new(node);
+            if let Ok(layout) = decoration.tree.layout_for_client(decoration.client_rect) {
+                decoration.layout = layout;
+                decoration.content_clip =
+                    content_clip_for_layout(&decoration.tree, &decoration.layout);
+                let order_map = build_render_order_map(&decoration.layout);
+                decoration.buffers = build_cached_buffers(&decoration.layout, &order_map);
+                decoration.shader_buffers = build_shader_buffers(&decoration.layout, &order_map);
+                decoration.text_buffers = build_text_buffers(
+                    &decoration.layout,
+                    &order_map,
+                    &mut self.text_rasterizer,
+                );
+                decoration.icon_buffers = build_icon_buffers(
+                    &decoration.layout,
+                    &order_map,
+                    &decoration.snapshot,
+                    &mut self.icon_rasterizer,
+                );
+                self.suggested_window_offset = suggested_window_offset(&decoration.layout);
+            }
+        }
+
+        if let Some(transform) = invocation.transform {
+            decoration.visual_transform = transform;
+        }
+
+        let next_root =
+            transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+        push_damage_pair(
+            &mut self.pending_decoration_damage,
+            Some(previous_root),
+            next_root,
+        );
+        self.schedule_redraw();
+    }
+
     pub fn promote_window_to_closing_snapshot(
         &mut self,
         window_id: &str,

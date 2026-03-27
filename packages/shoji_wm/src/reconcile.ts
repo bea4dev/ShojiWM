@@ -1,6 +1,8 @@
 import { createReactiveWindow } from "./reactive-window";
 import type { WindowAnimationController } from "./animation";
 import { read } from "./signals";
+import { createElementNode } from "./runtime";
+import { createComponentStateStore, withComponentRenderRoot } from "./runtime";
 import {
   enterWindowDependencyScope,
   leaveWindowDependencyScope,
@@ -12,6 +14,7 @@ import {
 } from "./serialize";
 import type {
   DecorationChild,
+  DecorationRenderable,
   DecorationFunction,
   ReactiveWaylandWindowHandle,
   SerializableDecorationChild,
@@ -111,6 +114,7 @@ export function createDecorationEvaluationCache(
   animation?: WindowAnimationController,
 ): DecorationEvaluationCache {
   const handle = createReactiveWindow(snapshot, actions, animation);
+  const componentStateStore = createComponentStateStore();
 
   let currentSnapshot = snapshot;
   let version = 1;
@@ -134,7 +138,11 @@ export function createDecorationEvaluationCache(
     clickHandlers = new Map();
     enterWindowDependencyScope(currentSnapshot.id);
     try {
-      tree = evaluate(handle.window);
+      tree = normalizeRootDecoration(
+        withComponentRenderRoot(currentSnapshot.id, componentStateStore, () =>
+          evaluate(handle.window)
+        )
+      );
       serialized = serializeDecorationTree(tree, serializationContext);
       transform = snapshotTransform(handle);
     } finally {
@@ -224,6 +232,14 @@ export function createDecorationEvaluationCache(
       return true;
     },
   };
+}
+
+function normalizeRootDecoration(rendered: DecorationRenderable): DecorationChild {
+  if (rendered == null || rendered === false || rendered === true) {
+    return createElementNode("Fragment", {});
+  }
+
+  return rendered;
 }
 
 function snapshotTransform(

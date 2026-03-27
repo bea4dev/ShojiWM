@@ -2,9 +2,11 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  createComponentStateStore,
   createReactiveWindow,
   installShaderResolverBridge,
   serializeDecorationTree,
+  withComponentRenderRoot,
   type DecorationSerializationContext,
   type DecorationFunction,
   type WaylandWindowActions,
@@ -67,7 +69,10 @@ async function main() {
   };
 
   const handle = createReactiveWindow(snapshot, actions);
-  const tree = decoration(handle.window);
+  const componentStateStore = createComponentStateStore();
+  const tree = withComponentRenderRoot(snapshot.id, componentStateStore, () =>
+    decoration(handle.window)
+  );
   let nextHandlerId = 1;
   const context: DecorationSerializationContext = {
     registerClickHandler(key) {

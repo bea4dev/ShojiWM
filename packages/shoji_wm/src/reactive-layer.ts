@@ -23,7 +23,7 @@ interface MutableLayerSignals {
 
 export function createReactiveLayer(
   snapshot: WaylandLayerSnapshot,
-  animation: AnimationController = createAnimationController(snapshot.id),
+  animation: AnimationController = createAnimationController(() => markLayerDirty(snapshot.id)),
 ): ReactiveWaylandLayerHandle {
   const signals: MutableLayerSignals = {
     id: signal(snapshot.id),

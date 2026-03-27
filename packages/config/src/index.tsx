@@ -17,6 +17,7 @@ import {
     animationVariable,
     seconds,
     cubicBezier,
+    useState,
 } from "shoji_wm";
 
 const openAnimation = animationVariable("window.open")
@@ -116,6 +117,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         }}
                     />
                     <Box style={{ flexGrow: 1 }} />
+                    <TestComponent />
                     <Button
                         id="window.close"
                         style={applyInteractionStyle(
@@ -138,6 +140,30 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                 <ClientWindow />
             </Box>
         </WindowBorder>
+    );
+};
+
+const TestComponent = () => {
+    const [state, setState] = useState(0);
+
+    if (state() > 10) {
+        return null;
+    }
+
+    return (
+        <Box direction="horizontal" style={{ gap: 6 }}>
+            <Label text={state(state => state.toString())} style={{ fontFamily: "Noto Sans CJK JP" }} />
+            <Button
+                onClick={() => { setState(state() + 1); }}
+                style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: 9,
+                    border: { px: 2, color: "#FFFFFF" },
+                    background: "#000000",
+                }}
+            />
+        </Box>
     );
 };
 

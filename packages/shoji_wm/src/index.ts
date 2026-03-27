@@ -1,6 +1,7 @@
 import type {
   AppIconProps,
   Component,
+  ComponentProps,
   DecorationInteractionSnapshot,
   DecorationFunction,
   DecorationChild,
@@ -123,6 +124,19 @@ export {
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
 export { createReactiveLayer } from "./reactive-layer";
+export {
+  createComponentStateStore,
+  createComputed,
+  createState,
+  onCleanup,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useComputed,
+  useEffect,
+  useState,
+  withComponentRenderRoot,
+} from "./runtime";
 export {
   createDecorationEvaluationCache,
   diffWindowSnapshot,
@@ -340,7 +354,7 @@ export function applyInteractionStyle(
   return style;
 }
 
-function defineIntrinsicComponent<TProps extends { children?: DecorationChild | DecorationChild[] }>(
+function defineIntrinsicComponent<TProps extends ComponentProps>(
   type: DecorationNodeType,
 ): Component<TProps> {
   return function IntrinsicComponent(props: TProps): DecorationElementNode {

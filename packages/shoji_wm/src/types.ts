@@ -109,6 +109,12 @@ export interface DecorationElementNode {
 }
 
 export type DecorationChild = DecorationElementNode | PrimitiveChild;
+export type DecorationRenderable =
+  | DecorationChild
+  | null
+  | undefined
+  | false
+  | true;
 
 export type DecorationNodeType =
   | "Box"
@@ -121,12 +127,12 @@ export type DecorationNodeType =
   | "Fragment";
 
 export interface ComponentProps {
-  children?: DecorationChild | DecorationChild[];
+  children?: DecorationRenderable | DecorationRenderable[];
 }
 
 export type Component<TProps extends ComponentProps = ComponentProps> = (
   props: TProps,
-) => DecorationElementNode;
+) => DecorationRenderable;
 
 export type Direction = "row" | "column" | "horizontal" | "vertical";
 export type AlignItems = "start" | "center" | "end" | "stretch";
@@ -366,7 +372,7 @@ export interface WindowBorderProps extends ComponentProps {
   id?: string;
 }
 
-export type DecorationFunction = (window: WaylandWindow) => DecorationChild;
+export type DecorationFunction = (window: WaylandWindow) => DecorationRenderable;
 
 export interface WindowManagerDefinition {
   decoration: DecorationFunction | null;

@@ -167,22 +167,7 @@ impl ShojiWM {
                                     .decoration_evaluator
                                     .invoke_handler(&window_id, &handler_id, now_ms)
                                 {
-                                    if let Some(decoration) =
-                                        self.window_decorations.get_mut(&window)
-                                    {
-                                        if let Some(node) = invocation.node {
-                                            decoration.tree = crate::ssd::DecorationTree::new(node);
-                                            if let Ok(layout) = decoration
-                                                .tree
-                                                .layout_for_client(decoration.client_rect)
-                                            {
-                                                decoration.layout = layout;
-                                            }
-                                        }
-                                        if let Some(transform) = invocation.transform {
-                                            decoration.visual_transform = transform;
-                                        }
-                                    }
+                                    self.apply_runtime_handler_invocation(&window, &invocation);
 
                                     if invocation.invoked {
                                         self.runtime_dirty_window_ids

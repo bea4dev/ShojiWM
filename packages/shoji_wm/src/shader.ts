@@ -1,5 +1,3 @@
-import { dirname, isAbsolute, resolve } from "node:path";
-
 import type {
   BackdropBlurOptions,
   BackdropSourceHandle,
@@ -22,7 +20,7 @@ import type {
   EffectInvalidationPolicyHandle,
 } from "./types";
 
-let shaderBaseDir = process.cwd();
+let shaderBaseDir = "/";
 
 export interface CompileEffectOptions {
   input: EffectInputHandle;
@@ -38,11 +36,11 @@ export interface CompileEffectOptions {
 }
 
 export function installShaderResolverBridge(configPath: string): void {
-  shaderBaseDir = dirname(resolve(configPath));
+  shaderBaseDir = dirnamePath(resolvePath(shaderBaseDir, configPath));
 }
 
 function resolveShaderPath(path: string): string {
-  return isAbsolute(path) ? path : resolve(shaderBaseDir, path);
+  return isAbsolutePath(path) ? path : resolvePath(shaderBaseDir, path);
 }
 
 export function loadShader(path: string): ShaderModuleHandle {
@@ -136,6 +134,45 @@ export function unit(effect: CompiledEffectHandle): UnitStageHandle {
     kind: "unit",
     effect,
   };
+}
+
+function isAbsolutePath(path: string): boolean {
+  return path.startsWith("/");
+}
+
+function dirnamePath(path: string): string {
+  const normalized = normalizePath(path);
+  if (normalized === "/") {
+    return "/";
+  }
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "/" : normalized.slice(0, index);
+}
+
+function resolvePath(...paths: string[]): string {
+  return normalizePath(paths.filter(Boolean).join("/"));
+}
+
+function normalizePath(path: string): string {
+  const absolute = path.startsWith("/");
+  const parts = path.split("/").filter((part) => part.length > 0 && part !== ".");
+  const stack: string[] = [];
+
+  for (const part of parts) {
+    if (part === "..") {
+      if (stack.length > 0) {
+        stack.pop();
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+
+  const joined = stack.join("/");
+  if (absolute) {
+    return joined ? `/${joined}` : "/";
+  }
+  return joined || ".";
 }
 
 export function compileEffect(options: CompileEffectOptions): CompiledEffectHandle {
