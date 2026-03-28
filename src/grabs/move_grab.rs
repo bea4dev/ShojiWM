@@ -42,13 +42,42 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
             .unwrap_or(self.initial_window_location);
 
         if old_location != new_location {
+            let window_id = data.snapshot_window(&self.window).id;
+            let move_delta_x = new_location.x - old_location.x;
+            let move_delta_y = new_location.y - old_location.y;
+            let (old_source_rect, new_source_rect) =
+                if let Some(decoration) = data.window_decorations.get(&self.window) {
+                    let old_root = decoration.layout.root.rect;
+                    (
+                        old_root,
+                        LogicalRect::new(
+                            old_root.x + move_delta_x,
+                            old_root.y + move_delta_y,
+                            old_root.width,
+                            old_root.height,
+                        ),
+                    )
+                } else {
+                    let bbox = self.window.bbox();
+                    let old_rect = LogicalRect::new(
+                        old_location.x + bbox.loc.x,
+                        old_location.y + bbox.loc.y,
+                        bbox.size.w,
+                        bbox.size.h,
+                    );
+                    let new_rect = LogicalRect::new(
+                        new_location.x + bbox.loc.x,
+                        new_location.y + bbox.loc.y,
+                        bbox.size.w,
+                        bbox.size.h,
+                    );
+                    (old_rect, new_rect)
+                };
             if let Some(decoration) = data.window_decorations.get(&self.window) {
                 let old_root = decoration.layout.root.rect;
-                let delta_x = new_location.x - old_location.x;
-                let delta_y = new_location.y - old_location.y;
                 let new_root = LogicalRect::new(
-                    old_root.x + delta_x,
-                    old_root.y + delta_y,
+                    old_root.x + move_delta_x,
+                    old_root.y + move_delta_y,
                     old_root.width,
                     old_root.height,
                 );
@@ -68,6 +97,16 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
             }
 
             data.space.map_element(self.window.clone(), new_location, true);
+            data.window_source_damage.push(crate::state::OwnedDamageRect {
+                owner: window_id.clone(),
+                rect: old_source_rect,
+            });
+            data.window_source_damage.push(crate::state::OwnedDamageRect {
+                owner: window_id.clone(),
+                rect: new_source_rect,
+            });
+            data.snapshot_dirty_window_ids.insert(window_id);
+            data.window_scene_generation = data.window_scene_generation.wrapping_add(1);
             data.schedule_redraw();
         }
     }

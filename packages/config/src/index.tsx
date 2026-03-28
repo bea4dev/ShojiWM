@@ -20,6 +20,30 @@ import {
     useState,
 } from "shoji_wm";
 
+/*
+WINDOW_MANAGER.output.applyDisplayConfig((display) => {
+    for (let displayName of WINDOW_MANAGER.output.list) {
+        display[displayName] = {
+            resolution: "best",
+            position: "auto",
+            scale: 2,
+        };
+    }
+});*/
+
+WINDOW_MANAGER.output.applyDisplayConfig((display) => {
+    display["eDP-1"] = {
+        resolution: "best",
+        position: "auto",
+        scale: 1.25,
+    };
+    display["DP-4"] = {
+        resolution: "best",
+        position: "auto",
+        scale: 1.5,
+    };
+});
+
 const openAnimation = animationVariable("window.open")
 const focusAnimation = animationVariable("window.focus");
 
@@ -27,7 +51,7 @@ WINDOW_MANAGER.effect.background_effect = compileEffect({
     input: backdropSource(),
     invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 12 },
     pipeline: [
-        dualKawaseBlur({ radius: 4, passes: 3 }),
+        dualKawaseBlur({ radius: 0, passes: 0 }),
     ]
 });
 
@@ -92,7 +116,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         input: backdropSource(),
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
-            dualKawaseBlur({ radius: 4, passes: 2 })
+            dualKawaseBlur({ radius: 0, passes: 0 })
         ],
     });
 
@@ -101,7 +125,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             style={{
                 border: { px: 2, color: borderColor },
                 borderRadius: 20,
-                background: "#101319",
+                background: "#10131900",
             }}
         >
             <Box direction="column">

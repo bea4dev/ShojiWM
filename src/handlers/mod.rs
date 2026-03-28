@@ -9,7 +9,7 @@ mod xdg_shell;
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::desktop::PopupKind;
+use smithay::desktop::{PopupKind, WindowSurfaceType, layer_map_for_output};
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
     Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
 };
@@ -94,7 +94,7 @@ impl FractionalScaleHandler for ShojiWM {
         smithay::wayland::compositor::with_states(&surface, |states| {
             let primary_scanout_output = smithay::desktop::utils::surface_primary_scanout_output(&surface, states)
                 .or_else(|| {
-                            if root != surface {
+                    if root != surface {
                         smithay::wayland::compositor::with_states(&root, |states| {
                             smithay::desktop::utils::surface_primary_scanout_output(&root, states).or_else(|| {
                                 self.space
@@ -102,8 +102,18 @@ impl FractionalScaleHandler for ShojiWM {
                                     .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
                                     .cloned()
                                     .and_then(|window| {
-                                    self.space.outputs_for_element(&window).first().cloned()
-                                })
+                                        self.space.outputs_for_element(&window).first().cloned()
+                                    })
+                                    .or_else(|| {
+                                        self.space.outputs().find_map(|output| {
+                                            let map = layer_map_for_output(output);
+                                            let found = map
+                                                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                                                .is_some();
+                                            drop(map);
+                                            found.then(|| output.clone())
+                                        })
+                                    })
                             })
                         })
                     } else {
@@ -112,6 +122,16 @@ impl FractionalScaleHandler for ShojiWM {
                             .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
                             .cloned()
                             .and_then(|window| self.space.outputs_for_element(&window).first().cloned())
+                            .or_else(|| {
+                                self.space.outputs().find_map(|output| {
+                                    let map = layer_map_for_output(output);
+                                    let found = map
+                                        .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                                        .is_some();
+                                    drop(map);
+                                    found.then(|| output.clone())
+                                })
+                            })
                     }
                 })
                 .or_else(|| self.space.outputs().next().cloned());

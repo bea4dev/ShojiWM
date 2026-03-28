@@ -271,6 +271,52 @@ export interface WindowManagerEffectConfig {
   background_effect: CompiledEffectHandle | null;
 }
 
+export interface OutputMode {
+  width: number;
+  height: number;
+  refreshRate: number;
+}
+
+export type OutputResolutionPreference =
+  | "best"
+  | {
+      width: number;
+      height: number;
+      refreshRate?: number;
+    };
+
+export type OutputPositionPreference =
+  | "auto"
+  | {
+      x: number;
+      y: number;
+    };
+
+export interface OutputConfigEntry {
+  resolution?: OutputResolutionPreference;
+  position?: OutputPositionPreference;
+  scale?: number;
+}
+
+export type DisplayConfigDraft = Record<string, OutputConfigEntry | null>;
+
+export interface OutputStateSnapshot {
+  resolution?: OutputMode;
+  position: {
+    x: number;
+    y: number;
+  };
+  scale: number;
+  availableModes: OutputMode[];
+}
+
+export interface OutputController {
+  readonly list: string[];
+  readonly current: Record<string, OutputStateSnapshot>;
+  availableModes(outputName: string): OutputMode[];
+  applyDisplayConfig(mutator: (display: DisplayConfigDraft) => void): void;
+}
+
 export interface BorderValue {
   px: MaybeSignal<number>;
   color: MaybeSignal<string>;
@@ -378,6 +424,7 @@ export interface WindowManagerDefinition {
   decoration: DecorationFunction | null;
   event: import("./events").WindowManagerEventController;
   effect: WindowManagerEffectConfig;
+  output: OutputController;
   display?: DisplayConfig;
 }
 

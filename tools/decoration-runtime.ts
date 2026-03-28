@@ -18,6 +18,7 @@ import {
   isSignal,
   installShaderResolverBridge,
   installRuntimeHooks,
+  takePendingDisplayConfig,
   leaveLayerDependencyScope,
   read,
   takeDirtyLayerNodeIds,
@@ -25,10 +26,13 @@ import {
   type WindowManagerEventController,
   installSchedulerBridge,
   type DecorationEvaluationCache,
+  type DisplayConfigDraft,
   type DecorationFunction,
+  type OutputStateSnapshot,
   type PollCallback,
   type PollDirtyMode,
   type PollHandle,
+  updateOutputState,
   type WaylandLayerSnapshot,
   type WaylandLayer,
   type WaylandWindowActions,
@@ -41,18 +45,21 @@ interface EvaluateRequest {
   kind: "evaluate";
   snapshot: WaylandWindowSnapshot;
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface SchedulerTickRequest {
   requestId: number;
   kind: "schedulerTick";
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface WindowClosedRequest {
   requestId: number;
   kind: "windowClosed";
   windowId: string;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface StartCloseRequest {
@@ -60,6 +67,7 @@ interface StartCloseRequest {
   kind: "startClose";
   windowId: string;
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface EvaluateCachedRequest {
@@ -67,6 +75,7 @@ interface EvaluateCachedRequest {
   kind: "evaluateCached";
   windowId: string;
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface InvokeHandlerRequest {
@@ -75,11 +84,13 @@ interface InvokeHandlerRequest {
   windowId: string;
   handlerId: string;
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface GetEffectConfigRequest {
   requestId: number;
   kind: "getEffectConfig";
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 interface EvaluateLayerEffectsRequest {
@@ -88,6 +99,7 @@ interface EvaluateLayerEffectsRequest {
   outputName: string;
   nowMs: number;
   layers: WaylandLayerSnapshot[];
+  displayState: Record<string, OutputStateSnapshot>;
 }
 
 type RuntimeRequest =
@@ -108,6 +120,7 @@ interface EvaluateSuccess {
   transform: WindowTransform;
   dirtyNodeIds?: string[];
   nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface SchedulerTickSuccess {
@@ -120,12 +133,14 @@ interface SchedulerTickSuccess {
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface WindowClosedSuccess {
   requestId: number;
   ok: true;
   kind: "windowClosed";
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface RuntimeWindowAction {
@@ -144,6 +159,7 @@ interface InvokeHandlerSuccess {
   dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface StartCloseSuccess {
@@ -157,6 +173,7 @@ interface StartCloseSuccess {
   dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface GetEffectConfigSuccess {
@@ -164,6 +181,7 @@ interface GetEffectConfigSuccess {
   ok: true;
   kind: "getEffectConfig";
   backgroundEffect?: CompiledEffectHandle | null;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface EvaluateLayerEffectsSuccess {
@@ -172,17 +190,26 @@ interface EvaluateLayerEffectsSuccess {
   kind: "evaluateLayerEffects";
   effects: RuntimeLayerEffectAssignment[];
   nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface RuntimeFailure {
   requestId: number;
   ok: false;
   error: string;
+  displayConfig?: { outputs: DisplayConfigDraft };
 }
 
 interface RuntimeLayerEffectAssignment {
   layerId: string;
   effect: CompiledEffectHandle | null;
+}
+
+function pendingDisplayConfigPayload():
+  | { outputs: DisplayConfigDraft }
+  | undefined {
+  const outputs = takePendingDisplayConfig();
+  return outputs ? { outputs } : undefined;
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
@@ -296,6 +323,7 @@ async function main() {
     }
 
     try {
+      updateOutputState(request.displayState);
       if (request.kind === "evaluate") {
         currentSchedulerTimeMs = request.nowMs;
         advanceAnimationFrame(request.nowMs);
@@ -309,6 +337,7 @@ async function main() {
             identityTransform(),
           dirtyNodeIds: takeDirtyWindowNodeIds(request.snapshot.id),
           nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+          displayConfig: pendingDisplayConfigPayload(),
         });
       } else {
         if (request.kind === "schedulerTick") {
@@ -323,6 +352,7 @@ async function main() {
             dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
             actions: tick.actions,
             nextPollInMs: tick.nextPollInMs,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "windowClosed") {
           closeWindow(events, request.windowId);
@@ -330,6 +360,7 @@ async function main() {
             requestId: request.requestId,
             ok: true,
             kind: "windowClosed",
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "startClose") {
           currentSchedulerTimeMs = request.nowMs;
@@ -339,6 +370,7 @@ async function main() {
             ok: true,
             kind: "startClose",
             ...result,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "evaluateCached") {
           currentSchedulerTimeMs = request.nowMs;
@@ -352,6 +384,7 @@ async function main() {
             transform: result.transform,
             dirtyNodeIds: result.dirtyNodeIds,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "getEffectConfig") {
           writeResponse(socket, {
@@ -359,6 +392,7 @@ async function main() {
             ok: true,
             kind: "getEffectConfig",
             backgroundEffect: effectConfig.background_effect,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "evaluateLayerEffects") {
           currentSchedulerTimeMs = request.nowMs;
@@ -370,6 +404,7 @@ async function main() {
             kind: "evaluateLayerEffects",
             effects: result.effects,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         } else {
           currentSchedulerTimeMs = request.nowMs;
@@ -379,6 +414,7 @@ async function main() {
             ok: true,
             kind: "invokeHandler",
             ...result,
+            displayConfig: pendingDisplayConfigPayload(),
           });
         }
       }
@@ -387,6 +423,7 @@ async function main() {
         requestId: request.requestId,
         ok: false,
         error: error instanceof Error ? error.stack ?? error.message : String(error),
+        displayConfig: pendingDisplayConfigPayload(),
       });
     }
   }

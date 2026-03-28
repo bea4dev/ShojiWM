@@ -58,6 +58,30 @@ pub struct WaylandLayerSnapshot {
     pub position: LayerPositionSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaylandOutputSnapshot {
+    pub resolution: Option<OutputModeSnapshot>,
+    pub position: OutputPositionSnapshot,
+    pub scale: f64,
+    pub available_modes: Vec<OutputModeSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputModeSnapshot {
+    pub width: i32,
+    pub height: i32,
+    pub refresh_rate: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputPositionSnapshot {
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerPositionSnapshot {

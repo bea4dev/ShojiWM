@@ -5,7 +5,7 @@ use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
     input::{Seat, SeatState, pointer::{CursorIcon, CursorImageStatus}},
-    output::Output,
+    output::{Mode as OutputMode, Output, Scale as OutputScale},
     reexports::{
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
@@ -51,12 +51,21 @@ use xcursor::parser::Image;
 
 use crate::{
     backend::{async_assets::{AsyncAssetResult, spawn_async_asset_worker}, icon::IconRasterizer, snapshot::{ClosingWindowSnapshot, LiveWindowSnapshot}, text::TextRasterizer, tty::BackendData},
-    config::DisplayConfig,
+    config::{
+        DisplayConfig, RuntimeDisplayConfigUpdate, RuntimeDisplayModePreference,
+        RuntimeOutputConfig, RuntimeOutputPositionPreference,
+    },
     cursor::Cursor,
     drawing::PointerElement,
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
-use crate::ssd::{BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot};
+use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
+use crate::ssd::{
+    BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
+    DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
+    OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot, WaylandWindowSnapshot,
+    WindowDecorationState, WindowPositionSnapshot,
+};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +134,7 @@ pub struct ShojiWM {
     pub runtime_dirty_window_ids: std::collections::HashSet<String>,
     pub runtime_scheduler_enabled: bool,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
+    pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -149,6 +159,18 @@ pub struct ShojiWM {
 }
 
 impl ShojiWM {
+    fn output_auto_sort_key(output_name: &str) -> (i32, String) {
+        let rank = if output_name.starts_with("eDP")
+            || output_name.starts_with("LVDS")
+            || output_name.starts_with("DSI")
+        {
+            0
+        } else {
+            1
+        };
+        (rank, output_name.to_string())
+    }
+
     fn runtime_frame_sync_interval_ms(&self) -> u64 {
         self.space
             .outputs()
@@ -350,6 +372,7 @@ impl ShojiWM {
             runtime_dirty_window_ids: Default::default(),
             runtime_scheduler_enabled: false,
             runtime_animation_outputs: Default::default(),
+            runtime_output_configs: Default::default(),
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect,
@@ -427,6 +450,7 @@ impl ShojiWM {
                 }
 
                 let now_ms = Duration::from(state.clock.now()).as_millis() as u64;
+                state.sync_runtime_display_state();
                 let tick = match state.decoration_evaluator.scheduler_tick(now_ms) {
                     Ok(tick) => tick,
                     Err(error) => {
@@ -441,6 +465,8 @@ impl ShojiWM {
                         .extend(tick.dirty_window_ids.into_iter());
                     state.schedule_redraw();
                 }
+
+                state.consume_runtime_display_config(tick.display_config);
 
                 if !tick.actions.is_empty() {
                     state.apply_runtime_window_actions(tick.actions);
@@ -460,7 +486,7 @@ impl ShojiWM {
             .expect("Failed to init runtime scheduler.");
     }
 
-    pub fn warmup_decoration_runtime(&self) {
+    pub fn warmup_decoration_runtime(&mut self) {
         let snapshot = WaylandWindowSnapshot {
             id: "__warmup__".into(),
             title: "warmup".into(),
@@ -476,13 +502,237 @@ impl ShojiWM {
         };
 
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-        if let Err(error) = self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+        self.sync_runtime_display_state();
+        match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+            Ok(result) => {
+                self.consume_runtime_display_config(result.display_config);
+            }
+            Err(error) => {
             warn!(?error, "failed to warm up decoration runtime");
             return;
+            }
         }
 
         let _ = self.decoration_evaluator.window_closed(&snapshot.id);
         debug!(window_id = snapshot.id, "warmed up decoration runtime");
+    }
+
+    pub fn snapshot_outputs(&self) -> std::collections::BTreeMap<String, WaylandOutputSnapshot> {
+        self.space
+            .outputs()
+            .map(|output| {
+                let name = output.name();
+                let available_modes = tty_output_available_modes(self, &name)
+                    .unwrap_or_else(|| output.modes())
+                    .into_iter()
+                    .map(|mode| OutputModeSnapshot {
+                        width: mode.size.w,
+                        height: mode.size.h,
+                        refresh_rate: mode.refresh as f64 / 1000.0,
+                    })
+                    .collect::<Vec<_>>();
+                let resolution = output.current_mode().map(|mode| OutputModeSnapshot {
+                    width: mode.size.w,
+                    height: mode.size.h,
+                    refresh_rate: mode.refresh as f64 / 1000.0,
+                });
+                let location = output.current_location();
+                (
+                    name,
+                    WaylandOutputSnapshot {
+                        resolution,
+                        position: OutputPositionSnapshot {
+                            x: location.x,
+                            y: location.y,
+                        },
+                        scale: output.current_scale().fractional_scale(),
+                        available_modes,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn resolve_runtime_output_mode(
+        &self,
+        output: &Output,
+        preference: &RuntimeDisplayModePreference,
+    ) -> Option<OutputMode> {
+        let modes = tty_output_available_modes(self, &output.name()).unwrap_or_else(|| output.modes());
+        if modes.is_empty() {
+            return output.current_mode();
+        }
+        match preference {
+            RuntimeDisplayModePreference::Best(value) if value == "best" => modes
+                .into_iter()
+                .max_by_key(|mode| {
+                    (
+                        i64::from(mode.size.w) * i64::from(mode.size.h),
+                        mode.refresh,
+                    )
+                }),
+            RuntimeDisplayModePreference::Exact {
+                width,
+                height,
+                refresh_rate,
+            } => {
+                let exact = modes
+                    .into_iter()
+                    .filter(|mode| mode.size.w == i32::from(*width) && mode.size.h == i32::from(*height))
+                    .collect::<Vec<_>>();
+                if exact.is_empty() {
+                    return None;
+                }
+                match refresh_rate {
+                    Some(refresh_rate) => exact.into_iter().min_by_key(|mode| {
+                        ((mode.refresh as f64 / 1000.0 - refresh_rate).abs() * 1000.0) as i64
+                    }),
+                    None => exact.into_iter().max_by_key(|mode| mode.refresh),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn apply_runtime_display_config_update(
+        &mut self,
+        update: RuntimeDisplayConfigUpdate,
+    ) {
+        for (output_name, config) in update.outputs {
+            match config {
+                Some(config) => {
+                    self.runtime_output_configs.insert(output_name, config);
+                }
+                None => {
+                    self.runtime_output_configs.remove(&output_name);
+                }
+            }
+        }
+        self.apply_runtime_display_configuration();
+    }
+
+    pub fn apply_runtime_display_configuration(&mut self) {
+        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return;
+        }
+
+        let mut target_modes = std::collections::BTreeMap::new();
+        for output in &outputs {
+            let target_mode = self
+                .runtime_output_configs
+                .get(&output.name())
+                .and_then(|config| config.resolution.as_ref())
+                .and_then(|preference| self.resolve_runtime_output_mode(output, preference));
+            target_modes.insert(output.name(), target_mode.or_else(|| output.current_mode()));
+        }
+
+        let mut manual_positions = std::collections::BTreeMap::new();
+        let mut auto_outputs = Vec::new();
+        for output in &outputs {
+            match self
+                .runtime_output_configs
+                .get(&output.name())
+                .and_then(|config| config.position.as_ref())
+            {
+                Some(RuntimeOutputPositionPreference::Exact { x, y }) => {
+                    manual_positions.insert(output.name(), (*x, *y));
+                }
+                Some(RuntimeOutputPositionPreference::Auto(value)) if value == "auto" => {
+                    auto_outputs.push(output.name());
+                }
+                None => auto_outputs.push(output.name()),
+                _ => auto_outputs.push(output.name()),
+            }
+        }
+
+        auto_outputs.sort_by_key(|name| Self::output_auto_sort_key(name));
+        let mut auto_cursor_x = manual_positions
+            .iter()
+            .filter_map(|(name, (x, _))| {
+                target_modes
+                    .get(name)
+                    .and_then(|mode| *mode)
+                    .map(|mode| x + mode.size.w)
+            })
+            .max()
+            .unwrap_or(0);
+
+        let mut target_positions = std::collections::BTreeMap::new();
+        for (name, (x, y)) in manual_positions {
+            target_positions.insert(name, Point::from((x, y)));
+        }
+        for output_name in auto_outputs {
+            target_positions.insert(output_name.clone(), Point::from((auto_cursor_x, 0)));
+            if let Some(mode) = target_modes.get(&output_name).and_then(|mode| *mode) {
+                auto_cursor_x += mode.size.w;
+            }
+        }
+
+        for output in outputs {
+            let name = output.name();
+            let target_mode = target_modes.get(&name).and_then(|mode| *mode);
+            let target_position = target_positions
+                .get(&name)
+                .copied()
+                .unwrap_or_else(|| output.current_location());
+            let target_scale = self
+                .runtime_output_configs
+                .get(&name)
+                .and_then(|config| config.scale)
+                .map(|scale| OutputScale::Fractional(scale.max(0.1)));
+
+            if let Some(mode) = target_mode {
+                let current_mode = output.current_mode();
+                if current_mode != Some(mode) {
+                    let _ = apply_tty_output_mode(self, &name, mode);
+                }
+            }
+
+            output.change_current_state(target_mode, None, target_scale, Some(target_position));
+            self.space.map_output(&output, target_position);
+        }
+
+        for output in self.space.outputs() {
+            if let Some(geometry) = self.space.output_geometry(output) {
+                self.pending_decoration_damage.push(LogicalRect::new(
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    geometry.size.w,
+                    geometry.size.h,
+                ));
+            }
+        }
+        self.schedule_redraw();
+    }
+
+    pub fn sync_runtime_display_state(&self) {
+        self.decoration_evaluator
+            .sync_display_state(self.snapshot_outputs());
+    }
+
+    pub fn consume_runtime_display_config(
+        &mut self,
+        update: Option<RuntimeDisplayConfigUpdate>,
+    ) {
+        if let Some(update) = update {
+            self.apply_runtime_display_config_update(update);
+        }
+    }
+
+    pub fn output_layout_bounds(&self) -> Option<Rectangle<i32, Logical>> {
+        let mut outputs = self
+            .space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output));
+        let first = outputs.next()?;
+        Some(outputs.fold(first, |bounds, geometry| {
+            let left = bounds.loc.x.min(geometry.loc.x);
+            let top = bounds.loc.y.min(geometry.loc.y);
+            let right = (bounds.loc.x + bounds.size.w).max(geometry.loc.x + geometry.size.w);
+            let bottom = (bounds.loc.y + bounds.size.h).max(geometry.loc.y + geometry.size.h);
+            Rectangle::new((left, top).into(), (right - left, bottom - top).into())
+        }))
     }
 
     pub fn surface_under(

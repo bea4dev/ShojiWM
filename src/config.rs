@@ -20,6 +20,40 @@ pub struct DisplayConfig {
     pub tty_outputs: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDisplayConfigUpdate {
+    #[serde(default)]
+    pub outputs: std::collections::BTreeMap<String, Option<RuntimeOutputConfig>>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOutputConfig {
+    pub resolution: Option<RuntimeDisplayModePreference>,
+    pub position: Option<RuntimeOutputPositionPreference>,
+    pub scale: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeDisplayModePreference {
+    Best(String),
+    Exact {
+        width: u16,
+        height: u16,
+        #[serde(rename = "refreshRate")]
+        refresh_rate: Option<f64>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeOutputPositionPreference {
+    Auto(String),
+    Exact { x: i32, y: i32 },
+}
+
 impl DisplayConfig {
     pub fn from_env() -> Self {
         Self {

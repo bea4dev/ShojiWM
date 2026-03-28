@@ -62,19 +62,20 @@ impl ShojiWM {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
-                let output = self.space.outputs().next().unwrap();
-                let output_geo = self.space.output_geometry(output).unwrap();
+                let Some(output_bounds) = self.output_layout_bounds() else {
+                    return;
+                };
 
                 let pointer = self.seat.get_pointer().unwrap();
                 let mut pos = pointer.current_location() + event.delta();
 
                 pos.x = pos.x.clamp(
-                    output_geo.loc.x as f64,
-                    (output_geo.loc.x + output_geo.size.w - 1) as f64,
+                    output_bounds.loc.x as f64,
+                    (output_bounds.loc.x + output_bounds.size.w - 1) as f64,
                 );
                 pos.y = pos.y.clamp(
-                    output_geo.loc.y as f64,
-                    (output_geo.loc.y + output_geo.size.h - 1) as f64,
+                    output_bounds.loc.y as f64,
+                    (output_bounds.loc.y + output_bounds.size.h - 1) as f64,
                 );
 
                 let serial = SERIAL_COUNTER.next_serial();
@@ -95,11 +96,11 @@ impl ShojiWM {
                 self.schedule_redraw();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let output = self.space.outputs().next().unwrap();
+                let Some(output_bounds) = self.output_layout_bounds() else {
+                    return;
+                };
 
-                let output_geo = self.space.output_geometry(output).unwrap();
-
-                let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+                let pos = event.position_transformed(output_bounds.size) + output_bounds.loc.to_f64();
 
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -163,10 +164,12 @@ impl ShojiWM {
 
                                 let window_id = self.snapshot_window(&window).id;
                                 let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+                                self.sync_runtime_display_state();
                                 if let Ok(invocation) = self
                                     .decoration_evaluator
                                     .invoke_handler(&window_id, &handler_id, now_ms)
                                 {
+                                    self.consume_runtime_display_config(invocation.display_config.clone());
                                     self.apply_runtime_handler_invocation(&window, &invocation);
 
                                     if invocation.invoked {

@@ -11,6 +11,7 @@ import type {
   ReactiveWaylandWindowSignals,
   DecorationNodeType,
   DisplayConfig,
+  DisplayConfigDraft,
   DisplayModePreference,
   EffectInvalidationPolicyHandle,
   AutomaticEffectInvalidationPolicyHandle,
@@ -35,6 +36,12 @@ import type {
   NamedTextureHandle,
   NoiseKind,
   NoiseStageHandle,
+  OutputConfigEntry,
+  OutputController,
+  OutputMode,
+  OutputPositionPreference,
+  OutputResolutionPreference,
+  OutputStateSnapshot,
   SaveStageHandle,
   ShaderUniformMap,
   ShaderUniformValue,
@@ -64,6 +71,7 @@ import type {
   WaylandLayerSnapshot,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
+import { OUTPUT_CONTROLLER } from "./output";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
 import { computed, read, isSignal } from "./signals";
@@ -124,6 +132,11 @@ export {
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
 export { createReactiveLayer } from "./reactive-layer";
+export {
+  OUTPUT_CONTROLLER,
+  takePendingDisplayConfig,
+  updateOutputState,
+} from "./output";
 export {
   createComponentStateStore,
   createComputed,
@@ -220,6 +233,12 @@ export type {
   NamedTextureHandle,
   NoiseKind,
   NoiseStageHandle,
+  OutputConfigEntry,
+  OutputController,
+  OutputMode,
+  OutputPositionPreference,
+  OutputResolutionPreference,
+  OutputStateSnapshot,
   SaveStageHandle,
   ShaderUniformMap,
   ShaderUniformValue,
@@ -275,6 +294,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   effect: {
     background_effect: null,
   },
+  output: OUTPUT_CONTROLLER,
 };
 
 export function windowAction(

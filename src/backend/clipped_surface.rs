@@ -8,7 +8,7 @@ use smithay::{
         gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
-    utils::{Buffer, Physical, Rectangle, Scale, Transform},
+    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
 use crate::ssd::ContentClip;
@@ -19,6 +19,7 @@ pub struct ClippedSurfaceElement {
     program: GlesTexProgram,
     clip: ContentClip,
     scale: f32,
+    output_origin: Point<i32, Physical>,
 }
 
 #[derive(Debug)]
@@ -29,6 +30,7 @@ impl ClippedSurfaceElement {
         renderer: &mut GlesRenderer,
         inner: WaylandSurfaceRenderElement<GlesRenderer>,
         scale: Scale<f64>,
+        output_origin: Point<i32, Logical>,
         clip: ContentClip,
     ) -> Result<Self, GlesError> {
         if renderer
@@ -75,6 +77,7 @@ impl ClippedSurfaceElement {
             program: program.0.clone(),
             clip,
             scale: scale.x as f32,
+            output_origin: output_origin.to_physical_precise_round(scale),
         })
     }
 
@@ -91,7 +94,10 @@ impl ClippedSurfaceElement {
             element_geometry.size.h as f32,
         );
 
-        let clip_loc = Vector2::new(clip_geometry.loc.x as f32, clip_geometry.loc.y as f32);
+        let clip_loc = Vector2::new(
+            (clip_geometry.loc.x - self.output_origin.x) as f32,
+            (clip_geometry.loc.y - self.output_origin.y) as f32,
+        );
         let clip_size = Vector2::new(clip_geometry.size.w as f32, clip_geometry.size.h as f32);
 
         let buffer_size = self.inner.buffer_size();

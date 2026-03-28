@@ -9,11 +9,14 @@ use std::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::config::RuntimeDisplayConfigUpdate;
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
     DecorationTree, WindowTransform, WireCompiledEffect, decode_tree_json,
 };
-use super::window_model::{WaylandLayerSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
+use super::window_model::{
+    WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
+};
 
 /// Dynamic decoration evaluation boundary.
 ///
@@ -81,6 +84,7 @@ pub struct DecorationEvaluationResult {
     pub transform: WindowTransform,
     pub dirty_node_ids: Vec<String>,
     pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +95,7 @@ pub struct DecorationSchedulerTick {
     pub dirty_layer_node_ids: std::collections::HashMap<String, Vec<String>>,
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -102,12 +107,14 @@ pub struct DecorationHandlerInvocation {
     pub dirty_window_node_ids: std::collections::HashMap<String, Vec<String>>,
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct LayerEffectEvaluationResult {
     pub effects: Vec<RuntimeLayerEffectAssignment>,
     pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +218,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
             transform: WindowTransform::default(),
             dirty_node_ids: Vec::new(),
             next_poll_in_ms: None,
+            display_config: None,
         })
     }
 }
@@ -253,6 +261,7 @@ pub struct NodeDecorationEvaluator {
     working_dir: Option<PathBuf>,
     transport: RuntimeTransportKind,
     runtime: Arc<Mutex<Option<NodeDecorationRuntime>>>,
+    display_state: Arc<Mutex<std::collections::BTreeMap<String, WaylandOutputSnapshot>>>,
 }
 
 struct NodeDecorationRuntime {
@@ -289,18 +298,24 @@ enum RuntimeRequest<'a> {
         snapshot: &'a WaylandWindowSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     SchedulerTick {
         #[serde(rename = "requestId")]
         request_id: u64,
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     WindowClosed {
         #[serde(rename = "requestId")]
         request_id: u64,
         #[serde(rename = "windowId")]
         window_id: &'a str,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     InvokeHandler {
         #[serde(rename = "requestId")]
@@ -311,6 +326,8 @@ enum RuntimeRequest<'a> {
         handler_id: &'a str,
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     StartClose {
         #[serde(rename = "requestId")]
@@ -319,6 +336,8 @@ enum RuntimeRequest<'a> {
         window_id: &'a str,
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     EvaluateCached {
         #[serde(rename = "requestId")]
@@ -327,10 +346,14 @@ enum RuntimeRequest<'a> {
         window_id: &'a str,
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     GetEffectConfig {
         #[serde(rename = "requestId")]
         request_id: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
     EvaluateLayerEffects {
         #[serde(rename = "requestId")]
@@ -340,6 +363,8 @@ enum RuntimeRequest<'a> {
         layers: &'a [WaylandLayerSnapshot],
         #[serde(rename = "nowMs")]
         now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
 }
 
@@ -355,6 +380,8 @@ struct RuntimeEvaluateResponse {
     dirty_node_ids: Option<Vec<String>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -374,6 +401,8 @@ struct RuntimeSchedulerResponse {
     actions: Option<Vec<RuntimeWindowAction>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -383,6 +412,8 @@ struct RuntimeClosedResponse {
     request_id: u64,
     kind: String,
     ok: bool,
+    #[serde(rename = "displayConfig")]
+    _display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -402,6 +433,8 @@ struct RuntimeInvokeHandlerResponse {
     actions: Option<Vec<RuntimeWindowAction>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -421,6 +454,8 @@ struct RuntimeStartCloseResponse {
     actions: Option<Vec<RuntimeWindowAction>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -430,6 +465,8 @@ struct RuntimeFailureResponse {
     request_id: i64,
     ok: bool,
     error: String,
+    #[serde(rename = "displayConfig")]
+    _display_config: Option<RuntimeDisplayConfigUpdate>,
 }
 
 #[derive(serde::Deserialize)]
@@ -440,6 +477,8 @@ struct RuntimeEffectConfigResponse {
     ok: bool,
     #[serde(rename = "backgroundEffect")]
     background_effect: Option<WireCompiledEffect>,
+    #[serde(rename = "displayConfig")]
+    _display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -459,6 +498,8 @@ struct RuntimeLayerEffectsResponse {
     effects: Option<Vec<RuntimeLayerEffectAssignmentResponse>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
     error: Option<String>,
 }
 
@@ -492,6 +533,7 @@ impl NodeDecorationEvaluator {
             working_dir: None,
             transport: RuntimeTransportKind::Uds,
             runtime: Arc::new(Mutex::new(None)),
+            display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         }
     }
 
@@ -514,6 +556,16 @@ impl NodeDecorationEvaluator {
             working_dir: None,
             transport: RuntimeTransportKind::Stdio,
             runtime: Arc::new(Mutex::new(None)),
+            display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+        }
+    }
+
+    pub fn set_display_state(
+        &self,
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+    ) {
+        if let Ok(mut guard) = self.display_state.lock() {
+            *guard = display_state;
         }
     }
 
@@ -653,8 +705,12 @@ impl NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig { request_id })
+        let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig {
+            request_id,
+            display_state: &display_state,
+        })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
@@ -726,6 +782,7 @@ impl Clone for NodeDecorationEvaluator {
             working_dir: self.working_dir.clone(),
             transport: self.transport,
             runtime: Arc::clone(&self.runtime),
+            display_state: Arc::clone(&self.display_state),
         }
     }
 }
@@ -843,11 +900,13 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::Evaluate {
             request_id,
             snapshot: window,
             now_ms,
+            display_state: &display_state,
         })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -914,6 +973,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             transform: response.transform.unwrap_or_default(),
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 
@@ -929,11 +989,13 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::EvaluateCached {
             request_id,
             window_id,
             now_ms,
+            display_state: &display_state,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1000,6 +1062,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             transform: response.transform.unwrap_or_default(),
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 
@@ -1019,8 +1082,13 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::SchedulerTick { request_id, now_ms })
+        let request = serde_json::to_string(&RuntimeRequest::SchedulerTick {
+            request_id,
+            now_ms,
+            display_state: &display_state,
+        })
             .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
@@ -1080,6 +1148,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 
@@ -1096,10 +1165,12 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::WindowClosed {
             request_id,
             window_id,
+            display_state: &display_state,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1174,12 +1245,14 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::InvokeHandler {
             request_id,
             window_id,
             handler_id,
             now_ms,
+            display_state: &display_state,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1246,6 +1319,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 
@@ -1266,11 +1340,13 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::StartClose {
             request_id,
             window_id,
             now_ms,
+            display_state: &display_state,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1347,6 +1423,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 
@@ -1363,12 +1440,14 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::EvaluateLayerEffects {
             request_id,
             output_name,
             layers,
             now_ms,
+            display_state: &display_state,
         })
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
@@ -1436,6 +1515,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .collect::<Result<Vec<_>, DecorationBridgeError>>()
                 .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
         })
     }
 }

@@ -34,9 +34,10 @@ pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
 };
 pub use window_model::{
-    LayerKindSnapshot, LayerPositionSnapshot, TransformOrigin, WaylandLayerSnapshot,
-    WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot, WindowPositionSnapshot,
-    WindowTransform, layer_runtime_id,
+    LayerKindSnapshot, LayerPositionSnapshot, OutputModeSnapshot, OutputPositionSnapshot,
+    TransformOrigin, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction,
+    WaylandWindowSnapshot, WindowIconSnapshot, WindowPositionSnapshot, WindowTransform,
+    layer_runtime_id,
 };
 
 /// Top-level decoration tree.

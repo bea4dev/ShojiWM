@@ -8,7 +8,7 @@ use smithay::{
         ImportAll, Renderer,
     },
     desktop::{layer_map_for_output, LayerSurface, PopupManager, Window, WindowSurface},
-    utils::{Physical, Point, Scale},
+    utils::{Logical, Physical, Point, Scale},
     wayland::{compositor::{RectangleKind, RegionAttributes}, shell::wlr_layer::Layer as WlrLayer},
 };
 
@@ -273,6 +273,7 @@ pub fn clipped_surface_elements(
     window: &Window,
     renderer: &mut GlesRenderer,
     location: Point<i32, Physical>,
+    output_origin: Point<i32, Logical>,
     scale: Scale<f64>,
     alpha: f32,
     clip: Option<ContentClip>,
@@ -281,7 +282,7 @@ pub fn clipped_surface_elements(
     match clip {
         Some(clip) => elements
             .into_iter()
-            .map(|element| ClippedSurfaceElement::new(renderer, element, scale, clip))
+            .map(|element| ClippedSurfaceElement::new(renderer, element, scale, output_origin, clip))
             .collect(),
         None => Ok(Vec::new()),
     }

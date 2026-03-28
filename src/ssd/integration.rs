@@ -159,6 +159,17 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     }
 }
 
+impl DecorationRuntimeEvaluator {
+    pub fn sync_display_state(
+        &self,
+        display_state: std::collections::BTreeMap<String, super::WaylandOutputSnapshot>,
+    ) {
+        if let Self::Node(evaluator) = self {
+            evaluator.set_display_state(display_state);
+        }
+    }
+}
+
 impl ShojiWM {
     pub fn apply_runtime_handler_invocation(
         &mut self,
@@ -228,7 +239,9 @@ impl ShojiWM {
             return Ok(false);
         };
 
+        self.sync_runtime_display_state();
         let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
+        self.consume_runtime_display_config(invocation.display_config.clone());
         if !invocation.invoked {
             self.live_window_snapshots
                 .insert(window_id.to_string(), live_snapshot);
@@ -257,16 +270,30 @@ impl ShojiWM {
         &self,
         snapshot: &WaylandWindowSnapshot,
     ) -> Result<(i32, i32), DecorationEvaluationError> {
+        let pointer_location = self
+            .seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location().to_i32_round());
+        let preferred_output_geometry = pointer_location
+            .and_then(|pointer_location| {
+                self.space
+                    .outputs()
+                    .filter_map(|output| self.space.output_geometry(output))
+                    .find(|geometry| geometry.contains(pointer_location))
+            })
+            .or_else(|| {
+                self.space
+                    .outputs()
+                    .filter_map(|output| self.space.output_geometry(output))
+                    .min_by_key(|geometry| (geometry.loc.x, geometry.loc.y))
+            });
+
         if let Some((left_extent, top_extent)) = self.suggested_window_offset {
-            let location = if let Some(output) = self.space.outputs().next() {
-                if let Some(output_geo) = self.space.output_geometry(output) {
-                    (
-                        output_geo.loc.x + left_extent,
-                        output_geo.loc.y + top_extent,
-                    )
-                } else {
-                    (left_extent, top_extent)
-                }
+            let location = if let Some(output_geo) = preferred_output_geometry {
+                (
+                    output_geo.loc.x + left_extent,
+                    output_geo.loc.y + top_extent,
+                )
             } else {
                 (left_extent, top_extent)
             };
@@ -300,15 +327,11 @@ impl ShojiWM {
         let left_extent = (slot.x - root.x).max(0);
         let top_extent = (slot.y - root.y).max(0);
 
-        let location = if let Some(output) = self.space.outputs().next() {
-            if let Some(output_geo) = self.space.output_geometry(output) {
-                (
-                    output_geo.loc.x + left_extent,
-                    output_geo.loc.y + top_extent,
-                )
-            } else {
-                (left_extent, top_extent)
-            }
+        let location = if let Some(output_geo) = preferred_output_geometry {
+            (
+                output_geo.loc.x + left_extent,
+                output_geo.loc.y + top_extent,
+            )
         } else {
             (left_extent, top_extent)
         };
@@ -375,9 +398,11 @@ impl ShojiWM {
             .map(|snapshot| snapshot.id.clone())
             .collect::<std::collections::HashSet<_>>();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        self.sync_runtime_display_state();
         let evaluation = self
             .decoration_evaluator
             .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
+        self.consume_runtime_display_config(evaluation.display_config.clone());
 
         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
         if evaluation.next_poll_in_ms == Some(0) {
@@ -407,6 +432,8 @@ impl ShojiWM {
         let force_output_animation_reevaluate = target_output_name
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
+        let mut pending_display_config_updates = Vec::new();
+        self.sync_runtime_display_state();
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         let window_count = windows.len();
         let mut rebuilt = 0usize;
@@ -495,6 +522,7 @@ impl ShojiWM {
                         StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                     }
                 };
+                pending_display_config_updates.push(evaluation.display_config.clone());
                 let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
                     .layout_for_client(client_rect)
@@ -575,6 +603,7 @@ impl ShojiWM {
                             StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                         }
                     };
+                    pending_display_config_updates.push(evaluation.display_config.clone());
                     cached.tree = DecorationTree::new(evaluation.node);
                     cached.layout = cached
                         .tree
@@ -667,6 +696,7 @@ impl ShojiWM {
                             }
                         }
                     };
+                    pending_display_config_updates.push(evaluation.display_config.clone());
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
                     let dirty_node_ids = evaluation.dirty_node_ids;
@@ -829,6 +859,7 @@ impl ShojiWM {
                 let previous_icon_buffers = closing.decoration.icon_buffers.clone();
                 let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
                 let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id, now_ms)?;
+                pending_display_config_updates.push(evaluation.display_config.clone());
                 let next_tree = DecorationTree::new(evaluation.node);
                 let dirty_node_ids = evaluation.dirty_node_ids;
                 let tree_changed = next_tree != closing.decoration.tree;
@@ -1004,6 +1035,10 @@ impl ShojiWM {
                     &mut self.icon_rasterizer,
                 );
             }
+        }
+
+        for update in pending_display_config_updates {
+            self.consume_runtime_display_config(update);
         }
 
         trace!(
