@@ -953,6 +953,7 @@ impl DecorationNode {
                     font_family: self.style.font_family.clone(),
                     text_align: self.style.text_align.clone(),
                     line_height: Some(line_height),
+                    raster_scale: 1,
                 };
                 Some(measure_label_intrinsic(&spec))
             }

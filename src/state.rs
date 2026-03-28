@@ -287,10 +287,11 @@ impl ShojiWM {
                                 spec_hash,
                                 width,
                                 height,
+                                raster_scale,
                                 pixels,
                             } => state
                                 .text_rasterizer
-                                .handle_async_ready(spec_hash, width, height, pixels),
+                                .handle_async_ready(spec_hash, width, height, raster_scale, pixels),
                             AsyncAssetResult::TextMissing { spec_hash } => {
                                 state.text_rasterizer.handle_async_miss(spec_hash)
                             }
@@ -298,10 +299,11 @@ impl ShojiWM {
                                 spec_hash,
                                 width,
                                 height,
+                                raster_scale,
                                 pixels,
                             } => state
                                 .icon_rasterizer
-                                .handle_async_ready(spec_hash, width, height, pixels),
+                                .handle_async_ready(spec_hash, width, height, raster_scale, pixels),
                             AsyncAssetResult::IconMissing { spec_hash } => {
                                 state.icon_rasterizer.handle_async_miss(spec_hash)
                             }

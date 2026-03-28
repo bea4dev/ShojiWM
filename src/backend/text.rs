@@ -62,6 +62,7 @@ pub struct LabelSpec {
     pub font_family: Option<Vec<String>>,
     pub text_align: Option<String>,
     pub line_height: Option<i32>,
+    pub raster_scale: i32,
 }
 
 #[derive(Debug)]
@@ -136,7 +137,7 @@ impl TextRasterizer {
                 &rendered.pixels,
                 Fourcc::Argb8888,
                 (rendered.width, rendered.height),
-                1,
+                spec.raster_scale.max(1),
                 smithay::utils::Transform::Normal,
                 None,
             ),
@@ -148,8 +149,12 @@ impl TextRasterizer {
             return None;
         }
 
-        let font_size = spec.font_size.max(1) as f32;
-        let line_height = spec.line_height.unwrap_or((font_size.ceil() as i32) + 4) as f32;
+        let raster_scale = spec.raster_scale.max(1);
+        let target_width = (spec.rect.width * raster_scale).max(1);
+        let target_height = (spec.rect.height * raster_scale).max(1);
+        let font_size = spec.font_size.max(1) as f32 * raster_scale as f32;
+        let line_height = spec.line_height.unwrap_or(spec.font_size.max(1) + 4) as f32
+            * raster_scale as f32;
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
@@ -158,7 +163,7 @@ impl TextRasterizer {
 
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
-            buffer.set_size(Some(spec.rect.width as f32), Some(spec.rect.height as f32));
+            buffer.set_size(Some(target_width as f32), Some(target_height as f32));
             buffer.set_wrap(Wrap::None);
             buffer.set_text(&spec.text, &attrs, Shaping::Advanced, alignment);
             buffer.shape_until_scroll(false);
@@ -169,9 +174,9 @@ impl TextRasterizer {
             .iter()
             .map(|run| run.line_top + run.line_height)
             .fold(0.0f32, f32::max);
-        let y_offset = ((spec.rect.height as f32 - text_height) * 0.5).max(0.0);
+        let y_offset = ((target_height as f32 - text_height) * 0.5).max(0.0);
 
-        let mut pixels = vec![0u8; (spec.rect.width * spec.rect.height * 4) as usize];
+        let mut pixels = vec![0u8; (target_width * target_height * 4) as usize];
         let text_color = CosmicColor::rgba(spec.color.r, spec.color.g, spec.color.b, spec.color.a);
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
@@ -180,12 +185,12 @@ impl TextRasterizer {
                     for off_x in 0..w as i32 {
                         let px = x + off_x;
                         let py = y + off_y + y_offset as i32;
-                        if px < 0 || py < 0 || px >= spec.rect.width || py >= spec.rect.height {
+                        if px < 0 || py < 0 || px >= target_width || py >= target_height {
                             continue;
                         }
                         blend_pixel(
                             &mut pixels,
-                            spec.rect.width,
+                            target_width,
                             px,
                             py,
                             color.as_rgba_tuple(),
@@ -196,8 +201,8 @@ impl TextRasterizer {
         }
 
         Some(RenderedLabelPixels {
-            width: spec.rect.width,
-            height: spec.rect.height,
+            width: target_width,
+            height: target_height,
             pixels,
         })
     }
@@ -207,6 +212,7 @@ impl TextRasterizer {
         spec_hash: u64,
         width: i32,
         height: i32,
+        raster_scale: i32,
         pixels: Vec<u8>,
     ) {
         self.async_in_flight.remove(&spec_hash);
@@ -217,7 +223,7 @@ impl TextRasterizer {
                     &pixels,
                     Fourcc::Argb8888,
                     (width, height),
-                    1,
+                    raster_scale.max(1),
                     smithay::utils::Transform::Normal,
                     None,
                 ),
@@ -301,6 +307,7 @@ pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
     spec.font_size.hash(&mut hasher);
     spec.text_align.hash(&mut hasher);
     spec.line_height.hash(&mut hasher);
+    spec.raster_scale.hash(&mut hasher);
     spec.font_family.hash(&mut hasher);
     spec.font_weight
         .as_ref()

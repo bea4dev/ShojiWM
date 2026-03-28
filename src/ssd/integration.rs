@@ -171,11 +171,40 @@ impl DecorationRuntimeEvaluator {
 }
 
 impl ShojiWM {
+    fn decoration_raster_scale_for_window(&self, window: &Window) -> i32 {
+        self.space
+            .outputs_for_element(window)
+            .into_iter()
+            .map(|output| output.current_scale().fractional_scale().ceil() as i32)
+            .max()
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    fn decoration_raster_scale_for_rect(&self, rect: LogicalRect) -> i32 {
+        let logical = smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((rect.x, rect.y)),
+            (rect.width, rect.height).into(),
+        );
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                let geometry = self.space.output_geometry(output)?;
+                logical
+                    .intersection(geometry)
+                    .map(|_| output.current_scale().fractional_scale().ceil() as i32)
+            })
+            .max()
+            .unwrap_or(1)
+            .max(1)
+    }
+
     pub fn apply_runtime_handler_invocation(
         &mut self,
         window: &Window,
         invocation: &DecorationHandlerInvocation,
     ) {
+        let raster_scale = self.decoration_raster_scale_for_window(window);
         let Some(decoration) = self.window_decorations.get_mut(window) else {
             return;
         };
@@ -195,11 +224,13 @@ impl ShojiWM {
                 decoration.text_buffers = build_text_buffers(
                     &decoration.layout,
                     &order_map,
+                    raster_scale,
                     &mut self.text_rasterizer,
                 );
                 decoration.icon_buffers = build_icon_buffers(
                     &decoration.layout,
                     &order_map,
+                    raster_scale,
                     &decoration.snapshot,
                     &mut self.icon_rasterizer,
                 );
@@ -486,6 +517,7 @@ impl ShojiWM {
                 None => continue,
             };
             let snapshot = self.snapshot_window(&window);
+            let window_raster_scale = self.decoration_raster_scale_for_window(&window);
             let had_cached_decoration = self.window_decorations.contains_key(&window);
             let runtime_state_changed = self
                 .window_decorations
@@ -536,8 +568,19 @@ impl ShojiWM {
                 let order_map = build_render_order_map(&layout);
                 let buffers = build_cached_buffers(&layout, &order_map);
                 let mut shader_buffers = build_shader_buffers(&layout, &order_map);
-                let text_buffers = build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
-                let icon_buffers = build_icon_buffers(&layout, &order_map, &snapshot, &mut self.icon_rasterizer);
+                let text_buffers = build_text_buffers(
+                    &layout,
+                    &order_map,
+                    window_raster_scale,
+                    &mut self.text_rasterizer,
+                );
+                let icon_buffers = build_icon_buffers(
+                    &layout,
+                    &order_map,
+                    window_raster_scale,
+                    &snapshot,
+                    &mut self.icon_rasterizer,
+                );
                 if let Some(previous) = self.window_decorations.get(&window) {
                     freeze_manual_shader_buffers(&previous.shader_buffers, &mut shader_buffers);
                 }
@@ -621,10 +664,19 @@ impl ShojiWM {
                     let order_map = build_render_order_map(&cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                     cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
-                    cached.text_buffers =
-                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                    cached.icon_buffers =
-                        build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                    cached.text_buffers = build_text_buffers(
+                        &cached.layout,
+                        &order_map,
+                        window_raster_scale,
+                        &mut self.text_rasterizer,
+                    );
+                    cached.icon_buffers = build_icon_buffers(
+                        &cached.layout,
+                        &order_map,
+                        window_raster_scale,
+                        &cached.snapshot,
+                        &mut self.icon_rasterizer,
+                    );
                     self.suggested_window_offset = suggested_window_offset(&cached.layout);
                     relayout += 1;
                     debug!(
@@ -717,10 +769,19 @@ impl ShojiWM {
                                 cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                                 cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
                                 freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
-                                cached.text_buffers =
-                                    build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                                cached.icon_buffers =
-                                    build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                                cached.text_buffers = build_text_buffers(
+                                    &cached.layout,
+                                    &order_map,
+                                    window_raster_scale,
+                                    &mut self.text_rasterizer,
+                                );
+                                cached.icon_buffers = build_icon_buffers(
+                                    &cached.layout,
+                                    &order_map,
+                                    window_raster_scale,
+                                    &cached.snapshot,
+                                    &mut self.icon_rasterizer,
+                                );
                             } else {
                                 let (rebuilt_buffers, rebuilt_shader_buffers) =
                                     rebuild_partial_buffers(&cached.layout, &order_map, &dirty_node_ids);
@@ -742,6 +803,7 @@ impl ShojiWM {
                                         &cached.layout,
                                         &order_map,
                                         &dirty_node_ids,
+                                        window_raster_scale,
                                         &mut self.text_rasterizer,
                                     ),
                                     &dirty_node_ids,
@@ -752,6 +814,7 @@ impl ShojiWM {
                                         &cached.layout,
                                         &order_map,
                                         &dirty_node_ids,
+                                        window_raster_scale,
                                         &cached.snapshot,
                                         &mut self.icon_rasterizer,
                                     ),
@@ -768,10 +831,19 @@ impl ShojiWM {
                             cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                             cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
                             freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
-                            cached.text_buffers =
-                                build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                            cached.icon_buffers =
-                                build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                            cached.text_buffers = build_text_buffers(
+                                &cached.layout,
+                                &order_map,
+                                window_raster_scale,
+                                &mut self.text_rasterizer,
+                            );
+                            cached.icon_buffers = build_icon_buffers(
+                                &cached.layout,
+                                &order_map,
+                                window_raster_scale,
+                                &cached.snapshot,
+                                &mut self.icon_rasterizer,
+                            );
                             self.suggested_window_offset = suggested_window_offset(&cached.layout);
                         }
                         cached.visual_transform = next_transform;
@@ -813,10 +885,19 @@ impl ShojiWM {
                     );
                     if force_async_asset_refresh {
                         let order_map = build_render_order_map(&cached.layout);
-                        cached.text_buffers =
-                            build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                        cached.icon_buffers =
-                            build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                        cached.text_buffers = build_text_buffers(
+                            &cached.layout,
+                            &order_map,
+                            window_raster_scale,
+                            &mut self.text_rasterizer,
+                        );
+                        cached.icon_buffers = build_icon_buffers(
+                            &cached.layout,
+                            &order_map,
+                            window_raster_scale,
+                            &cached.snapshot,
+                            &mut self.icon_rasterizer,
+                        );
                     }
                     log_decoration_refresh(
                         "runtime-dirty",
@@ -830,10 +911,19 @@ impl ShojiWM {
                     animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
                 } else if force_async_asset_refresh {
                     let order_map = build_render_order_map(&cached.layout);
-                    cached.text_buffers =
-                        build_text_buffers(&cached.layout, &order_map, &mut self.text_rasterizer);
-                    cached.icon_buffers =
-                        build_icon_buffers(&cached.layout, &order_map, &cached.snapshot, &mut self.icon_rasterizer);
+                    cached.text_buffers = build_text_buffers(
+                        &cached.layout,
+                        &order_map,
+                        window_raster_scale,
+                        &mut self.text_rasterizer,
+                    );
+                    cached.icon_buffers = build_icon_buffers(
+                        &cached.layout,
+                        &order_map,
+                        window_raster_scale,
+                        &cached.snapshot,
+                        &mut self.icon_rasterizer,
+                    );
                 }
             }
         }
@@ -848,6 +938,11 @@ impl ShojiWM {
             .cloned()
             .collect::<Vec<_>>();
         for window_id in closing_dirty_ids {
+            let closing_raster_scale = self
+                .closing_window_snapshots
+                .get(&window_id)
+                .map(|closing| self.decoration_raster_scale_for_rect(closing.live.rect))
+                .unwrap_or(1);
             if let Some(closing) = self.closing_window_snapshots.get_mut(&window_id) {
                 let previous_root =
                     transformed_root_rect(closing.decoration.layout.root.rect, closing.transform);
@@ -887,11 +982,13 @@ impl ShojiWM {
                             closing.decoration.text_buffers = build_text_buffers(
                                 &closing.decoration.layout,
                                 &order_map,
+                                closing_raster_scale,
                                 &mut self.text_rasterizer,
                             );
                             closing.decoration.icon_buffers = build_icon_buffers(
                                 &closing.decoration.layout,
                                 &order_map,
+                                closing_raster_scale,
                                 &closing.decoration.snapshot,
                                 &mut self.icon_rasterizer,
                             );
@@ -916,6 +1013,7 @@ impl ShojiWM {
                                     &closing.decoration.layout,
                                     &order_map,
                                     &dirty_node_ids,
+                                    closing_raster_scale,
                                     &mut self.text_rasterizer,
                                 ),
                                 &dirty_node_ids,
@@ -926,6 +1024,7 @@ impl ShojiWM {
                                     &closing.decoration.layout,
                                     &order_map,
                                     &dirty_node_ids,
+                                    closing_raster_scale,
                                     &closing.decoration.snapshot,
                                     &mut self.icon_rasterizer,
                                 ),
@@ -943,10 +1042,11 @@ impl ShojiWM {
                         let buffers = build_cached_buffers(&layout, &order_map);
                         let shader_buffers = build_shader_buffers(&layout, &order_map);
                         let text_buffers =
-                            build_text_buffers(&layout, &order_map, &mut self.text_rasterizer);
+                            build_text_buffers(&layout, &order_map, closing_raster_scale, &mut self.text_rasterizer);
                         let icon_buffers = build_icon_buffers(
                             &layout,
                             &order_map,
+                            closing_raster_scale,
                             &closing.decoration.snapshot,
                             &mut self.icon_rasterizer,
                         );
@@ -995,11 +1095,13 @@ impl ShojiWM {
                     closing.decoration.text_buffers = build_text_buffers(
                         &closing.decoration.layout,
                         &order_map,
+                        closing_raster_scale,
                         &mut self.text_rasterizer,
                     );
                     closing.decoration.icon_buffers = build_icon_buffers(
                         &closing.decoration.layout,
                         &order_map,
+                        closing_raster_scale,
                         &closing.decoration.snapshot,
                         &mut self.icon_rasterizer,
                     );
@@ -1020,17 +1122,34 @@ impl ShojiWM {
         }
 
         if force_async_asset_refresh {
-            for closing in self.closing_window_snapshots.values_mut() {
+            let closing_scales = self
+                .closing_window_snapshots
+                .iter()
+                .map(|(window_id, closing)| {
+                    (
+                        window_id.clone(),
+                        self.decoration_raster_scale_for_rect(closing.live.rect),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            for (window_id, closing) in self.closing_window_snapshots.iter_mut() {
+                let closing_raster_scale = *closing_scales.get(window_id).unwrap_or(&1);
                 let order_map = build_render_order_map(&closing.decoration.layout);
                 closing.decoration.buffers =
                     build_cached_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.shader_buffers =
                     build_shader_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.text_buffers =
-                    build_text_buffers(&closing.decoration.layout, &order_map, &mut self.text_rasterizer);
+                    build_text_buffers(
+                        &closing.decoration.layout,
+                        &order_map,
+                        closing_raster_scale,
+                        &mut self.text_rasterizer,
+                    );
                 closing.decoration.icon_buffers = build_icon_buffers(
                     &closing.decoration.layout,
                     &order_map,
+                    closing_raster_scale,
                     &closing.decoration.snapshot,
                     &mut self.icon_rasterizer,
                 );
@@ -1254,21 +1373,40 @@ fn suggested_window_offset(layout: &ComputedDecorationTree) -> Option<(i32, i32)
 fn build_text_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
+    raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
 ) -> Vec<CachedDecorationLabel> {
     let mut buffers = Vec::new();
-    collect_text_buffers(&layout.root, "root".into(), order_map, None, rasterizer, &mut buffers);
+    collect_text_buffers(
+        &layout.root,
+        "root".into(),
+        order_map,
+        None,
+        raster_scale,
+        rasterizer,
+        &mut buffers,
+    );
     buffers
 }
 
 fn build_icon_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
+    raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
     let mut buffers = Vec::new();
-    collect_icon_buffers(&layout.root, "root".into(), order_map, None, snapshot, rasterizer, &mut buffers);
+    collect_icon_buffers(
+        &layout.root,
+        "root".into(),
+        order_map,
+        None,
+        raster_scale,
+        snapshot,
+        rasterizer,
+        &mut buffers,
+    );
     buffers
 }
 
@@ -1297,6 +1435,7 @@ fn rebuild_partial_text_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: &[String],
+    raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
 ) -> Vec<CachedDecorationLabel> {
     let dirty_node_ids = dirty_node_ids
@@ -1304,7 +1443,15 @@ fn rebuild_partial_text_buffers(
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
     let mut buffers = Vec::new();
-    collect_text_buffers(&layout.root, "root".into(), order_map, Some(&dirty_node_ids), rasterizer, &mut buffers);
+    collect_text_buffers(
+        &layout.root,
+        "root".into(),
+        order_map,
+        Some(&dirty_node_ids),
+        raster_scale,
+        rasterizer,
+        &mut buffers,
+    );
     buffers
 }
 
@@ -1312,6 +1459,7 @@ fn rebuild_partial_icon_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: &[String],
+    raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
@@ -1320,7 +1468,16 @@ fn rebuild_partial_icon_buffers(
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
     let mut buffers = Vec::new();
-    collect_icon_buffers(&layout.root, "root".into(), order_map, Some(&dirty_node_ids), snapshot, rasterizer, &mut buffers);
+    collect_icon_buffers(
+        &layout.root,
+        "root".into(),
+        order_map,
+        Some(&dirty_node_ids),
+        raster_scale,
+        snapshot,
+        rasterizer,
+        &mut buffers,
+    );
     buffers
 }
 
@@ -1626,6 +1783,7 @@ fn collect_text_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     buffers: &mut Vec<CachedDecorationLabel>,
 ) {
@@ -1634,7 +1792,15 @@ fn collect_text_buffers(
     }
 
     for (index, child) in node.children.iter().rev().enumerate() {
-        collect_text_buffers(child, format!("{path}/child-{index}"), order_map, dirty_node_ids, rasterizer, buffers);
+        collect_text_buffers(
+            child,
+            format!("{path}/child-{index}"),
+            order_map,
+            dirty_node_ids,
+            raster_scale,
+            rasterizer,
+            buffers,
+        );
     }
 
     if dirty_node_ids.is_some_and(|dirty_node_ids| {
@@ -1663,6 +1829,7 @@ fn collect_text_buffers(
         font_family: node.style.font_family.clone(),
         text_align: node.style.text_align.clone(),
         line_height: node.style.line_height,
+        raster_scale,
     };
 
     if let Some(buffer) = rasterizer.render_label(&spec) {
@@ -1680,6 +1847,7 @@ fn collect_icon_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
     buffers: &mut Vec<CachedDecorationIcon>,
@@ -1689,7 +1857,16 @@ fn collect_icon_buffers(
     }
 
     for (index, child) in node.children.iter().rev().enumerate() {
-        collect_icon_buffers(child, format!("{path}/child-{index}"), order_map, dirty_node_ids, snapshot, rasterizer, buffers);
+        collect_icon_buffers(
+            child,
+            format!("{path}/child-{index}"),
+            order_map,
+            dirty_node_ids,
+            raster_scale,
+            snapshot,
+            rasterizer,
+            buffers,
+        );
     }
 
     if dirty_node_ids.is_some_and(|dirty_node_ids| {
@@ -1709,6 +1886,7 @@ fn collect_icon_buffers(
         rect: node.rect,
         icon: snapshot.icon.clone(),
         app_id: snapshot.app_id.clone(),
+        raster_scale,
     };
 
     if let Some(buffer) = rasterizer.render_icon(&spec) {

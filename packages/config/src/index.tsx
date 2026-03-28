@@ -35,7 +35,7 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {
         resolution: "best",
         position: "auto",
-        scale: 1.25,
+        scale: 1,
     };
     display["DP-4"] = {
         resolution: "best",

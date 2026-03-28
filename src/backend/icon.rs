@@ -50,6 +50,7 @@ pub struct IconSpec {
     pub rect: LogicalRect,
     pub icon: Option<WindowIconSnapshot>,
     pub app_id: Option<String>,
+    pub raster_scale: i32,
 }
 
 #[derive(Debug, Default)]
@@ -123,7 +124,7 @@ impl IconRasterizer {
             &rendered.pixels,
             Fourcc::Argb8888,
             (rendered.width, rendered.height),
-            1,
+            spec.raster_scale.max(1),
             smithay::utils::Transform::Normal,
             None,
         );
@@ -142,18 +143,22 @@ impl IconRasterizer {
             return None;
         }
 
+        let raster_scale = spec.raster_scale.max(1);
+        let target_width = (spec.rect.width * raster_scale).max(1);
+        let target_height = (spec.rect.height * raster_scale).max(1);
+
         let source = icon_source_key(spec)?;
         let key = IconCacheKey {
             source,
-            width: spec.rect.width,
-            height: spec.rect.height,
+            width: target_width,
+            height: target_height,
         };
 
         let rgba = if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
-            decode_png_and_scale(bytes, spec.rect.width, spec.rect.height)?
+            decode_png_and_scale(bytes, target_width, target_height)?
         } else {
             let names = icon_candidate_names(spec);
-            let Some(path) = self.find_icon_path_cached(&names, spec.rect.width, spec.rect.height) else {
+            let Some(path) = self.find_icon_path_cached(&names, target_width, target_height) else {
                 self.cache.insert(key, None);
                 return None;
             };
@@ -168,8 +173,8 @@ impl IconRasterizer {
             let Some(rgba) = decode_icon_and_scale(
                 &bytes,
                 extension.as_deref(),
-                spec.rect.width,
-                spec.rect.height,
+                target_width,
+                target_height,
             ) else {
                 self.cache.insert(key, None);
                 return None;
@@ -181,16 +186,16 @@ impl IconRasterizer {
         let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Argb8888,
-            (spec.rect.width, spec.rect.height),
-            1,
+            (target_width, target_height),
+            raster_scale,
             smithay::utils::Transform::Normal,
             None,
         );
 
         self.cache.insert(key, Some(buffer));
         Some(RenderedIconPixels {
-            width: spec.rect.width,
-            height: spec.rect.height,
+            width: target_width,
+            height: target_height,
             pixels,
         })
     }
@@ -200,6 +205,7 @@ impl IconRasterizer {
         spec_hash: u64,
         width: i32,
         height: i32,
+        raster_scale: i32,
         pixels: Vec<u8>,
     ) {
         self.async_in_flight.remove(&spec_hash);
@@ -210,7 +216,7 @@ impl IconRasterizer {
                     &pixels,
                     Fourcc::Argb8888,
                     (width, height),
-                    1,
+                    raster_scale.max(1),
                     smithay::utils::Transform::Normal,
                     None,
                 ),
@@ -269,6 +275,7 @@ pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
     let mut hasher = DefaultHasher::new();
     spec.rect.width.hash(&mut hasher);
     spec.rect.height.hash(&mut hasher);
+    spec.raster_scale.hash(&mut hasher);
     spec.app_id.hash(&mut hasher);
     if let Some(icon) = &spec.icon {
         icon.name.hash(&mut hasher);

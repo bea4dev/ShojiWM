@@ -19,6 +19,8 @@ pub struct ClippedMemoryElement {
     clip_rect: LogicalRect,
     clip_radius: i32,
     scale: f32,
+    clip_scale_x: f32,
+    clip_scale_y: f32,
 }
 
 #[derive(Debug)]
@@ -76,6 +78,18 @@ impl ClippedMemoryElement {
             .get::<ClippedMemoryProgram>()
             .expect("clipped memory shader should be cached");
 
+        let src = inner.src();
+        let clip_scale_x = if element_rect.width > 0 {
+            src.size.w as f32 / element_rect.width as f32
+        } else {
+            1.0
+        };
+        let clip_scale_y = if element_rect.height > 0 {
+            src.size.h as f32 / element_rect.height as f32
+        } else {
+            1.0
+        };
+
         Ok(Self {
             inner,
             program: program.0.clone(),
@@ -86,7 +100,9 @@ impl ClippedMemoryElement {
                 clip_rect.height,
             ),
             clip_radius,
-            scale: scale.x as f32,
+            scale: clip_scale_x.max(clip_scale_y).max(scale.x as f32),
+            clip_scale_x,
+            clip_scale_y,
         })
     }
 
@@ -103,13 +119,21 @@ impl ClippedMemoryElement {
             Uniform::new(
                 "clip_rect",
                 [
-                    self.clip_rect.x as f32,
-                    self.clip_rect.y as f32,
-                    self.clip_rect.width as f32,
-                    self.clip_rect.height as f32,
+                    self.clip_rect.x as f32 * self.clip_scale_x,
+                    self.clip_rect.y as f32 * self.clip_scale_y,
+                    self.clip_rect.width as f32 * self.clip_scale_x,
+                    self.clip_rect.height as f32 * self.clip_scale_y,
                 ],
             ),
-            Uniform::new("clip_radius", [radius, radius, radius, radius]),
+            Uniform::new(
+                "clip_radius",
+                [
+                    radius * self.clip_scale_x.min(self.clip_scale_y),
+                    radius * self.clip_scale_x.min(self.clip_scale_y),
+                    radius * self.clip_scale_x.min(self.clip_scale_y),
+                    radius * self.clip_scale_x.min(self.clip_scale_y),
+                ],
+            ),
         ]
     }
 }
