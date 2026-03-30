@@ -22,6 +22,7 @@ pub enum RoundedShapeKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoundedRectSpec {
     pub rect: Rectangle<i32, Logical>,
+    pub geometry: Rectangle<i32, Physical>,
     pub color: [f32; 4],
     pub alpha: f32,
     pub radius: i32,
@@ -54,6 +55,7 @@ pub struct StableRoundedElement {
     id: Id,
     commit_counter: CommitCounter,
     area: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Physical>,
     alpha: f32,
     additional_uniforms: Vec<Uniform<'static>>,
     kind: Kind,
@@ -81,6 +83,7 @@ impl RoundedElementState {
             id: self.id.clone(),
             commit_counter: self.commit_counter,
             area: spec.rect,
+            geometry: spec.geometry,
             alpha: spec.alpha.clamp(0.0, 1.0),
             additional_uniforms: uniforms,
             kind: Kind::Unspecified,
@@ -102,7 +105,8 @@ impl Element for StableRoundedElement {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.area.to_physical_precise_round(scale)
+        let _ = scale;
+        self.geometry
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {

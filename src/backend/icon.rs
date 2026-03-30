@@ -306,7 +306,17 @@ pub fn icon_elements_for_window(
     decoration
         .icon_buffers
         .iter()
-        .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale, alpha).transpose())
+        .filter_map(|icon| {
+            memory_icon_element(
+                renderer,
+                icon,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
+            .transpose()
+        })
         .collect()
 }
 
@@ -330,7 +340,14 @@ pub fn ordered_icon_elements_for_window(
         .icon_buffers
         .iter()
         .filter_map(|icon| {
-            memory_icon_element(renderer, icon, output_geo, scale, alpha)
+            memory_icon_element(
+                renderer,
+                icon,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
                 .transpose()
                 .map(|result| result.map(|element| (icon.order, element)))
         })
@@ -348,7 +365,14 @@ pub fn ordered_icon_elements_for_decoration(
         .icon_buffers
         .iter()
         .filter_map(|icon| {
-            memory_icon_element(renderer, icon, output_geo, scale, alpha)
+            memory_icon_element(
+                renderer,
+                icon,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
                 .transpose()
                 .map(|result| result.map(|element| (icon.order, element)))
         })
@@ -365,13 +389,24 @@ pub fn icon_elements_for_decoration(
     decoration
         .icon_buffers
         .iter()
-        .filter_map(|icon| memory_icon_element(renderer, icon, output_geo, scale, alpha).transpose())
+        .filter_map(|icon| {
+            memory_icon_element(
+                renderer,
+                icon,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
+            .transpose()
+        })
         .collect()
 }
 
 fn memory_icon_element(
     renderer: &mut GlesRenderer,
     icon: &CachedDecorationIcon,
+    root_rect: LogicalRect,
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
@@ -381,8 +416,8 @@ fn memory_icon_element(
     }
 
     let local = Point::from((
-        icon.rect.x - output_geo.loc.x,
-        icon.rect.y - output_geo.loc.y,
+        icon.rect.x - root_rect.x,
+        icon.rect.y - root_rect.y,
     ));
     let physical: Point<i32, Physical> = local.to_f64().to_physical_precise_round(scale);
     let element = MemoryRenderBufferRenderElement::from_buffer(
@@ -399,8 +434,18 @@ fn memory_icon_element(
             renderer,
             element,
             scale,
-            icon.rect,
-            clip_rect,
+            LogicalRect::new(
+                icon.rect.x - root_rect.x,
+                icon.rect.y - root_rect.y,
+                icon.rect.width,
+                icon.rect.height,
+            ),
+            LogicalRect::new(
+                clip_rect.x - root_rect.x,
+                clip_rect.y - root_rect.y,
+                clip_rect.width,
+                clip_rect.height,
+            ),
             icon.clip_radius,
         )?;
         Ok(Some(crate::backend::text::DecorationTextureElements::Clipped(

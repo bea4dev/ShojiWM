@@ -12,7 +12,7 @@ use tracing::trace;
 
 use crate::{
     backend::visual::{
-        RectSnapMode, snapped_logical_radius, snapped_logical_rect_for_element,
+        RectSnapMode, relative_physical_rect_from_root, snapped_logical_radius, snapped_logical_rect_for_element,
         snapped_logical_rect_in_element_space,
     },
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
@@ -229,13 +229,20 @@ fn rounded_rect_element(
     }
     let local_rect = Rectangle::new(
         Point::from((
-            cached.rect.x - output_geo.loc.x,
-            cached.rect.y - output_geo.loc.y,
+            cached.rect.x - decoration.layout.root.rect.x,
+            cached.rect.y - decoration.layout.root.rect.y,
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
     let window_snap_origin = output_geo.loc;
     let outer_radius = snapped_logical_radius(cached.radius, scale);
+    let geometry = relative_physical_rect_from_root(
+        cached.rect,
+        decoration.layout.root.rect,
+        output_geo,
+        scale,
+        cached.clip_rect,
+    );
     let quantized_border_inner = (cached.border_width > 0 && !cached.shared_inner_hole)
         .then(|| {
         if let Some(hole_rect) = cached.hole_rect {
@@ -313,6 +320,7 @@ fn rounded_rect_element(
         renderer,
         RoundedRectSpec {
             rect: local_rect,
+            geometry,
             color: [
                 cached.color.r as f32 / 255.0,
                 cached.color.g as f32 / 255.0,
@@ -366,12 +374,19 @@ fn shader_effect_element(
 
     let local_rect = Rectangle::new(
         Point::from((
-            cached.rect.x - output_geo.loc.x,
-            cached.rect.y - output_geo.loc.y,
+            cached.rect.x - decoration.layout.root.rect.x,
+            cached.rect.y - decoration.layout.root.rect.y,
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
     let window_snap_origin = output_geo.loc;
+    let geometry = relative_physical_rect_from_root(
+        cached.rect,
+        decoration.layout.root.rect,
+        output_geo,
+        scale,
+        cached.clip_rect,
+    );
 
     let state = decoration
         .shader_cache
@@ -381,6 +396,7 @@ fn shader_effect_element(
         renderer,
         ShaderEffectSpec {
             rect: local_rect,
+            geometry,
             shader: cached.shader.clone(),
             alpha_bits: alpha.to_bits(),
             render_scale: scale.x as f32,

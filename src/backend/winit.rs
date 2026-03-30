@@ -26,7 +26,10 @@ use tracing::{info, trace, warn};
 
 use crate::{
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
-    backend::visual::{WindowVisualState, transformed_root_rect, window_visual_state},
+    backend::visual::{
+        WindowVisualState, relative_physical_rect_from_root, root_physical_origin,
+        transformed_root_rect, window_visual_state,
+    },
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
 };
@@ -235,6 +238,10 @@ pub fn init_winit(
                                 scale.x * visual_state.scale.x.max(0.0),
                                 scale.y * visual_state.scale.y.max(0.0),
                             ));
+                            let root_origin = state
+                                .window_decorations
+                                .get(window)
+                                .map(|decoration| root_physical_origin(decoration.layout.root.rect, output_geo, scale));
                             let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
                             let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> =
                                 Vec::new();
@@ -269,13 +276,19 @@ pub fn init_winit(
                                     .map(|(order, element)| (order, element, true)),
                                 );
                                 for (order, element, render_as_backdrop) in backdrop_items.drain(..) {
-                                    let transformed = transform_backdrop_elements(vec![element], visual_state)
+                                    if let Some(root_origin) = root_origin {
+                                        let transformed = transform_backdrop_elements(
+                                            vec![element],
+                                            root_origin,
+                                            visual_state,
+                                        )
                                         .into_iter()
                                         .map(|item| (order, item));
-                                    if render_as_backdrop {
-                                        ordered_backdrop_elements.extend(transformed);
-                                    } else {
-                                        ordered_ui_elements.extend(transformed);
+                                        if render_as_backdrop {
+                                            ordered_backdrop_elements.extend(transformed);
+                                        } else {
+                                            ordered_ui_elements.extend(transformed);
+                                        }
                                     }
                                 }
                                 if let Some(decoration_state) =
@@ -294,11 +307,13 @@ pub fn init_winit(
                                     .unwrap_or_default();
                                     background_items.sort_by_key(|(order, _)| *order);
                                     for (order, element) in background_items {
-                                        ordered_ui_elements.extend(
-                                            transform_decoration_elements(vec![element], visual_state)
-                                                .into_iter()
-                                                .map(|item| (order, item)),
-                                        );
+                                        if let Some(root_origin) = root_origin {
+                                            ordered_ui_elements.extend(
+                                                transform_decoration_elements(vec![element], root_origin, visual_state)
+                                                    .into_iter()
+                                                    .map(|item| (order, item)),
+                                            );
+                                        }
                                     }
                                 }
 
@@ -312,11 +327,13 @@ pub fn init_winit(
                                 )
                                 .unwrap_or_default()
                                 {
-                                    ordered_ui_elements.extend(
-                                        transform_text_elements(vec![element], visual_state)
-                                            .into_iter()
-                                            .map(|item| (order, item)),
-                                    );
+                                    if let Some(root_origin) = root_origin {
+                                        ordered_ui_elements.extend(
+                                            transform_text_elements(vec![element], root_origin, visual_state)
+                                                .into_iter()
+                                                .map(|item| (order, item)),
+                                        );
+                                    }
                                 }
 
                                 for (order, element) in decoration::ordered_text_elements_for_window(
@@ -329,11 +346,13 @@ pub fn init_winit(
                                 )
                                 .unwrap_or_default()
                                 {
-                                    ordered_ui_elements.extend(
-                                        transform_text_elements(vec![element], visual_state)
-                                            .into_iter()
-                                            .map(|item| (order, item)),
-                                    );
+                                    if let Some(root_origin) = root_origin {
+                                        ordered_ui_elements.extend(
+                                            transform_text_elements(vec![element], root_origin, visual_state)
+                                                .into_iter()
+                                                .map(|item| (order, item)),
+                                        );
+                                    }
                                 }
 
                                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
@@ -725,15 +744,18 @@ smithay::render_elements! {
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     TransformedClipped=RelocateRenderElement<RescaleRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>,
     Text=crate::backend::text::DecorationTextureElements,
-    TransformedText=RelocateRenderElement<RescaleRenderElement<crate::backend::text::DecorationTextureElements>>,
+    RelocatedText=RelocateRenderElement<crate::backend::text::DecorationTextureElements>,
+    TransformedText=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::text::DecorationTextureElements>>>,
     Snapshot=TextureRenderElement<GlesTexture>,
     TransformedSnapshot=RelocateRenderElement<RescaleRenderElement<TextureRenderElement<GlesTexture>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
     Decoration=crate::backend::decoration::DecorationSceneElements,
-    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<crate::backend::decoration::DecorationSceneElements>>,
+    RelocatedDecoration=RelocateRenderElement<crate::backend::decoration::DecorationSceneElements>,
+    TransformedDecoration=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::decoration::DecorationSceneElements>>>,
     Backdrop=crate::backend::shader_effect::StableBackdropTextureElement,
-    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>,
+    RelocatedBackdrop=RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>,
+    TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>>,
 }
 
 fn transform_window_elements(
@@ -789,18 +811,30 @@ fn transform_clipped_elements(
 
 fn transform_text_elements(
     elements: Vec<crate::backend::text::DecorationTextureElements>,
+    root_origin: Point<i32, smithay::utils::Physical>,
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(WinitRenderElements::Text).collect();
+        return elements
+            .into_iter()
+            .map(|element| {
+                WinitRenderElements::RelocatedText(RelocateRenderElement::from_element(
+                    element,
+                    root_origin,
+                    Relocate::Relative,
+                ))
+            })
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
+            let relocated =
+                RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedText(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    element,
+                    relocated,
                     visual.origin,
                     visual.scale,
                 ),
@@ -837,18 +871,30 @@ fn transform_snapshot_elements(
 
 fn transform_decoration_elements(
     elements: Vec<crate::backend::decoration::DecorationSceneElements>,
+    root_origin: Point<i32, smithay::utils::Physical>,
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(WinitRenderElements::Decoration).collect();
+        return elements
+            .into_iter()
+            .map(|element| {
+                WinitRenderElements::RelocatedDecoration(RelocateRenderElement::from_element(
+                    element,
+                    root_origin,
+                    Relocate::Relative,
+                ))
+            })
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
+            let relocated =
+                RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    element,
+                    relocated,
                     visual.origin,
                     visual.scale,
                 ),
@@ -861,18 +907,30 @@ fn transform_decoration_elements(
 
 fn transform_backdrop_elements(
     elements: Vec<crate::backend::shader_effect::StableBackdropTextureElement>,
+    root_origin: Point<i32, smithay::utils::Physical>,
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(WinitRenderElements::Backdrop).collect();
+        return elements
+            .into_iter()
+            .map(|element| {
+                WinitRenderElements::RelocatedBackdrop(RelocateRenderElement::from_element(
+                    element,
+                    root_origin,
+                    Relocate::Relative,
+                ))
+            })
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
+            let relocated =
+                RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(
-                    element,
+                    relocated,
                     visual.origin,
                     visual.scale,
                 ),
@@ -927,6 +985,7 @@ fn backdrop_shader_elements_for_window(
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
             let render_as_backdrop = uses_backdrop || uses_xray;
+            let root_rect = decoration.layout.root.rect;
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
             let display_rect = if apply_visual_transform {
@@ -1043,8 +1102,8 @@ fn backdrop_shader_elements_for_window(
                 {
                     let local_rect = Rectangle::new(
                         smithay::utils::Point::from((
-                            display_rect.x - output_geo.loc.x,
-                            display_rect.y - output_geo.loc.y,
+                            display_rect.x - root_rect.x,
+                            display_rect.y - root_rect.y,
                         )),
                         (display_rect.width, display_rect.height).into(),
                     );
@@ -1074,12 +1133,20 @@ fn backdrop_shader_elements_for_window(
                         (source_effect_rect.width, source_effect_rect.height).into(),
                     );
                     let local_capture_rect = local_sample_rect;
-                    return crate::backend::shader_effect::backdrop_shader_element(
+                    let geometry = relative_physical_rect_from_root(
+                        display_rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                        cached.clip_rect,
+                    );
+                    return crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                         renderer,
                         existing.id.clone(),
                         existing.commit_counter,
                         existing.texture,
                         local_rect,
+                        geometry,
                         local_sample_rect,
                         local_capture_rect,
                         &cached.shader,
@@ -1192,8 +1259,8 @@ fn backdrop_shader_elements_for_window(
             }
             let local_rect = Rectangle::new(
                 smithay::utils::Point::from((
-                    display_rect.x - output_geo.loc.x,
-                    display_rect.y - output_geo.loc.y,
+                    display_rect.x - root_rect.x,
+                    display_rect.y - root_rect.y,
                 )),
                 (display_rect.width, display_rect.height).into(),
             );
@@ -1223,7 +1290,14 @@ fn backdrop_shader_elements_for_window(
                 (source_effect_rect.width, source_effect_rect.height).into(),
             );
             let local_capture_rect = local_sample_rect;
-            crate::backend::shader_effect::backdrop_shader_element(
+            let geometry = relative_physical_rect_from_root(
+                display_rect,
+                root_rect,
+                output_geo,
+                scale,
+                cached.clip_rect,
+            );
+            crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                 renderer,
                 state
                     .window_decorations
@@ -1239,6 +1313,7 @@ fn backdrop_shader_elements_for_window(
                     .unwrap_or_default(),
                 texture,
                 local_rect,
+                geometry,
                 local_sample_rect,
                 local_capture_rect,
                 &cached.shader,
@@ -2439,6 +2514,7 @@ fn window_scene_elements_for_capture(
     let mut elements = Vec::new();
 
     if let Some(decoration) = state.window_decorations.get(window) {
+        let root_origin = root_physical_origin(decoration.layout.root.rect, capture_geo, scale);
         let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
         let mut decoration = decoration.clone();
         if let Ok(backgrounds) = crate::backend::decoration::ordered_background_elements_for_window(
@@ -2450,7 +2526,7 @@ fn window_scene_elements_for_capture(
         ) {
             for (order, element) in backgrounds {
                 ordered_ui_elements.extend(
-                    transform_decoration_elements(vec![element], visual_state)
+                    transform_decoration_elements(vec![element], root_origin, visual_state)
                         .into_iter()
                         .map(|item| (order, item)),
                 );
@@ -2465,7 +2541,7 @@ fn window_scene_elements_for_capture(
         ) {
             for (order, element) in icon_elements {
                 ordered_ui_elements.extend(
-                    transform_text_elements(vec![element], visual_state)
+                    transform_text_elements(vec![element], root_origin, visual_state)
                         .into_iter()
                         .map(|item| (order, item)),
                 );
@@ -2480,7 +2556,7 @@ fn window_scene_elements_for_capture(
         ) {
             for (order, element) in text_elements {
                 ordered_ui_elements.extend(
-                    transform_text_elements(vec![element], visual_state)
+                    transform_text_elements(vec![element], root_origin, visual_state)
                         .into_iter()
                         .map(|item| (order, item)),
                 );
@@ -2601,6 +2677,8 @@ fn closing_snapshot_elements(
                 output_geo,
                 scale,
             );
+            let root_origin =
+                root_physical_origin(snapshot.decoration.layout.root.rect, output_geo, scale);
 
             let mut elements = Vec::new();
             if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
@@ -2610,7 +2688,7 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                elements.extend(transform_text_elements(icon_elements, visual));
+                elements.extend(transform_text_elements(icon_elements, root_origin, visual));
             }
             if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
                 renderer,
@@ -2619,7 +2697,7 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                elements.extend(transform_text_elements(text_elements, visual));
+                elements.extend(transform_text_elements(text_elements, root_origin, visual));
             }
             let mut decoration = snapshot.decoration.clone();
             if let Ok(background_elements) = decoration::background_elements_for_window(
@@ -2629,7 +2707,7 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                elements.extend(transform_decoration_elements(background_elements, visual));
+                elements.extend(transform_decoration_elements(background_elements, root_origin, visual));
             }
 
             if let Some(element) =

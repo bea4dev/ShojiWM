@@ -354,7 +354,17 @@ pub fn text_elements_for_window(
     decoration
         .text_buffers
         .iter()
-        .filter_map(|label| memory_text_element(renderer, label, output_geo, scale, alpha).transpose())
+        .filter_map(|label| {
+            memory_text_element(
+                renderer,
+                label,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
+            .transpose()
+        })
         .collect()
 }
 
@@ -378,7 +388,14 @@ pub fn ordered_text_elements_for_window(
         .text_buffers
         .iter()
         .filter_map(|label| {
-            memory_text_element(renderer, label, output_geo, scale, alpha)
+            memory_text_element(
+                renderer,
+                label,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
                 .transpose()
                 .map(|result| result.map(|element| (label.order, element)))
         })
@@ -396,7 +413,14 @@ pub fn ordered_text_elements_for_decoration(
         .text_buffers
         .iter()
         .filter_map(|label| {
-            memory_text_element(renderer, label, output_geo, scale, alpha)
+            memory_text_element(
+                renderer,
+                label,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
                 .transpose()
                 .map(|result| result.map(|element| (label.order, element)))
         })
@@ -413,13 +437,24 @@ pub fn text_elements_for_decoration(
     decoration
         .text_buffers
         .iter()
-        .filter_map(|label| memory_text_element(renderer, label, output_geo, scale, alpha).transpose())
+        .filter_map(|label| {
+            memory_text_element(
+                renderer,
+                label,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+                alpha,
+            )
+            .transpose()
+        })
         .collect()
 }
 
 fn memory_text_element(
     renderer: &mut GlesRenderer,
     label: &CachedDecorationLabel,
+    root_rect: LogicalRect,
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
@@ -429,8 +464,8 @@ fn memory_text_element(
     }
 
     let local = Point::from((
-        label.rect.x - output_geo.loc.x,
-        label.rect.y - output_geo.loc.y,
+        label.rect.x - root_rect.x,
+        label.rect.y - root_rect.y,
     ));
     let physical: Point<i32, Physical> = local.to_f64().to_physical_precise_round(scale);
     let element = MemoryRenderBufferRenderElement::from_buffer(
@@ -447,8 +482,18 @@ fn memory_text_element(
             renderer,
             element,
             scale,
-            label.rect,
-            clip_rect,
+            LogicalRect::new(
+                label.rect.x - root_rect.x,
+                label.rect.y - root_rect.y,
+                label.rect.width,
+                label.rect.height,
+            ),
+            LogicalRect::new(
+                clip_rect.x - root_rect.x,
+                clip_rect.y - root_rect.y,
+                clip_rect.width,
+                clip_rect.height,
+            ),
             label.clip_radius,
         )?;
         Ok(Some(DecorationTextureElements::Clipped(clipped)))

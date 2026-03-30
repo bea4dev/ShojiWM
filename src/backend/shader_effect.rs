@@ -72,6 +72,7 @@ impl Default for CachedBackdropSubElement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShaderEffectSpec {
     pub rect: Rectangle<i32, Logical>,
+    pub geometry: Rectangle<i32, Physical>,
     pub shader: CompiledEffect,
     pub alpha_bits: u32,
     pub render_scale: f32,
@@ -102,6 +103,7 @@ pub struct StableShaderEffectElement {
     id: Id,
     commit_counter: CommitCounter,
     area: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Physical>,
     alpha: f32,
     additional_uniforms: Vec<Uniform<'static>>,
     kind: Kind,
@@ -114,6 +116,7 @@ pub struct StableBackdropFramebufferElement {
     id: Id,
     commit_counter: CommitCounter,
     area: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Physical>,
     alpha: f32,
     render_scale: f32,
     clip_rect: Option<SnappedLogicalRect>,
@@ -128,6 +131,7 @@ pub struct StableBackdropTextureElement {
     id: Id,
     commit_counter: CommitCounter,
     area: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Physical>,
     src: Rectangle<f64, Buffer>,
     alpha: f32,
     render_scale: f32,
@@ -235,6 +239,7 @@ impl ShaderEffectElementState {
             id: self.id.clone(),
             commit_counter: self.commit_counter,
             area: spec.rect,
+            geometry: spec.geometry,
             alpha: f32::from_bits(spec.alpha_bits).clamp(0.0, 1.0),
             additional_uniforms: uniforms_for_spec(&spec),
             kind: Kind::Unspecified,
@@ -258,6 +263,7 @@ impl ShaderEffectElementState {
             id: self.id.clone(),
             commit_counter: self.commit_counter,
             area: spec.rect,
+            geometry: spec.geometry,
             alpha: f32::from_bits(spec.alpha_bits).clamp(0.0, 1.0),
             render_scale: spec.render_scale,
             clip_rect: spec.clip_rect,
@@ -281,7 +287,8 @@ impl Element for StableShaderEffectElement {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.area.to_physical_precise_round(scale)
+        let _ = scale;
+        self.geometry
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -337,7 +344,8 @@ impl Element for StableBackdropFramebufferElement {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.area.to_physical_precise_round(scale)
+        let _ = scale;
+        self.geometry
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -560,7 +568,8 @@ impl Element for StableBackdropTextureElement {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.area.to_physical_precise_round(scale)
+        let _ = scale;
+        self.geometry
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -1309,6 +1318,40 @@ pub fn backdrop_shader_element(
     clip_radius: i32,
     debug_label: String,
 ) -> Result<StableBackdropTextureElement, ShaderEffectError> {
+    backdrop_shader_element_with_geometry(
+        renderer,
+        element_id,
+        commit_counter,
+        texture,
+        display_rect,
+        display_rect.to_physical_precise_round(Scale::from((render_scale as f64, render_scale as f64))),
+        sample_rect,
+        captured_rect,
+        _shader,
+        alpha,
+        render_scale,
+        clip_rect,
+        clip_radius,
+        debug_label,
+    )
+}
+
+pub fn backdrop_shader_element_with_geometry(
+    renderer: &mut GlesRenderer,
+    element_id: Id,
+    commit_counter: CommitCounter,
+    texture: GlesTexture,
+    display_rect: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Physical>,
+    sample_rect: Rectangle<i32, Logical>,
+    captured_rect: Rectangle<i32, Logical>,
+    _shader: &CompiledEffect,
+    alpha: f32,
+    render_scale: f32,
+    clip_rect: Option<SnappedLogicalRect>,
+    clip_radius: i32,
+    debug_label: String,
+) -> Result<StableBackdropTextureElement, ShaderEffectError> {
     let program = compile_display_texture_program(renderer)?;
     let src = Rectangle::new(
         smithay::utils::Point::from((
@@ -1331,6 +1374,7 @@ pub fn backdrop_shader_element(
         id: element_id,
         commit_counter,
         area: display_rect,
+        geometry,
         src,
         alpha: alpha.clamp(0.0, 1.0),
         render_scale,
@@ -1549,6 +1593,7 @@ fn apply_shader_input_stage(
     };
     let spec = ShaderEffectSpec {
         rect: Rectangle::new(Point::from((0, 0)), size.into()),
+        geometry: Rectangle::new(Point::from((0, 0)), size.into()),
         shader: effect,
         alpha_bits: 1.0f32.to_bits(),
         render_scale: 1.0,
