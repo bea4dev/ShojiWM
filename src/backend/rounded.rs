@@ -9,8 +9,8 @@ use smithay::{
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoundedClip {
-    pub rect: Rectangle<i32, Logical>,
-    pub radius: i32,
+    pub rect: crate::backend::visual::SnappedLogicalRect,
+    pub radius: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -26,6 +26,7 @@ pub struct RoundedRectSpec {
     pub alpha: f32,
     pub radius: i32,
     pub shape: RoundedShapeKind,
+    pub inner: Option<RoundedClip>,
     pub clip: Option<RoundedClip>,
     pub render_scale: f32,
 }
@@ -163,6 +164,18 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
                 UniformName::new(
+                    "inner_enabled",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "inner_rect",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+                UniformName::new(
+                    "inner_radius",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+                UniformName::new(
                     "render_scale",
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
@@ -205,24 +218,42 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
         .clip
         .map(|clip| {
             [
-                clip.rect.loc.x as f32,
-                clip.rect.loc.y as f32,
-                clip.rect.size.w as f32,
-                clip.rect.size.h as f32,
+                clip.rect.x,
+                clip.rect.y,
+                clip.rect.width,
+                clip.rect.height,
             ]
         })
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-    let clip_radius = spec
-        .clip
-        .map(|clip| clip.radius.max(0) as f32)
-        .unwrap_or(0.0);
+    let clip_radius = spec.clip.map(|clip| clip.radius.max(0.0)).unwrap_or(0.0);
+    let local_inner_rect = spec
+        .inner
+        .map(|inner| {
+            [
+                inner.rect.x,
+                inner.rect.y,
+                inner.rect.width,
+                inner.rect.height,
+            ]
+        })
+        .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let inner_radius = spec.inner.map(|inner| inner.radius.max(0.0)).unwrap_or(0.0);
     let radius = spec.radius.max(0) as f32;
 
     vec![
         Uniform::new("color", spec.color),
         Uniform::new("corner_radius", [radius, radius, radius, radius]),
         Uniform::new("border_width", border_width),
-        Uniform::new("render_scale", spec.render_scale.max(1.0)),
+        Uniform::new(
+            "inner_enabled",
+            if spec.inner.is_some() { 1.0f32 } else { 0.0f32 },
+        ),
+        Uniform::new("inner_rect", local_inner_rect),
+        Uniform::new(
+            "inner_radius",
+            [inner_radius, inner_radius, inner_radius, inner_radius],
+        ),
+        Uniform::new("render_scale", spec.render_scale.max(0.0001)),
         Uniform::new(
             "clip_enabled",
             if spec.clip.is_some() { 1.0f32 } else { 0.0f32 },

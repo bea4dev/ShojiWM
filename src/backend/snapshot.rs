@@ -93,7 +93,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     snapshot.has_client_content = has_client_content;
     let mut framebuffer = renderer.bind(&mut snapshot.texture)?;
     let mut damage_tracker =
-        OutputDamageTracker::new((physical.size.w, physical.size.h), 1.0, Transform::Normal);
+        OutputDamageTracker::new((physical.size.w, physical.size.h), scale.x, Transform::Normal);
     let _ = damage_tracker.render_output(
         renderer,
         &mut framebuffer,
@@ -175,6 +175,10 @@ pub fn closing_snapshot_element(
             .to_f64()
             .to_physical_precise_round(scale);
     let location = location.to_f64();
+    let src = Some(Rectangle::from_size((
+        snapshot.live.texture.size().w as f64,
+        snapshot.live.texture.size().h as f64,
+    ).into()));
 
     Some(TextureRenderElement::from_static_texture(
         snapshot.live.id.clone(),
@@ -184,8 +188,48 @@ pub fn closing_snapshot_element(
         1,
         Transform::Normal,
         Some(visual.opacity),
+        src,
+        Some((snapshot.live.rect.width, snapshot.live.rect.height).into()),
         None,
-        None,
+        smithay::backend::renderer::element::Kind::Unspecified,
+    ))
+}
+
+pub fn live_snapshot_element(
+    renderer: &GlesRenderer,
+    snapshot: &LiveWindowSnapshot,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Option<TextureRenderElement<GlesTexture>> {
+    let rect = Rectangle::new(
+        Point::from((snapshot.rect.x, snapshot.rect.y)),
+        (snapshot.rect.width, snapshot.rect.height).into(),
+    );
+    if rect.intersection(output_geo).is_none() {
+        return None;
+    }
+
+    let location: Point<i32, smithay::utils::Physical> =
+        (Point::from((snapshot.rect.x, snapshot.rect.y)) - output_geo.loc)
+            .to_f64()
+            .to_physical_precise_round(scale);
+    let location = location.to_f64();
+    let src = Some(Rectangle::from_size((
+        snapshot.texture.size().w as f64,
+        snapshot.texture.size().h as f64,
+    ).into()));
+
+    Some(TextureRenderElement::from_static_texture(
+        snapshot.id.clone(),
+        renderer.context_id(),
+        location,
+        snapshot.texture.clone(),
+        1,
+        Transform::Normal,
+        Some(alpha),
+        src,
+        Some((snapshot.rect.width, snapshot.rect.height).into()),
         None,
         smithay::backend::renderer::element::Kind::Unspecified,
     ))

@@ -43,7 +43,7 @@ float rounded_alpha(vec2 coords, vec2 size) {
     }
 
     float dist = distance(coords, center);
-    float half_px = 0.5 / max(clip_scale, 1.0);
+    float half_px = 0.5 / max(abs(clip_scale), 0.0001);
     return 1.0 - smoothstep(radius - half_px, radius + half_px, dist);
 }
 

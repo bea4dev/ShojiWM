@@ -6,6 +6,9 @@ uniform vec2 size;
 uniform vec4 color;
 uniform vec4 corner_radius;
 uniform float border_width;
+uniform float inner_enabled;
+uniform vec4 inner_rect;
+uniform vec4 inner_radius;
 uniform float render_scale;
 
 uniform float clip_enabled;
@@ -39,7 +42,7 @@ float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {
     }
 
     float dist = distance(coords, center);
-    float half_px = 0.5 / max(render_scale, 1.0);
+    float half_px = 0.5 / max(abs(render_scale), 0.0001);
     return 1.0 - smoothstep(r - half_px, r + half_px, dist);
 }
 
@@ -52,6 +55,10 @@ void main() {
         vec2 inner_coords = coords - vec2(border_width);
         vec4 inner_radius = max(corner_radius - vec4(border_width), vec4(0.0));
         float inner_alpha = rounded_rect_alpha(inner_coords, inner_size, inner_radius);
+        shape_alpha = max(shape_alpha - inner_alpha, 0.0);
+    } else if (inner_enabled > 0.5) {
+        vec2 inner_coords = coords - inner_rect.xy;
+        float inner_alpha = rounded_rect_alpha(inner_coords, inner_rect.zw, inner_radius);
         shape_alpha = max(shape_alpha - inner_alpha, 0.0);
     }
 

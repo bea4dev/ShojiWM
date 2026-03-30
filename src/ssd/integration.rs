@@ -70,6 +70,8 @@ pub struct CachedDecorationBuffer {
     pub buffer: SolidColorBuffer,
     pub radius: i32,
     pub border_width: i32,
+    pub hole_rect: Option<LogicalRect>,
+    pub hole_radius: i32,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
     pub source_kind: &'static str,
@@ -1216,7 +1218,6 @@ fn content_clip_for_layout(
     let border = layout.root.window_border_style()?;
     let border_rect = layout.root.first_window_border_rect()?;
     let border_radius = layout.root.first_window_border_radius().unwrap_or(0);
-
     let inner_rect = border_rect.inset(super::Edges {
         top: border.width.max(0),
         right: border.width.max(0),
@@ -1696,6 +1697,13 @@ fn collect_cached_buffers(
                             ),
                             radius: node_radius,
                             border_width: border.width.max(0),
+                            hole_rect: Some(node.rect.inset(super::Edges {
+                                top: border.width.max(0),
+                                right: border.width.max(0),
+                                bottom: border.width.max(0),
+                                left: border.width.max(0),
+                            })),
+                            hole_radius: (node_radius - border.width.max(0)).max(0),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
                             source_kind: node_kind_name(&node.kind),
@@ -1721,15 +1729,27 @@ fn collect_cached_buffers(
                     if background.a > 0 {
                         if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
                             if let Some(inner_rect) = window_border_inner_rect {
-                                push_fill_rects_around_hole(
+                                push_cached_fill(
                                     buffers,
-                                    order_map,
-                                    &path,
-                                    node.stable_id.clone(),
+                                    *order_map
+                                        .get(&format!("{path}:fill-top"))
+                                        .unwrap_or(&usize::MAX),
+                                    format!("{path}:fill-top"),
                                     node.rect,
-                                    inner_rect,
                                     background,
+                                    node.stable_id.clone(),
                                     node_radius,
+                                    0,
+                                    Some(inner_rect),
+                                    node
+                                        .style
+                                        .border
+                                        .map(|border| {
+                                            (node_radius - border.width.max(0)).max(0)
+                                        })
+                                        .unwrap_or(node_radius),
+                                    None,
+                                    0,
                                 );
                             } else {
                                 push_cached_fill(
@@ -1740,6 +1760,8 @@ fn collect_cached_buffers(
                                     background,
                                     node.stable_id.clone(),
                                     node_radius,
+                                    0,
+                                    None,
                                     0,
                                     None,
                                     0,
@@ -1754,6 +1776,8 @@ fn collect_cached_buffers(
                                 background,
                                 node.stable_id.clone(),
                                 node_radius,
+                                0,
+                                None,
                                 0,
                                 current_clip_rect,
                                 current_clip_radius,
@@ -1899,48 +1923,6 @@ fn collect_icon_buffers(
     }
 }
 
-fn push_fill_rects_around_hole(
-    buffers: &mut Vec<CachedDecorationBuffer>,
-    order_map: &std::collections::HashMap<String, usize>,
-    path: &str,
-    owner_node_id: Option<String>,
-    rect: LogicalRect,
-    hole: LogicalRect,
-    color: super::Color,
-    radius: i32,
-) {
-    let top_height = (hole.y - rect.y).max(0);
-    let bottom_y = hole.y + hole.height;
-    let bottom_height = (rect.y + rect.height - bottom_y).max(0);
-    let left_width = (hole.x - rect.x).max(0);
-    let right_x = hole.x + hole.width;
-    let right_width = (rect.x + rect.width - right_x).max(0);
-
-    let candidates = [
-        ("fill-top", LogicalRect::new(rect.x, rect.y, rect.width, top_height)),
-        ("fill-bottom", LogicalRect::new(rect.x, bottom_y, rect.width, bottom_height)),
-        ("fill-left", LogicalRect::new(rect.x, hole.y, left_width, hole.height)),
-        ("fill-right", LogicalRect::new(right_x, hole.y, right_width, hole.height)),
-    ];
-
-    for (suffix, candidate) in candidates {
-        push_cached_fill(
-            buffers,
-            *order_map
-                .get(&format!("{path}:{suffix}"))
-                .unwrap_or(&usize::MAX),
-            format!("{path}:{suffix}"),
-            candidate,
-            color,
-            owner_node_id.clone(),
-            radius,
-            0,
-            None,
-            0,
-        );
-    }
-}
-
 fn push_cached_fill(
     buffers: &mut Vec<CachedDecorationBuffer>,
     order: usize,
@@ -1950,6 +1932,8 @@ fn push_cached_fill(
     owner_node_id: Option<String>,
     radius: i32,
     border_width: i32,
+    hole_rect: Option<LogicalRect>,
+    hole_radius: i32,
     clip_rect: Option<LogicalRect>,
     clip_radius: i32,
 ) {
@@ -1974,6 +1958,8 @@ fn push_cached_fill(
         ),
         radius,
         border_width,
+        hole_rect,
+        hole_radius,
         clip_rect,
         clip_radius,
         source_kind: "fill",
@@ -2030,6 +2016,11 @@ fn log_decoration_refresh(
             color = %format_color(buffer.color),
             radius = buffer.radius,
             border_width = buffer.border_width,
+            hole_rect = buffer
+                .hole_rect
+                .map(format_rect)
+                .unwrap_or_else(|| "<none>".to_string()),
+            hole_radius = buffer.hole_radius,
             clip_rect = buffer
                 .clip_rect
                 .map(format_rect)
@@ -2105,11 +2096,13 @@ fn runtime_dirty_damage_rects(
                 (
                     item.rect,
                     format!(
-                        "{:?}:{:?}:{}:{}:{:?}:{}",
+                        "{:?}:{:?}:{}:{}:{:?}:{}:{:?}:{}",
                         item.color,
                         item.source_kind,
                         item.radius,
                         item.border_width,
+                        item.hole_rect,
+                        item.hole_radius,
                         item.clip_rect,
                         item.clip_radius
                     ),
@@ -2122,11 +2115,13 @@ fn runtime_dirty_damage_rects(
                 (
                     item.rect,
                     format!(
-                        "{:?}:{:?}:{}:{}:{:?}:{}",
+                        "{:?}:{:?}:{}:{}:{:?}:{}:{:?}:{}",
                         item.color,
                         item.source_kind,
                         item.radius,
                         item.border_width,
+                        item.hole_rect,
+                        item.hole_radius,
                         item.clip_rect,
                         item.clip_radius
                     ),

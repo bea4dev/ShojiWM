@@ -9,6 +9,38 @@ use smithay::{
 
 use crate::ssd::{LogicalRect, WindowTransform};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnappedLogicalRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+pub fn snapped_logical_rect_relative(
+    rect: LogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> SnappedLogicalRect {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let left = (((rect.x - origin.x) as f64) * scale_x).round() / scale_x;
+    let top = (((rect.y - origin.y) as f64) * scale_y).round() / scale_y;
+    let right = ((((rect.x + rect.width) - origin.x) as f64) * scale_x).round() / scale_x;
+    let bottom = ((((rect.y + rect.height) - origin.y) as f64) * scale_y).round() / scale_y;
+    SnappedLogicalRect {
+        x: left as f32,
+        y: top as f32,
+        width: (right - left).max(0.0) as f32,
+        height: (bottom - top).max(0.0) as f32,
+    }
+}
+
+pub fn snapped_logical_radius(radius: i32, scale: Scale<f64>) -> f32 {
+    let scale_x = scale.x.abs().max(0.0001);
+    (((radius.max(0)) as f64) * scale_x).round().max(0.0) as f32 / scale_x as f32
+}
+
 #[derive(Debug)]
 pub struct AlphaRenderElement<E> {
     element: E,

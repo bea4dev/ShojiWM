@@ -231,6 +231,10 @@ pub fn init_winit(
                                     translation: (0, 0).into(),
                                     opacity: 1.0,
                                 });
+                            let snap_scale = smithay::utils::Scale::from((
+                                scale.x * visual_state.scale.x.max(0.0),
+                                scale.y * visual_state.scale.y.max(0.0),
+                            ));
                             let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
                             let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> =
                                 Vec::new();
@@ -279,7 +283,7 @@ pub fn init_winit(
                                         renderer,
                                         decoration_state,
                                         output_geo,
-                                        scale,
+                                        snap_scale,
                                         visual_state.opacity,
                                     )
                                     .inspect_err(|error| {
@@ -339,13 +343,81 @@ pub fn init_winit(
                                 .get(window)
                                 .and_then(|decoration| decoration.content_clip);
 
-                            let client_elements = if let Some(content_clip) = content_clip {
+                            let client_elements = if !is_identity_visual(visual_state) {
+                                state
+                                    .live_window_snapshots
+                                    .get(&window_id)
+                                    .and_then(|snapshot| {
+                                        snapshot::live_snapshot_element(
+                                            renderer,
+                                            snapshot,
+                                            output_geo,
+                                            scale,
+                                            visual_state.opacity,
+                                        )
+                                    })
+                                    .map(|element| transform_snapshot_elements(vec![element], visual_state))
+                                    .unwrap_or_default()
+                            } else if let Some(content_clip) = content_clip {
+                                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                    if let Some(decoration) = state.window_decorations.get(window) {
+                                        let snap_scale = smithay::utils::Scale::from((
+                                            scale.x * visual_state.scale.x.max(0.0),
+                                            scale.y * visual_state.scale.y.max(0.0),
+                                        ));
+                                        let border_width = (decoration.layout.root.rect.x + decoration.layout.root.rect.width)
+                                            - (content_clip.rect.loc.x + content_clip.rect.size.w);
+                                        let border_rect = Some(crate::ssd::LogicalRect::new(
+                                            content_clip.rect.loc.x - border_width,
+                                            content_clip.rect.loc.y - border_width,
+                                            content_clip.rect.size.w + border_width * 2,
+                                            content_clip.rect.size.h + border_width * 2,
+                                        ));
+                                        let snapped_inner = Some(
+                                            crate::backend::visual::snapped_logical_rect_relative(
+                                                crate::ssd::LogicalRect::new(
+                                                    content_clip.rect.loc.x,
+                                                    content_clip.rect.loc.y,
+                                                    content_clip.rect.size.w,
+                                                    content_clip.rect.size.h,
+                                                ),
+                                                output_geo.loc,
+                                                snap_scale,
+                                            )
+                                        );
+                                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative(
+                                            crate::ssd::LogicalRect::new(
+                                                content_clip.rect.loc.x,
+                                                content_clip.rect.loc.y,
+                                                content_clip.rect.size.w,
+                                                content_clip.rect.size.h,
+                                            ),
+                                            output_geo.loc,
+                                            snap_scale,
+                                        );
+                                        tracing::info!(
+                                            output = %output.name(),
+                                            window_id = %window_id,
+                                            window_location = ?window_location,
+                                            output_scale = scale.x,
+                                            window_scale_x = visual_state.scale.x,
+                                            window_scale_y = visual_state.scale.y,
+                                            physical_location = ?physical_location,
+                                            border_rect = ?border_rect,
+                                            snapped_inner = ?snapped_inner,
+                                            content_clip = ?content_clip,
+                                            snapped_clip = ?snapped_clip,
+                                            "gap debug winit border/client geometry"
+                                        );
+                                    }
+                                }
                                 let clipped = window_render::clipped_surface_elements(
                                     window,
                                     renderer,
                                     physical_location,
                                     output_geo.loc,
                                     scale,
+                                    snap_scale,
                                     visual_state.opacity,
                                     Some(content_clip),
                                 )
@@ -353,6 +425,27 @@ pub fn init_winit(
                                     warn!(?error, "failed to build clipped surface elements");
                                 })
                                 .unwrap_or_default();
+                                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                    let first_geometry = clipped
+                                        .first()
+                                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                                    let window_geometry = window.geometry();
+                                    let decoration_client_rect = state
+                                        .window_decorations
+                                        .get(window)
+                                        .map(|decoration| decoration.client_rect);
+                                    tracing::info!(
+                                        output = %output.name(),
+                                        window_id = %window_id,
+                                        window_geometry = ?window_geometry,
+                                        decoration_client_rect = ?decoration_client_rect,
+                                        window_bbox = ?window.bbox(),
+                                        physical_location = ?physical_location,
+                                        clipped_count = clipped.len(),
+                                        first_geometry = ?first_geometry,
+                                        "gap debug winit clipped surface elements"
+                                    );
+                                }
                                 transform_clipped_elements(clipped, visual_state)
                             } else {
                                 let surfaces = window_render::surface_elements(
@@ -362,6 +455,27 @@ pub fn init_winit(
                                     scale,
                                     visual_state.opacity,
                                 );
+                                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                    let first_geometry = surfaces
+                                        .first()
+                                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                                    let window_geometry = window.geometry();
+                                    let decoration_client_rect = state
+                                        .window_decorations
+                                        .get(window)
+                                        .map(|decoration| decoration.client_rect);
+                                    tracing::info!(
+                                        output = %output.name(),
+                                        window_id = %window_id,
+                                        window_geometry = ?window_geometry,
+                                        decoration_client_rect = ?decoration_client_rect,
+                                        window_bbox = ?window.bbox(),
+                                        physical_location = ?physical_location,
+                                        surface_count = surfaces.len(),
+                                        first_geometry = ?first_geometry,
+                                        "gap debug winit raw surface elements"
+                                    );
+                                }
                                 transform_window_elements(
                                     surfaces,
                                     visual_state,
@@ -719,9 +833,26 @@ fn transform_decoration_elements(
 
 fn transform_backdrop_elements(
     elements: Vec<crate::backend::shader_effect::StableBackdropTextureElement>,
-    _visual: WindowVisualState,
+    visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
-    elements.into_iter().map(WinitRenderElements::Backdrop).collect()
+    if is_identity_visual(visual) {
+        return elements.into_iter().map(WinitRenderElements::Backdrop).collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    element,
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
 }
 
 fn backdrop_shader_elements_for_window(

@@ -11,6 +11,7 @@ use smithay::{
 use tracing::trace;
 
 use crate::{
+    backend::visual::{snapped_logical_radius, snapped_logical_rect_relative},
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
     backend::shader_effect::{
         ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement,
@@ -232,14 +233,20 @@ fn rounded_rect_element(
     );
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
-        rect: Rectangle::new(
-            Point::from((
-                clip_rect.x - cached.rect.x,
-                clip_rect.y - cached.rect.y,
-            )),
-            (clip_rect.width, clip_rect.height).into(),
+        rect: snapped_logical_rect_relative(
+            clip_rect,
+            Point::from((cached.rect.x, cached.rect.y)),
+            scale,
         ),
-        radius: cached.clip_radius,
+        radius: snapped_logical_radius(cached.clip_radius, scale),
+    });
+    let inner = cached.hole_rect.map(|hole_rect| RoundedClip {
+        rect: snapped_logical_rect_relative(
+            hole_rect,
+            Point::from((cached.rect.x, cached.rect.y)),
+            scale,
+        ),
+        radius: snapped_logical_radius(cached.hole_radius, scale),
     });
 
     let state = decoration
@@ -265,6 +272,7 @@ fn rounded_rect_element(
             } else {
                 RoundedShapeKind::Fill
             },
+            inner,
             clip,
             render_scale: scale.x as f32,
         },

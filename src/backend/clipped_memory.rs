@@ -114,7 +114,7 @@ impl ClippedMemoryElement {
 
         vec![
             Uniform::new("element_size", [element_width, element_height]),
-            Uniform::new("render_scale", self.scale.max(1.0)),
+            Uniform::new("render_scale", self.scale.max(0.0001)),
             Uniform::new("clip_enabled", 1.0f32),
             Uniform::new(
                 "clip_rect",

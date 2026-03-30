@@ -274,15 +274,25 @@ pub fn clipped_surface_elements(
     renderer: &mut GlesRenderer,
     location: Point<i32, Physical>,
     output_origin: Point<i32, Logical>,
-    scale: Scale<f64>,
+    output_scale: Scale<f64>,
+    clip_scale: Scale<f64>,
     alpha: f32,
     clip: Option<ContentClip>,
 ) -> Result<Vec<ClippedSurfaceElement>, smithay::backend::renderer::gles::GlesError> {
-    let elements = surface_elements(window, renderer, location, scale, alpha);
+    let elements = surface_elements(window, renderer, location, output_scale, alpha);
     match clip {
         Some(clip) => elements
             .into_iter()
-            .map(|element| ClippedSurfaceElement::new(renderer, element, scale, output_origin, clip))
+            .map(|element| {
+                ClippedSurfaceElement::new(
+                    renderer,
+                    element,
+                    output_scale,
+                    clip_scale,
+                    output_origin,
+                    clip,
+                )
+            })
             .collect(),
         None => Ok(Vec::new()),
     }

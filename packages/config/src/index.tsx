@@ -42,6 +42,11 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
         position: "auto",
         scale: 1.5,
     };
+    display["DP-2"] = {
+        resolution: "best",
+        position: "auto",
+        scale: 1.6,
+    };
 });
 
 const openAnimation = animationVariable("window.open")
