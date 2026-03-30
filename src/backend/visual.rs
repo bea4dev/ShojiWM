@@ -281,6 +281,20 @@ pub fn relative_physical_rect_from_root(
     Rectangle::new(Point::from((left_px, top_px)), (width_px, height_px).into())
 }
 
+pub fn snapped_logical_rect_from_relative_physical(
+    rect: Rectangle<i32, Physical>,
+    scale: Scale<f64>,
+) -> SnappedLogicalRect {
+    let scale_x = scale.x.abs().max(0.0001) as f32;
+    let scale_y = scale.y.abs().max(0.0001) as f32;
+    SnappedLogicalRect {
+        x: rect.loc.x as f32 / scale_x,
+        y: rect.loc.y as f32 / scale_y,
+        width: rect.size.w as f32 / scale_x,
+        height: rect.size.h as f32 / scale_y,
+    }
+}
+
 pub fn transformed_root_rect(rect: LogicalRect, transform: WindowTransform) -> LogicalRect {
     transformed_rect(rect, rect, transform)
 }

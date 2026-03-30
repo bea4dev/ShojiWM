@@ -12,7 +12,8 @@ use tracing::trace;
 
 use crate::{
     backend::visual::{
-        RectSnapMode, relative_physical_rect_from_root, snapped_logical_radius, snapped_logical_rect_for_element,
+        RectSnapMode, relative_physical_rect_from_root, snapped_logical_radius,
+        snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
         snapped_logical_rect_in_element_space,
     },
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
@@ -234,7 +235,6 @@ fn rounded_rect_element(
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
-    let window_snap_origin = output_geo.loc;
     let outer_radius = snapped_logical_radius(cached.radius, scale);
     let geometry = relative_physical_rect_from_root(
         cached.rect,
@@ -290,23 +290,29 @@ fn rounded_rect_element(
     });
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
-        rect: snapped_logical_rect_in_element_space(
-            clip_rect,
-            cached.rect,
-            window_snap_origin,
+        rect: snapped_logical_rect_from_relative_physical(
+            relative_physical_rect_from_root(
+                clip_rect,
+                cached.rect,
+                output_geo,
+                scale,
+                Some(clip_rect),
+            ),
             scale,
-            RectSnapMode::OriginAndSize,
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
     });
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect.map(|hole_rect| RoundedClip {
-            rect: snapped_logical_rect_in_element_space(
-                hole_rect,
-                cached.rect,
-                window_snap_origin,
+            rect: snapped_logical_rect_from_relative_physical(
+                relative_physical_rect_from_root(
+                    hole_rect,
+                    cached.rect,
+                    output_geo,
+                    scale,
+                    Some(hole_rect),
+                ),
                 scale,
-                RectSnapMode::OriginAndSize,
             ),
             radius: snapped_logical_radius(cached.hole_radius, scale),
         })
