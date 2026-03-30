@@ -840,10 +840,7 @@ fn transform_decoration_elements(
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements
-            .into_iter()
-            .map(WinitRenderElements::Decoration)
-            .collect();
+        return elements.into_iter().map(WinitRenderElements::Decoration).collect();
     }
 
     elements

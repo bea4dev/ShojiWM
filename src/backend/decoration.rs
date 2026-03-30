@@ -234,38 +234,41 @@ fn rounded_rect_element(
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
+    let window_snap_origin = output_geo.loc;
     let outer_radius = snapped_logical_radius(cached.radius, scale);
-    let quantize_x = |logical: i32| {
-        ((((logical.max(0)) as f64) * scale.x.abs().max(0.0001)).round()
-            / scale.x.abs().max(0.0001)) as f32
-    };
-    let quantize_y = |logical: i32| {
-        ((((logical.max(0)) as f64) * scale.y.abs().max(0.0001)).round()
-            / scale.y.abs().max(0.0001)) as f32
-    };
     let quantized_border_inner = (cached.border_width > 0 && !cached.shared_inner_hole)
         .then(|| {
         if let Some(hole_rect) = cached.hole_rect {
-            let left = quantize_x(hole_rect.x - cached.rect.x);
-            let top = quantize_y(hole_rect.y - cached.rect.y);
-            let right = quantize_x(
-                (cached.rect.x + cached.rect.width) - (hole_rect.x + hole_rect.width),
-            );
-            let bottom = quantize_y(
-                (cached.rect.y + cached.rect.height) - (hole_rect.y + hole_rect.height),
-            );
+            let left = ((((hole_rect.x - cached.rect.x).max(0)) as f64) * scale.x.abs().max(0.0001))
+                .round()
+                / scale.x.abs().max(0.0001);
+            let top = ((((hole_rect.y - cached.rect.y).max(0)) as f64) * scale.y.abs().max(0.0001))
+                .round()
+                / scale.y.abs().max(0.0001);
+            let right = ((((cached.rect.x + cached.rect.width) - (hole_rect.x + hole_rect.width)).max(0) as f64)
+                * scale.x.abs().max(0.0001))
+                .round()
+                / scale.x.abs().max(0.0001);
+            let bottom = ((((cached.rect.y + cached.rect.height) - (hole_rect.y + hole_rect.height)).max(0) as f64)
+                * scale.y.abs().max(0.0001))
+                .round()
+                / scale.y.abs().max(0.0001);
             RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
-                    x: left,
-                    y: top,
-                    width: (cached.rect.width as f32 - left - right).max(0.0),
-                    height: (cached.rect.height as f32 - top - bottom).max(0.0),
+                    x: left as f32,
+                    y: top as f32,
+                    width: (cached.rect.width as f32 - left as f32 - right as f32).max(0.0),
+                    height: (cached.rect.height as f32 - top as f32 - bottom as f32).max(0.0),
                 },
                 radius: snapped_logical_radius(cached.hole_radius, scale),
             }
         } else {
-            let logical_border_width_x = quantize_x(cached.border_width.max(0));
-            let logical_border_width_y = quantize_y(cached.border_width.max(0));
+            let logical_border_width_x =
+                ((((cached.border_width.max(0)) as f64) * scale.x.abs().max(0.0001)).round()
+                    / scale.x.abs().max(0.0001)) as f32;
+            let logical_border_width_y =
+                ((((cached.border_width.max(0)) as f64) * scale.y.abs().max(0.0001)).round()
+                    / scale.y.abs().max(0.0001)) as f32;
             let logical_border_radius = logical_border_width_x.max(logical_border_width_y);
             RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
@@ -283,7 +286,7 @@ fn rounded_rect_element(
         rect: snapped_logical_rect_in_element_space(
             clip_rect,
             cached.rect,
-            output_geo.loc,
+            window_snap_origin,
             scale,
             RectSnapMode::OriginAndSize,
         ),
@@ -294,7 +297,7 @@ fn rounded_rect_element(
             rect: snapped_logical_rect_in_element_space(
                 hole_rect,
                 cached.rect,
-                output_geo.loc,
+                window_snap_origin,
                 scale,
                 RectSnapMode::OriginAndSize,
             ),
@@ -331,6 +334,7 @@ fn rounded_rect_element(
         },
     )?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
         tracing::info!(
             stable_key = %cached.stable_key,
             source_kind = %cached.source_kind,
@@ -341,7 +345,7 @@ fn rounded_rect_element(
             clip_rect = ?cached.clip_rect,
             snapped_inner = ?inner,
             snapped_clip = ?clip,
-            geometry = ?smithay::backend::renderer::element::Element::geometry(&element, scale),
+            geometry = ?geometry,
             "gap debug rounded decoration element"
         );
     }
@@ -367,6 +371,7 @@ fn shader_effect_element(
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
+    let window_snap_origin = output_geo.loc;
 
     let state = decoration
         .shader_cache
@@ -383,7 +388,7 @@ fn shader_effect_element(
                 snapped_logical_rect_in_element_space(
                     clip_rect,
                     cached.rect,
-                    output_geo.loc,
+                    window_snap_origin,
                     scale,
                     RectSnapMode::OriginAndSize,
                 )
@@ -392,6 +397,7 @@ fn shader_effect_element(
         },
     )?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
         tracing::info!(
             stable_key = %cached.stable_key,
             rect = ?cached.rect,
@@ -401,12 +407,12 @@ fn shader_effect_element(
                 snapped_logical_rect_for_element(
                     clip_rect,
                     Point::from((cached.rect.x, cached.rect.y)),
-                    output_geo.loc,
+                    window_snap_origin,
                     scale,
                     RectSnapMode::SharedEdges,
                 )
             }),
-            geometry = ?smithay::backend::renderer::element::Element::geometry(&element, scale),
+            geometry = ?geometry,
             "gap debug shader decoration element"
         );
     }

@@ -35,7 +35,7 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {
         resolution: "best",
         position: "auto",
-        scale: 1,
+        scale: 1.25,
     };
     display["DP-4"] = {
         resolution: "best",
@@ -111,7 +111,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
 
     const titlebarStyle: SSDStyle = {
         height: 30,
-        paddingX: 20,
+        paddingX: 0,
         gap: 8,
         alignItems: "center",
         background: titlebarBackground,
