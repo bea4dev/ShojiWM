@@ -664,7 +664,7 @@ fn render_surface(
                 scale.x * visual_state.scale.x.max(0.0),
                 scale.y * visual_state.scale.y.max(0.0),
             ));
-            let use_full_window_snapshot = !is_identity_visual(visual_state);
+            let use_full_window_snapshot = false;
             let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             let mut snapshot_ui_items: Vec<(usize, TtyRenderElements)> = Vec::new();
@@ -686,7 +686,7 @@ fn render_surface(
                     window,
                     if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
                     decoration_ready,
-                    !use_full_window_snapshot,
+                    false,
                 );
                 if let Some(effect_config) = state.configured_background_effect.as_ref() {
                     backdrop_items.extend(
@@ -706,7 +706,7 @@ fn render_surface(
                             window,
                             if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
                             effect_config,
-                            !use_full_window_snapshot,
+                            false,
                         )
                         .into_iter()
                         .map(|(order, element)| (order, element, true)),
@@ -1562,6 +1562,7 @@ fn log_gap_readback_probe(
     );
 }
 
+#[allow(dead_code)]
 fn capture_snapshot_from_output_elements(
     renderer: &mut GlesRenderer,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
@@ -1656,7 +1657,7 @@ fn backdrop_shader_elements_for_window(
             let render_as_backdrop = uses_backdrop || uses_xray;
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             cached.stable_key.hash(&mut hasher);
-            let effect_rect = if apply_visual_transform {
+            let display_rect = if apply_visual_transform {
                 crate::backend::visual::transformed_rect(
                     cached.rect,
                     decoration.layout.root.rect,
@@ -1665,11 +1666,16 @@ fn backdrop_shader_elements_for_window(
             } else {
                 cached.rect
             };
+            let source_effect_rect = crate::backend::visual::transformed_rect(
+                cached.rect,
+                decoration.layout.root.rect,
+                decoration.visual_transform,
+            );
             (
-                effect_rect.x,
-                effect_rect.y,
-                effect_rect.width,
-                effect_rect.height,
+                source_effect_rect.x,
+                source_effect_rect.y,
+                source_effect_rect.width,
+                source_effect_rect.height,
                 output_geo.loc.x,
                 output_geo.loc.y,
                 output_geo.size.w,
@@ -1692,12 +1698,12 @@ fn backdrop_shader_elements_for_window(
             format!("{:?}", cached.shader).hash(&mut hasher);
             let capture_geo = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
-                    effect_rect.x - blur_padding,
-                    effect_rect.y - blur_padding,
+                    source_effect_rect.x - blur_padding,
+                    source_effect_rect.y - blur_padding,
                 )),
                 (
-                    effect_rect.width + blur_padding * 2,
-                    effect_rect.height + blur_padding * 2,
+                    source_effect_rect.width + blur_padding * 2,
+                    source_effect_rect.height + blur_padding * 2,
                 )
                     .into(),
             );
@@ -1715,18 +1721,23 @@ fn backdrop_shader_elements_for_window(
                     space,
                     window_decorations,
                     &lower_windows,
-                    effect_rect,
+                    source_effect_rect,
                 );
             }
             if uses_backdrop || uses_xray {
-                hash_layer_scene_contributors(&mut hasher, output, &lower_layers, effect_rect);
+                hash_layer_scene_contributors(
+                    &mut hasher,
+                    output,
+                    &lower_layers,
+                    source_effect_rect,
+                );
             }
             let signature = hasher.finish();
             let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
                 &cached.shader,
                 smithay::utils::Rectangle::new(
-                    smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
-                    (effect_rect.width, effect_rect.height).into(),
+                    smithay::utils::Point::from((source_effect_rect.x, source_effect_rect.y)),
+                    (source_effect_rect.width, source_effect_rect.height).into(),
                 ),
                 &{
                     let mut entries = Vec::new();
@@ -1759,10 +1770,10 @@ fn backdrop_shader_elements_for_window(
                 {
                     let local_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
-                            effect_rect.x - output_geo.loc.x,
-                            effect_rect.y - output_geo.loc.y,
+                            display_rect.x - output_geo.loc.x,
+                            display_rect.y - output_geo.loc.y,
                         )),
-                        (effect_rect.width, effect_rect.height).into(),
+                        (display_rect.width, display_rect.height).into(),
                     );
                     let clip_rect = cached.clip_rect.map(|clip_rect| {
                         let clip = if apply_visual_transform {
@@ -1782,8 +1793,14 @@ fn backdrop_shader_elements_for_window(
                             (clip.width, clip.height).into(),
                         )
                     });
-                    let local_sample_rect = local_rect;
-                    let local_capture_rect = local_rect;
+                    let local_sample_rect = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::from((
+                            source_effect_rect.x - output_geo.loc.x,
+                            source_effect_rect.y - output_geo.loc.y,
+                        )),
+                        (source_effect_rect.width, source_effect_rect.height).into(),
+                    );
+                    let local_capture_rect = local_sample_rect;
                     return crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
                         existing.id.clone(),
@@ -1869,12 +1886,12 @@ fn backdrop_shader_elements_for_window(
                 (actual_capture_geo.size.w, actual_capture_geo.size.h),
                 Some(Rectangle::new(
                     Point::from((
-                        effect_rect.x - actual_capture_geo.loc.x,
-                        effect_rect.y - actual_capture_geo.loc.y,
+                        source_effect_rect.x - actual_capture_geo.loc.x,
+                        source_effect_rect.y - actual_capture_geo.loc.y,
                     )),
-                    (effect_rect.width, effect_rect.height).into(),
+                    (source_effect_rect.width, source_effect_rect.height).into(),
                 )),
-                Some((effect_rect.width, effect_rect.height)),
+                Some((source_effect_rect.width, source_effect_rect.height)),
                 &cached.shader,
             )
             .ok()?;
@@ -1901,10 +1918,10 @@ fn backdrop_shader_elements_for_window(
             }
             let local_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
-                    effect_rect.x - output_geo.loc.x,
-                    effect_rect.y - output_geo.loc.y,
+                    display_rect.x - output_geo.loc.x,
+                    display_rect.y - output_geo.loc.y,
                 )),
-                (effect_rect.width, effect_rect.height).into(),
+                (display_rect.width, display_rect.height).into(),
             );
             let clip_rect = cached.clip_rect.map(|clip_rect| {
                 let clip = if apply_visual_transform {
@@ -1924,8 +1941,14 @@ fn backdrop_shader_elements_for_window(
                     (clip.width, clip.height).into(),
                 )
             });
-            let local_sample_rect = local_rect;
-            let local_capture_rect = local_rect;
+            let local_sample_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    source_effect_rect.x - output_geo.loc.x,
+                    source_effect_rect.y - output_geo.loc.y,
+                )),
+                (source_effect_rect.width, source_effect_rect.height).into(),
+            );
+            let local_capture_rect = local_sample_rect;
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
                 window_decorations
