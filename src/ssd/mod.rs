@@ -181,22 +181,6 @@ impl ComputedDecorationNode {
         self.children.iter().find_map(Self::window_border_style)
     }
 
-    fn first_window_border_radius(&self) -> Option<i32> {
-        if matches!(self.kind, DecorationNodeKind::WindowBorder) {
-            return Some(self.style.border_radius.unwrap_or(0));
-        }
-
-        self.children.iter().find_map(Self::first_window_border_radius)
-    }
-
-    fn first_window_border_rect(&self) -> Option<LogicalRect> {
-        if matches!(self.kind, DecorationNodeKind::WindowBorder) {
-            return Some(self.rect);
-        }
-
-        self.children.iter().find_map(Self::first_window_border_rect)
-    }
-
     pub(crate) fn bounds_rect(&self) -> LogicalRect {
         let mut min_x = self.rect.x;
         let mut min_y = self.rect.y;

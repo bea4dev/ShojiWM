@@ -372,7 +372,7 @@ pub fn init_winit(
                                                 snap_scale,
                                             )
                                         );
-                                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative(
+                                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
                                             crate::ssd::LogicalRect::new(
                                                 content_clip.rect.loc.x,
                                                 content_clip.rect.loc.y,
@@ -381,7 +381,16 @@ pub fn init_winit(
                                             ),
                                             output_geo.loc,
                                             snap_scale,
+                                            content_clip.snap_mode,
                                         );
+                                        let expected_left =
+                                            (snapped_clip.x as f64 * scale.x).round() as i32;
+                                        let expected_top =
+                                            (snapped_clip.y as f64 * scale.y).round() as i32;
+                                        let expected_right =
+                                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
+                                        let expected_bottom =
+                                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
                                         tracing::info!(
                                             output = %output.name(),
                                             window_id = %window_id,
@@ -394,6 +403,10 @@ pub fn init_winit(
                                             snapped_inner = ?snapped_inner,
                                             content_clip = ?content_clip,
                                             snapped_clip = ?snapped_clip,
+                                            expected_left,
+                                            expected_top,
+                                            expected_right,
+                                            expected_bottom,
                                             "gap debug winit border/client geometry"
                                         );
                                     }
@@ -421,6 +434,36 @@ pub fn init_winit(
                                         .window_decorations
                                         .get(window)
                                         .map(|decoration| decoration.client_rect);
+                                    let edge_delta = if let (Some(_decoration), Some(first_geometry)) =
+                                        (state.window_decorations.get(window), first_geometry)
+                                    {
+                                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative(
+                                            crate::ssd::LogicalRect::new(
+                                                content_clip.rect.loc.x,
+                                                content_clip.rect.loc.y,
+                                                content_clip.rect.size.w,
+                                                content_clip.rect.size.h,
+                                            ),
+                                            output_geo.loc,
+                                            snap_scale,
+                                        );
+                                        let expected_left =
+                                            (snapped_clip.x as f64 * scale.x).round() as i32;
+                                        let expected_top =
+                                            (snapped_clip.y as f64 * scale.y).round() as i32;
+                                        let expected_right =
+                                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
+                                        let expected_bottom =
+                                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                                        Some((
+                                            first_geometry.loc.x - expected_left,
+                                            first_geometry.loc.y - expected_top,
+                                            (first_geometry.loc.x + first_geometry.size.w) - expected_right,
+                                            (first_geometry.loc.y + first_geometry.size.h) - expected_bottom,
+                                        ))
+                                    } else {
+                                        None
+                                    };
                                     tracing::info!(
                                         output = %output.name(),
                                         window_id = %window_id,
@@ -430,6 +473,7 @@ pub fn init_winit(
                                         physical_location = ?physical_location,
                                         clipped_count = clipped.len(),
                                         first_geometry = ?first_geometry,
+                                        edge_delta = ?edge_delta,
                                         "gap debug winit clipped surface elements"
                                     );
                                 }
@@ -1017,12 +1061,12 @@ fn backdrop_shader_elements_for_window(
                         } else {
                             clip_rect
                         };
-                        Rectangle::new(
-                            smithay::utils::Point::from((
-                                transformed_clip.x - output_geo.loc.x,
-                                transformed_clip.y - output_geo.loc.y,
-                            )),
-                            (transformed_clip.width, transformed_clip.height).into(),
+                        crate::backend::visual::snapped_logical_rect_in_element_space(
+                            transformed_clip,
+                            display_rect,
+                            output_geo.loc,
+                            scale,
+                            crate::backend::visual::RectSnapMode::OriginAndSize,
                         )
                     });
                     let local_sample_rect = Rectangle::new(
@@ -1166,12 +1210,12 @@ fn backdrop_shader_elements_for_window(
                 } else {
                     clip_rect
                 };
-                Rectangle::new(
-                    smithay::utils::Point::from((
-                        transformed_clip.x - output_geo.loc.x,
-                        transformed_clip.y - output_geo.loc.y,
-                    )),
-                    (transformed_clip.width, transformed_clip.height).into(),
+                crate::backend::visual::snapped_logical_rect_in_element_space(
+                    transformed_clip,
+                    display_rect,
+                    output_geo.loc,
+                    scale,
+                    crate::backend::visual::RectSnapMode::OriginAndSize,
                 )
             });
             let local_sample_rect = Rectangle::new(

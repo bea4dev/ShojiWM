@@ -31,6 +31,7 @@ use smithay::{
 };
 use tracing::warn;
 
+use crate::backend::visual::SnappedLogicalRect;
 use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectInvalidationPolicy, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
 
 #[derive(Debug, Clone)]
@@ -74,7 +75,7 @@ pub struct ShaderEffectSpec {
     pub shader: CompiledEffect,
     pub alpha_bits: u32,
     pub render_scale: f32,
-    pub clip_rect: Option<Rectangle<i32, Logical>>,
+    pub clip_rect: Option<SnappedLogicalRect>,
     pub clip_radius: i32,
 }
 
@@ -115,7 +116,7 @@ pub struct StableBackdropFramebufferElement {
     area: Rectangle<i32, Logical>,
     alpha: f32,
     render_scale: f32,
-    clip_rect: Option<Rectangle<i32, Logical>>,
+    clip_rect: Option<SnappedLogicalRect>,
     clip_radius: i32,
     kind: Kind,
 }
@@ -130,7 +131,7 @@ pub struct StableBackdropTextureElement {
     src: Rectangle<f64, Buffer>,
     alpha: f32,
     render_scale: f32,
-    clip_rect: Option<Rectangle<i32, Logical>>,
+    clip_rect: Option<SnappedLogicalRect>,
     clip_radius: i32,
     uv_offset: [f32; 2],
     uv_scale: [f32; 2],
@@ -382,14 +383,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
 
         let clip_rect = self
             .clip_rect
-            .map(|clip| {
-                [
-                    (clip.loc.x - self.area.loc.x) as f32,
-                    (clip.loc.y - self.area.loc.y) as f32,
-                    clip.size.w as f32,
-                    clip.size.h as f32,
-                ]
-            })
+            .map(|clip| [clip.x, clip.y, clip.width, clip.height])
             .unwrap_or([0.0, 0.0, 0.0, 0.0]);
         let radius = self.clip_radius.max(0) as f32;
         let full_size = texture.size();
@@ -594,14 +588,7 @@ impl RenderElement<GlesRenderer> for StableBackdropTextureElement {
     ) -> Result<(), GlesError> {
         let clip_rect = self
             .clip_rect
-            .map(|clip| {
-                [
-                    (clip.loc.x - self.area.loc.x) as f32,
-                    (clip.loc.y - self.area.loc.y) as f32,
-                    clip.size.w as f32,
-                    clip.size.h as f32,
-                ]
-            })
+            .map(|clip| [clip.x, clip.y, clip.width, clip.height])
             .unwrap_or([0.0, 0.0, 0.0, 0.0]);
         let radius = self.clip_radius.max(0) as f32;
 
@@ -1272,14 +1259,7 @@ void main() {{
 fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
     let clip_rect = spec
         .clip_rect
-        .map(|rect| {
-            [
-                (rect.loc.x - spec.rect.loc.x) as f32,
-                (rect.loc.y - spec.rect.loc.y) as f32,
-                rect.size.w as f32,
-                rect.size.h as f32,
-            ]
-        })
+        .map(|rect| [rect.x, rect.y, rect.width, rect.height])
         .unwrap_or([0.0f32, 0.0f32, 0.0f32, 0.0f32]);
     let clip_radius = spec.clip_radius.max(0) as f32;
     let mut uniforms = vec![
@@ -1325,7 +1305,7 @@ pub fn backdrop_shader_element(
     _shader: &CompiledEffect,
     alpha: f32,
     render_scale: f32,
-    clip_rect: Option<Rectangle<i32, Logical>>,
+    clip_rect: Option<SnappedLogicalRect>,
     clip_radius: i32,
     debug_label: String,
 ) -> Result<StableBackdropTextureElement, ShaderEffectError> {

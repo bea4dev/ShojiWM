@@ -16,13 +16,14 @@ uniform sampler2D tex;
 uniform float clip_scale;
 uniform vec2 clip_size;
 uniform vec4 corner_radius;
+uniform float rect_bounds_enabled;
 uniform mat3 input_to_clip;
 
 float rounded_alpha(vec2 coords, vec2 size) {
     vec2 center;
     float radius;
 
-    if (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y) {
+    if (rect_bounds_enabled > 0.5 && (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y)) {
         return 0.0;
     }
 

@@ -929,6 +929,14 @@ fn render_surface(
             } else if let Some(content_clip) = content_clip {
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                     if let Some(decoration) = window_decorations.get(window) {
+                        let border_buffer = decoration
+                            .buffers
+                            .iter()
+                            .find(|buffer| buffer.source_kind == "window-border" && buffer.border_width > 0);
+                        let border_fill = decoration
+                            .buffers
+                            .iter()
+                            .find(|buffer| buffer.source_kind == "fill" && buffer.hole_rect.is_some());
                         let snap_scale = Scale::from((
                             scale.x * visual_state.scale.x.max(0.0),
                             scale.y * visual_state.scale.y.max(0.0),
@@ -942,7 +950,7 @@ fn render_surface(
                             content_clip.rect.size.h + border_width * 2,
                         ));
                         let snapped_inner = Some(
-                            crate::backend::visual::snapped_logical_rect_relative(
+                            crate::backend::visual::snapped_logical_rect_relative_with_mode(
                                 crate::ssd::LogicalRect::new(
                                     content_clip.rect.loc.x,
                                     content_clip.rect.loc.y,
@@ -951,9 +959,10 @@ fn render_surface(
                                 ),
                                 output_geo.loc,
                                 snap_scale,
+                                content_clip.snap_mode,
                             )
                         );
-                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative(
+                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
                             crate::ssd::LogicalRect::new(
                                 content_clip.rect.loc.x,
                                 content_clip.rect.loc.y,
@@ -962,7 +971,14 @@ fn render_surface(
                             ),
                             output_geo.loc,
                             snap_scale,
+                            content_clip.snap_mode,
                         );
+                        let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
+                        let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
+                        let expected_right =
+                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
+                        let expected_bottom =
+                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
                         tracing::info!(
                             output = %output.name(),
                             window_id = %window_id,
@@ -975,7 +991,23 @@ fn render_surface(
                             snapped_inner = ?snapped_inner,
                             content_clip = ?content_clip,
                             snapped_clip = ?snapped_clip,
+                            expected_left,
+                            expected_top,
+                            expected_right,
+                            expected_bottom,
                             "gap debug tty border/client geometry"
+                        );
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            border_buffer_rect = ?border_buffer.map(|buffer| buffer.rect),
+                            border_buffer_width = ?border_buffer.map(|buffer| buffer.border_width),
+                            border_buffer_hole = ?border_buffer.and_then(|buffer| buffer.hole_rect),
+                            border_fill_rect = ?border_fill.map(|buffer| buffer.rect),
+                            border_fill_hole = ?border_fill.and_then(|buffer| buffer.hole_rect),
+                            decoration_root_rect = ?decoration.layout.root.rect,
+                            decoration_slot_rect = ?decoration.layout.window_slot_rect(),
+                            "gap debug tty border buffers"
                         );
                     }
                 }
@@ -1001,6 +1033,39 @@ fn render_surface(
                     let decoration_client_rect = window_decorations
                         .get(window)
                         .map(|decoration| decoration.client_rect);
+                    let edge_delta = if let (Some(decoration), Some(first_geometry)) =
+                        (window_decorations.get(window), first_geometry)
+                    {
+                        let snap_scale = Scale::from((
+                            scale.x * visual_state.scale.x.max(0.0),
+                            scale.y * visual_state.scale.y.max(0.0),
+                        ));
+                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
+                            crate::ssd::LogicalRect::new(
+                                decoration.content_clip.unwrap().rect.loc.x,
+                                decoration.content_clip.unwrap().rect.loc.y,
+                                decoration.content_clip.unwrap().rect.size.w,
+                                decoration.content_clip.unwrap().rect.size.h,
+                            ),
+                            output_geo.loc,
+                            snap_scale,
+                            decoration.content_clip.unwrap().snap_mode,
+                        );
+                        let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
+                        let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
+                        let expected_right =
+                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
+                        let expected_bottom =
+                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                        Some((
+                            first_geometry.loc.x - expected_left,
+                            first_geometry.loc.y - expected_top,
+                            (first_geometry.loc.x + first_geometry.size.w) - expected_right,
+                            (first_geometry.loc.y + first_geometry.size.h) - expected_bottom,
+                        ))
+                    } else {
+                        None
+                    };
                     tracing::info!(
                         output = %output.name(),
                         window_id = %window_id,
@@ -1010,6 +1075,7 @@ fn render_surface(
                         physical_location = ?physical_location,
                         clipped_count = clipped.len(),
                         first_geometry = ?first_geometry,
+                        edge_delta = ?edge_delta,
                         "gap debug tty clipped surface elements"
                     );
                 }
@@ -1024,12 +1090,23 @@ fn render_surface(
                             first_geometry.loc,
                             smithay::utils::Size::from((probe_width, first_geometry.size.h)),
                         );
+                        let top_probe = smithay::utils::Rectangle::new(
+                            first_geometry.loc,
+                            smithay::utils::Size::from((first_geometry.size.w, first_geometry.size.h.min(4))),
+                        );
                         let right_probe = smithay::utils::Rectangle::new(
                             smithay::utils::Point::from((
                                 first_geometry.loc.x + first_geometry.size.w.saturating_sub(probe_width),
                                 first_geometry.loc.y,
                             )),
                             smithay::utils::Size::from((probe_width, first_geometry.size.h)),
+                        );
+                        let bottom_probe = smithay::utils::Rectangle::new(
+                            smithay::utils::Point::from((
+                                first_geometry.loc.x,
+                                first_geometry.loc.y + first_geometry.size.h.saturating_sub(first_geometry.size.h.min(4)),
+                            )),
+                            smithay::utils::Size::from((first_geometry.size.w, first_geometry.size.h.min(4))),
                         );
                         log_gap_readback_probe(
                             &mut backend.renderer,
@@ -1044,8 +1121,26 @@ fn render_surface(
                             &mut backend.renderer,
                             scale,
                             &transformed,
+                            top_probe,
+                            "top",
+                            &output.name(),
+                            &window_id,
+                        );
+                        log_gap_readback_probe(
+                            &mut backend.renderer,
+                            scale,
+                            &transformed,
                             right_probe,
                             "right",
+                            &output.name(),
+                            &window_id,
+                        );
+                        log_gap_readback_probe(
+                            &mut backend.renderer,
+                            scale,
+                            &transformed,
+                            bottom_probe,
+                            "bottom",
                             &output.name(),
                             &window_id,
                         );
@@ -1785,12 +1880,12 @@ fn backdrop_shader_elements_for_window(
                         } else {
                             clip_rect
                         };
-                        smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                clip.x - output_geo.loc.x,
-                                clip.y - output_geo.loc.y,
-                            )),
-                            (clip.width, clip.height).into(),
+                        crate::backend::visual::snapped_logical_rect_in_element_space(
+                            clip,
+                            display_rect,
+                            output_geo.loc,
+                            scale,
+                            crate::backend::visual::RectSnapMode::OriginAndSize,
                         )
                     });
                     let local_sample_rect = smithay::utils::Rectangle::new(
@@ -1933,12 +2028,12 @@ fn backdrop_shader_elements_for_window(
                 } else {
                     clip_rect
                 };
-                smithay::utils::Rectangle::new(
-                    smithay::utils::Point::from((
-                        clip.x - output_geo.loc.x,
-                        clip.y - output_geo.loc.y,
-                    )),
-                    (clip.width, clip.height).into(),
+                crate::backend::visual::snapped_logical_rect_in_element_space(
+                    clip,
+                    display_rect,
+                    output_geo.loc,
+                    scale,
+                    crate::backend::visual::RectSnapMode::OriginAndSize,
                 )
             });
             let local_sample_rect = smithay::utils::Rectangle::new(

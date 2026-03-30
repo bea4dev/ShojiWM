@@ -12,6 +12,7 @@ use crate::backend::{
     shader_effect::CachedShaderEffect,
     text::{CachedDecorationLabel, LabelSpec},
 };
+use crate::backend::visual::RectSnapMode;
 use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
 use crate::backend::rounded::RoundedElementState;
 
@@ -45,6 +46,7 @@ pub struct WindowDecorationState {
 pub struct ContentClip {
     pub rect: Rectangle<i32, Logical>,
     pub radius: i32,
+    pub snap_mode: RectSnapMode,
 }
 
 impl WindowDecorationState {
@@ -1215,22 +1217,63 @@ fn content_clip_for_layout(
     _tree: &DecorationTree,
     layout: &ComputedDecorationTree,
 ) -> Option<ContentClip> {
-    let border = layout.root.window_border_style()?;
-    let border_rect = layout.root.first_window_border_rect()?;
-    let border_radius = layout.root.first_window_border_radius().unwrap_or(0);
-    let inner_rect = border_rect.inset(super::Edges {
-        top: border.width.max(0),
-        right: border.width.max(0),
-        bottom: border.width.max(0),
-        left: border.width.max(0),
+    slot_content_clip_for_node(&layout.root, None)
+}
+
+fn window_border_inner_hole_rect(
+    node: &super::ComputedDecorationNode,
+    border_width: i32,
+) -> LogicalRect {
+    let inner_rect = node.rect.inset(super::Edges {
+        top: border_width,
+        right: border_width,
+        bottom: border_width,
+        left: border_width,
     });
-    Some(ContentClip {
-        rect: Rectangle::new(
-            Point::from((inner_rect.x, inner_rect.y)),
-            (inner_rect.width, inner_rect.height).into(),
-        ),
-        radius: (border_radius - border.width.max(0)).max(0),
-    })
+
+    let Some(slot_rect) = node.window_slot_rect() else {
+        return inner_rect;
+    };
+
+    let left = slot_rect.x.max(inner_rect.x);
+    let right = (slot_rect.x + slot_rect.width).min(inner_rect.x + inner_rect.width);
+    if right <= left {
+        return inner_rect;
+    }
+
+    LogicalRect::new(left, inner_rect.y, right - left, inner_rect.height)
+}
+
+fn slot_content_clip_for_node(
+    node: &super::ComputedDecorationNode,
+    nearest_border: Option<(i32, i32)>,
+) -> Option<ContentClip> {
+    let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+        node.style.border.map(|border| {
+            (
+                border.width.max(0),
+                node.style.border_radius.unwrap_or(0).max(0),
+            )
+        }).or(nearest_border)
+    } else {
+        nearest_border
+    };
+
+    if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
+        let (border_width, border_radius) = next_border.unwrap_or((0, 0));
+        return Some(ContentClip {
+            rect: Rectangle::new(
+                Point::from((node.rect.x, node.rect.y)),
+                (node.rect.width, node.rect.height).into(),
+            ),
+            radius: (border_radius - border_width).max(0),
+            snap_mode: RectSnapMode::OriginAndSize,
+        });
+    }
+
+    node.children
+        .iter()
+        .find_map(|child| slot_content_clip_for_node(child, next_border))
 }
 
 impl DecorationTree {
@@ -1660,12 +1703,7 @@ fn collect_cached_buffers(
     let child_clip = node.effective_clip;
     let window_border_inner_rect = node.style.border.and_then(|border| {
         matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
-            node.rect.inset(super::Edges {
-                top: border.width.max(0),
-                right: border.width.max(0),
-                bottom: border.width.max(0),
-                left: border.width.max(0),
-            })
+            window_border_inner_hole_rect(node, border.width.max(0))
         })
     });
 
@@ -1697,12 +1735,10 @@ fn collect_cached_buffers(
                             ),
                             radius: node_radius,
                             border_width: border.width.max(0),
-                            hole_rect: Some(node.rect.inset(super::Edges {
-                                top: border.width.max(0),
-                                right: border.width.max(0),
-                                bottom: border.width.max(0),
-                                left: border.width.max(0),
-                            })),
+                            hole_rect: Some(window_border_inner_hole_rect(
+                                node,
+                                border.width.max(0),
+                            )),
                             hole_radius: (node_radius - border.width.max(0)).max(0),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,

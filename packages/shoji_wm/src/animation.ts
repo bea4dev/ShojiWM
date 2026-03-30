@@ -129,6 +129,7 @@ interface AnimationTimeline {
 const linear = (value: number) => value;
 const activeAnimationEntries = new Set<AnimationEntry>();
 let currentAnimationFrameMs = 0;
+const animationSnapEpsilon = 1e-4;
 
 /**
  * Creates a stable animation token.
@@ -269,6 +270,16 @@ export function advanceAnimationFrame(nowMs: number): boolean {
     const progress = repeatedProgress(rawProgress, timeline.repeat);
     const eased = normalizeEasedProgress(timeline.easing(progress), progress);
     const nextValue = timeline.from + (timeline.to - timeline.from) * eased;
+    if (
+      !timeline.repeat &&
+      (rawProgress >= 1 || Math.abs(nextValue - timeline.to) <= animationSnapEpsilon)
+    ) {
+      entry.progress.value = timeline.to;
+      entry.timeline = undefined;
+      activeAnimationEntries.delete(entry);
+      continue;
+    }
+
     entry.progress.value = nextValue;
 
     if (!timeline.repeat && rawProgress >= 1) {

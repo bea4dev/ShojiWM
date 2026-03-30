@@ -50,15 +50,15 @@ void main() {
     vec2 coords = v_coords * size;
     float shape_alpha = rounded_rect_alpha(coords, size, corner_radius);
 
-    if (border_width > 0.0) {
+    if (inner_enabled > 0.5) {
+        vec2 inner_coords = coords - inner_rect.xy;
+        float inner_alpha = rounded_rect_alpha(inner_coords, inner_rect.zw, inner_radius);
+        shape_alpha = max(shape_alpha - inner_alpha, 0.0);
+    } else if (border_width > 0.0) {
         vec2 inner_size = max(size - vec2(border_width * 2.0), vec2(0.0));
         vec2 inner_coords = coords - vec2(border_width);
         vec4 inner_radius = max(corner_radius - vec4(border_width), vec4(0.0));
         float inner_alpha = rounded_rect_alpha(inner_coords, inner_size, inner_radius);
-        shape_alpha = max(shape_alpha - inner_alpha, 0.0);
-    } else if (inner_enabled > 0.5) {
-        vec2 inner_coords = coords - inner_rect.xy;
-        float inner_alpha = rounded_rect_alpha(inner_coords, inner_rect.zw, inner_radius);
         shape_alpha = max(shape_alpha - inner_alpha, 0.0);
     }
 

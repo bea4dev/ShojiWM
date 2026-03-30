@@ -11,7 +11,10 @@ use smithay::{
 use tracing::trace;
 
 use crate::{
-    backend::visual::{snapped_logical_radius, snapped_logical_rect_relative},
+    backend::visual::{
+        RectSnapMode, snapped_logical_radius, snapped_logical_rect_for_element,
+        snapped_logical_rect_in_element_space,
+    },
     backend::rounded::{RoundedClip, RoundedRectSpec, RoundedShapeKind, StableRoundedElement},
     backend::shader_effect::{
         ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement,
@@ -233,18 +236,22 @@ fn rounded_rect_element(
     );
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
-        rect: snapped_logical_rect_relative(
+        rect: snapped_logical_rect_in_element_space(
             clip_rect,
-            Point::from((cached.rect.x, cached.rect.y)),
+            cached.rect,
+            output_geo.loc,
             scale,
+            RectSnapMode::OriginAndSize,
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
     });
     let inner = cached.hole_rect.map(|hole_rect| RoundedClip {
-        rect: snapped_logical_rect_relative(
+        rect: snapped_logical_rect_in_element_space(
             hole_rect,
-            Point::from((cached.rect.x, cached.rect.y)),
+            cached.rect,
+            output_geo.loc,
             scale,
+            RectSnapMode::OriginAndSize,
         ),
         radius: snapped_logical_radius(cached.hole_radius, scale),
     });
@@ -277,6 +284,21 @@ fn rounded_rect_element(
             render_scale: scale.x as f32,
         },
     )?;
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            stable_key = %cached.stable_key,
+            source_kind = %cached.source_kind,
+            rect = ?cached.rect,
+            local_rect = ?local_rect,
+            border_width = cached.border_width,
+            hole_rect = ?cached.hole_rect,
+            clip_rect = ?cached.clip_rect,
+            snapped_inner = ?inner,
+            snapped_clip = ?clip,
+            geometry = ?smithay::backend::renderer::element::Element::geometry(&element, scale),
+            "gap debug rounded decoration element"
+        );
+    }
     Ok(Some(element))
 }
 
@@ -312,14 +334,36 @@ fn shader_effect_element(
             alpha_bits: alpha.to_bits(),
             render_scale: scale.x as f32,
             clip_rect: cached.clip_rect.map(|clip_rect| {
-                Rectangle::new(
-                    Point::from((clip_rect.x, clip_rect.y)),
-                    (clip_rect.width, clip_rect.height).into(),
+                snapped_logical_rect_in_element_space(
+                    clip_rect,
+                    cached.rect,
+                    output_geo.loc,
+                    scale,
+                    RectSnapMode::OriginAndSize,
                 )
             }),
             clip_radius: cached.clip_radius,
         },
     )?;
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            stable_key = %cached.stable_key,
+            rect = ?cached.rect,
+            local_rect = ?local_rect,
+            clip_rect = ?cached.clip_rect,
+            snapped_clip = ?cached.clip_rect.map(|clip_rect| {
+                snapped_logical_rect_for_element(
+                    clip_rect,
+                    Point::from((cached.rect.x, cached.rect.y)),
+                    output_geo.loc,
+                    scale,
+                    RectSnapMode::SharedEdges,
+                )
+            }),
+            geometry = ?smithay::backend::renderer::element::Element::geometry(&element, scale),
+            "gap debug shader decoration element"
+        );
+    }
     Ok(Some(element))
 }
 

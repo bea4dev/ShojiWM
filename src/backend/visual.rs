@@ -17,17 +17,40 @@ pub struct SnappedLogicalRect {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RectSnapMode {
+    SharedEdges,
+    OriginAndSize,
+}
+
 pub fn snapped_logical_rect_relative(
     rect: LogicalRect,
     origin: Point<i32, Logical>,
     scale: Scale<f64>,
 ) -> SnappedLogicalRect {
+    snapped_logical_rect_relative_with_mode(rect, origin, scale, RectSnapMode::SharedEdges)
+}
+
+pub fn snapped_logical_rect_relative_with_mode(
+    rect: LogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+    mode: RectSnapMode,
+) -> SnappedLogicalRect {
     let scale_x = scale.x.abs().max(0.0001);
     let scale_y = scale.y.abs().max(0.0001);
     let left = (((rect.x - origin.x) as f64) * scale_x).round() / scale_x;
     let top = (((rect.y - origin.y) as f64) * scale_y).round() / scale_y;
-    let right = ((((rect.x + rect.width) - origin.x) as f64) * scale_x).round() / scale_x;
-    let bottom = ((((rect.y + rect.height) - origin.y) as f64) * scale_y).round() / scale_y;
+    let (right, bottom) = match mode {
+        RectSnapMode::SharedEdges => (
+            ((((rect.x + rect.width) - origin.x) as f64) * scale_x).round() / scale_x,
+            ((((rect.y + rect.height) - origin.y) as f64) * scale_y).round() / scale_y,
+        ),
+        RectSnapMode::OriginAndSize => (
+            left + ((rect.width as f64) * scale_x).round() / scale_x,
+            top + ((rect.height as f64) * scale_y).round() / scale_y,
+        ),
+    };
     SnappedLogicalRect {
         x: left as f32,
         y: top as f32,
@@ -39,6 +62,60 @@ pub fn snapped_logical_rect_relative(
 pub fn snapped_logical_radius(radius: i32, scale: Scale<f64>) -> f32 {
     let scale_x = scale.x.abs().max(0.0001);
     (((radius.max(0)) as f64) * scale_x).round().max(0.0) as f32 / scale_x as f32
+}
+
+pub fn snapped_logical_rect_for_element(
+    rect: LogicalRect,
+    element_origin: Point<i32, Logical>,
+    snap_origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+    mode: RectSnapMode,
+) -> SnappedLogicalRect {
+    let snapped_global =
+        snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
+    SnappedLogicalRect {
+        x: snapped_global.x - (element_origin.x - snap_origin.x) as f32,
+        y: snapped_global.y - (element_origin.y - snap_origin.y) as f32,
+        width: snapped_global.width,
+        height: snapped_global.height,
+    }
+}
+
+pub fn snapped_logical_rect_in_element_space(
+    rect: LogicalRect,
+    element_rect: LogicalRect,
+    snap_origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+    mode: RectSnapMode,
+) -> SnappedLogicalRect {
+    let snapped_global =
+        snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+
+    let element_left_px = (((element_rect.x - snap_origin.x) as f64) * scale_x).round() as f32;
+    let element_top_px = (((element_rect.y - snap_origin.y) as f64) * scale_y).round() as f32;
+    let element_width_px = ((element_rect.width as f64) * scale_x).round().max(1.0) as f32;
+    let element_height_px = ((element_rect.height as f64) * scale_y).round().max(1.0) as f32;
+
+    let snapped_left_px = ((snapped_global.x as f64) * scale_x).round() as f32;
+    let snapped_top_px = ((snapped_global.y as f64) * scale_y).round() as f32;
+    let snapped_right_px =
+        (((snapped_global.x + snapped_global.width) as f64) * scale_x).round() as f32;
+    let snapped_bottom_px =
+        (((snapped_global.y + snapped_global.height) as f64) * scale_y).round() as f32;
+
+    let local_left_px = snapped_left_px - element_left_px;
+    let local_top_px = snapped_top_px - element_top_px;
+    let local_width_px = (snapped_right_px - snapped_left_px).max(0.0);
+    let local_height_px = (snapped_bottom_px - snapped_top_px).max(0.0);
+
+    SnappedLogicalRect {
+        x: local_left_px * element_rect.width.max(1) as f32 / element_width_px,
+        y: local_top_px * element_rect.height.max(1) as f32 / element_height_px,
+        width: local_width_px * element_rect.width.max(1) as f32 / element_width_px,
+        height: local_height_px * element_rect.height.max(1) as f32 / element_height_px,
+    }
 }
 
 #[derive(Debug)]

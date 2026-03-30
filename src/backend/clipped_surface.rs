@@ -12,7 +12,10 @@ use smithay::{
 };
 
 use crate::ssd::ContentClip;
-use crate::backend::visual::{snapped_logical_radius, snapped_logical_rect_relative, SnappedLogicalRect};
+use crate::backend::visual::{
+    SnappedLogicalRect, snapped_logical_radius,
+    snapped_logical_rect_relative_with_mode,
+};
 
 #[derive(Debug)]
 enum ClippedSurfaceInner {
@@ -26,6 +29,8 @@ pub struct ClippedSurfaceElement {
     program: GlesTexProgram,
     clip_rect: SnappedLogicalRect,
     corner_radius: [f32; 4],
+    simple_clip_size: Option<[f32; 2]>,
+    rect_bounds_enabled: f32,
     output_scale: f32,
     clip_scale: f32,
 }
@@ -64,6 +69,10 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_4f,
                     ),
                     UniformName::new(
+                        "rect_bounds_enabled",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
                         "input_to_clip",
                         smithay::backend::renderer::gles::UniformType::Matrix3x3,
                     ),
@@ -88,13 +97,60 @@ impl ClippedSurfaceElement {
             )),
             clip.rect.size,
         );
-        let physical_clip = local_clip
-            .to_f64()
-            .to_physical_precise_round(output_scale);
+        let snapped_clip_rect = snapped_logical_rect_relative_with_mode(
+            crate::ssd::LogicalRect::new(
+                clip.rect.loc.x,
+                clip.rect.loc.y,
+                clip.rect.size.w,
+                clip.rect.size.h,
+            ),
+            output_origin,
+            clip_scale,
+            clip.snap_mode,
+        );
+        let physical_left = (snapped_clip_rect.x as f64 * output_scale.x).round() as i32;
+        let physical_top = (snapped_clip_rect.y as f64 * output_scale.y).round() as i32;
+        let physical_right =
+            ((snapped_clip_rect.x + snapped_clip_rect.width) as f64 * output_scale.x).round() as i32;
+        let physical_bottom =
+            ((snapped_clip_rect.y + snapped_clip_rect.height) as f64 * output_scale.y).round() as i32;
+        let physical_clip: Rectangle<i32, Physical> = Rectangle::new(
+            Point::from((physical_left, physical_top)),
+            (
+                (physical_right - physical_left).max(0),
+                (physical_bottom - physical_top).max(0),
+            )
+                .into(),
+        );
+        let original_physical_clip = physical_clip;
+        if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+            tracing::info!(
+                output_origin = ?output_origin,
+                output_scale = ?output_scale,
+                clip_scale = ?clip_scale,
+                raw_geometry_output = ?inner.geometry(output_scale),
+                raw_geometry_clip = ?inner.geometry(clip_scale),
+                raw_src = ?inner.src(),
+                raw_buffer_size = ?inner.buffer_size(),
+                raw_view = ?inner.view(),
+                raw_transform = ?inner.transform(),
+                clip = ?clip,
+                "gap debug clipped surface raw element"
+            );
+        }
+
         let inner = if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
             && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
         {
-            match CropRenderElement::from_element(inner, output_scale, physical_clip) {
+            let expanded_physical_clip = Rectangle::new(
+                physical_clip.loc,
+                (
+                    physical_clip.size.w.saturating_add(1),
+                    physical_clip.size.h.saturating_add(1),
+                )
+                    .into(),
+            );
+            match CropRenderElement::from_element(inner, output_scale, expanded_physical_clip) {
                 Some(cropped) => ClippedSurfaceInner::Simple(cropped),
                 None => return Err(GlesError::FramebufferBindingError),
             }
@@ -102,19 +158,61 @@ impl ClippedSurfaceElement {
             ClippedSurfaceInner::Mapped(inner)
         };
 
+        if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+            match &inner {
+                ClippedSurfaceInner::Simple(cropped) => {
+                    let geometry = cropped.geometry(output_scale);
+                    let src = cropped.src();
+                    let physical_right = physical_clip.loc.x + physical_clip.size.w;
+                    let physical_bottom = physical_clip.loc.y + physical_clip.size.h;
+                    let geometry_right = geometry.loc.x + geometry.size.w;
+                    let geometry_bottom = geometry.loc.y + geometry.size.h;
+                    let src_right = src.loc.x + src.size.w;
+                    let src_bottom = src.loc.y + src.size.h;
+                    tracing::info!(
+                        local_clip = ?local_clip,
+                        physical_clip = ?original_physical_clip,
+                        expanded_physical_clip = ?Rectangle::new(
+                            original_physical_clip.loc,
+                            (
+                                original_physical_clip.size.w.saturating_add(1),
+                                original_physical_clip.size.h.saturating_add(1),
+                            )
+                                .into()
+                        ),
+                        output_origin = ?output_origin,
+                        output_scale = ?output_scale,
+                        clip_scale = ?clip_scale,
+                        cropped_geometry = ?geometry,
+                        cropped_src = ?src,
+                        physical_right,
+                        physical_bottom,
+                        geometry_right,
+                        geometry_bottom,
+                        src_right,
+                        src_bottom,
+                        "gap debug clipped surface simple crop"
+                    );
+                }
+                ClippedSurfaceInner::Mapped(mapped) => {
+                    tracing::info!(
+                        local_clip = ?local_clip,
+                        physical_clip = ?physical_clip,
+                        output_origin = ?output_origin,
+                        output_scale = ?output_scale,
+                        clip_scale = ?clip_scale,
+                        mapped_geometry = ?mapped.geometry(output_scale),
+                        mapped_src = ?mapped.src(),
+                        "gap debug clipped surface mapped crop"
+                    );
+                }
+            }
+        }
+
         Ok(Self {
             inner,
             program: program.0.clone(),
-            clip_rect: snapped_logical_rect_relative(
-                crate::ssd::LogicalRect::new(
-                    clip.rect.loc.x,
-                    clip.rect.loc.y,
-                    clip.rect.size.w,
-                    clip.rect.size.h,
-                ),
-                output_origin,
-                clip_scale,
-            ),
+            clip_rect: snapped_clip_rect,
             corner_radius: if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
                 && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
             {
@@ -123,6 +221,23 @@ impl ClippedSurfaceElement {
             } else {
                 let radius = snapped_logical_radius(clip.radius, clip_scale);
                 [radius, radius, radius, radius]
+            },
+            simple_clip_size: if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
+                && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
+            {
+                Some([
+                    original_physical_clip.size.w as f32,
+                    original_physical_clip.size.h as f32,
+                ])
+            } else {
+                None
+            },
+            rect_bounds_enabled: if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
+                && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
+            {
+                0.0
+            } else {
+                1.0
             },
             output_scale: output_scale.x as f32,
             clip_scale: clip_scale.x as f32,
@@ -134,14 +249,25 @@ impl ClippedSurfaceElement {
         let (clip_size, corner_radius, input_to_clip_array) = match &self.inner {
             ClippedSurfaceInner::Simple(inner) => {
                 let geometry = inner.geometry(scale);
-                (
+                let clip_size = self.simple_clip_size.map_or(
                     Vector2::new(geometry.size.w as f32, geometry.size.h as f32),
+                    |size| Vector2::new(size[0].max(1.0), size[1].max(1.0)),
+                );
+                let input_to_clip_array = [
+                    geometry.size.w as f32 / clip_size.x,
+                    0.0,
+                    0.0,
+                    0.0,
+                    geometry.size.h as f32 / clip_size.y,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ];
+                (
+                    clip_size,
                     self.corner_radius,
-                    [
-                        1.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0,
-                        0.0, 0.0, 1.0,
-                    ],
+                    input_to_clip_array,
                 )
             }
             ClippedSurfaceInner::Mapped(inner) => {
@@ -211,6 +337,7 @@ impl ClippedSurfaceElement {
             Uniform::new("clip_scale", self.clip_scale),
             Uniform::new("clip_size", [clip_size.x, clip_size.y]),
             Uniform::new("corner_radius", corner_radius),
+            Uniform::new("rect_bounds_enabled", self.rect_bounds_enabled),
             Uniform::new(
                 "input_to_clip",
                 smithay::backend::renderer::gles::UniformValue::Matrix3x3 {
@@ -263,10 +390,35 @@ impl Element for ClippedSurfaceElement {
         scale: Scale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        match &self.inner {
+        let damage = match &self.inner {
             ClippedSurfaceInner::Simple(inner) => inner.damage_since(scale, commit),
             ClippedSurfaceInner::Mapped(inner) => inner.damage_since(scale, commit),
+        };
+
+        if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+            match &self.inner {
+                ClippedSurfaceInner::Simple(inner) => {
+                    tracing::info!(
+                        scale = ?scale,
+                        commit = ?commit,
+                        geometry = ?inner.geometry(scale),
+                        damage = ?damage,
+                        "gap debug clipped surface simple damage"
+                    );
+                }
+                ClippedSurfaceInner::Mapped(inner) => {
+                    tracing::info!(
+                        scale = ?scale,
+                        commit = ?commit,
+                        geometry = ?inner.geometry(scale),
+                        damage = ?damage,
+                        "gap debug clipped surface mapped damage"
+                    );
+                }
+            }
         }
+
+        damage
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -298,17 +450,31 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), GlesError> {
-        frame.override_default_tex_program(self.program.clone(), self.uniforms());
-        let result = match &self.inner {
-            ClippedSurfaceInner::Simple(inner) => {
-                RenderElement::<GlesRenderer>::draw(inner, frame, src, dst, damage, opaque_regions, cache)
-            }
+        match &self.inner {
+            ClippedSurfaceInner::Simple(inner) => RenderElement::<GlesRenderer>::draw(
+                inner,
+                frame,
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                cache,
+            ),
             ClippedSurfaceInner::Mapped(inner) => {
-                RenderElement::<GlesRenderer>::draw(inner, frame, src, dst, damage, opaque_regions, cache)
+                frame.override_default_tex_program(self.program.clone(), self.uniforms());
+                let result = RenderElement::<GlesRenderer>::draw(
+                    inner,
+                    frame,
+                    src,
+                    dst,
+                    damage,
+                    opaque_regions,
+                    cache,
+                );
+                frame.clear_tex_program_override();
+                result
             }
-        };
-        frame.clear_tex_program_override();
-        result
+        }
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
