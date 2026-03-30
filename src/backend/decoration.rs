@@ -234,6 +234,26 @@ fn rounded_rect_element(
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
+    let outer_radius = snapped_logical_radius(cached.radius, scale);
+    let quantized_border_inner = (cached.border_width > 0
+        && cached.hole_rect.is_some()
+        && cached.source_kind != "window-border")
+        .then(|| {
+            let physical_border_width =
+                ((cached.border_width.max(0) as f64) * scale.x.abs().max(0.0001))
+                    .round()
+                    .max(1.0) as f32;
+            let logical_border_width = physical_border_width / scale.x.abs().max(0.0001) as f32;
+            RoundedClip {
+                rect: crate::backend::visual::SnappedLogicalRect {
+                    x: logical_border_width,
+                    y: logical_border_width,
+                    width: (cached.rect.width as f32 - logical_border_width * 2.0).max(0.0),
+                    height: (cached.rect.height as f32 - logical_border_width * 2.0).max(0.0),
+                },
+                radius: (outer_radius - logical_border_width).max(0.0),
+            }
+        });
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
         rect: snapped_logical_rect_in_element_space(
@@ -245,15 +265,17 @@ fn rounded_rect_element(
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
     });
-    let inner = cached.hole_rect.map(|hole_rect| RoundedClip {
-        rect: snapped_logical_rect_in_element_space(
-            hole_rect,
-            cached.rect,
-            output_geo.loc,
-            scale,
-            RectSnapMode::OriginAndSize,
-        ),
-        radius: snapped_logical_radius(cached.hole_radius, scale),
+    let inner = quantized_border_inner.or_else(|| {
+        cached.hole_rect.map(|hole_rect| RoundedClip {
+            rect: snapped_logical_rect_in_element_space(
+                hole_rect,
+                cached.rect,
+                output_geo.loc,
+                scale,
+                RectSnapMode::OriginAndSize,
+            ),
+            radius: snapped_logical_radius(cached.hole_radius, scale),
+        })
     });
 
     let state = decoration
