@@ -74,6 +74,7 @@ pub struct CachedDecorationBuffer {
     pub border_width: i32,
     pub hole_rect: Option<LogicalRect>,
     pub hole_radius: i32,
+    pub shared_inner_hole: bool,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
     pub source_kind: &'static str,
@@ -175,6 +176,15 @@ impl DecorationRuntimeEvaluator {
 }
 
 impl ShojiWM {
+    fn decoration_layout_scale_for_window(&self, window: &Window) -> f64 {
+        self.space
+            .outputs_for_element(window)
+            .into_iter()
+            .map(|output| output.current_scale().fractional_scale())
+            .fold(1.0f64, f64::max)
+            .max(1.0)
+    }
+
     fn decoration_raster_scale_for_window(&self, window: &Window) -> i32 {
         self.space
             .outputs_for_element(window)
@@ -521,6 +531,7 @@ impl ShojiWM {
                 None => continue,
             };
             let snapshot = self.snapshot_window(&window);
+            let layout_scale = self.decoration_layout_scale_for_window(&window);
             let window_raster_scale = self.decoration_raster_scale_for_window(&window);
             let had_cached_decoration = self.window_decorations.contains_key(&window);
             let runtime_state_changed = self
@@ -561,7 +572,7 @@ impl ShojiWM {
                 pending_display_config_updates.push(evaluation.display_config.clone());
                 let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
-                    .layout_for_client(client_rect)
+                    .layout_for_client_with_scale(client_rect, layout_scale)
                     .map_err(super::DecorationEvaluationError::Layout)?;
                 push_damage_pair(
                     &mut self.pending_decoration_damage,
@@ -654,7 +665,7 @@ impl ShojiWM {
                     cached.tree = DecorationTree::new(evaluation.node);
                     cached.layout = cached
                         .tree
-                        .layout_for_client(client_rect)
+                        .layout_for_client_with_scale(client_rect, layout_scale)
                         .map_err(super::DecorationEvaluationError::Layout)?;
                     push_damage_pair(
                         &mut self.pending_decoration_damage,
@@ -828,7 +839,7 @@ impl ShojiWM {
                         } else {
                             cached.layout = cached
                                 .tree
-                                .layout_for_client(client_rect)
+                                .layout_for_client_with_scale(client_rect, layout_scale)
                                 .map_err(super::DecorationEvaluationError::Layout)?;
                             cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                             let order_map = build_render_order_map(&cached.layout);
@@ -1224,24 +1235,31 @@ fn window_border_inner_hole_rect(
     node: &super::ComputedDecorationNode,
     border_width: i32,
 ) -> LogicalRect {
-    let inner_rect = node.rect.inset(super::Edges {
+    let fallback_inner_rect = node.rect.inset(super::Edges {
         top: border_width,
         right: border_width,
         bottom: border_width,
         left: border_width,
     });
 
-    let Some(slot_rect) = node.window_slot_rect() else {
-        return inner_rect;
+    let inner_rect = node.resolved_content_rect;
+    let Some(slot_rect) = node.resolved_window_slot_rect() else {
+        return inner_rect.round_to_logical_rect();
     };
 
     let left = slot_rect.x.max(inner_rect.x);
-    let right = (slot_rect.x + slot_rect.width).min(inner_rect.x + inner_rect.width);
-    if right <= left {
-        return inner_rect;
+    let right = slot_rect.right().min(inner_rect.right());
+    if right.raw() <= left.raw() {
+        return fallback_inner_rect;
     }
 
-    LogicalRect::new(left, inner_rect.y, right - left, inner_rect.height)
+    crate::ssd::ResolvedLogicalRect {
+        x: left,
+        y: inner_rect.y,
+        width: crate::ssd::ResolvedLayoutValue::from_raw(right.raw() - left.raw()),
+        height: inner_rect.height,
+    }
+    .round_to_logical_rect()
 }
 
 fn slot_content_clip_for_node(
@@ -1260,13 +1278,22 @@ fn slot_content_clip_for_node(
     };
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
-        let (border_width, border_radius) = next_border.unwrap_or((0, 0));
+        let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
         return Some(ContentClip {
             rect: Rectangle::new(
-                Point::from((node.rect.x, node.rect.y)),
-                (node.rect.width, node.rect.height).into(),
+                Point::from((
+                    node.resolved_rect.x.round_to_i32(),
+                    node.resolved_rect.y.round_to_i32(),
+                )),
+                (
+                    node.resolved_rect.width.round_to_i32(),
+                    node.resolved_rect.height.round_to_i32(),
+                )
+                    .into(),
             ),
-            radius: (border_radius - border_width).max(0),
+            radius: (node.resolved_border_radius - node.resolved_border_width)
+                .round_to_i32()
+                .max(0),
             snap_mode: RectSnapMode::OriginAndSize,
         });
     }
@@ -1282,9 +1309,18 @@ impl DecorationTree {
         &self,
         client_rect: LogicalRect,
     ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
+        self.layout_for_client_with_scale(client_rect, 1.0)
+    }
+
+    pub fn layout_for_client_with_scale(
+        &self,
+        client_rect: LogicalRect,
+        scale: f64,
+    ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
         let initial = self.layout_with_window_slot_size(
             LogicalRect::new(0, 0, client_rect.width, client_rect.height),
             Some((client_rect.width, client_rect.height)),
+            scale,
         )?;
         let slot = initial
             .window_slot_rect()
@@ -1306,6 +1342,7 @@ impl DecorationTree {
                 client_rect.height + extra_top + extra_bottom,
             ),
             Some((client_rect.width, client_rect.height)),
+            scale,
         )?;
 
         let desired_slot = desired
@@ -1322,10 +1359,11 @@ impl DecorationTree {
         &self,
         bounds: LogicalRect,
         window_slot_size: Option<(i32, i32)>,
+        scale: f64,
     ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
         self.validate()?;
 
-        let mut root = super::layout_node(&self.root, bounds, None, window_slot_size)?;
+        let mut root = super::layout_node_with_scale(&self.root, bounds, None, window_slot_size, scale)?;
         root.rect = root.bounds_rect();
         if root.window_slot_rect().is_none() {
             return Err(super::DecorationLayoutError::MissingComputedWindowSlot);
@@ -1355,6 +1393,20 @@ impl super::ComputedDecorationNode {
                 self.rect.width,
                 self.rect.height,
             ),
+            resolved_rect: crate::ssd::ResolvedLogicalRect {
+                x: self.resolved_rect.x + crate::ssd::ResolvedLayoutValue::from_i32(dx),
+                y: self.resolved_rect.y + crate::ssd::ResolvedLayoutValue::from_i32(dy),
+                width: self.resolved_rect.width,
+                height: self.resolved_rect.height,
+            },
+            resolved_content_rect: crate::ssd::ResolvedLogicalRect {
+                x: self.resolved_content_rect.x + crate::ssd::ResolvedLayoutValue::from_i32(dx),
+                y: self.resolved_content_rect.y + crate::ssd::ResolvedLayoutValue::from_i32(dy),
+                width: self.resolved_content_rect.width,
+                height: self.resolved_content_rect.height,
+            },
+            resolved_border_width: self.resolved_border_width,
+            resolved_border_radius: self.resolved_border_radius,
             effective_clip: self.effective_clip.map(|clip| super::DecorationClip {
                 rect: LogicalRect::new(
                     clip.rect.x + dx,
@@ -1364,6 +1416,17 @@ impl super::ComputedDecorationNode {
                 ),
                 radius: clip.radius,
             }),
+            resolved_effective_clip: self
+                .resolved_effective_clip
+                .map(|clip| crate::ssd::ResolvedDecorationClip {
+                    rect: crate::ssd::ResolvedLogicalRect {
+                        x: clip.rect.x + crate::ssd::ResolvedLayoutValue::from_i32(dx),
+                        y: clip.rect.y + crate::ssd::ResolvedLayoutValue::from_i32(dy),
+                        width: clip.rect.width,
+                        height: clip.rect.height,
+                    },
+                    radius: clip.radius,
+                }),
             children: self
                 .children
                 .iter()
@@ -1697,13 +1760,13 @@ fn collect_cached_buffers(
             .is_some_and(|stable_id| dirty_node_ids.contains(stable_id))
     });
 
-    let node_radius = node.style.border_radius.unwrap_or(0).max(0);
+    let node_radius = node.resolved_border_radius.round_to_i32().max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let child_clip = node.effective_clip;
-    let window_border_inner_rect = node.style.border.and_then(|border| {
+    let window_border_inner_rect = node.style.border.and_then(|_border| {
         matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
-            window_border_inner_hole_rect(node, border.width.max(0))
+            window_border_inner_hole_rect(node, node.resolved_border_width.round_to_i32().max(0))
         })
     });
 
@@ -1734,12 +1797,15 @@ fn collect_cached_buffers(
                                 ],
                             ),
                             radius: node_radius,
-                            border_width: border.width.max(0),
+                            border_width: node.resolved_border_width.round_to_i32().max(0),
                             hole_rect: Some(window_border_inner_hole_rect(
                                 node,
-                                border.width.max(0),
+                                node.resolved_border_width.round_to_i32().max(0),
                             )),
-                            hole_radius: (node_radius - border.width.max(0)).max(0),
+                            hole_radius: (node.resolved_border_radius - node.resolved_border_width)
+                                .round_to_i32()
+                                .max(0),
+                            shared_inner_hole: !node.children.is_empty(),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
                             source_kind: node_kind_name(&node.kind),
@@ -1777,13 +1843,9 @@ fn collect_cached_buffers(
                                     node_radius,
                                     0,
                                     Some(inner_rect),
-                                    node
-                                        .style
-                                        .border
-                                        .map(|border| {
-                                            (node_radius - border.width.max(0)).max(0)
-                                        })
-                                        .unwrap_or(node_radius),
+                                    (node.resolved_border_radius - node.resolved_border_width)
+                                        .round_to_i32()
+                                        .max(0),
                                     None,
                                     0,
                                 );
@@ -1996,6 +2058,7 @@ fn push_cached_fill(
         border_width,
         hole_rect,
         hole_radius,
+        shared_inner_hole: false,
         clip_rect,
         clip_radius,
         source_kind: "fill",

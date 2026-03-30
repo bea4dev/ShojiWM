@@ -235,25 +235,49 @@ fn rounded_rect_element(
         (cached.rect.width, cached.rect.height).into(),
     );
     let outer_radius = snapped_logical_radius(cached.radius, scale);
-    let quantized_border_inner = (cached.border_width > 0
-        && cached.hole_rect.is_some()
-        && cached.source_kind != "window-border")
+    let quantize_x = |logical: i32| {
+        ((((logical.max(0)) as f64) * scale.x.abs().max(0.0001)).round()
+            / scale.x.abs().max(0.0001)) as f32
+    };
+    let quantize_y = |logical: i32| {
+        ((((logical.max(0)) as f64) * scale.y.abs().max(0.0001)).round()
+            / scale.y.abs().max(0.0001)) as f32
+    };
+    let quantized_border_inner = (cached.border_width > 0 && !cached.shared_inner_hole)
         .then(|| {
-            let physical_border_width =
-                ((cached.border_width.max(0) as f64) * scale.x.abs().max(0.0001))
-                    .round()
-                    .max(1.0) as f32;
-            let logical_border_width = physical_border_width / scale.x.abs().max(0.0001) as f32;
+        if let Some(hole_rect) = cached.hole_rect {
+            let left = quantize_x(hole_rect.x - cached.rect.x);
+            let top = quantize_y(hole_rect.y - cached.rect.y);
+            let right = quantize_x(
+                (cached.rect.x + cached.rect.width) - (hole_rect.x + hole_rect.width),
+            );
+            let bottom = quantize_y(
+                (cached.rect.y + cached.rect.height) - (hole_rect.y + hole_rect.height),
+            );
             RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
-                    x: logical_border_width,
-                    y: logical_border_width,
-                    width: (cached.rect.width as f32 - logical_border_width * 2.0).max(0.0),
-                    height: (cached.rect.height as f32 - logical_border_width * 2.0).max(0.0),
+                    x: left,
+                    y: top,
+                    width: (cached.rect.width as f32 - left - right).max(0.0),
+                    height: (cached.rect.height as f32 - top - bottom).max(0.0),
                 },
-                radius: (outer_radius - logical_border_width).max(0.0),
+                radius: snapped_logical_radius(cached.hole_radius, scale),
             }
-        });
+        } else {
+            let logical_border_width_x = quantize_x(cached.border_width.max(0));
+            let logical_border_width_y = quantize_y(cached.border_width.max(0));
+            let logical_border_radius = logical_border_width_x.max(logical_border_width_y);
+            RoundedClip {
+                rect: crate::backend::visual::SnappedLogicalRect {
+                    x: logical_border_width_x,
+                    y: logical_border_width_y,
+                    width: (cached.rect.width as f32 - logical_border_width_x * 2.0).max(0.0),
+                    height: (cached.rect.height as f32 - logical_border_width_y * 2.0).max(0.0),
+                },
+                radius: (outer_radius - logical_border_radius).max(0.0),
+            }
+        }
+    });
 
     let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
         rect: snapped_logical_rect_in_element_space(
