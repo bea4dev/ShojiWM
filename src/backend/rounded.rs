@@ -16,7 +16,7 @@ pub struct RoundedClip {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RoundedShapeKind {
     Fill,
-    Border { width: i32 },
+    Border { width: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -215,7 +215,7 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
 fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
     let border_width = match spec.shape {
         RoundedShapeKind::Fill => 0.0,
-        RoundedShapeKind::Border { width } => width.max(0) as f32,
+        RoundedShapeKind::Border { width } => width.max(0.0),
     };
 
     let local_clip_rect = spec

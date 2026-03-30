@@ -964,7 +964,7 @@ fn render_surface(
                         let border_buffer = decoration
                             .buffers
                             .iter()
-                            .find(|buffer| buffer.source_kind == "window-border" && buffer.border_width > 0);
+                            .find(|buffer| buffer.source_kind == "window-border" && buffer.border_width > 0.0);
                         let border_fill = decoration
                             .buffers
                             .iter()

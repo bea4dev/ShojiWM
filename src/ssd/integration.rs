@@ -71,7 +71,7 @@ pub struct CachedDecorationBuffer {
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
     pub radius: i32,
-    pub border_width: i32,
+    pub border_width: f32,
     pub hole_rect: Option<LogicalRect>,
     pub hole_radius: i32,
     pub shared_inner_hole: bool,
@@ -1797,11 +1797,13 @@ fn collect_cached_buffers(
                                 ],
                             ),
                             radius: node_radius,
-                            border_width: node.resolved_border_width.round_to_i32().max(0),
-                            hole_rect: Some(window_border_inner_hole_rect(
-                                node,
-                                node.resolved_border_width.round_to_i32().max(0),
-                            )),
+                            border_width: node.resolved_border_width.to_f32().max(0.0),
+                            hole_rect: (!node.children.is_empty()).then(|| {
+                                window_border_inner_hole_rect(
+                                    node,
+                                    node.resolved_border_width.round_to_i32().max(0),
+                                )
+                            }),
                             hole_radius: (node.resolved_border_radius - node.resolved_border_width)
                                 .round_to_i32()
                                 .max(0),
@@ -1841,7 +1843,7 @@ fn collect_cached_buffers(
                                     background,
                                     node.stable_id.clone(),
                                     node_radius,
-                                    0,
+                                    0.0,
                                     Some(inner_rect),
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .round_to_i32()
@@ -1858,7 +1860,7 @@ fn collect_cached_buffers(
                                     background,
                                     node.stable_id.clone(),
                                     node_radius,
-                                    0,
+                                    0.0,
                                     None,
                                     0,
                                     None,
@@ -1874,7 +1876,7 @@ fn collect_cached_buffers(
                                 background,
                                 node.stable_id.clone(),
                                 node_radius,
-                                0,
+                                0.0,
                                 None,
                                 0,
                                 current_clip_rect,
@@ -2029,7 +2031,7 @@ fn push_cached_fill(
     color: super::Color,
     owner_node_id: Option<String>,
     radius: i32,
-    border_width: i32,
+    border_width: f32,
     hole_rect: Option<LogicalRect>,
     hole_radius: i32,
     clip_rect: Option<LogicalRect>,

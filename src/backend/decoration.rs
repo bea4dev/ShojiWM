@@ -243,7 +243,7 @@ fn rounded_rect_element(
         scale,
         cached.clip_rect,
     );
-    let quantized_border_inner = (cached.border_width > 0 && !cached.shared_inner_hole)
+    let quantized_border_inner = (cached.border_width > 0.0 && !cached.shared_inner_hole)
         .then(|| {
         if let Some(hole_rect) = cached.hole_rect {
             let left = ((((hole_rect.x - cached.rect.x).max(0)) as f64) * scale.x.abs().max(0.0001))
@@ -271,10 +271,10 @@ fn rounded_rect_element(
             }
         } else {
             let logical_border_width_x =
-                ((((cached.border_width.max(0)) as f64) * scale.x.abs().max(0.0001)).round()
+                (((cached.border_width.max(0.0) as f64) * scale.x.abs().max(0.0001)).round()
                     / scale.x.abs().max(0.0001)) as f32;
             let logical_border_width_y =
-                ((((cached.border_width.max(0)) as f64) * scale.y.abs().max(0.0001)).round()
+                (((cached.border_width.max(0.0) as f64) * scale.y.abs().max(0.0001)).round()
                     / scale.y.abs().max(0.0001)) as f32;
             let logical_border_radius = logical_border_width_x.max(logical_border_width_y);
             RoundedClip {
@@ -335,7 +335,7 @@ fn rounded_rect_element(
             ],
             alpha,
             radius: cached.radius,
-            shape: if cached.border_width > 0 {
+            shape: if cached.border_width > 0.0 {
                 RoundedShapeKind::Border {
                     width: cached.border_width,
                 }
