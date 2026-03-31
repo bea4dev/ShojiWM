@@ -12,7 +12,8 @@ use tracing::trace;
 
 use crate::{
     backend::visual::{
-        RectSnapMode, relative_physical_rect_from_root, snapped_logical_radius,
+        RectSnapMode, relative_physical_rect_from_root,
+        relative_physical_rect_from_root_precise, snapped_logical_radius,
         snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
         snapped_logical_rect_in_element_space,
     },
@@ -235,6 +236,10 @@ fn rounded_rect_element(
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
+    let snapped_radius_f32 = |radius: f32| {
+        let scale_x = scale.x.abs().max(0.0001) as f32;
+        ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0)
+    };
     let outer_radius = snapped_logical_radius(cached.radius, scale);
     let geometry = relative_physical_rect_from_root(
         cached.rect,
@@ -301,7 +306,18 @@ fn rounded_rect_element(
             scale,
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
-    });
+    }).or_else(|| cached.clip_rect_precise.map(|clip_rect| RoundedClip {
+        rect: snapped_logical_rect_from_relative_physical(
+            relative_physical_rect_from_root_precise(
+                clip_rect,
+                cached.rect,
+                output_geo,
+                scale,
+            ),
+            scale,
+        ),
+        radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
+    }));
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect.map(|hole_rect| RoundedClip {
             rect: snapped_logical_rect_from_relative_physical(
@@ -315,7 +331,18 @@ fn rounded_rect_element(
                 scale,
             ),
             radius: snapped_logical_radius(cached.hole_radius, scale),
-        })
+        }).or_else(|| cached.hole_rect_precise.map(|hole_rect| RoundedClip {
+            rect: snapped_logical_rect_from_relative_physical(
+                relative_physical_rect_from_root_precise(
+                    hole_rect,
+                    cached.rect,
+                    output_geo,
+                    scale,
+                ),
+                scale,
+            ),
+            radius: snapped_radius_f32(cached.hole_radius as f32),
+        }))
     });
 
     let state = decoration
@@ -414,8 +441,21 @@ fn shader_effect_element(
                     scale,
                     RectSnapMode::OriginAndSize,
                 )
-            }),
-            clip_radius: cached.clip_radius,
+            }).or_else(|| cached.clip_rect_precise.map(|clip_rect| {
+                snapped_logical_rect_from_relative_physical(
+                    relative_physical_rect_from_root_precise(
+                        clip_rect,
+                        cached.rect,
+                        output_geo,
+                        scale,
+                    ),
+                    scale,
+                )
+            })),
+            clip_radius: cached
+                .clip_radius_precise
+                .map(|radius| radius.round() as i32)
+                .unwrap_or(cached.clip_radius),
         },
     )?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {

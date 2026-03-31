@@ -17,6 +17,14 @@ pub struct SnappedLogicalRect {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreciseLogicalRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RectSnapMode {
     SharedEdges,
@@ -293,6 +301,28 @@ pub fn snapped_logical_rect_from_relative_physical(
         width: rect.size.w as f32 / scale_x,
         height: rect.size.h as f32 / scale_y,
     }
+}
+
+pub fn relative_physical_rect_from_root_precise(
+    rect: PreciseLogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    let scale_x = output_scale.x.abs().max(0.0001) as f32;
+    let scale_y = output_scale.y.abs().max(0.0001) as f32;
+    let root_left_px =
+        (((root_rect.x - output_geo.loc.x) as f64) * output_scale.x.abs().max(0.0001)).round() as i32;
+    let root_top_px =
+        (((root_rect.y - output_geo.loc.y) as f64) * output_scale.y.abs().max(0.0001)).round() as i32;
+    let left_px = (((rect.x - output_geo.loc.x as f32) * scale_x).round()) as i32;
+    let top_px = (((rect.y - output_geo.loc.y as f32) * scale_y).round()) as i32;
+    let right_px = ((((rect.x + rect.width) - output_geo.loc.x as f32) * scale_x).round()) as i32;
+    let bottom_px = ((((rect.y + rect.height) - output_geo.loc.y as f32) * scale_y).round()) as i32;
+    Rectangle::new(
+        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
+    )
 }
 
 pub fn transformed_root_rect(rect: LogicalRect, transform: WindowTransform) -> LogicalRect {

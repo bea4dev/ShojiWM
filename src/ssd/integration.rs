@@ -8,6 +8,7 @@ use tracing::{debug, trace, warn};
 
 use crate::state::ShojiWM;
 use crate::backend::{
+    visual::PreciseLogicalRect,
     icon::{CachedDecorationIcon, IconSpec},
     shader_effect::CachedShaderEffect,
     text::{CachedDecorationLabel, LabelSpec},
@@ -73,10 +74,13 @@ pub struct CachedDecorationBuffer {
     pub radius: i32,
     pub border_width: f32,
     pub hole_rect: Option<LogicalRect>,
+    pub hole_rect_precise: Option<PreciseLogicalRect>,
     pub hole_radius: i32,
     pub shared_inner_hole: bool,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
+    pub clip_rect_precise: Option<PreciseLogicalRect>,
+    pub clip_radius_precise: Option<f32>,
     pub source_kind: &'static str,
 }
 
@@ -1262,6 +1266,15 @@ fn window_border_inner_hole_rect(
     .round_to_logical_rect()
 }
 
+fn precise_rect_from_resolved(rect: crate::ssd::ResolvedLogicalRect) -> PreciseLogicalRect {
+    PreciseLogicalRect {
+        x: rect.x.to_f32(),
+        y: rect.y.to_f32(),
+        width: rect.width.to_f32(),
+        height: rect.height.to_f32(),
+    }
+}
+
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
@@ -1462,6 +1475,7 @@ fn build_cached_buffers_and_shaders(
     collect_cached_buffers(
         &layout.root,
         "root".to_string(),
+        None,
         None,
         order_map,
         dirty_node_ids,
@@ -1745,6 +1759,7 @@ fn collect_cached_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     ancestor_clip: Option<super::DecorationClip>,
+    ancestor_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     buffers: &mut Vec<CachedDecorationBuffer>,
@@ -1763,7 +1778,10 @@ fn collect_cached_buffers(
     let node_radius = node.resolved_border_radius.round_to_i32().max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
+    let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
+    let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
     let child_clip = node.effective_clip;
+    let child_resolved_clip = node.resolved_effective_clip;
     let window_border_inner_rect = node.style.border.and_then(|_border| {
         matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
             window_border_inner_hole_rect(node, node.resolved_border_width.round_to_i32().max(0))
@@ -1804,12 +1822,16 @@ fn collect_cached_buffers(
                                     node.resolved_border_width.round_to_i32().max(0),
                                 )
                             }),
+                            hole_rect_precise: (!node.children.is_empty())
+                                .then(|| precise_rect_from_resolved(node.resolved_content_rect)),
                             hole_radius: (node.resolved_border_radius - node.resolved_border_width)
                                 .round_to_i32()
                                 .max(0),
                             shared_inner_hole: !node.children.is_empty(),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
+                            clip_rect_precise: current_clip_rect_precise,
+                            clip_radius_precise: current_clip_radius_precise,
                             source_kind: node_kind_name(&node.kind),
                         });
                     }
@@ -1826,6 +1848,8 @@ fn collect_cached_buffers(
                         shader: effect.shader.clone(),
                         clip_rect: current_clip_rect,
                         clip_radius: current_clip_radius,
+                        clip_rect_precise: current_clip_rect_precise,
+                        clip_radius_precise: current_clip_radius_precise,
                     });
                 }
 
@@ -1848,6 +1872,8 @@ fn collect_cached_buffers(
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .round_to_i32()
                                         .max(0),
+                                    current_clip_rect_precise,
+                                    current_clip_radius_precise,
                                     None,
                                     0,
                                 );
@@ -1863,6 +1889,8 @@ fn collect_cached_buffers(
                                     0.0,
                                     None,
                                     0,
+                                    current_clip_rect_precise,
+                                    current_clip_radius_precise,
                                     None,
                                     0,
                                 );
@@ -1879,6 +1907,8 @@ fn collect_cached_buffers(
                                 0.0,
                                 None,
                                 0,
+                                current_clip_rect_precise,
+                                current_clip_radius_precise,
                                 current_clip_rect,
                                 current_clip_radius,
                             );
@@ -1892,6 +1922,7 @@ fn collect_cached_buffers(
                     child,
                     format!("{path}/child-{index}"),
                     child_clip,
+                    child_resolved_clip,
                     order_map,
                     dirty_node_ids,
                     buffers,
@@ -2034,6 +2065,8 @@ fn push_cached_fill(
     border_width: f32,
     hole_rect: Option<LogicalRect>,
     hole_radius: i32,
+    clip_rect_precise: Option<PreciseLogicalRect>,
+    clip_radius_precise: Option<f32>,
     clip_rect: Option<LogicalRect>,
     clip_radius: i32,
 ) {
@@ -2059,10 +2092,13 @@ fn push_cached_fill(
         radius,
         border_width,
         hole_rect,
+        hole_rect_precise: None,
         hole_radius,
         shared_inner_hole: false,
         clip_rect,
         clip_radius,
+        clip_rect_precise,
+        clip_radius_precise,
         source_kind: "fill",
     });
 }

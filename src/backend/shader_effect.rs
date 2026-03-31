@@ -31,7 +31,7 @@ use smithay::{
 };
 use tracing::warn;
 
-use crate::backend::visual::SnappedLogicalRect;
+use crate::backend::visual::{PreciseLogicalRect, SnappedLogicalRect};
 use crate::ssd::{BlendMode, CompiledEffect, EffectInput, EffectInvalidationPolicy, EffectStage, LogicalRect, NoiseKind, NoiseStage, ShaderModule, ShaderStage, ShaderUniformValue};
 
 #[derive(Debug, Clone)]
@@ -43,6 +43,8 @@ pub struct CachedShaderEffect {
     pub shader: CompiledEffect,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
+    pub clip_rect_precise: Option<PreciseLogicalRect>,
+    pub clip_radius_precise: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
