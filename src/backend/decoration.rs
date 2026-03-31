@@ -366,7 +366,16 @@ fn rounded_rect_element(
         radius: snapped_logical_radius(cached.clip_radius, scale),
     }));
     let inner = quantized_border_inner.or_else(|| {
-        cached.hole_rect.map(|hole_rect| RoundedClip {
+        cached.hole_rect_precise.map(|hole_rect| RoundedClip {
+            rect: snapped_precise_logical_rect_in_element_space(
+                hole_rect,
+                outer_rect_precise,
+                scale,
+            ),
+            radius: snapped_radius_f32(
+                cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+            ),
+        }).or_else(|| cached.hole_rect.map(|hole_rect| RoundedClip {
             rect: snapped_logical_rect_from_relative_physical(
                 relative_physical_rect_from_root(
                     hole_rect,
@@ -375,15 +384,6 @@ fn rounded_rect_element(
                     scale,
                     Some(hole_rect),
                 ),
-                scale,
-            ),
-            radius: snapped_radius_f32(
-                cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
-            ),
-        }).or_else(|| cached.hole_rect_precise.map(|hole_rect| RoundedClip {
-            rect: snapped_precise_logical_rect_in_element_space(
-                hole_rect,
-                outer_rect_precise,
                 scale,
             ),
             radius: snapped_radius_f32(

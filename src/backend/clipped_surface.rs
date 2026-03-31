@@ -13,8 +13,7 @@ use smithay::{
 
 use crate::ssd::ContentClip;
 use crate::backend::visual::{
-    SnappedLogicalRect, snapped_logical_radius,
-    snapped_logical_rect_relative_with_mode,
+    SnappedLogicalRect, snapped_precise_logical_rect_relative_with_mode,
 };
 
 #[derive(Debug)]
@@ -97,13 +96,8 @@ impl ClippedSurfaceElement {
             )),
             clip.rect.size,
         );
-        let snapped_clip_rect = snapped_logical_rect_relative_with_mode(
-            crate::ssd::LogicalRect::new(
-                clip.rect.loc.x,
-                clip.rect.loc.y,
-                clip.rect.size.w,
-                clip.rect.size.h,
-            ),
+        let snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
+            clip.rect_precise,
             output_origin,
             clip_scale,
             clip.snap_mode,
@@ -142,15 +136,7 @@ impl ClippedSurfaceElement {
         let inner = if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
             && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
         {
-            let expanded_physical_clip = Rectangle::new(
-                physical_clip.loc,
-                (
-                    physical_clip.size.w.saturating_add(1),
-                    physical_clip.size.h.saturating_add(1),
-                )
-                    .into(),
-            );
-            match CropRenderElement::from_element(inner, output_scale, expanded_physical_clip) {
+            match CropRenderElement::from_element(inner, output_scale, physical_clip) {
                 Some(cropped) => ClippedSurfaceInner::Simple(cropped),
                 None => return Err(GlesError::FramebufferBindingError),
             }
@@ -172,14 +158,6 @@ impl ClippedSurfaceElement {
                     tracing::info!(
                         local_clip = ?local_clip,
                         physical_clip = ?original_physical_clip,
-                        expanded_physical_clip = ?Rectangle::new(
-                            original_physical_clip.loc,
-                            (
-                                original_physical_clip.size.w.saturating_add(1),
-                                original_physical_clip.size.h.saturating_add(1),
-                            )
-                                .into()
-                        ),
                         output_origin = ?output_origin,
                         output_scale = ?output_scale,
                         clip_scale = ?clip_scale,
@@ -216,10 +194,13 @@ impl ClippedSurfaceElement {
             corner_radius: if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
                 && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
             {
-                let radius = snapped_logical_radius(clip.radius, output_scale) * output_scale.x as f32;
+                let radius = ((clip.radius_precise.max(0.0) as f64) * output_scale.x.abs().max(0.0001))
+                    .round() as f32;
                 [0.0, 0.0, radius, radius]
             } else {
-                let radius = snapped_logical_radius(clip.radius, clip_scale);
+                let scale_x = clip_scale.x.abs().max(0.0001) as f32;
+                let radius =
+                    ((clip.radius_precise.max(0.0) * scale_x).round() / scale_x).max(0.0);
                 [radius, radius, radius, radius]
             },
             simple_clip_size: if (clip_scale.x - output_scale.x).abs() < f64::EPSILON

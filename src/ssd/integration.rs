@@ -48,6 +48,8 @@ pub struct WindowDecorationState {
 pub struct ContentClip {
     pub rect: Rectangle<i32, Logical>,
     pub radius: i32,
+    pub rect_precise: PreciseLogicalRect,
+    pub radius_precise: f32,
     pub snap_mode: RectSnapMode,
 }
 
@@ -1345,11 +1347,29 @@ fn slot_content_clip_for_node(
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
         let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
-        let clip = node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
+        let inherited_clip = node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
             rect: node.resolved_rect,
             radius: (node.resolved_border_radius - node.resolved_border_width)
                 .max(crate::ssd::ResolvedLayoutValue::ZERO),
         });
+        let clip_rect = crate::ssd::ResolvedLogicalRect {
+            x: inherited_clip.rect.x.max(node.resolved_rect.x),
+            y: inherited_clip.rect.y.max(node.resolved_rect.y),
+            width: crate::ssd::ResolvedLayoutValue::from_raw(
+                (inherited_clip.rect.right().min(node.resolved_rect.right()).raw()
+                    - inherited_clip.rect.x.max(node.resolved_rect.x).raw())
+                    .max(0),
+            ),
+            height: crate::ssd::ResolvedLayoutValue::from_raw(
+                (inherited_clip.rect.bottom().min(node.resolved_rect.bottom()).raw()
+                    - inherited_clip.rect.y.max(node.resolved_rect.y).raw())
+                    .max(0),
+            ),
+        };
+        let clip = crate::ssd::ResolvedDecorationClip {
+            rect: clip_rect,
+            radius: inherited_clip.radius,
+        };
         return Some(ContentClip {
             rect: Rectangle::new(
                 Point::from((
@@ -1363,7 +1383,9 @@ fn slot_content_clip_for_node(
                     .into(),
             ),
             radius: clip.radius.round_to_i32().max(0),
-            snap_mode: RectSnapMode::OriginAndSize,
+            rect_precise: precise_rect_from_resolved(clip.rect),
+            radius_precise: clip.radius.to_f32().max(0.0),
+            snap_mode: RectSnapMode::SharedEdges,
         });
     }
 
@@ -2572,5 +2594,46 @@ mod tests {
             layout.window_slot_rect(),
             Some(LogicalRect::new(50, 100, 800, 600))
         );
+    }
+
+    #[test]
+    fn content_clip_matches_window_slot_not_border_inner() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    border_radius: Some(18),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Column,
+                    }))
+                    .with_children(vec![
+                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                            direction: LayoutDirection::Row,
+                        }))
+                        .with_style(DecorationStyle {
+                            height: Some(30),
+                            ..Default::default()
+                        }),
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                    ]),
+                ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
+            .expect("layout should succeed");
+        let slot = layout.window_slot_rect().expect("slot should exist");
+        let clip = content_clip_for_layout(&tree, &layout).expect("content clip should exist");
+
+        assert_eq!(clip.rect.loc.x, slot.x);
+        assert_eq!(clip.rect.loc.y, slot.y);
+        assert_eq!(clip.rect.size.w, slot.width);
+        assert_eq!(clip.rect.size.h, slot.height);
     }
 }

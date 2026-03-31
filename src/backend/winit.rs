@@ -444,6 +444,8 @@ pub fn init_winit(
                                     warn!(?error, "failed to build clipped surface elements");
                                 })
                                 .unwrap_or_default();
+                                let bypass_clip =
+                                    std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some();
                                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                                     let first_geometry = clipped
                                         .first()
@@ -496,7 +498,44 @@ pub fn init_winit(
                                         "gap debug winit clipped surface elements"
                                     );
                                 }
-                                transform_clipped_elements(clipped, visual_state)
+                                if bypass_clip {
+                                    let raw_elements = window_render::surface_elements(
+                                        window,
+                                        renderer,
+                                        physical_location,
+                                        scale,
+                                        visual_state.opacity,
+                                    );
+                                    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                        let first_geometry = raw_elements.first().map(|element| {
+                                            smithay::backend::renderer::element::Element::geometry(element, scale)
+                                        });
+                                        let first_src = raw_elements.first().map(|element| {
+                                            smithay::backend::renderer::element::Element::src(element)
+                                        });
+                                        let first_transform = raw_elements.first().map(|element| {
+                                            smithay::backend::renderer::element::Element::transform(element)
+                                        });
+                                        tracing::info!(
+                                            output = %output.name(),
+                                            window_id = %window_id,
+                                            physical_location = ?physical_location,
+                                            raw_count = raw_elements.len(),
+                                            first_geometry = ?first_geometry,
+                                            first_src = ?first_src,
+                                            first_transform = ?first_transform,
+                                            "gap debug winit raw surface elements"
+                                        );
+                                    }
+                                    transform_window_elements(
+                                        raw_elements,
+                                        visual_state,
+                                        WinitRenderElements::Window,
+                                        WinitRenderElements::TransformedWindow,
+                                    )
+                                } else {
+                                    transform_clipped_elements(clipped, visual_state)
+                                }
                             } else {
                                 let surfaces = window_render::surface_elements(
                                     window,

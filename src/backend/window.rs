@@ -279,6 +279,10 @@ pub fn clipped_surface_elements(
     alpha: f32,
     clip: Option<ContentClip>,
 ) -> Result<Vec<ClippedSurfaceElement>, smithay::backend::renderer::gles::GlesError> {
+    if std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {
+        return Ok(Vec::new());
+    }
+
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
     match clip {
         Some(clip) => elements

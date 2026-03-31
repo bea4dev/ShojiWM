@@ -67,6 +67,34 @@ pub fn snapped_logical_rect_relative_with_mode(
     }
 }
 
+pub fn snapped_precise_logical_rect_relative_with_mode(
+    rect: PreciseLogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+    mode: RectSnapMode,
+) -> SnappedLogicalRect {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let left = (((rect.x - origin.x as f32) as f64) * scale_x).round() / scale_x;
+    let top = (((rect.y - origin.y as f32) as f64) * scale_y).round() / scale_y;
+    let (right, bottom) = match mode {
+        RectSnapMode::SharedEdges => (
+            ((((rect.x + rect.width) - origin.x as f32) as f64) * scale_x).round() / scale_x,
+            ((((rect.y + rect.height) - origin.y as f32) as f64) * scale_y).round() / scale_y,
+        ),
+        RectSnapMode::OriginAndSize => (
+            left + ((rect.width as f64) * scale_x).round() / scale_x,
+            top + ((rect.height as f64) * scale_y).round() / scale_y,
+        ),
+    };
+    SnappedLogicalRect {
+        x: left as f32,
+        y: top as f32,
+        width: (right - left).max(0.0) as f32,
+        height: (bottom - top).max(0.0) as f32,
+    }
+}
+
 pub fn snapped_logical_radius(radius: i32, scale: Scale<f64>) -> f32 {
     let scale_x = scale.x.abs().max(0.0001);
     (((radius.max(0)) as f64) * scale_x).round().max(0.0) as f32 / scale_x as f32

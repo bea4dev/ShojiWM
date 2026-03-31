@@ -1122,6 +1122,7 @@ fn render_surface(
                     warn!(?error, "failed to build clipped surface elements");
                 })
                 .unwrap_or_default();
+                let bypass_clip = std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some();
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                     let first_geometry = clipped
                         .first()
@@ -1176,7 +1177,42 @@ fn render_surface(
                         "gap debug tty clipped surface elements"
                     );
                 }
-                let transformed = transform_clipped_elements(clipped, visual_state);
+                let transformed = if bypass_clip {
+                    let raw_elements = window_render::surface_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        visual_state.opacity,
+                    );
+                    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                        let first_geometry = raw_elements.first().map(|element| {
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
+                        });
+                        let first_src = raw_elements.first().map(|element| {
+                            smithay::backend::renderer::element::Element::src(element)
+                        });
+                        let first_transform = raw_elements.first().map(|element| {
+                            smithay::backend::renderer::element::Element::transform(element)
+                        });
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            physical_location = ?physical_location,
+                            raw_count = raw_elements.len(),
+                            first_geometry = ?first_geometry,
+                            first_src = ?first_src,
+                            first_transform = ?first_transform,
+                            "gap debug tty raw surface elements"
+                        );
+                    }
+                    raw_elements
+                        .into_iter()
+                        .map(TtyRenderElements::Window)
+                        .collect()
+                } else {
+                    transform_clipped_elements(clipped, visual_state)
+                };
                 if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
                     if let Some(first_geometry) = transformed
                         .first()
