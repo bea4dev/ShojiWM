@@ -40,6 +40,7 @@ pub struct CachedShaderEffect {
     pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
+    pub rect_precise: Option<PreciseLogicalRect>,
     pub shader: CompiledEffect,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,

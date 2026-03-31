@@ -1035,12 +1035,77 @@ fn render_surface(
                             border_buffer_rect = ?border_buffer.map(|buffer| buffer.rect),
                             border_buffer_width = ?border_buffer.map(|buffer| buffer.border_width),
                             border_buffer_hole = ?border_buffer.and_then(|buffer| buffer.hole_rect),
+                            border_buffer_hole_precise = ?border_buffer.and_then(|buffer| buffer.hole_rect_precise),
+                            border_buffer_hole_radius_precise = ?border_buffer.and_then(|buffer| buffer.hole_radius_precise),
                             border_fill_rect = ?border_fill.map(|buffer| buffer.rect),
                             border_fill_hole = ?border_fill.and_then(|buffer| buffer.hole_rect),
                             decoration_root_rect = ?decoration.layout.root.rect,
                             decoration_slot_rect = ?decoration.layout.window_slot_rect(),
                             "gap debug tty border buffers"
                         );
+                        if let Some(decoration) = window_decorations.get(window) {
+                            let border_inner_physical = border_buffer.and_then(|buffer| {
+                                buffer
+                                    .hole_rect_precise
+                                    .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
+                                        rect,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                    ))
+                                    .or_else(|| buffer.hole_rect.map(|rect| {
+                                        crate::backend::visual::relative_physical_rect_from_root(
+                                            rect,
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                            Some(rect),
+                                        )
+                                    }))
+                            });
+                            let titlebar_fill = decoration.buffers.iter().find(|buffer| {
+                                buffer.source_kind == "fill" && buffer.rect.height == 30
+                            });
+                            let titlebar_fill_physical = titlebar_fill.map(|buffer| {
+                                crate::backend::visual::relative_physical_rect_from_root(
+                                    buffer.rect,
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                    buffer.clip_rect,
+                                )
+                            });
+                            let first_button = decoration.buffers.iter().find(|buffer| {
+                                buffer.source_kind == "button" && buffer.border_width > 0.0
+                            });
+                            let first_button_physical = first_button.map(|buffer| {
+                                crate::backend::visual::relative_physical_rect_from_root(
+                                    buffer.rect,
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                    buffer.clip_rect,
+                                )
+                            });
+                            let button_delta = match (border_inner_physical, first_button_physical) {
+                                (Some(inner), Some(button)) => Some((
+                                    button.loc.x - inner.loc.x,
+                                    button.loc.y - inner.loc.y,
+                                    (inner.loc.x + inner.size.w) - (button.loc.x + button.size.w),
+                                    (inner.loc.y + inner.size.h) - (button.loc.y + button.size.h),
+                                )),
+                                _ => None,
+                            };
+                            tracing::info!(
+                                output = %output.name(),
+                                window_id = %window_id,
+                                border_inner_physical = ?border_inner_physical,
+                                titlebar_fill_physical = ?titlebar_fill_physical,
+                                first_button_physical = ?first_button_physical,
+                                button_delta = ?button_delta,
+                                "gap debug tty border inner compare"
+                            );
+                        }
                     }
                 }
                 let clipped = window_render::clipped_surface_elements(

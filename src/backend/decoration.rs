@@ -296,7 +296,18 @@ fn rounded_rect_element(
         }
     });
 
-    let clip = cached.clip_rect.map(|clip_rect| RoundedClip {
+    let clip = cached.clip_rect_precise.map(|clip_rect| RoundedClip {
+        rect: snapped_logical_rect_from_relative_physical(
+            relative_physical_rect_from_root_precise(
+                clip_rect,
+                cached.rect,
+                output_geo,
+                scale,
+            ),
+            scale,
+        ),
+        radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
+    }).or_else(|| cached.clip_rect.map(|clip_rect| RoundedClip {
         rect: snapped_logical_rect_from_relative_physical(
             relative_physical_rect_from_root(
                 clip_rect,
@@ -308,17 +319,6 @@ fn rounded_rect_element(
             scale,
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
-    }).or_else(|| cached.clip_rect_precise.map(|clip_rect| RoundedClip {
-        rect: snapped_logical_rect_from_relative_physical(
-            relative_physical_rect_from_root_precise(
-                clip_rect,
-                cached.rect,
-                output_geo,
-                scale,
-            ),
-            scale,
-        ),
-        radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
     }));
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect.map(|hole_rect| RoundedClip {
@@ -406,6 +406,7 @@ fn rounded_rect_element(
             stable_key = %cached.stable_key,
             source_kind = %cached.source_kind,
             rect = ?cached.rect,
+            rect_precise = ?cached.rect_precise,
             local_rect = ?local_rect,
             border_width = cached.border_width,
             hole_rect = ?cached.hole_rect,

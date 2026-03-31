@@ -37,7 +37,7 @@ void main() {
     float shape_alpha = rounded_rect_alpha(coords, size, corner_radius);
 
     if (inner_enabled > 0.5 && border_width > 0.0) {
-        vec2 outer_origin = inner_rect.xy; - vec2(border_width);
+        vec2 outer_origin = inner_rect.xy - vec2(border_width);
         vec2 outer_size = inner_rect.zw + vec2(border_width * 2.0);
         vec4 outer_radius = inner_radius + vec4(border_width);
         float outer_alpha = rounded_rect_alpha(coords - outer_origin, outer_size, outer_radius);

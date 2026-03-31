@@ -69,6 +69,7 @@ pub struct CachedDecorationBuffer {
     pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
+    pub rect_precise: Option<PreciseLogicalRect>,
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
     pub radius: i32,
@@ -1281,6 +1282,35 @@ fn precise_rect_from_resolved(rect: crate::ssd::ResolvedLogicalRect) -> PreciseL
     }
 }
 
+fn precise_rect_from_logical(rect: LogicalRect) -> PreciseLogicalRect {
+    PreciseLogicalRect {
+        x: rect.x as f32,
+        y: rect.y as f32,
+        width: rect.width as f32,
+        height: rect.height as f32,
+    }
+}
+
+fn window_border_inner_clip_logical(
+    node: &super::ComputedDecorationNode,
+) -> Option<super::DecorationClip> {
+    if !matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+        return None;
+    }
+    node.style.border?;
+    let border_width = node.resolved_border_width.round_to_i32().max(0);
+    let rect = window_border_inner_hole_rect(node, border_width);
+    if rect.width <= 0 || rect.height <= 0 {
+        return None;
+    }
+    Some(super::DecorationClip {
+        rect,
+        radius: (node.resolved_border_radius - node.resolved_border_width)
+            .round_to_i32()
+            .max(0),
+    })
+}
+
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
@@ -1789,13 +1819,16 @@ fn collect_cached_buffers(
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
     let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
-    let window_border_inner_clip = window_border_inner_clip_resolved(node);
-    let child_clip = window_border_inner_clip
-        .map(|clip| clip.round_to_logical_clip())
-        .or(node.effective_clip);
-    let child_resolved_clip = window_border_inner_clip.or(node.resolved_effective_clip);
+    let window_border_inner_clip = window_border_inner_clip_logical(node);
+    let child_clip = window_border_inner_clip.or(node.effective_clip);
+    let child_resolved_clip = window_border_inner_clip
+        .map(|clip| crate::ssd::ResolvedDecorationClip {
+            rect: crate::ssd::ResolvedLogicalRect::from_logical(clip.rect),
+            radius: crate::ssd::ResolvedLayoutValue::from_i32(clip.radius),
+        })
+        .or(node.resolved_effective_clip);
     let window_border_inner_rect = window_border_inner_clip
-        .map(|clip| clip.rect.round_to_logical_rect())
+        .map(|clip| clip.rect)
         .or_else(|| {
             node.style.border.and_then(|_border| {
                 matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
@@ -1820,6 +1853,7 @@ fn collect_cached_buffers(
                             stable_key: format!("{path}:border"),
                             order: current_order,
                             rect: node.rect,
+                            rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
                             color,
                             buffer: SolidColorBuffer::new(
                                 (node.rect.width.max(1), node.rect.height.max(1)),
@@ -1836,18 +1870,21 @@ fn collect_cached_buffers(
                             border_width: node.resolved_border_width.to_f32().max(0.0),
                             hole_rect: window_border_inner_rect,
                             hole_rect_precise: window_border_inner_clip
-                                .map(|clip| precise_rect_from_resolved(clip.rect))
+                                .map(|clip| precise_rect_from_logical(clip.rect))
                                 .or_else(|| (!node.children.is_empty())
-                                    .then(|| precise_rect_from_resolved(node.resolved_content_rect))),
+                                    .then(|| precise_rect_from_logical(window_border_inner_hole_rect(
+                                        node,
+                                        node.resolved_border_width.round_to_i32().max(0),
+                                    )))),
                             hole_radius: window_border_inner_clip
-                                .map(|clip| clip.radius.round_to_i32().max(0))
+                                .map(|clip| clip.radius.max(0))
                                 .unwrap_or_else(|| {
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .round_to_i32()
                                         .max(0)
                                 }),
                             hole_radius_precise: window_border_inner_clip
-                                .map(|clip| clip.radius.to_f32().max(0.0))
+                                .map(|clip| clip.radius.max(0) as f32)
                                 .or_else(|| (!node.children.is_empty()).then(|| {
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .to_f32()
@@ -1871,6 +1908,7 @@ fn collect_cached_buffers(
                         stable_key: format!("{path}:shader"),
                         order: current_order,
                         rect: node.rect,
+                        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
                         shader: effect.shader.clone(),
                         clip_rect: current_clip_rect,
                         clip_radius: current_clip_radius,
@@ -1896,16 +1934,16 @@ fn collect_cached_buffers(
                                     0.0,
                                     Some(inner_rect),
                                     window_border_inner_clip
-                                        .map(|clip| clip.radius.round_to_i32().max(0))
+                                        .map(|clip| clip.radius.max(0))
                                         .unwrap_or_else(|| {
                                             (node.resolved_border_radius - node.resolved_border_width)
                                                 .round_to_i32()
                                                 .max(0)
                                         }),
                                     window_border_inner_clip
-                                        .map(|clip| precise_rect_from_resolved(clip.rect)),
+                                        .map(|clip| precise_rect_from_logical(clip.rect)),
                                     window_border_inner_clip
-                                        .map(|clip| clip.radius.to_f32().max(0.0)),
+                                        .map(|clip| clip.radius.max(0) as f32),
                                     current_clip_rect_precise,
                                     current_clip_radius_precise,
                                     None,
@@ -2119,6 +2157,7 @@ fn push_cached_fill(
         stable_key,
         order,
         rect,
+        rect_precise: Some(precise_rect_from_logical(rect)),
         color,
         buffer: SolidColorBuffer::new(
             (rect.width.max(1), rect.height.max(1)),
