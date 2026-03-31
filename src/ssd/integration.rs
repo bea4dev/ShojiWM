@@ -1237,6 +1237,20 @@ fn content_clip_for_layout(
     slot_content_clip_for_node(&layout.root, None)
 }
 
+fn window_border_inner_clip_resolved(
+    node: &super::ComputedDecorationNode,
+) -> Option<crate::ssd::ResolvedDecorationClip> {
+    if !matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+        return None;
+    }
+    node.style.border?;
+    Some(node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
+        rect: node.resolved_content_rect,
+        radius: (node.resolved_border_radius - node.resolved_border_width)
+            .max(crate::ssd::ResolvedLayoutValue::ZERO),
+    }))
+}
+
 fn window_border_inner_hole_rect(
     node: &super::ComputedDecorationNode,
     border_width: i32,
@@ -1248,24 +1262,14 @@ fn window_border_inner_hole_rect(
         left: border_width,
     });
 
-    let inner_rect = node.resolved_content_rect;
-    let Some(slot_rect) = node.resolved_window_slot_rect() else {
-        return inner_rect.round_to_logical_rect();
-    };
-
-    let left = slot_rect.x.max(inner_rect.x);
-    let right = slot_rect.right().min(inner_rect.right());
-    if right.raw() <= left.raw() {
-        return fallback_inner_rect;
+    let inner_rect = window_border_inner_clip_resolved(node)
+        .map(|clip| clip.rect.round_to_logical_rect())
+        .unwrap_or_else(|| node.resolved_content_rect.round_to_logical_rect());
+    if inner_rect.width <= 0 || inner_rect.height <= 0 {
+        fallback_inner_rect
+    } else {
+        inner_rect
     }
-
-    crate::ssd::ResolvedLogicalRect {
-        x: left,
-        y: inner_rect.y,
-        width: crate::ssd::ResolvedLayoutValue::from_raw(right.raw() - left.raw()),
-        height: inner_rect.height,
-    }
-    .round_to_logical_rect()
 }
 
 fn precise_rect_from_resolved(rect: crate::ssd::ResolvedLogicalRect) -> PreciseLogicalRect {
@@ -1294,21 +1298,24 @@ fn slot_content_clip_for_node(
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
         let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
+        let clip = node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
+            rect: node.resolved_rect,
+            radius: (node.resolved_border_radius - node.resolved_border_width)
+                .max(crate::ssd::ResolvedLayoutValue::ZERO),
+        });
         return Some(ContentClip {
             rect: Rectangle::new(
                 Point::from((
-                    node.resolved_rect.x.round_to_i32(),
-                    node.resolved_rect.y.round_to_i32(),
+                    clip.rect.x.round_to_i32(),
+                    clip.rect.y.round_to_i32(),
                 )),
                 (
-                    node.resolved_rect.width.round_to_i32(),
-                    node.resolved_rect.height.round_to_i32(),
+                    clip.rect.width.round_to_i32(),
+                    clip.rect.height.round_to_i32(),
                 )
                     .into(),
             ),
-            radius: (node.resolved_border_radius - node.resolved_border_width)
-                .round_to_i32()
-                .max(0),
+            radius: clip.radius.round_to_i32().max(0),
             snap_mode: RectSnapMode::OriginAndSize,
         });
     }
@@ -1782,13 +1789,20 @@ fn collect_cached_buffers(
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
     let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
-    let child_clip = node.effective_clip;
-    let child_resolved_clip = node.resolved_effective_clip;
-    let window_border_inner_rect = node.style.border.and_then(|_border| {
-        matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
-            window_border_inner_hole_rect(node, node.resolved_border_width.round_to_i32().max(0))
-        })
-    });
+    let window_border_inner_clip = window_border_inner_clip_resolved(node);
+    let child_clip = window_border_inner_clip
+        .map(|clip| clip.round_to_logical_clip())
+        .or(node.effective_clip);
+    let child_resolved_clip = window_border_inner_clip.or(node.resolved_effective_clip);
+    let window_border_inner_rect = window_border_inner_clip
+        .map(|clip| clip.rect.round_to_logical_rect())
+        .or_else(|| {
+            node.style.border.and_then(|_border| {
+                matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
+                    window_border_inner_hole_rect(node, node.resolved_border_width.round_to_i32().max(0))
+                })
+            })
+        });
 
     match &node.kind {
         super::DecorationNodeKind::Label(_)
@@ -1820,22 +1834,25 @@ fn collect_cached_buffers(
                             radius_precise: (!node.children.is_empty())
                                 .then(|| node.resolved_border_radius.to_f32().max(0.0)),
                             border_width: node.resolved_border_width.to_f32().max(0.0),
-                            hole_rect: (!node.children.is_empty()).then(|| {
-                                window_border_inner_hole_rect(
-                                    node,
-                                    node.resolved_border_width.round_to_i32().max(0),
-                                )
-                            }),
-                            hole_rect_precise: (!node.children.is_empty())
-                                .then(|| precise_rect_from_resolved(node.resolved_content_rect)),
-                            hole_radius: (node.resolved_border_radius - node.resolved_border_width)
-                                .round_to_i32()
-                                .max(0),
-                            hole_radius_precise: (!node.children.is_empty()).then(|| {
-                                (node.resolved_border_radius - node.resolved_border_width)
-                                    .to_f32()
-                                    .max(0.0)
-                            }),
+                            hole_rect: window_border_inner_rect,
+                            hole_rect_precise: window_border_inner_clip
+                                .map(|clip| precise_rect_from_resolved(clip.rect))
+                                .or_else(|| (!node.children.is_empty())
+                                    .then(|| precise_rect_from_resolved(node.resolved_content_rect))),
+                            hole_radius: window_border_inner_clip
+                                .map(|clip| clip.radius.round_to_i32().max(0))
+                                .unwrap_or_else(|| {
+                                    (node.resolved_border_radius - node.resolved_border_width)
+                                        .round_to_i32()
+                                        .max(0)
+                                }),
+                            hole_radius_precise: window_border_inner_clip
+                                .map(|clip| clip.radius.to_f32().max(0.0))
+                                .or_else(|| (!node.children.is_empty()).then(|| {
+                                    (node.resolved_border_radius - node.resolved_border_width)
+                                        .to_f32()
+                                        .max(0.0)
+                                })),
                             shared_inner_hole: !node.children.is_empty(),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
