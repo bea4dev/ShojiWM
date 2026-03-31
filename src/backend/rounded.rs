@@ -25,7 +25,7 @@ pub struct RoundedRectSpec {
     pub geometry: Rectangle<i32, Physical>,
     pub color: [f32; 4],
     pub alpha: f32,
-    pub radius: i32,
+    pub radius: f32,
     pub shape: RoundedShapeKind,
     pub inner: Option<RoundedClip>,
     pub clip: Option<RoundedClip>,
@@ -242,7 +242,7 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
         })
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
     let inner_radius = spec.inner.map(|inner| inner.radius.max(0.0)).unwrap_or(0.0);
-    let radius = spec.radius.max(0) as f32;
+    let radius = spec.radius.max(0.0);
 
     vec![
         Uniform::new("color", spec.color),

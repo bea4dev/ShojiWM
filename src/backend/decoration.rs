@@ -367,7 +367,7 @@ fn rounded_rect_element(
                 cached.color.a as f32 / 255.0,
             ],
             alpha,
-            radius: cached.radius,
+            radius: outer_radius,
             shape: if cached.border_width > 0.0 {
                 RoundedShapeKind::Border {
                     width: cached.border_width,
