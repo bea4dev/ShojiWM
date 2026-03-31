@@ -126,6 +126,37 @@ pub fn snapped_logical_rect_in_element_space(
     }
 }
 
+pub fn snapped_precise_logical_rect_in_element_space(
+    rect: PreciseLogicalRect,
+    element_rect: PreciseLogicalRect,
+    scale: Scale<f64>,
+) -> SnappedLogicalRect {
+    let scale_x = scale.x.abs().max(0.0001) as f32;
+    let scale_y = scale.y.abs().max(0.0001) as f32;
+
+    let element_left_px = (element_rect.x * scale_x).round();
+    let element_top_px = (element_rect.y * scale_y).round();
+    let snapped_left_px = (rect.x * scale_x).round();
+    let snapped_top_px = (rect.y * scale_y).round();
+    let snapped_right_px = ((rect.x + rect.width) * scale_x).round();
+    let snapped_bottom_px = ((rect.y + rect.height) * scale_y).round();
+
+    let local_left_px = snapped_left_px - element_left_px;
+    let local_top_px = snapped_top_px - element_top_px;
+    let local_width_px = (snapped_right_px - snapped_left_px).max(0.0);
+    let local_height_px = (snapped_bottom_px - snapped_top_px).max(0.0);
+
+    let element_width_px = ((element_rect.width * scale_x).round()).max(1.0);
+    let element_height_px = ((element_rect.height * scale_y).round()).max(1.0);
+
+    SnappedLogicalRect {
+        x: local_left_px * element_rect.width.max(0.0001) / element_width_px,
+        y: local_top_px * element_rect.height.max(0.0001) / element_height_px,
+        width: local_width_px * element_rect.width.max(0.0001) / element_width_px,
+        height: local_height_px * element_rect.height.max(0.0001) / element_height_px,
+    }
+}
+
 #[derive(Debug)]
 pub struct AlphaRenderElement<E> {
     element: E,
@@ -289,6 +320,25 @@ pub fn relative_physical_rect_from_root(
     Rectangle::new(Point::from((left_px, top_px)), (width_px, height_px).into())
 }
 
+pub fn relative_physical_rect_from_root_snapped_edges(
+    rect: LogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    relative_physical_rect_from_root_precise(
+        PreciseLogicalRect {
+            x: rect.x as f32,
+            y: rect.y as f32,
+            width: rect.width as f32,
+            height: rect.height as f32,
+        },
+        root_rect,
+        output_geo,
+        output_scale,
+    )
+}
+
 pub fn snapped_logical_rect_from_relative_physical(
     rect: Rectangle<i32, Physical>,
     scale: Scale<f64>,
@@ -323,6 +373,71 @@ pub fn relative_physical_rect_from_root_precise(
         Point::from((left_px - root_left_px, top_px - root_top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PreciseLogicalRect, relative_physical_rect_from_root,
+        relative_physical_rect_from_root_snapped_edges, snapped_precise_logical_rect_in_element_space,
+    };
+    use crate::ssd::LogicalRect;
+    use smithay::utils::{Logical, Rectangle, Scale};
+
+    #[test]
+    fn snapped_edge_relative_rect_is_translation_stable_against_output() {
+        let output_geo = Rectangle::<i32, Logical>::new((0, 0).into(), (4000, 2000).into());
+        let scale = Scale::from((1.6, 1.6));
+
+        let root_a = LogicalRect::new(100, 40, 200, 80);
+        let child_a = LogicalRect::new(111, 40, 10, 10);
+        let root_b = LogicalRect::new(101, 40, 200, 80);
+        let child_b = LogicalRect::new(112, 40, 10, 10);
+
+        let snapped_a =
+            relative_physical_rect_from_root_snapped_edges(child_a, root_a, output_geo, scale);
+        let snapped_b =
+            relative_physical_rect_from_root_snapped_edges(child_b, root_b, output_geo, scale);
+        let local_a = relative_physical_rect_from_root(child_a, root_a, output_geo, scale, None);
+        let local_b = relative_physical_rect_from_root(child_b, root_b, output_geo, scale, None);
+
+        assert_eq!(snapped_a, snapped_b);
+        assert_ne!(local_a, local_b);
+    }
+
+    #[test]
+    fn precise_clip_in_element_space_is_translation_stable() {
+        let scale = Scale::from((1.6, 1.6));
+        let element_a = PreciseLogicalRect {
+            x: 100.0,
+            y: 40.0,
+            width: 18.75,
+            height: 18.75,
+        };
+        let clip_a = PreciseLogicalRect {
+            x: 101.875,
+            y: 41.875,
+            width: 15.0,
+            height: 15.0,
+        };
+        let element_b = PreciseLogicalRect {
+            x: 101.0,
+            y: 40.0,
+            width: 18.75,
+            height: 18.75,
+        };
+        let clip_b = PreciseLogicalRect {
+            x: 102.875,
+            y: 41.875,
+            width: 15.0,
+            height: 15.0,
+        };
+
+        assert_eq!(
+            snapped_precise_logical_rect_in_element_space(clip_a, element_a, scale),
+            snapped_precise_logical_rect_in_element_space(clip_b, element_b, scale)
+        );
+    }
 }
 
 pub fn transformed_root_rect(rect: LogicalRect, transform: WindowTransform) -> LogicalRect {

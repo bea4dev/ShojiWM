@@ -1551,7 +1551,7 @@ mod tests {
 
     #[test]
     fn evaluator_reflects_title_into_tree() {
-        let tree = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false))
+        let tree = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false), 0)
             .expect("evaluation should succeed");
 
         let title_node = &tree.root.children[0].children[0].children[0];
@@ -1560,9 +1560,9 @@ mod tests {
 
     #[test]
     fn evaluator_changes_border_color_for_focused_window() {
-        let focused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(true))
+        let focused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(true), 0)
             .expect("focused evaluation should succeed");
-        let unfocused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false))
+        let unfocused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false), 0)
             .expect("unfocused evaluation should succeed");
 
         assert_ne!(focused.root.style.border, unfocused.root.style.border);

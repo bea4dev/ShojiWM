@@ -22,19 +22,26 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::{Logical, Physical, Point, Rectangle, Scale as OutputScale},
+    utils::{Logical, Rectangle, Scale as OutputScale},
 };
 
 use crate::ssd::{LogicalRect, WindowDecorationState, WindowIconSnapshot};
 use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
+use crate::backend::visual::{
+    PreciseLogicalRect, relative_physical_rect_from_root_precise,
+    relative_physical_rect_from_root_snapped_edges,
+};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
     pub owner_node_id: Option<String>,
     pub order: usize,
     pub rect: LogicalRect,
+    pub rect_precise: Option<PreciseLogicalRect>,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
+    pub clip_rect_precise: Option<PreciseLogicalRect>,
+    pub clip_radius_precise: Option<f32>,
     pub buffer: MemoryRenderBuffer,
 }
 
@@ -48,6 +55,7 @@ pub struct RenderedIconPixels {
 #[derive(Debug, Clone)]
 pub struct IconSpec {
     pub rect: LogicalRect,
+    pub rect_precise: Option<PreciseLogicalRect>,
     pub icon: Option<WindowIconSnapshot>,
     pub app_id: Option<String>,
     pub raster_scale: i32,
@@ -103,8 +111,11 @@ impl IconRasterizer {
                 owner_node_id: None,
                 order: 0,
                 rect: spec.rect,
+                rect_precise: spec.rect_precise,
                 clip_rect: None,
                 clip_radius: 0,
+                clip_rect_precise: None,
+                clip_radius_precise: None,
                 buffer: cached.buffer.clone(),
             });
         }
@@ -132,8 +143,11 @@ impl IconRasterizer {
             owner_node_id: None,
             order: 0,
             rect: spec.rect,
+            rect_precise: spec.rect_precise,
             clip_rect: None,
             clip_radius: 0,
+            clip_rect_precise: None,
+            clip_radius_precise: None,
             buffer,
         })
     }
@@ -144,8 +158,18 @@ impl IconRasterizer {
         }
 
         let raster_scale = spec.raster_scale.max(1);
-        let target_width = (spec.rect.width * raster_scale).max(1);
-        let target_height = (spec.rect.height * raster_scale).max(1);
+        let logical_width = spec
+            .rect_precise
+            .map(|rect| rect.width)
+            .unwrap_or(spec.rect.width as f32)
+            .max(0.0);
+        let logical_height = spec
+            .rect_precise
+            .map(|rect| rect.height)
+            .unwrap_or(spec.rect.height as f32)
+            .max(0.0);
+        let target_width = (logical_width * raster_scale as f32).round().max(1.0) as i32;
+        let target_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
 
         let source = icon_source_key(spec)?;
         let key = IconCacheKey {
@@ -275,6 +299,9 @@ pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
     let mut hasher = DefaultHasher::new();
     spec.rect.width.hash(&mut hasher);
     spec.rect.height.hash(&mut hasher);
+    spec.rect_precise
+        .map(|rect| ((rect.width * 1024.0).round() as i32, (rect.height * 1024.0).round() as i32))
+        .hash(&mut hasher);
     spec.raster_scale.hash(&mut hasher);
     spec.app_id.hash(&mut hasher);
     if let Some(icon) = &spec.icon {
@@ -415,14 +442,22 @@ fn memory_icon_element(
         return Ok(None);
     }
 
-    let local = Point::from((
-        icon.rect.x - root_rect.x,
-        icon.rect.y - root_rect.y,
-    ));
-    let physical: Point<i32, Physical> = local.to_f64().to_physical_precise_round(scale);
+    let physical = icon
+        .rect_precise
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale)
+        })
+        .unwrap_or_else(|| {
+            relative_physical_rect_from_root_snapped_edges(
+                icon.rect,
+                root_rect,
+                output_geo,
+                scale,
+            )
+        });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
-        physical.to_f64(),
+        physical.loc.to_f64(),
         &icon.buffer,
         Some(alpha.clamp(0.0, 1.0)),
         None,
@@ -447,6 +482,31 @@ fn memory_icon_element(
                 clip_rect.height,
             ),
             icon.clip_radius,
+            Some(PreciseLogicalRect {
+                x: icon
+                    .rect_precise
+                    .map(|rect| rect.x - root_rect.x as f32)
+                    .unwrap_or((icon.rect.x - root_rect.x) as f32),
+                y: icon
+                    .rect_precise
+                    .map(|rect| rect.y - root_rect.y as f32)
+                    .unwrap_or((icon.rect.y - root_rect.y) as f32),
+                width: icon
+                    .rect_precise
+                    .map(|rect| rect.width)
+                    .unwrap_or(icon.rect.width as f32),
+                height: icon
+                    .rect_precise
+                    .map(|rect| rect.height)
+                    .unwrap_or(icon.rect.height as f32),
+            }),
+            icon.clip_rect_precise.map(|clip_rect| PreciseLogicalRect {
+                x: clip_rect.x - root_rect.x as f32,
+                y: clip_rect.y - root_rect.y as f32,
+                width: clip_rect.width,
+                height: clip_rect.height,
+            }),
+            icon.clip_radius_precise,
         )?;
         Ok(Some(crate::backend::text::DecorationTextureElements::Clipped(
             clipped,

@@ -14,6 +14,8 @@ use crate::{
     backend::visual::{
         RectSnapMode, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, snapped_logical_radius,
+        relative_physical_rect_from_root_snapped_edges,
+        snapped_precise_logical_rect_in_element_space,
         snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
         snapped_logical_rect_in_element_space,
     },
@@ -241,16 +243,63 @@ fn rounded_rect_element(
         ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0)
     };
     let outer_radius = snapped_radius_f32(cached.radius_precise.unwrap_or(cached.radius as f32));
-    let geometry = relative_physical_rect_from_root(
-        cached.rect,
-        decoration.layout.root.rect,
-        output_geo,
-        scale,
-        cached.clip_rect,
-    );
+    let geometry = cached
+        .rect_precise
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(
+                rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            )
+        })
+        .unwrap_or_else(|| {
+            relative_physical_rect_from_root_snapped_edges(
+                cached.rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            )
+        });
+    let outer_rect_precise = cached.rect_precise.unwrap_or(crate::backend::visual::PreciseLogicalRect {
+        x: cached.rect.x as f32,
+        y: cached.rect.y as f32,
+        width: cached.rect.width as f32,
+        height: cached.rect.height as f32,
+    });
     let quantized_border_inner = (cached.border_width > 0.0 && !cached.shared_inner_hole)
         .then(|| {
-        if let Some(hole_rect) = cached.hole_rect {
+        if let Some(hole_rect) = cached.hole_rect_precise {
+            let left = (((hole_rect.x - outer_rect_precise.x).max(0.0) as f64) * scale.x.abs().max(0.0001))
+                .round()
+                / scale.x.abs().max(0.0001);
+            let top = (((hole_rect.y - outer_rect_precise.y).max(0.0) as f64) * scale.y.abs().max(0.0001))
+                .round()
+                / scale.y.abs().max(0.0001);
+            let right = ((((outer_rect_precise.x + outer_rect_precise.width)
+                - (hole_rect.x + hole_rect.width))
+                .max(0.0) as f64)
+                * scale.x.abs().max(0.0001))
+                .round()
+                / scale.x.abs().max(0.0001);
+            let bottom = ((((outer_rect_precise.y + outer_rect_precise.height)
+                - (hole_rect.y + hole_rect.height))
+                .max(0.0) as f64)
+                * scale.y.abs().max(0.0001))
+                .round()
+                / scale.y.abs().max(0.0001);
+            RoundedClip {
+                rect: crate::backend::visual::SnappedLogicalRect {
+                    x: left as f32,
+                    y: top as f32,
+                    width: (outer_rect_precise.width - left as f32 - right as f32).max(0.0),
+                    height: (outer_rect_precise.height - top as f32 - bottom as f32).max(0.0),
+                },
+                radius: snapped_radius_f32(
+                    cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+                ),
+            }
+        } else if let Some(hole_rect) = cached.hole_rect {
             let left = ((((hole_rect.x - cached.rect.x).max(0)) as f64) * scale.x.abs().max(0.0001))
                 .round()
                 / scale.x.abs().max(0.0001);
@@ -297,13 +346,9 @@ fn rounded_rect_element(
     });
 
     let clip = cached.clip_rect_precise.map(|clip_rect| RoundedClip {
-        rect: snapped_logical_rect_from_relative_physical(
-            relative_physical_rect_from_root_precise(
-                clip_rect,
-                cached.rect,
-                output_geo,
-                scale,
-            ),
+        rect: snapped_precise_logical_rect_in_element_space(
+            clip_rect,
+            outer_rect_precise,
             scale,
         ),
         radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
@@ -336,13 +381,9 @@ fn rounded_rect_element(
                 cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
             ),
         }).or_else(|| cached.hole_rect_precise.map(|hole_rect| RoundedClip {
-            rect: snapped_logical_rect_from_relative_physical(
-                relative_physical_rect_from_root_precise(
-                    hole_rect,
-                    cached.rect,
-                    output_geo,
-                    scale,
-                ),
+            rect: snapped_precise_logical_rect_in_element_space(
+                hole_rect,
+                outer_rect_precise,
                 scale,
             ),
             radius: snapped_radius_f32(
@@ -447,13 +488,24 @@ fn shader_effect_element(
         (cached.rect.width, cached.rect.height).into(),
     );
     let window_snap_origin = output_geo.loc;
-    let geometry = relative_physical_rect_from_root(
-        cached.rect,
-        decoration.layout.root.rect,
-        output_geo,
-        scale,
-        cached.clip_rect,
-    );
+    let geometry = cached
+        .rect_precise
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(
+                rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            )
+        })
+        .unwrap_or_else(|| {
+            relative_physical_rect_from_root_snapped_edges(
+                cached.rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            )
+        });
 
     let state = decoration
         .shader_cache
@@ -475,17 +527,15 @@ fn shader_effect_element(
                     scale,
                     RectSnapMode::OriginAndSize,
                 )
-            }).or_else(|| cached.clip_rect_precise.map(|clip_rect| {
-                snapped_logical_rect_from_relative_physical(
-                    relative_physical_rect_from_root_precise(
+            }).or_else(|| {
+                cached.rect_precise.zip(cached.clip_rect_precise).map(|(rect_precise, clip_rect)| {
+                    snapped_precise_logical_rect_in_element_space(
                         clip_rect,
-                        cached.rect,
-                        output_geo,
+                        rect_precise,
                         scale,
-                    ),
-                    scale,
-                )
-            })),
+                    )
+                })
+            }),
             clip_radius: cached
                 .clip_radius_precise
                 .map(|radius| radius.round() as i32)

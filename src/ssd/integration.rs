@@ -31,6 +31,7 @@ pub struct WindowDecorationState {
     pub snapshot: WaylandWindowSnapshot,
     pub tree: DecorationTree,
     pub layout: ComputedDecorationTree,
+    pub layout_scale: f64,
     pub client_rect: LogicalRect,
     pub visual_transform: WindowTransform,
     pub content_clip: Option<ContentClip>,
@@ -634,6 +635,7 @@ impl ShojiWM {
                         snapshot,
                         tree,
                         layout,
+                        layout_scale,
                         client_rect,
                         visual_transform: evaluation.transform,
                         content_clip,
@@ -674,6 +676,7 @@ impl ShojiWM {
                         .tree
                         .layout_for_client_with_scale(client_rect, layout_scale)
                         .map_err(super::DecorationEvaluationError::Layout)?;
+                    cached.layout_scale = layout_scale;
                     push_damage_pair(
                         &mut self.pending_decoration_damage,
                         Some(previous_root),
@@ -783,8 +786,13 @@ impl ShojiWM {
                         let layout_equivalent = cached.tree.root.layout_equivalent(&next_tree.root);
                         cached.tree = next_tree;
                         if layout_equivalent {
-                            reapply_tree_preserving_layout(&mut cached.layout.root, &cached.tree.root, None);
-                            cached.layout.root.rect = cached.layout.root.bounds_rect();
+                            reapply_tree_preserving_layout(
+                                &mut cached.layout.root,
+                                &cached.tree.root,
+                                None,
+                                cached.layout_scale,
+                            );
+                            cached.layout.root.sync_root_bounds(cached.layout_scale);
                             cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                             let order_map = build_render_order_map(&cached.layout);
                             if dirty_node_ids.is_empty() {
@@ -848,6 +856,7 @@ impl ShojiWM {
                                 .tree
                                 .layout_for_client_with_scale(client_rect, layout_scale)
                                 .map_err(super::DecorationEvaluationError::Layout)?;
+                            cached.layout_scale = layout_scale;
                             cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
                             let order_map = build_render_order_map(&cached.layout);
                             cached.buffers = build_cached_buffers(&cached.layout, &order_map);
@@ -991,8 +1000,13 @@ impl ShojiWM {
                             &mut closing.decoration.layout.root,
                             &closing.decoration.tree.root,
                             None,
+                            closing.decoration.layout_scale,
                         );
-                        closing.decoration.layout.root.rect = closing.decoration.layout.root.bounds_rect();
+                        closing
+                            .decoration
+                            .layout
+                            .root
+                            .sync_root_bounds(closing.decoration.layout_scale);
                         closing.decoration.content_clip =
                             content_clip_for_layout(&closing.decoration.tree, &closing.decoration.layout);
                         let order_map = build_render_order_map(&closing.decoration.layout);
@@ -1057,7 +1071,10 @@ impl ShojiWM {
                         let layout = closing
                             .decoration
                             .tree
-                            .layout_for_client(closing.decoration.client_rect)
+                            .layout_for_client_with_scale(
+                                closing.decoration.client_rect,
+                                closing.decoration.layout_scale,
+                            )
                             .map_err(super::DecorationEvaluationError::Layout)?;
                         let content_clip = content_clip_for_layout(&closing.decoration.tree, &layout);
                         let order_map = build_render_order_map(&layout);
@@ -1416,7 +1433,7 @@ impl DecorationTree {
         self.validate()?;
 
         let mut root = super::layout_node_with_scale(&self.root, bounds, None, window_slot_size, scale)?;
-        root.rect = root.bounds_rect();
+        root.sync_root_bounds(scale);
         if root.window_slot_rect().is_none() {
             return Err(super::DecorationLayoutError::MissingComputedWindowSlot);
         }
@@ -1819,6 +1836,10 @@ fn collect_cached_buffers(
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
     let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
+    let window_border_inner_clip_precise = window_border_inner_clip_resolved(node)
+        .map(|clip| precise_rect_from_resolved(clip.rect));
+    let window_border_inner_radius_precise = window_border_inner_clip_resolved(node)
+        .map(|clip| clip.radius.to_f32().max(0.0));
     let window_border_inner_clip = window_border_inner_clip_logical(node);
     let child_clip = window_border_inner_clip.or(node.effective_clip);
     let child_resolved_clip = window_border_inner_clip
@@ -1869,13 +1890,15 @@ fn collect_cached_buffers(
                                 .then(|| node.resolved_border_radius.to_f32().max(0.0)),
                             border_width: node.resolved_border_width.to_f32().max(0.0),
                             hole_rect: window_border_inner_rect,
-                            hole_rect_precise: window_border_inner_clip
-                                .map(|clip| precise_rect_from_logical(clip.rect))
-                                .or_else(|| (!node.children.is_empty())
-                                    .then(|| precise_rect_from_logical(window_border_inner_hole_rect(
-                                        node,
-                                        node.resolved_border_width.round_to_i32().max(0),
-                                    )))),
+                            hole_rect_precise: window_border_inner_clip_precise.or_else(|| {
+                                (!node.children.is_empty()).then(|| {
+                                    precise_rect_from_resolved(
+                                        window_border_inner_clip_resolved(node)
+                                            .map(|clip| clip.rect)
+                                            .unwrap_or(node.resolved_content_rect),
+                                    )
+                                })
+                            }),
                             hole_radius: window_border_inner_clip
                                 .map(|clip| clip.radius.max(0))
                                 .unwrap_or_else(|| {
@@ -1883,13 +1906,13 @@ fn collect_cached_buffers(
                                         .round_to_i32()
                                         .max(0)
                                 }),
-                            hole_radius_precise: window_border_inner_clip
-                                .map(|clip| clip.radius.max(0) as f32)
-                                .or_else(|| (!node.children.is_empty()).then(|| {
+                            hole_radius_precise: window_border_inner_radius_precise.or_else(|| {
+                                (!node.children.is_empty()).then(|| {
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .to_f32()
                                         .max(0.0)
-                                })),
+                                })
+                            }),
                             shared_inner_hole: !node.children.is_empty(),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
@@ -1928,9 +1951,11 @@ fn collect_cached_buffers(
                                         .unwrap_or(&usize::MAX),
                                     format!("{path}:fill-top"),
                                     node.rect,
+                                    Some(precise_rect_from_resolved(node.resolved_rect)),
                                     background,
                                     node.stable_id.clone(),
                                     node_radius,
+                                    Some(node.resolved_border_radius.to_f32().max(0.0)),
                                     0.0,
                                     Some(inner_rect),
                                     window_border_inner_clip
@@ -1955,9 +1980,11 @@ fn collect_cached_buffers(
                                     *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
                                     format!("{path}:fill"),
                                     node.rect,
+                                    Some(precise_rect_from_resolved(node.resolved_rect)),
                                     background,
                                     node.stable_id.clone(),
                                     node_radius,
+                                    Some(node.resolved_border_radius.to_f32().max(0.0)),
                                     0.0,
                                     None,
                                     0,
@@ -1975,9 +2002,11 @@ fn collect_cached_buffers(
                                 *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
                                 format!("{path}:fill"),
                                 node.rect,
+                                Some(precise_rect_from_resolved(node.resolved_rect)),
                                 background,
                                 node.stable_id.clone(),
                                 node_radius,
+                                Some(node.resolved_border_radius.to_f32().max(0.0)),
                                 0.0,
                                 None,
                                 0,
@@ -2053,6 +2082,7 @@ fn collect_text_buffers(
 
     let spec = LabelSpec {
         rect: node.rect,
+        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
         text: label.text.clone(),
         color: color.with_opacity(node.style.opacity),
         font_size: node.style.font_size.unwrap_or(13),
@@ -2067,8 +2097,15 @@ fn collect_text_buffers(
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
         buffer.order = *order_map.get(&format!("{path}:label")).unwrap_or(&usize::MAX);
+        buffer.rect_precise = Some(precise_rect_from_resolved(node.resolved_rect));
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
+        buffer.clip_rect_precise = node
+            .resolved_effective_clip
+            .map(|clip| precise_rect_from_resolved(clip.rect));
+        buffer.clip_radius_precise = node
+            .resolved_effective_clip
+            .map(|clip| clip.radius.to_f32().max(0.0));
         buffers.push(buffer);
     }
 }
@@ -2115,6 +2152,7 @@ fn collect_icon_buffers(
 
     let spec = IconSpec {
         rect: node.rect,
+        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
         icon: snapshot.icon.clone(),
         app_id: snapshot.app_id.clone(),
         raster_scale,
@@ -2124,8 +2162,15 @@ fn collect_icon_buffers(
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
         buffer.order = *order_map.get(&format!("{path}:icon")).unwrap_or(&usize::MAX);
+        buffer.rect_precise = Some(precise_rect_from_resolved(node.resolved_rect));
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
+        buffer.clip_rect_precise = node
+            .resolved_effective_clip
+            .map(|clip| precise_rect_from_resolved(clip.rect));
+        buffer.clip_radius_precise = node
+            .resolved_effective_clip
+            .map(|clip| clip.radius.to_f32().max(0.0));
         buffers.push(buffer);
     }
 }
@@ -2135,9 +2180,11 @@ fn push_cached_fill(
     order: usize,
     stable_key: String,
     rect: LogicalRect,
+    rect_precise: Option<PreciseLogicalRect>,
     color: super::Color,
     owner_node_id: Option<String>,
     radius: i32,
+    radius_precise: Option<f32>,
     border_width: f32,
     hole_rect: Option<LogicalRect>,
     hole_radius: i32,
@@ -2157,7 +2204,7 @@ fn push_cached_fill(
         stable_key,
         order,
         rect,
-        rect_precise: Some(precise_rect_from_logical(rect)),
+        rect_precise: rect_precise.or_else(|| Some(precise_rect_from_logical(rect))),
         color,
         buffer: SolidColorBuffer::new(
             (rect.width.max(1), rect.height.max(1)),
@@ -2169,7 +2216,7 @@ fn push_cached_fill(
             ],
         ),
         radius,
-        radius_precise: None,
+        radius_precise,
         border_width,
         hole_rect,
         hole_rect_precise,

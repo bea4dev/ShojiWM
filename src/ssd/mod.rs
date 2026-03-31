@@ -86,7 +86,7 @@ impl DecorationTree {
         self.validate()?;
 
         let mut root = layout_node_with_scale(&self.root, bounds, None, None, scale)?;
-        root.rect = root.bounds_rect();
+        root.sync_root_bounds(scale);
         if root.window_slot_rect().is_none() {
             return Err(DecorationLayoutError::MissingComputedWindowSlot);
         }
@@ -220,20 +220,31 @@ impl ComputedDecorationNode {
     }
 
     pub(crate) fn bounds_rect(&self) -> LogicalRect {
-        let mut min_x = self.rect.x;
-        let mut min_y = self.rect.y;
-        let mut max_x = self.rect.x + self.rect.width;
-        let mut max_y = self.rect.y + self.rect.height;
+        self.resolved_bounds_rect().round_to_logical_rect()
+    }
+
+    pub(crate) fn resolved_bounds_rect(&self) -> ResolvedLogicalRect {
+        let mut min_x = self.resolved_rect.x;
+        let mut min_y = self.resolved_rect.y;
+        let mut max_x = self.resolved_rect.x + self.resolved_rect.width;
+        let mut max_y = self.resolved_rect.y + self.resolved_rect.height;
 
         if !self.children.is_empty() {
-            let inset = self.style.content_inset();
-            let mut child_min_x = i32::MAX;
-            let mut child_min_y = i32::MAX;
-            let mut child_max_x = i32::MIN;
-            let mut child_max_y = i32::MIN;
+            let inset = ResolvedLayoutEdges {
+                top: self.resolved_content_rect.y - self.resolved_rect.y,
+                left: self.resolved_content_rect.x - self.resolved_rect.x,
+                right: (self.resolved_rect.x + self.resolved_rect.width)
+                    - (self.resolved_content_rect.x + self.resolved_content_rect.width),
+                bottom: (self.resolved_rect.y + self.resolved_rect.height)
+                    - (self.resolved_content_rect.y + self.resolved_content_rect.height),
+            };
+            let mut child_min_x = ResolvedLayoutValue::from_raw(i32::MAX);
+            let mut child_min_y = ResolvedLayoutValue::from_raw(i32::MAX);
+            let mut child_max_x = ResolvedLayoutValue::from_raw(i32::MIN);
+            let mut child_max_y = ResolvedLayoutValue::from_raw(i32::MIN);
 
             for child in &self.children {
-                let child_bounds = child.bounds_rect();
+                let child_bounds = child.resolved_bounds_rect();
                 child_min_x = child_min_x.min(child_bounds.x);
                 child_min_y = child_min_y.min(child_bounds.y);
                 child_max_x = child_max_x.max(child_bounds.x + child_bounds.width);
@@ -246,7 +257,32 @@ impl ComputedDecorationNode {
             max_y = max_y.max(child_max_y + inset.bottom);
         }
 
-        LogicalRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+        ResolvedLogicalRect {
+            x: min_x,
+            y: min_y,
+            width: ResolvedLayoutValue::from_raw((max_x.raw() - min_x.raw()).max(0)),
+            height: ResolvedLayoutValue::from_raw((max_y.raw() - min_y.raw()).max(0)),
+        }
+    }
+
+    pub(crate) fn sync_root_bounds(&mut self, scale: f64) {
+        self.resolved_rect = self.resolved_bounds_rect();
+        self.rect = self.resolved_rect.round_to_logical_rect();
+        self.resolved_content_rect = self.resolved_rect.inset(self.style.resolved_content_inset(scale));
+        self.resolved_effective_clip =
+            effective_clip_for_node_resolved(&self.to_decoration_node(), None, self.resolved_content_rect, scale);
+        self.effective_clip = self
+            .resolved_effective_clip
+            .map(ResolvedDecorationClip::round_to_logical_clip);
+    }
+
+    fn to_decoration_node(&self) -> DecorationNode {
+        DecorationNode {
+            stable_id: self.stable_id.clone(),
+            kind: self.kind.clone(),
+            style: self.style.clone(),
+            children: self.children.iter().map(Self::to_decoration_node).collect(),
+        }
     }
 
     pub fn rects_for_stable_ids(
@@ -931,7 +967,25 @@ pub(super) fn layout_node_with_scale(
     window_slot_size: Option<(i32, i32)>,
     scale: f64,
 ) -> Result<ComputedDecorationNode, DecorationLayoutError> {
-    let resolved_rect = ResolvedLogicalRect::from_logical(rect);
+    layout_node_resolved(
+        node,
+        ResolvedLogicalRect::from_logical(rect),
+        inherited_clip.map(|clip| ResolvedDecorationClip {
+            rect: ResolvedLogicalRect::from_logical(clip.rect),
+            radius: ResolvedLayoutValue::from_i32(clip.radius),
+        }),
+        window_slot_size,
+        scale,
+    )
+}
+
+fn layout_node_resolved(
+    node: &DecorationNode,
+    resolved_rect: ResolvedLogicalRect,
+    inherited_clip: Option<ResolvedDecorationClip>,
+    window_slot_size: Option<(i32, i32)>,
+    scale: f64,
+) -> Result<ComputedDecorationNode, DecorationLayoutError> {
     let resolved_border_width = node
         .style
         .border
@@ -940,34 +994,39 @@ pub(super) fn layout_node_with_scale(
     let resolved_border_radius =
         ResolvedLayoutValue::from_i32(node.style.border_radius.unwrap_or(0).max(0)).snap_edge(scale);
     let content_rect = resolved_rect.inset(node.style.resolved_content_inset(scale));
-    let effective_clip = effective_clip_for_node_resolved(
-        node,
-        inherited_clip.map(|clip| ResolvedDecorationClip {
-            rect: ResolvedLogicalRect::from_logical(clip.rect),
-            radius: ResolvedLayoutValue::from_i32(clip.radius),
-        }),
-        content_rect,
-        scale,
-    );
+    let effective_clip =
+        effective_clip_for_node_resolved(node, inherited_clip, content_rect, scale);
 
     let children = match &node.kind {
-        DecorationNodeKind::Box(layout) => {
-            layout_box_children(node, content_rect, layout.direction, effective_clip, window_slot_size, scale)?
-        }
-        DecorationNodeKind::ShaderEffect(effect) => {
-            layout_box_children(node, content_rect, effect.direction, effective_clip, window_slot_size, scale)?
-        }
+        DecorationNodeKind::Box(layout) => layout_box_children(
+            node,
+            content_rect,
+            layout.direction,
+            effective_clip,
+            window_slot_size,
+            scale,
+        )?,
+        DecorationNodeKind::ShaderEffect(effect) => layout_box_children(
+            node,
+            content_rect,
+            effect.direction,
+            effective_clip,
+            window_slot_size,
+            scale,
+        )?,
         _ if node.children.is_empty() => Vec::new(),
         _ => node
             .children
             .iter()
-            .map(|child| layout_node_with_scale(
-                child,
-                content_rect.round_to_logical_rect(),
-                effective_clip.map(ResolvedDecorationClip::round_to_logical_clip),
-                window_slot_size,
-                scale,
-            ))
+            .map(|child| {
+                layout_node_resolved(
+                    child,
+                    content_rect,
+                    effective_clip,
+                    window_slot_size,
+                    scale,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?,
     };
 
@@ -989,30 +1048,35 @@ pub(super) fn layout_node_with_scale(
 pub(super) fn reapply_tree_preserving_layout(
     computed: &mut ComputedDecorationNode,
     node: &DecorationNode,
-    inherited_clip: Option<DecorationClip>,
+    inherited_clip: Option<ResolvedDecorationClip>,
+    scale: f64,
 ) {
     computed.stable_id = node.stable_id.clone();
     computed.kind = node.kind.clone();
     computed.style = node.style.clone();
-    let content_rect = computed.rect.inset(node.style.content_inset());
-    computed.effective_clip = effective_clip_for_node(node, inherited_clip, content_rect);
-    computed.resolved_rect = ResolvedLogicalRect::from_logical(computed.rect);
-    computed.resolved_content_rect = ResolvedLogicalRect::from_logical(content_rect);
+    let content_rect = computed
+        .resolved_rect
+        .inset(node.style.resolved_content_inset(scale));
+    let effective_clip = effective_clip_for_node_resolved(node, inherited_clip, content_rect, scale);
+    computed.rect = computed.resolved_rect.round_to_logical_rect();
+    computed.resolved_content_rect = content_rect;
     computed.resolved_border_width = node
         .style
         .border
-        .map(|border| ResolvedLayoutValue::from_i32(border.width.max(0)))
+        .map(|border| ResolvedLayoutValue::from_i32(border.width.max(0)).snap_edge(scale))
         .unwrap_or(ResolvedLayoutValue::ZERO);
     computed.resolved_border_radius =
-        ResolvedLayoutValue::from_i32(node.style.border_radius.unwrap_or(0).max(0));
-    computed.resolved_effective_clip =
-        computed.effective_clip.map(|clip| ResolvedDecorationClip {
-            rect: ResolvedLogicalRect::from_logical(clip.rect),
-            radius: ResolvedLayoutValue::from_i32(clip.radius),
-        });
+        ResolvedLayoutValue::from_i32(node.style.border_radius.unwrap_or(0).max(0)).snap_edge(scale);
+    computed.effective_clip = effective_clip.map(ResolvedDecorationClip::round_to_logical_clip);
+    computed.resolved_effective_clip = effective_clip;
 
     for (computed_child, node_child) in computed.children.iter_mut().zip(node.children.iter()) {
-        reapply_tree_preserving_layout(computed_child, node_child, computed.effective_clip);
+        reapply_tree_preserving_layout(
+            computed_child,
+            node_child,
+            computed.resolved_effective_clip,
+            scale,
+        );
     }
 }
 
@@ -1042,9 +1106,7 @@ fn layout_box_children(
     let mut total_flex = 0.0f32;
 
     for child in &node.children {
-        let base = ResolvedLayoutValue::from_i32(
-            child.preferred_main_size(direction, window_slot_size).max(0),
-        );
+        let base = child.preferred_main_size_resolved(direction, window_slot_size, scale);
         let flex = child.flex_grow_for_layout();
         base_sizes.push(base);
         flexes.push(flex);
@@ -1083,12 +1145,13 @@ fn layout_box_children(
 
     for (child, main_size) in node.children.iter().zip(allocated.into_iter()) {
         let child_align = node.style.align_items;
-        let cross_size = ResolvedLayoutValue::from_i32(child.preferred_cross_size(
+        let cross_size = child.preferred_cross_size_resolved(
             direction,
-            cross_available.round_to_i32(),
+            cross_available,
             child_align,
             window_slot_size,
-        ));
+            scale,
+        );
         let cross_origin = direction.cross_origin_for_child_resolved(
             content_rect,
             child_align,
@@ -1096,10 +1159,10 @@ fn layout_box_children(
         );
 
         let child_rect = direction.rect_resolved(cursor, cross_origin, main_size, cross_size);
-        children.push(layout_node_with_scale(
+        children.push(layout_node_resolved(
             child,
-            child_rect.round_to_logical_rect(),
-            effective_clip.map(|clip| clip.round_to_logical_clip()),
+            child_rect,
+            effective_clip,
             window_slot_size,
             scale,
         )?);
@@ -1122,7 +1185,7 @@ impl DecorationNode {
         };
 
         let fallback = explicit
-            .map(ResolvedLayoutValue::from_i32)
+            .map(|value| ResolvedLayoutValue::from_i32(value).snap_edge(scale))
             .unwrap_or_else(|| {
                 self.auto_size_resolved(window_slot_size, scale)
                     .map(|(width, height)| match direction {
@@ -1135,7 +1198,7 @@ impl DecorationNode {
                     })
             });
 
-        self.style.clamp_main_resolved(direction, fallback)
+        self.style.clamp_main_resolved(direction, fallback, scale)
     }
 
     fn preferred_main_size(&self, direction: LayoutDirection, window_slot_size: Option<(i32, i32)>) -> i32 {
@@ -1173,7 +1236,7 @@ impl DecorationNode {
         };
 
         let fallback = explicit
-            .map(ResolvedLayoutValue::from_i32)
+            .map(|value| ResolvedLayoutValue::from_i32(value).snap_edge(scale))
             .unwrap_or_else(|| {
                 if matches!(align.unwrap_or(AlignItems::Stretch), AlignItems::Stretch)
                     && available_cross.raw() > 0
@@ -1189,7 +1252,7 @@ impl DecorationNode {
                     .unwrap_or(available_cross)
             });
 
-        self.style.clamp_cross_resolved(direction, fallback)
+        self.style.clamp_cross_resolved(direction, fallback, scale)
     }
 
     fn preferred_cross_size(
@@ -1237,6 +1300,7 @@ impl DecorationNode {
                 let line_height = self.style.line_height.unwrap_or(font_size + 4).max(font_size);
                 let spec = LabelSpec {
                     rect: LogicalRect::new(0, 0, 0, 0),
+                    rect_precise: None,
                     text: label.text.clone(),
                     color: self.style.color.unwrap_or(Color::WHITE).with_opacity(self.style.opacity),
                     font_size,
@@ -1472,6 +1536,7 @@ impl DecorationStyle {
         &self,
         direction: LayoutDirection,
         value: ResolvedLayoutValue,
+        scale: f64,
     ) -> ResolvedLayoutValue {
         clamp_size_resolved(
             value,
@@ -1483,6 +1548,7 @@ impl DecorationStyle {
                 LayoutDirection::Row => self.max_width,
                 LayoutDirection::Column => self.max_height,
             },
+            scale,
         )
     }
 
@@ -1497,6 +1563,7 @@ impl DecorationStyle {
         &self,
         direction: LayoutDirection,
         value: ResolvedLayoutValue,
+        scale: f64,
     ) -> ResolvedLayoutValue {
         clamp_size_resolved(
             value,
@@ -1508,6 +1575,7 @@ impl DecorationStyle {
                 LayoutDirection::Row => self.max_height,
                 LayoutDirection::Column => self.max_width,
             },
+            scale,
         )
     }
 }
@@ -1568,13 +1636,14 @@ fn clamp_size_resolved(
     value: ResolvedLayoutValue,
     min: Option<i32>,
     max: Option<i32>,
+    scale: f64,
 ) -> ResolvedLayoutValue {
     let mut value = ResolvedLayoutValue::from_raw(value.raw().max(0));
     if let Some(min) = min {
-        value = value.max(ResolvedLayoutValue::from_i32(min.max(0)));
+        value = value.max(ResolvedLayoutValue::from_i32(min.max(0)).snap_edge(scale));
     }
     if let Some(max) = max {
-        value = value.min(ResolvedLayoutValue::from_i32(max.max(0)));
+        value = value.min(ResolvedLayoutValue::from_i32(max.max(0)).snap_edge(scale));
     }
     value
 }
@@ -2532,5 +2601,155 @@ mod tests {
 
         assert_eq!(inset.x.to_f32(), 1.875);
         assert_eq!(inset.width.to_f32(), 14.25);
+    }
+
+    #[test]
+    fn layout_preserves_subpixel_child_offsets_at_fractional_scale() {
+        let root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 1,
+                    color: Color::WHITE,
+                }),
+                padding: Edges {
+                    top: 4,
+                    right: 4,
+                    bottom: 4,
+                    left: 4,
+                },
+                ..Default::default()
+            })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Row,
+                }))
+                .with_style(DecorationStyle {
+                    gap: Some(3),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+                        text: "A".into(),
+                    }))
+                    .with_style(DecorationStyle {
+                        width: Some(11),
+                        height: Some(20),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+                        width: Some(11),
+                        height: Some(20),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]),
+            ]);
+
+        let layout = DecorationTree::new(root)
+            .layout_for_client_with_scale(LogicalRect::new(50, 40, 200, 120), 1.6)
+            .expect("layout should succeed");
+
+        let row = &layout.root.children[0];
+        let label = &row.children[0];
+        let icon = &row.children[1];
+
+        assert_eq!(
+            (icon.resolved_rect.x - label.resolved_rect.x - label.resolved_rect.width).to_f32(),
+            3.125
+        );
+    }
+
+    #[test]
+    fn reapply_preserves_subpixel_offsets_at_fractional_scale() {
+        let original = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            gap: Some(3),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+                text: "A".into(),
+            }))
+            .with_style(DecorationStyle {
+                width: Some(11),
+                height: Some(20),
+                color: Some(Color::WHITE),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+                width: Some(11),
+                height: Some(20),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let updated = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            gap: Some(3),
+            background: Some(Color::BLACK),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+                text: "A".into(),
+            }))
+            .with_style(DecorationStyle {
+                width: Some(11),
+                height: Some(20),
+                color: Some(Color::BLACK),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+                width: Some(11),
+                height: Some(20),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let mut layout = DecorationTree::new(original)
+            .layout_for_client_with_scale(LogicalRect::new(50, 40, 200, 120), 1.6)
+            .expect("layout should succeed");
+        reapply_tree_preserving_layout(&mut layout.root, &updated, None, 1.6);
+
+        let label = &layout.root.children[0];
+        let icon = &layout.root.children[1];
+        assert_eq!(
+            (icon.resolved_rect.x - label.resolved_rect.x - label.resolved_rect.width).to_f32(),
+            3.125
+        );
+    }
+
+    #[test]
+    fn explicit_fixed_size_snaps_to_scale_quantum() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Row,
+            }))
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+                    action: WindowAction::Close,
+                }))
+                .with_style(DecorationStyle {
+                    width: Some(18),
+                    height: Some(18),
+                    ..Default::default()
+                }),
+                DecorationNode::new(DecorationNodeKind::WindowSlot),
+            ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(0, 0, 100, 60), 1.6)
+            .expect("layout should succeed");
+        let button = &layout.root.children[0];
+
+        assert_eq!(button.resolved_rect.width.to_f32(), 18.125);
+        assert_eq!(button.resolved_rect.height.to_f32(), 18.125);
     }
 }

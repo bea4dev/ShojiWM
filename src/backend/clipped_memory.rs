@@ -10,14 +10,15 @@ use smithay::{
     utils::{Buffer, Physical, Rectangle, Scale, Transform},
 };
 
+use crate::backend::visual::PreciseLogicalRect;
 use crate::ssd::LogicalRect;
 
 #[derive(Debug)]
 pub struct ClippedMemoryElement {
     inner: MemoryRenderBufferRenderElement<GlesRenderer>,
     program: GlesTexProgram,
-    clip_rect: LogicalRect,
-    clip_radius: i32,
+    clip_rect: PreciseLogicalRect,
+    clip_radius: f32,
     scale: f32,
     clip_scale_x: f32,
     clip_scale_y: f32,
@@ -34,6 +35,9 @@ impl ClippedMemoryElement {
         element_rect: LogicalRect,
         clip_rect: LogicalRect,
         clip_radius: i32,
+        element_rect_precise: Option<PreciseLogicalRect>,
+        clip_rect_precise: Option<PreciseLogicalRect>,
+        clip_radius_precise: Option<f32>,
     ) -> Result<Self, GlesError> {
         if renderer
             .egl_context()
@@ -89,17 +93,29 @@ impl ClippedMemoryElement {
         } else {
             1.0
         };
+        let element_rect_precise = element_rect_precise.unwrap_or(PreciseLogicalRect {
+            x: element_rect.x as f32,
+            y: element_rect.y as f32,
+            width: element_rect.width as f32,
+            height: element_rect.height as f32,
+        });
+        let clip_rect_precise = clip_rect_precise.unwrap_or(PreciseLogicalRect {
+            x: clip_rect.x as f32,
+            y: clip_rect.y as f32,
+            width: clip_rect.width as f32,
+            height: clip_rect.height as f32,
+        });
 
         Ok(Self {
             inner,
             program: program.0.clone(),
-            clip_rect: LogicalRect::new(
-                clip_rect.x - element_rect.x,
-                clip_rect.y - element_rect.y,
-                clip_rect.width,
-                clip_rect.height,
-            ),
-            clip_radius,
+            clip_rect: PreciseLogicalRect {
+                x: clip_rect_precise.x - element_rect_precise.x,
+                y: clip_rect_precise.y - element_rect_precise.y,
+                width: clip_rect_precise.width,
+                height: clip_rect_precise.height,
+            },
+            clip_radius: clip_radius_precise.unwrap_or(clip_radius as f32).max(0.0),
             scale: clip_scale_x.max(clip_scale_y).max(scale.x as f32),
             clip_scale_x,
             clip_scale_y,
@@ -110,7 +126,7 @@ impl ClippedMemoryElement {
         let src = self.inner.src();
         let element_width = src.size.w as f32;
         let element_height = src.size.h as f32;
-        let radius = self.clip_radius.max(0) as f32;
+        let radius = self.clip_radius.max(0.0);
 
         vec![
             Uniform::new("element_size", [element_width, element_height]),
@@ -119,10 +135,10 @@ impl ClippedMemoryElement {
             Uniform::new(
                 "clip_rect",
                 [
-                    self.clip_rect.x as f32 * self.clip_scale_x,
-                    self.clip_rect.y as f32 * self.clip_scale_y,
-                    self.clip_rect.width as f32 * self.clip_scale_x,
-                    self.clip_rect.height as f32 * self.clip_scale_y,
+                    self.clip_rect.x * self.clip_scale_x,
+                    self.clip_rect.y * self.clip_scale_y,
+                    self.clip_rect.width * self.clip_scale_x,
+                    self.clip_rect.height * self.clip_scale_y,
                 ],
             ),
             Uniform::new(
