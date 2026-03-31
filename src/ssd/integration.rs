@@ -1895,9 +1895,17 @@ fn collect_cached_buffers(
                                     node_radius,
                                     0.0,
                                     Some(inner_rect),
-                                    (node.resolved_border_radius - node.resolved_border_width)
-                                        .round_to_i32()
-                                        .max(0),
+                                    window_border_inner_clip
+                                        .map(|clip| clip.radius.round_to_i32().max(0))
+                                        .unwrap_or_else(|| {
+                                            (node.resolved_border_radius - node.resolved_border_width)
+                                                .round_to_i32()
+                                                .max(0)
+                                        }),
+                                    window_border_inner_clip
+                                        .map(|clip| precise_rect_from_resolved(clip.rect)),
+                                    window_border_inner_clip
+                                        .map(|clip| clip.radius.to_f32().max(0.0)),
                                     current_clip_rect_precise,
                                     current_clip_radius_precise,
                                     None,
@@ -1915,6 +1923,8 @@ fn collect_cached_buffers(
                                     0.0,
                                     None,
                                     0,
+                                    None,
+                                    None,
                                     current_clip_rect_precise,
                                     current_clip_radius_precise,
                                     None,
@@ -1933,6 +1943,8 @@ fn collect_cached_buffers(
                                 0.0,
                                 None,
                                 0,
+                                None,
+                                None,
                                 current_clip_rect_precise,
                                 current_clip_radius_precise,
                                 current_clip_rect,
@@ -2091,6 +2103,8 @@ fn push_cached_fill(
     border_width: f32,
     hole_rect: Option<LogicalRect>,
     hole_radius: i32,
+    hole_rect_precise: Option<PreciseLogicalRect>,
+    hole_radius_precise: Option<f32>,
     clip_rect_precise: Option<PreciseLogicalRect>,
     clip_radius_precise: Option<f32>,
     clip_rect: Option<LogicalRect>,
@@ -2119,9 +2133,9 @@ fn push_cached_fill(
         radius_precise: None,
         border_width,
         hole_rect,
-        hole_rect_precise: None,
+        hole_rect_precise,
         hole_radius,
-        hole_radius_precise: None,
+        hole_radius_precise,
         shared_inner_hole: false,
         clip_rect,
         clip_radius,
