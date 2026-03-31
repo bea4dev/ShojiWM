@@ -240,7 +240,7 @@ fn rounded_rect_element(
         let scale_x = scale.x.abs().max(0.0001) as f32;
         ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0)
     };
-    let outer_radius = snapped_logical_radius(cached.radius, scale);
+    let outer_radius = snapped_radius_f32(cached.radius_precise.unwrap_or(cached.radius as f32));
     let geometry = relative_physical_rect_from_root(
         cached.rect,
         decoration.layout.root.rect,
@@ -272,7 +272,9 @@ fn rounded_rect_element(
                     width: (cached.rect.width as f32 - left as f32 - right as f32).max(0.0),
                     height: (cached.rect.height as f32 - top as f32 - bottom as f32).max(0.0),
                 },
-                radius: snapped_logical_radius(cached.hole_radius, scale),
+                radius: snapped_radius_f32(
+                    cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+                ),
             }
         } else {
             let logical_border_width_x =
@@ -330,7 +332,9 @@ fn rounded_rect_element(
                 ),
                 scale,
             ),
-            radius: snapped_logical_radius(cached.hole_radius, scale),
+            radius: snapped_radius_f32(
+                cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+            ),
         }).or_else(|| cached.hole_rect_precise.map(|hole_rect| RoundedClip {
             rect: snapped_logical_rect_from_relative_physical(
                 relative_physical_rect_from_root_precise(
@@ -341,7 +345,9 @@ fn rounded_rect_element(
                 ),
                 scale,
             ),
-            radius: snapped_radius_f32(cached.hole_radius as f32),
+            radius: snapped_radius_f32(
+                cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+            ),
         }))
     });
 
@@ -376,6 +382,26 @@ fn rounded_rect_element(
     )?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
+        let inner_physical = inner.map(|inner| {
+            let scale_x = scale.x.abs().max(0.0001) as f32;
+            let scale_y = scale.y.abs().max(0.0001) as f32;
+            let left = (inner.rect.x * scale_x).round() as i32;
+            let top = (inner.rect.y * scale_y).round() as i32;
+            let right = ((inner.rect.x + inner.rect.width) * scale_x).round() as i32;
+            let bottom = ((inner.rect.y + inner.rect.height) * scale_y).round() as i32;
+            smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
+                smithay::utils::Point::<i32, smithay::utils::Physical>::from((left, top)),
+                ((right - left).max(0), (bottom - top).max(0)).into(),
+            )
+        });
+        let border_physical = inner_physical.map(|inner| {
+            (
+                inner.loc.x,
+                inner.loc.y,
+                geometry.size.w - (inner.loc.x + inner.size.w),
+                geometry.size.h - (inner.loc.y + inner.size.h),
+            )
+        });
         tracing::info!(
             stable_key = %cached.stable_key,
             source_kind = %cached.source_kind,
@@ -383,8 +409,15 @@ fn rounded_rect_element(
             local_rect = ?local_rect,
             border_width = cached.border_width,
             hole_rect = ?cached.hole_rect,
+            hole_rect_precise = ?cached.hole_rect_precise,
+            radius = cached.radius,
+            radius_precise = ?cached.radius_precise,
+            hole_radius = cached.hole_radius,
+            hole_radius_precise = ?cached.hole_radius_precise,
             clip_rect = ?cached.clip_rect,
             snapped_inner = ?inner,
+            inner_physical = ?inner_physical,
+            border_physical = ?border_physical,
             snapped_clip = ?clip,
             geometry = ?geometry,
             "gap debug rounded decoration element"

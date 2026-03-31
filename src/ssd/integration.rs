@@ -72,10 +72,12 @@ pub struct CachedDecorationBuffer {
     pub color: super::Color,
     pub buffer: SolidColorBuffer,
     pub radius: i32,
+    pub radius_precise: Option<f32>,
     pub border_width: f32,
     pub hole_rect: Option<LogicalRect>,
     pub hole_rect_precise: Option<PreciseLogicalRect>,
     pub hole_radius: i32,
+    pub hole_radius_precise: Option<f32>,
     pub shared_inner_hole: bool,
     pub clip_rect: Option<LogicalRect>,
     pub clip_radius: i32,
@@ -1815,6 +1817,8 @@ fn collect_cached_buffers(
                                 ],
                             ),
                             radius: node_radius,
+                            radius_precise: (!node.children.is_empty())
+                                .then(|| node.resolved_border_radius.to_f32().max(0.0)),
                             border_width: node.resolved_border_width.to_f32().max(0.0),
                             hole_rect: (!node.children.is_empty()).then(|| {
                                 window_border_inner_hole_rect(
@@ -1827,6 +1831,11 @@ fn collect_cached_buffers(
                             hole_radius: (node.resolved_border_radius - node.resolved_border_width)
                                 .round_to_i32()
                                 .max(0),
+                            hole_radius_precise: (!node.children.is_empty()).then(|| {
+                                (node.resolved_border_radius - node.resolved_border_width)
+                                    .to_f32()
+                                    .max(0.0)
+                            }),
                             shared_inner_hole: !node.children.is_empty(),
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
@@ -2090,10 +2099,12 @@ fn push_cached_fill(
             ],
         ),
         radius,
+        radius_precise: None,
         border_width,
         hole_rect,
         hole_rect_precise: None,
         hole_radius,
+        hole_radius_precise: None,
         shared_inner_hole: false,
         clip_rect,
         clip_radius,
