@@ -1106,32 +1106,18 @@ uniform vec4 clip_radius;
 varying vec2 v_coords;
 
 float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {{
-    if (coords.x < 0.0 || coords.y < 0.0 || coords.x > rect_size.x || coords.y > rect_size.y) {{
-        return 0.0;
-    }}
-
-    vec2 center;
+    vec2 half_size = rect_size * 0.5;
+    vec2 p = coords - half_size;
     float r;
-
-    if (coords.x < radius.x && coords.y < radius.x) {{
-        r = radius.x;
-        center = vec2(r, r);
-    }} else if (coords.x > rect_size.x - radius.y && coords.y < radius.y) {{
-        r = radius.y;
-        center = vec2(rect_size.x - r, r);
-    }} else if (coords.x > rect_size.x - radius.z && coords.y > rect_size.y - radius.z) {{
-        r = radius.z;
-        center = vec2(rect_size.x - r, rect_size.y - r);
-    }} else if (coords.x < radius.w && coords.y > rect_size.y - radius.w) {{
-        r = radius.w;
-        center = vec2(r, rect_size.y - r);
+    if (p.x >= 0.0) {{
+        r = p.y >= 0.0 ? radius.z : radius.y;
     }} else {{
-        return 1.0;
+        r = p.y >= 0.0 ? radius.w : radius.x;
     }}
-
-    float dist = distance(coords, center);
+    vec2 q = abs(p) - (half_size - vec2(r));
+    float dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
     float half_px = 0.5 / max(render_scale, 1.0);
-    return 1.0 - smoothstep(r - half_px, r + half_px, dist);
+    return 1.0 - smoothstep(-half_px, half_px, dist);
 }}
 
 {source}
@@ -1184,32 +1170,18 @@ uniform float tint;
 #endif
 
 float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {{
-    if (coords.x < 0.0 || coords.y < 0.0 || coords.x > rect_size.x || coords.y > rect_size.y) {{
-        return 0.0;
-    }}
-
-    vec2 center;
+    vec2 half_size = rect_size * 0.5;
+    vec2 p = coords - half_size;
     float r;
-
-    if (coords.x < radius.x && coords.y < radius.x) {{
-        r = radius.x;
-        center = vec2(r, r);
-    }} else if (coords.x > rect_size.x - radius.y && coords.y < radius.y) {{
-        r = radius.y;
-        center = vec2(rect_size.x - r, r);
-    }} else if (coords.x > rect_size.x - radius.z && coords.y > rect_size.y - radius.z) {{
-        r = radius.z;
-        center = vec2(rect_size.x - r, rect_size.y - r);
-    }} else if (coords.x < radius.w && coords.y > rect_size.y - radius.w) {{
-        r = radius.w;
-        center = vec2(r, rect_size.y - r);
+    if (p.x >= 0.0) {{
+        r = p.y >= 0.0 ? radius.z : radius.y;
     }} else {{
-        return 1.0;
+        r = p.y >= 0.0 ? radius.w : radius.x;
     }}
-
-    float dist = distance(coords, center);
+    vec2 q = abs(p) - (half_size - vec2(r));
+    float dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
     float half_px = 0.5 / max(render_scale, 1.0);
-    return 1.0 - smoothstep(r - half_px, r + half_px, dist);
+    return 1.0 - smoothstep(-half_px, half_px, dist);
 }}
 
 {source}
