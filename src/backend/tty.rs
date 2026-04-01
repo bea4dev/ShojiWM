@@ -630,8 +630,18 @@ fn render_surface(
             if closing_window_snapshots.contains_key(&window_id) {
                 continue;
             }
-            let physical_location =
-                (window_location - output_geo.loc).to_physical_precise_round(scale);
+            let precise_client_location = window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.content_clip)
+                .map(|clip| {
+                    smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                        clip.rect_precise.x as f64 - output_geo.loc.x as f64,
+                        clip.rect_precise.y as f64 - output_geo.loc.y as f64,
+                    ))
+                    .to_physical_precise_round(scale)
+                });
+            let physical_location = precise_client_location
+                .unwrap_or_else(|| (window_location - output_geo.loc).to_physical_precise_round(scale));
             let direct_surface_count = window_render::surface_elements(
                 window,
                 &mut backend.renderer,
