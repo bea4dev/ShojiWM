@@ -1858,17 +1858,14 @@ fn collect_cached_buffers(
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
     let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
-    let window_border_inner_clip_precise = window_border_inner_clip_resolved(node)
+    let window_border_inner_clip_resolved = window_border_inner_clip_resolved(node);
+    let window_border_inner_clip_precise = window_border_inner_clip_resolved
         .map(|clip| precise_rect_from_resolved(clip.rect));
-    let window_border_inner_radius_precise = window_border_inner_clip_resolved(node)
+    let window_border_inner_radius_precise = window_border_inner_clip_resolved
         .map(|clip| clip.radius.to_f32().max(0.0));
     let window_border_inner_clip = window_border_inner_clip_logical(node);
     let child_clip = window_border_inner_clip.or(node.effective_clip);
-    let child_resolved_clip = window_border_inner_clip
-        .map(|clip| crate::ssd::ResolvedDecorationClip {
-            rect: crate::ssd::ResolvedLogicalRect::from_logical(clip.rect),
-            radius: crate::ssd::ResolvedLayoutValue::from_i32(clip.radius),
-        })
+    let child_resolved_clip = window_border_inner_clip_resolved
         .or(node.resolved_effective_clip);
     let window_border_inner_rect = window_border_inner_clip
         .map(|clip| clip.rect)
@@ -1915,7 +1912,7 @@ fn collect_cached_buffers(
                             hole_rect_precise: window_border_inner_clip_precise.or_else(|| {
                                 (!node.children.is_empty()).then(|| {
                                     precise_rect_from_resolved(
-                                        window_border_inner_clip_resolved(node)
+                                        window_border_inner_clip_resolved
                                             .map(|clip| clip.rect)
                                             .unwrap_or(node.resolved_content_rect),
                                     )

@@ -37,6 +37,9 @@ pub struct RoundedRectSpec {
     pub inner_mode: RoundedInnerMode,
     pub clip: Option<RoundedClip>,
     pub render_scale: f32,
+    pub debug_inner_only: f32,
+    pub debug_clip_only: f32,
+    pub debug_shell_only: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +194,18 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
                 UniformName::new(
+                    "debug_inner_only",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "debug_clip_only",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "debug_shell_only",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
                     "clip_enabled",
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
@@ -265,6 +280,9 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
             [inner_radius, inner_radius, inner_radius, inner_radius],
         ),
         Uniform::new("render_scale", spec.render_scale.max(0.0001)),
+        Uniform::new("debug_inner_only", spec.debug_inner_only),
+        Uniform::new("debug_clip_only", spec.debug_clip_only),
+        Uniform::new("debug_shell_only", spec.debug_shell_only),
         Uniform::new(
             "clip_enabled",
             if spec.clip.is_some() { 1.0f32 } else { 0.0f32 },

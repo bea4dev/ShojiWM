@@ -14,8 +14,8 @@ use crate::{
     backend::visual::{
         RectSnapMode, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, snapped_logical_radius,
+        precise_logical_rect_in_element_space,
         relative_physical_rect_from_root_snapped_edges,
-        snapped_precise_logical_rect_in_element_space,
         snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
         snapped_logical_rect_in_element_space,
     },
@@ -52,6 +52,22 @@ fn gap_disable_border_inner_enabled() -> bool {
 
 fn gap_disable_titlebar_clip_enabled(height: i32) -> bool {
     std::env::var_os("SHOJI_GAP_DISABLE_TITLEBAR_CLIP").is_some() && height == 30
+}
+
+fn gap_show_border_inner_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_SHOW_BORDER_INNER").is_some()
+}
+
+fn gap_show_titlebar_clip_enabled(height: i32) -> bool {
+    std::env::var_os("SHOJI_GAP_SHOW_TITLEBAR_CLIP").is_some() && height == 30
+}
+
+fn gap_show_border_shell_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_SHOW_BORDER_SHELL").is_some()
+}
+
+fn gap_show_border_shell_only_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_SHOW_BORDER_SHELL_ONLY").is_some()
 }
 
 fn gap_shrink_border_hole_px() -> f32 {
@@ -276,6 +292,9 @@ fn rounded_rect_element(
     scale: Scale<f64>,
     alpha: f32,
 ) -> Result<Option<StableRoundedElement>, GlesError> {
+    if gap_show_border_shell_only_enabled() && cached.source_kind != "window-border" {
+        return Ok(None);
+    }
     if intersect_logical_rect(cached.rect, output_geo).is_none() {
         return Ok(None);
     }
@@ -398,11 +417,7 @@ fn rounded_rect_element(
         None
     } else {
         cached.clip_rect_precise.map(|clip_rect| RoundedClip {
-        rect: snapped_precise_logical_rect_in_element_space(
-            clip_rect,
-            outer_rect_precise,
-            scale,
-        ),
+        rect: precise_logical_rect_in_element_space(clip_rect, outer_rect_precise),
         radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
     }).or_else(|| cached.clip_rect.map(|clip_rect| RoundedClip {
         rect: snapped_logical_rect_from_relative_physical(
@@ -420,11 +435,7 @@ fn rounded_rect_element(
     };
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect_precise.map(|hole_rect| RoundedClip {
-            rect: snapped_precise_logical_rect_in_element_space(
-                hole_rect,
-                outer_rect_precise,
-                scale,
-            ),
+            rect: precise_logical_rect_in_element_space(hole_rect, outer_rect_precise),
             radius: snapped_radius_f32(
                 cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
             ),
@@ -456,27 +467,25 @@ fn rounded_rect_element(
     } else {
         inner
     };
-    // For the shared border/content edge, prefer the shader's border_width-derived inner edge.
-    // This keeps the border and its content on the same basis instead of feeding a separately
-    // quantized inner rect into the shader.
-    let inner = if cached.source_kind == "window-border" && cached.shared_inner_hole {
-        None
-    } else {
-        inner
-    };
+    let expected_inner = inner;
+    let derived_inner = (cached.border_width > 0.0).then(|| RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: cached.border_width.max(0.0),
+            y: cached.border_width.max(0.0),
+            width: (local_rect.size.w as f32 - cached.border_width.max(0.0) * 2.0).max(0.0),
+            height: (local_rect.size.h as f32 - cached.border_width.max(0.0) * 2.0).max(0.0),
+        },
+        radius: (outer_radius - cached.border_width.max(0.0)).max(0.0),
+    });
     let inner = if gap_disable_border_inner_enabled() && cached.source_kind == "window-border" {
         None
     } else {
         inner
     };
     let inner_mode = if cached.border_width > 0.0 {
-        if cached.source_kind == "window-border" && cached.shared_inner_hole {
-            crate::backend::rounded::RoundedInnerMode::DerivedInset
-        } else {
-            inner
-                .map(crate::backend::rounded::RoundedInnerMode::Explicit)
-                .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
-        }
+        inner
+            .map(crate::backend::rounded::RoundedInnerMode::Explicit)
+            .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
     } else {
         crate::backend::rounded::RoundedInnerMode::None
     };
@@ -514,6 +523,21 @@ fn rounded_rect_element(
         inner_mode,
         clip,
         render_scale,
+        debug_inner_only: if cached.source_kind == "window-border" && gap_show_border_inner_enabled() {
+            1.0
+        } else {
+            0.0
+        },
+        debug_clip_only: if cached.source_kind == "fill" && gap_show_titlebar_clip_enabled(cached.rect.height) {
+            1.0
+        } else {
+            0.0
+        },
+        debug_shell_only: if cached.source_kind == "window-border" && gap_show_border_shell_enabled() {
+            1.0
+        } else {
+            0.0
+        },
     };
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         tracing::info!(
@@ -526,7 +550,19 @@ fn rounded_rect_element(
     let element = state.element(renderer, spec)?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
-        let inner_physical = inner.map(|inner| {
+        let root_local_rect_precise = cached.rect_precise.map(|rect| crate::backend::visual::PreciseLogicalRect {
+            x: rect.x - decoration.layout.root.rect.x as f32,
+            y: rect.y - decoration.layout.root.rect.y as f32,
+            width: rect.width,
+            height: rect.height,
+        });
+        let root_local_clip_precise = cached.clip_rect_precise.map(|rect| crate::backend::visual::PreciseLogicalRect {
+            x: rect.x - decoration.layout.root.rect.x as f32,
+            y: rect.y - decoration.layout.root.rect.y as f32,
+            width: rect.width,
+            height: rect.height,
+        });
+        let to_physical = |inner: RoundedClip| {
             let scale_x = scale.x.abs().max(0.0001) as f32;
             let scale_y = scale.y.abs().max(0.0001) as f32;
             let left = (inner.rect.x * scale_x).round() as i32;
@@ -537,7 +573,33 @@ fn rounded_rect_element(
                 smithay::utils::Point::<i32, smithay::utils::Physical>::from((left, top)),
                 ((right - left).max(0), (bottom - top).max(0)).into(),
             )
-        });
+        };
+        let offset_physical =
+            |rect: smithay::utils::Rectangle<i32, smithay::utils::Physical>| {
+                smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
+                    smithay::utils::Point::<i32, smithay::utils::Physical>::from((
+                        geometry.loc.x + rect.loc.x,
+                        geometry.loc.y + rect.loc.y,
+                    )),
+                    rect.size,
+                )
+            };
+        let inner_physical = inner.map(to_physical);
+        let expected_inner_physical = expected_inner.map(to_physical);
+        let derived_inner_physical = derived_inner.map(to_physical);
+        let expected_inner_physical_global = expected_inner_physical.map(offset_physical);
+        let derived_inner_physical_global = derived_inner_physical.map(offset_physical);
+        let clip_physical = clip.map(to_physical);
+        let clip_physical_global = clip_physical.map(offset_physical);
+        let derived_vs_expected_delta = match (derived_inner_physical, expected_inner_physical) {
+            (Some(derived), Some(expected)) => Some((
+                derived.loc.x - expected.loc.x,
+                derived.loc.y - expected.loc.y,
+                derived.size.w - expected.size.w,
+                derived.size.h - expected.size.h,
+            )),
+            _ => None,
+        };
         let border_physical = inner_physical.map(|inner| {
             (
                 inner.loc.x,
@@ -551,6 +613,7 @@ fn rounded_rect_element(
             source_kind = %cached.source_kind,
             rect = ?cached.rect,
             rect_precise = ?cached.rect_precise,
+            root_local_rect_precise = ?root_local_rect_precise,
             local_rect = ?local_rect,
             border_width = cached.border_width,
             hole_rect = ?cached.hole_rect,
@@ -560,10 +623,20 @@ fn rounded_rect_element(
             hole_radius = cached.hole_radius,
             hole_radius_precise = ?cached.hole_radius_precise,
             clip_rect = ?cached.clip_rect,
+            expected_inner = ?expected_inner,
+            expected_inner_physical = ?expected_inner_physical,
+            expected_inner_physical_global = ?expected_inner_physical_global,
+            derived_inner = ?derived_inner,
+            derived_inner_physical = ?derived_inner_physical,
+            derived_inner_physical_global = ?derived_inner_physical_global,
+            derived_vs_expected_delta = ?derived_vs_expected_delta,
             snapped_inner = ?inner,
             inner_physical = ?inner_physical,
             border_physical = ?border_physical,
             snapped_clip = ?clip,
+            root_local_clip_precise = ?root_local_clip_precise,
+            clip_physical = ?clip_physical,
+            clip_physical_global = ?clip_physical_global,
             geometry = ?geometry,
             "gap debug rounded decoration element"
         );
@@ -579,6 +652,9 @@ fn shader_effect_element(
     scale: Scale<f64>,
     alpha: f32,
 ) -> Result<Option<StableShaderEffectElement>, ShaderEffectError> {
+    if gap_show_border_shell_only_enabled() {
+        return Ok(None);
+    }
     if intersect_logical_rect(cached.rect, output_geo).is_none() {
         return Ok(None);
     }
@@ -635,12 +711,8 @@ fn shader_effect_element(
                     RectSnapMode::OriginAndSize,
                 )
             }).or_else(|| {
-                cached.rect_precise.zip(cached.clip_rect_precise).map(|(rect_precise, clip_rect)| {
-                    snapped_precise_logical_rect_in_element_space(
-                        clip_rect,
-                        rect_precise,
-                        scale,
-                    )
+            cached.rect_precise.zip(cached.clip_rect_precise).map(|(rect_precise, clip_rect)| {
+                    precise_logical_rect_in_element_space(clip_rect, rect_precise)
                 })
             })
         },
@@ -662,14 +734,52 @@ fn shader_effect_element(
             "gap debug shader decoration spec"
         );
     }
+    let debug_clip_rect = spec.clip_rect;
     let element = state.element(renderer, spec)?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
+        let root_local_rect_precise = cached.rect_precise.map(|rect| crate::backend::visual::PreciseLogicalRect {
+            x: rect.x - decoration.layout.root.rect.x as f32,
+            y: rect.y - decoration.layout.root.rect.y as f32,
+            width: rect.width,
+            height: rect.height,
+        });
+        let root_local_clip_precise = cached.clip_rect_precise.map(|rect| crate::backend::visual::PreciseLogicalRect {
+            x: rect.x - decoration.layout.root.rect.x as f32,
+            y: rect.y - decoration.layout.root.rect.y as f32,
+            width: rect.width,
+            height: rect.height,
+        });
+        let clip_physical = debug_clip_rect.map(|clip_rect| {
+            let scale_x = scale.x.abs().max(0.0001) as f32;
+            let scale_y = scale.y.abs().max(0.0001) as f32;
+            let left = (clip_rect.x * scale_x).round() as i32;
+            let top = (clip_rect.y * scale_y).round() as i32;
+            let right = ((clip_rect.x + clip_rect.width) * scale_x).round() as i32;
+            let bottom = ((clip_rect.y + clip_rect.height) * scale_y).round() as i32;
+            smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
+                smithay::utils::Point::<i32, smithay::utils::Physical>::from((left, top)),
+                ((right - left).max(0), (bottom - top).max(0)).into(),
+            )
+        });
+        let clip_physical_global = clip_physical.map(|rect| {
+            smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
+                smithay::utils::Point::<i32, smithay::utils::Physical>::from((
+                    geometry.loc.x + rect.loc.x,
+                    geometry.loc.y + rect.loc.y,
+                )),
+                rect.size,
+            )
+        });
         tracing::info!(
             stable_key = %cached.stable_key,
             rect = ?cached.rect,
+            rect_precise = ?cached.rect_precise,
+            root_local_rect_precise = ?root_local_rect_precise,
             local_rect = ?local_rect,
             clip_rect = ?cached.clip_rect,
+            clip_rect_precise = ?cached.clip_rect_precise,
+            root_local_clip_precise = ?root_local_clip_precise,
             snapped_clip = ?cached.clip_rect.map(|clip_rect| {
                 snapped_logical_rect_for_element(
                     clip_rect,
@@ -679,6 +789,8 @@ fn shader_effect_element(
                     RectSnapMode::SharedEdges,
                 )
             }),
+            clip_physical = ?clip_physical,
+            clip_physical_global = ?clip_physical_global,
             geometry = ?geometry,
             "gap debug shader decoration element"
         );

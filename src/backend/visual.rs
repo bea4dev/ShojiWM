@@ -185,6 +185,18 @@ pub fn snapped_precise_logical_rect_in_element_space(
     }
 }
 
+pub fn precise_logical_rect_in_element_space(
+    rect: PreciseLogicalRect,
+    element_rect: PreciseLogicalRect,
+) -> SnappedLogicalRect {
+    SnappedLogicalRect {
+        x: rect.x - element_rect.x,
+        y: rect.y - element_rect.y,
+        width: rect.width.max(0.0),
+        height: rect.height.max(0.0),
+    }
+}
+
 #[derive(Debug)]
 pub struct AlphaRenderElement<E> {
     element: E,
