@@ -24,6 +24,7 @@ enum ClippedSurfaceInner {
 #[derive(Debug)]
 pub struct ClippedSurfaceElement {
     inner: ClippedSurfaceInner,
+    geometry: Rectangle<i32, Physical>,
     program: GlesTexProgram,
     clip_rect: SnappedLogicalRect,
     corner_radius: [f32; 4],
@@ -172,6 +173,7 @@ impl ClippedSurfaceElement {
                         output_scale = ?output_scale,
                         clip_scale = ?clip_scale,
                         mapped_geometry = ?mapped.geometry(output_scale),
+                        element_geometry = ?physical_clip,
                         mapped_src = ?mapped.src(),
                         "gap debug clipped surface mapped crop"
                     );
@@ -181,6 +183,7 @@ impl ClippedSurfaceElement {
 
         Ok(Self {
             inner,
+            geometry: physical_clip,
             program: program.0.clone(),
             clip_rect: snapped_clip_rect,
             corner_radius: {
@@ -196,10 +199,9 @@ impl ClippedSurfaceElement {
     }
 
     fn uniforms(&self) -> Vec<Uniform<'static>> {
-        let scale = Scale::from(self.output_scale as f64);
         let (clip_size, corner_radius, input_to_clip_array) = match &self.inner {
             ClippedSurfaceInner::Mapped(inner) => {
-                let element_geometry = inner.geometry(scale);
+                let element_geometry = self.geometry;
 
                 let element_loc = Vector2::new(
                     element_geometry.loc.x as f32 / self.output_scale.max(0.0001),
@@ -291,9 +293,8 @@ impl Element for ClippedSurfaceElement {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        match &self.inner {
-            ClippedSurfaceInner::Mapped(inner) => inner.geometry(scale),
-        }
+        let _ = scale;
+        self.geometry
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
@@ -323,7 +324,8 @@ impl Element for ClippedSurfaceElement {
                     tracing::info!(
                         scale = ?scale,
                         commit = ?commit,
-                        geometry = ?inner.geometry(scale),
+                        geometry = ?self.geometry,
+                        inner_geometry = ?inner.geometry(scale),
                         damage = ?damage,
                         "gap debug clipped surface mapped damage"
                     );
