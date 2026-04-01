@@ -675,6 +675,12 @@ fn render_surface(
                 let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
                 let mut snapshot_ui_items: Vec<(usize, TtyRenderElements)> = Vec::new();
                 let mut snapshot_backdrop_items: Vec<(usize, TtyRenderElements)> = Vec::new();
+                let mut debug_background_geometries: Vec<(
+                    usize,
+                    String,
+                    &'static str,
+                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                )> = Vec::new();
                 let root_origin = window_decorations
                     .get(window)
                     .map(|decoration| root_physical_origin(decoration.layout.root.rect, output_geo, scale));
@@ -813,6 +819,14 @@ fn render_surface(
                                 let post_transform_geometry = items
                                     .first()
                                     .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                                if let Some(post_transform_geometry) = post_transform_geometry {
+                                    debug_background_geometries.push((
+                                        order,
+                                        stable_key.clone(),
+                                        source_kind,
+                                        post_transform_geometry,
+                                    ));
+                                }
                                 tracing::info!(
                                     output = %output.name(),
                                     window_id = %window_id,
@@ -1372,6 +1386,70 @@ fn render_surface(
                         edge_delta = ?edge_delta,
                         "gap debug tty clipped surface elements"
                     );
+                    if !debug_background_geometries.is_empty() {
+                        let mut titlebar_fills = debug_background_geometries
+                            .iter()
+                            .filter(|(_, stable_key, source_kind, geometry)| {
+                                *source_kind == "fill"
+                                    && stable_key.ends_with(":fill")
+                                    && geometry.size.w > 200
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        titlebar_fills.sort_by_key(|(order, _, _, _)| *order);
+                        let first_fill = titlebar_fills.first().cloned();
+                        let second_fill = titlebar_fills.get(1).cloned();
+                        let sibling_gap =
+                            |upper: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                             lower: smithay::utils::Rectangle<i32, smithay::utils::Physical>| {
+                                (
+                                    lower.loc.x - upper.loc.x,
+                                    lower.loc.y - (upper.loc.y + upper.size.h),
+                                    (lower.loc.x + lower.size.w) - (upper.loc.x + upper.size.w),
+                                )
+                            };
+                        let shader_to_shader_gap = first_fill.as_ref().zip(second_fill.as_ref()).map(
+                            |((_, _, _, first), (_, _, _, second))| sibling_gap(*first, *second),
+                        );
+                        let shader_to_client_gap =
+                            second_fill.as_ref().and_then(|(_, _, _, second)| {
+                                first_geometry.map(|client| sibling_gap(*second, client))
+                            });
+                        let fill_client_edge_delta =
+                            second_fill.as_ref().and_then(|(_, _, _, fill)| {
+                                first_geometry.map(|client| {
+                                    (
+                                        client.loc.x - fill.loc.x,
+                                        client.loc.y - (fill.loc.y + fill.size.h),
+                                        (client.loc.x + client.size.w) - (fill.loc.x + fill.size.w),
+                                        client.size.w - fill.size.w,
+                                    )
+                                })
+                            });
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            background_geometries = ?debug_background_geometries,
+                            titlebar_fills = ?titlebar_fills,
+                            first_fill = ?first_fill,
+                            second_fill = ?second_fill,
+                            client_geometry = ?first_geometry,
+                            shader_to_shader_gap = ?shader_to_shader_gap,
+                            shader_to_client_gap = ?shader_to_client_gap,
+                            fill_client_edge_delta = ?fill_client_edge_delta,
+                            "gap debug tty sibling geometry summary"
+                        );
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            first_fill = ?first_fill.as_ref().map(|(_, stable_key, _, geometry)| (stable_key, geometry)),
+                            second_fill = ?second_fill.as_ref().map(|(_, stable_key, _, geometry)| (stable_key, geometry)),
+                            client_geometry = ?first_geometry,
+                            fill_client_edge_delta = ?fill_client_edge_delta,
+                            edge_delta = ?edge_delta,
+                            "gap debug tty frame summary"
+                        );
+                    }
                 }
                 let transformed = if bypass_clip {
                     window_render::debug_surface_elements(

@@ -14,7 +14,7 @@ use crate::{
     backend::visual::{
         RectSnapMode, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, snapped_logical_radius,
-        snapped_precise_logical_rect_for_element,
+        snapped_precise_logical_rect_for_element, snapped_precise_logical_rect_in_element_space,
         relative_physical_rect_from_root_snapped_edges,
         snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
         snapped_logical_rect_in_element_space,
@@ -112,13 +112,12 @@ fn align_shared_clip_edges_to_outer(
     clip_rect_logical: Option<LogicalRect>,
     outer_rect_precise: crate::backend::visual::PreciseLogicalRect,
     outer_rect_logical: LogicalRect,
-    local_rect: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> RoundedClip {
     let epsilon_x = (1.0 / scale.x.abs().max(0.0001)) as f32;
     let epsilon_y = (1.0 / scale.y.abs().max(0.0001)) as f32;
-    let local_right = local_rect.size.w.max(0) as f32;
-    let local_bottom = local_rect.size.h.max(0) as f32;
+    let local_right = outer_rect_precise.width.max(0.0);
+    let local_bottom = outer_rect_precise.height.max(0.0);
 
     let shared_left = clip_rect_precise
         .map(|rect| (rect.x - outer_rect_precise.x).abs() <= epsilon_x)
@@ -165,6 +164,50 @@ fn align_shared_clip_edges_to_outer(
     }
 
     clip
+}
+
+fn clip_contains_local_rect(
+    clip: RoundedClip,
+    local_rect: Rectangle<i32, Logical>,
+) -> bool {
+    let epsilon = 1.0;
+    let local_right = local_rect.size.w.max(0) as f32;
+    let local_bottom = local_rect.size.h.max(0) as f32;
+    clip.rect.x <= epsilon
+        && clip.rect.y <= epsilon
+        && clip.rect.x + clip.rect.width >= local_right - epsilon
+        && clip.rect.y + clip.rect.height >= local_bottom - epsilon
+}
+
+fn corner_radii_from_clip(
+    fallback_radius: f32,
+    clip: RoundedClip,
+    local_rect: Rectangle<i32, Logical>,
+) -> [f32; 4] {
+    let mut radii = [fallback_radius; 4];
+    let epsilon = 1.0;
+    let local_right = local_rect.size.w.max(0) as f32;
+    let local_bottom = local_rect.size.h.max(0) as f32;
+
+    let shares_left = clip.rect.x.abs() <= epsilon;
+    let shares_top = clip.rect.y.abs() <= epsilon;
+    let shares_right = ((clip.rect.x + clip.rect.width) - local_right).abs() <= epsilon;
+    let shares_bottom = ((clip.rect.y + clip.rect.height) - local_bottom).abs() <= epsilon;
+
+    if shares_top && shares_left {
+        radii[0] = clip.radius.max(radii[0]);
+    }
+    if shares_top && shares_right {
+        radii[1] = clip.radius.max(radii[1]);
+    }
+    if shares_bottom && shares_right {
+        radii[2] = clip.radius.max(radii[2]);
+    }
+    if shares_bottom && shares_left {
+        radii[3] = clip.radius.max(radii[3]);
+    }
+
+    radii
 }
 
 pub fn rounded_elements_for_output(
@@ -481,10 +524,9 @@ fn rounded_rect_element(
             .map(|clip_rect| {
                 align_shared_clip_edges_to_outer(
                     RoundedClip {
-                        rect: snapped_precise_logical_rect_for_element(
+                        rect: snapped_precise_logical_rect_in_element_space(
                             clip_rect,
                             outer_rect_precise,
-                            output_geo.loc,
                             scale,
                         ),
                         radius: snapped_radius_f32(
@@ -495,7 +537,6 @@ fn rounded_rect_element(
                     None,
                     outer_rect_precise,
                     cached.rect,
-                    local_rect,
                     scale,
                 )
             })
@@ -518,17 +559,15 @@ fn rounded_rect_element(
                     Some(clip_rect),
                     outer_rect_precise,
                     cached.rect,
-                    local_rect,
                     scale,
                 )
             }))
     };
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect_precise.map(|hole_rect| RoundedClip {
-            rect: snapped_precise_logical_rect_for_element(
+            rect: snapped_precise_logical_rect_in_element_space(
                 hole_rect,
                 outer_rect_precise,
-                output_geo.loc,
                 scale,
             ),
             radius: snapped_radius_f32(
@@ -577,10 +616,16 @@ fn rounded_rect_element(
     } else {
         inner
     };
+    let prefer_derived_inner =
+        cached.source_kind == "window-border" && cached.shared_inner_hole;
     let inner_mode = if cached.border_width > 0.0 {
-        inner
-            .map(crate::backend::rounded::RoundedInnerMode::Explicit)
-            .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
+        if prefer_derived_inner {
+            crate::backend::rounded::RoundedInnerMode::DerivedInset
+        } else {
+            inner
+                .map(crate::backend::rounded::RoundedInnerMode::Explicit)
+                .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
+        }
     } else {
         crate::backend::rounded::RoundedInnerMode::None
     };
@@ -627,6 +672,17 @@ fn rounded_rect_element(
         }
         _ => outer_render_scale,
     };
+    let corner_radii = if cached.border_width <= 0.0 {
+        clip.map(|clip| corner_radii_from_clip(outer_radius, clip, local_rect))
+            .unwrap_or([outer_radius, outer_radius, outer_radius, outer_radius])
+    } else {
+        [outer_radius, outer_radius, outer_radius, outer_radius]
+    };
+    let clip = if cached.border_width <= 0.0 {
+        clip.filter(|clip| !clip_contains_local_rect(*clip, local_rect))
+    } else {
+        clip
+    };
     let spec = RoundedRectSpec {
         rect: local_rect,
         geometry,
@@ -638,6 +694,7 @@ fn rounded_rect_element(
         ],
         alpha,
         radius: outer_radius,
+        corner_radii,
         shape: if cached.border_width > 0.0 {
             RoundedShapeKind::Border {
                 width: cached.border_width,

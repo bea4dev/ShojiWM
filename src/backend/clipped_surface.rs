@@ -94,12 +94,31 @@ impl ClippedSurfaceElement {
             )),
             clip.rect.size,
         );
-        let snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
+        let mut snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
             clip.rect_precise,
             output_origin,
             clip_scale,
             clip.snap_mode,
         );
+        let element_geometry = inner.geometry(output_scale);
+        let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
+        let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
+        let element_rect_logical = SnappedLogicalRect {
+            x: element_geometry.loc.x as f32 / output_scale_x,
+            y: element_geometry.loc.y as f32 / output_scale_y,
+            width: element_geometry.size.w as f32 / output_scale_x,
+            height: element_geometry.size.h as f32 / output_scale_y,
+        };
+        let clip_size_delta_px = (
+            ((snapped_clip_rect.width - element_rect_logical.width) * output_scale_x).abs(),
+            ((snapped_clip_rect.height - element_rect_logical.height) * output_scale_y).abs(),
+        );
+        if clip_size_delta_px.0 <= 1.0 && clip_size_delta_px.1 <= 1.0 {
+            snapped_clip_rect.x = element_rect_logical.x;
+            snapped_clip_rect.y = element_rect_logical.y;
+            snapped_clip_rect.width = element_rect_logical.width;
+            snapped_clip_rect.height = element_rect_logical.height;
+        }
         let physical_left = (snapped_clip_rect.x as f64 * output_scale.x).round() as i32;
         let physical_top = (snapped_clip_rect.y as f64 * output_scale.y).round() as i32;
         let physical_right =
@@ -119,13 +138,16 @@ impl ClippedSurfaceElement {
                 output_origin = ?output_origin,
                 output_scale = ?output_scale,
                 clip_scale = ?clip_scale,
-                raw_geometry_output = ?inner.geometry(output_scale),
+                raw_geometry_output = ?element_geometry,
                 raw_geometry_clip = ?inner.geometry(clip_scale),
                 raw_src = ?inner.src(),
                 raw_buffer_size = ?inner.buffer_size(),
                 raw_view = ?inner.view(),
                 raw_transform = ?inner.transform(),
                 clip = ?clip,
+                aligned_clip_rect = ?snapped_clip_rect,
+                element_rect_logical = ?element_rect_logical,
+                clip_size_delta_px = ?clip_size_delta_px,
                 "gap debug clipped surface raw element"
             );
         }

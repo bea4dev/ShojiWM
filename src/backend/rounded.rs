@@ -33,6 +33,7 @@ pub struct RoundedRectSpec {
     pub color: [f32; 4],
     pub alpha: f32,
     pub radius: f32,
+    pub corner_radii: [f32; 4],
     pub shape: RoundedShapeKind,
     pub inner_mode: RoundedInnerMode,
     pub clip: Option<RoundedClip>,
@@ -277,11 +278,21 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
             inner.radius.max(0.0),
         ),
     };
-    let radius = spec.radius.max(0.0);
+    let fallback_radius = spec.radius.max(0.0);
+    let corner_radii = spec.corner_radii.map(|radius| radius.max(0.0));
+    let uses_custom_corner_radii = corner_radii.iter().any(|radius| *radius > 0.0)
+        || fallback_radius > 0.0;
 
     vec![
         Uniform::new("color", spec.color),
-        Uniform::new("corner_radius", [radius, radius, radius, radius]),
+        Uniform::new(
+            "corner_radius",
+            if uses_custom_corner_radii {
+                corner_radii
+            } else {
+                [fallback_radius, fallback_radius, fallback_radius, fallback_radius]
+            },
+        ),
         Uniform::new("border_width", border_width),
         Uniform::new("inner_enabled", inner_enabled),
         Uniform::new("inner_rect", local_inner_rect),
