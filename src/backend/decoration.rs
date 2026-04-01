@@ -469,6 +469,17 @@ fn rounded_rect_element(
     } else {
         inner
     };
+    let inner_mode = if cached.border_width > 0.0 {
+        if cached.source_kind == "window-border" && cached.shared_inner_hole {
+            crate::backend::rounded::RoundedInnerMode::DerivedInset
+        } else {
+            inner
+                .map(crate::backend::rounded::RoundedInnerMode::Explicit)
+                .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
+        }
+    } else {
+        crate::backend::rounded::RoundedInnerMode::None
+    };
 
     let state = decoration
         .rounded_cache
@@ -500,7 +511,7 @@ fn rounded_rect_element(
         } else {
             RoundedShapeKind::Fill
         },
-        inner,
+        inner_mode,
         clip,
         render_scale,
     };

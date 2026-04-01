@@ -14,6 +14,13 @@ pub struct RoundedClip {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RoundedInnerMode {
+    None,
+    DerivedInset,
+    Explicit(RoundedClip),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RoundedShapeKind {
     Fill,
     Border { width: f32 },
@@ -27,7 +34,7 @@ pub struct RoundedRectSpec {
     pub alpha: f32,
     pub radius: f32,
     pub shape: RoundedShapeKind,
-    pub inner: Option<RoundedClip>,
+    pub inner_mode: RoundedInnerMode,
     pub clip: Option<RoundedClip>,
     pub render_scale: f32,
 }
@@ -230,28 +237,28 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
         })
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
     let clip_radius = spec.clip.map(|clip| clip.radius.max(0.0)).unwrap_or(0.0);
-    let local_inner_rect = spec
-        .inner
-        .map(|inner| {
+    let (inner_enabled, local_inner_rect, inner_radius) = match spec.inner_mode {
+        RoundedInnerMode::None | RoundedInnerMode::DerivedInset => {
+            (0.0f32, [0.0, 0.0, 0.0, 0.0], 0.0f32)
+        }
+        RoundedInnerMode::Explicit(inner) => (
+            1.0f32,
             [
                 inner.rect.x,
                 inner.rect.y,
                 inner.rect.width,
                 inner.rect.height,
-            ]
-        })
-        .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-    let inner_radius = spec.inner.map(|inner| inner.radius.max(0.0)).unwrap_or(0.0);
+            ],
+            inner.radius.max(0.0),
+        ),
+    };
     let radius = spec.radius.max(0.0);
 
     vec![
         Uniform::new("color", spec.color),
         Uniform::new("corner_radius", [radius, radius, radius, radius]),
         Uniform::new("border_width", border_width),
-        Uniform::new(
-            "inner_enabled",
-            if spec.inner.is_some() { 1.0f32 } else { 0.0f32 },
-        ),
+        Uniform::new("inner_enabled", inner_enabled),
         Uniform::new("inner_rect", local_inner_rect),
         Uniform::new(
             "inner_radius",
