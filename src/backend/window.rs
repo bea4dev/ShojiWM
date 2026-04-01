@@ -1,6 +1,7 @@
 use smithay::{
     backend::renderer::{
         element::{
+            Element,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             AsRenderElements, Kind,
         },
@@ -233,6 +234,73 @@ where
             AsRenderElements::<R>::render_elements(surface, renderer, location, scale, alpha)
         }
     }
+}
+
+pub fn debug_surface_elements<R>(
+    window: &Window,
+    renderer: &mut R,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_none() {
+        return;
+    }
+
+    let elements = surface_elements(window, renderer, location, scale, alpha);
+    let geometries = elements
+        .iter()
+        .map(|element| element.geometry(scale))
+        .collect::<Vec<_>>();
+    let srcs = elements
+        .iter()
+        .map(|element| element.src())
+        .collect::<Vec<_>>();
+    let transforms = elements
+        .iter()
+        .map(|element| element.transform())
+        .collect::<Vec<_>>();
+    let commits = elements
+        .iter()
+        .map(|element| element.current_commit())
+        .collect::<Vec<_>>();
+    let damages = elements
+        .iter()
+        .map(|element| element.damage_since(scale, None))
+        .collect::<Vec<_>>();
+    let opaque_regions = elements
+        .iter()
+        .map(|element| element.opaque_regions(scale))
+        .collect::<Vec<_>>();
+
+    let bbox = geometries.iter().copied().reduce(|acc, rect| {
+        let left = acc.loc.x.min(rect.loc.x);
+        let top = acc.loc.y.min(rect.loc.y);
+        let right = (acc.loc.x + acc.size.w).max(rect.loc.x + rect.size.w);
+        let bottom = (acc.loc.y + acc.size.h).max(rect.loc.y + rect.size.h);
+        smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((left, top)),
+            ((right - left), (bottom - top)).into(),
+        )
+    });
+
+    tracing::info!(
+        location = ?location,
+        scale = ?scale,
+        alpha,
+        count = elements.len(),
+        bbox = ?bbox,
+        geometries = ?geometries,
+        srcs = ?srcs,
+        transforms = ?transforms,
+        commits = ?commits,
+        damages = ?damages,
+        opaque_regions = ?opaque_regions,
+        "gap debug raw surface tree elements"
+    );
 }
 
 pub fn popup_elements<R>(

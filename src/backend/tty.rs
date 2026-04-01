@@ -738,6 +738,22 @@ fn render_surface(
                             root_origin,
                             composition_visual,
                         )?;
+                        if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
+                            && !use_full_window_snapshot
+                            && let Some(first_geometry) = items
+                                .first()
+                                .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale))
+                        {
+                            log_gap_readback_edge_probes(
+                                &mut backend.renderer,
+                                scale,
+                                &items,
+                                first_geometry,
+                                "decoration-backdrop",
+                                &output.name(),
+                                &window_id,
+                            );
+                        }
                         if use_full_window_snapshot {
                             if render_as_backdrop {
                                 snapshot_backdrop_items.extend(items.into_iter().map(|item| (order, item)));
@@ -774,6 +790,22 @@ fn render_surface(
                                 root_origin,
                                 composition_visual,
                             )?;
+                            if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
+                                && !use_full_window_snapshot
+                                && let Some(first_geometry) = items
+                                    .first()
+                                    .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale))
+                            {
+                                log_gap_readback_edge_probes(
+                                    &mut backend.renderer,
+                                    scale,
+                                    &items,
+                                    first_geometry,
+                                    "decoration-background",
+                                    &output.name(),
+                                    &window_id,
+                                );
+                            }
                             if use_full_window_snapshot {
                                 snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                             } else {
@@ -1044,6 +1076,23 @@ fn render_surface(
                             "gap debug tty border buffers"
                         );
                         if let Some(decoration) = window_decorations.get(window) {
+                            let border_outer_physical = border_buffer.and_then(|buffer| {
+                                buffer
+                                    .rect_precise
+                                    .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
+                                        rect,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                    ))
+                                    .or_else(|| Some(crate::backend::visual::relative_physical_rect_from_root(
+                                        buffer.rect,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                        buffer.clip_rect,
+                                    )))
+                            });
                             let border_inner_physical = border_buffer.and_then(|buffer| {
                                 buffer
                                     .hole_rect_precise
@@ -1067,14 +1116,51 @@ fn render_surface(
                                 buffer.source_kind == "fill" && buffer.rect.height == 30
                             });
                             let titlebar_fill_physical = titlebar_fill.map(|buffer| {
-                                crate::backend::visual::relative_physical_rect_from_root(
-                                    buffer.rect,
-                                    decoration.layout.root.rect,
-                                    output_geo,
-                                    scale,
-                                    buffer.clip_rect,
-                                )
+                                buffer
+                                    .rect_precise
+                                    .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
+                                        rect,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                    ))
+                                    .unwrap_or_else(|| {
+                                        crate::backend::visual::relative_physical_rect_from_root(
+                                            buffer.rect,
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                            buffer.clip_rect,
+                                        )
+                                    })
                             });
+                            let titlebar_shader = decoration.shader_buffers.iter().find(|buffer| {
+                                buffer.rect.height == 30
+                            });
+                            let titlebar_shader_physical = titlebar_shader.map(|buffer| {
+                                buffer
+                                    .rect_precise
+                                    .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
+                                        rect,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                    ))
+                                    .unwrap_or_else(|| {
+                                        crate::backend::visual::relative_physical_rect_from_root(
+                                            buffer.rect,
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                            buffer.clip_rect,
+                                        )
+                                    })
+                            });
+                            let content_clip_physical =
+                                smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
+                                    smithay::utils::Point::from((expected_left, expected_top)),
+                                    ((expected_right - expected_left).max(0), (expected_bottom - expected_top).max(0)).into(),
+                                );
                             let first_button = decoration.buffers.iter().find(|buffer| {
                                 buffer.source_kind == "button" && buffer.border_width > 0.0
                             });
@@ -1099,11 +1185,14 @@ fn render_surface(
                             tracing::info!(
                                 output = %output.name(),
                                 window_id = %window_id,
+                                border_outer_physical = ?border_outer_physical,
                                 border_inner_physical = ?border_inner_physical,
+                                titlebar_shader_physical = ?titlebar_shader_physical,
                                 titlebar_fill_physical = ?titlebar_fill_physical,
+                                content_clip_physical = ?content_clip_physical,
                                 first_button_physical = ?first_button_physical,
                                 button_delta = ?button_delta,
-                                "gap debug tty border inner compare"
+                                "gap debug tty border physical compare"
                             );
                         }
                     }
@@ -1178,6 +1267,13 @@ fn render_surface(
                     );
                 }
                 let transformed = if bypass_clip {
+                    window_render::debug_surface_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        visual_state.opacity,
+                    );
                     let raw_elements = window_render::surface_elements(
                         window,
                         &mut backend.renderer,
@@ -1206,10 +1302,40 @@ fn render_surface(
                             "gap debug tty raw surface elements"
                         );
                     }
-                    raw_elements
-                        .into_iter()
-                        .map(TtyRenderElements::Window)
-                        .collect()
+                    let expand_px = std::env::var_os("SHOJI_GAP_EXPAND_RAW_EDGE")
+                        .and_then(|value| value.to_str().and_then(|value| value.parse::<i32>().ok()))
+                        .unwrap_or(0)
+                        .max(0);
+                    if expand_px == 0 {
+                        raw_elements
+                            .into_iter()
+                            .map(TtyRenderElements::Window)
+                            .collect()
+                    } else {
+                        raw_elements
+                            .into_iter()
+                            .map(|element| {
+                                let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
+                                let scale_x =
+                                    (geometry.size.w.saturating_add(expand_px).max(1) as f64)
+                                        / geometry.size.w.max(1) as f64;
+                                let scale_y =
+                                    (geometry.size.h.saturating_add(expand_px).max(1) as f64)
+                                        / geometry.size.h.max(1) as f64;
+                                TtyRenderElements::TransformedWindow(
+                                    RelocateRenderElement::from_element(
+                                        RescaleRenderElement::from_element(
+                                            element,
+                                            geometry.loc,
+                                            smithay::utils::Scale::from((scale_x, scale_y)),
+                                        ),
+                                        smithay::utils::Point::from((0, 0)),
+                                        Relocate::Relative,
+                                    ),
+                                )
+                            })
+                            .collect()
+                    }
                 } else {
                     transform_clipped_elements(clipped, visual_state)
                 };
@@ -1218,62 +1344,12 @@ fn render_surface(
                         .first()
                         .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
                     {
-                        let probe_width = first_geometry.size.w.min(4);
-                        let left_probe = smithay::utils::Rectangle::new(
-                            first_geometry.loc,
-                            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
-                        );
-                        let top_probe = smithay::utils::Rectangle::new(
-                            first_geometry.loc,
-                            smithay::utils::Size::from((first_geometry.size.w, first_geometry.size.h.min(4))),
-                        );
-                        let right_probe = smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                first_geometry.loc.x + first_geometry.size.w.saturating_sub(probe_width),
-                                first_geometry.loc.y,
-                            )),
-                            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
-                        );
-                        let bottom_probe = smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                first_geometry.loc.x,
-                                first_geometry.loc.y + first_geometry.size.h.saturating_sub(first_geometry.size.h.min(4)),
-                            )),
-                            smithay::utils::Size::from((first_geometry.size.w, first_geometry.size.h.min(4))),
-                        );
-                        log_gap_readback_probe(
+                        log_gap_readback_edge_probes(
                             &mut backend.renderer,
                             scale,
                             &transformed,
-                            left_probe,
-                            "left",
-                            &output.name(),
-                            &window_id,
-                        );
-                        log_gap_readback_probe(
-                            &mut backend.renderer,
-                            scale,
-                            &transformed,
-                            top_probe,
-                            "top",
-                            &output.name(),
-                            &window_id,
-                        );
-                        log_gap_readback_probe(
-                            &mut backend.renderer,
-                            scale,
-                            &transformed,
-                            right_probe,
-                            "right",
-                            &output.name(),
-                            &window_id,
-                        );
-                        log_gap_readback_probe(
-                            &mut backend.renderer,
-                            scale,
-                            &transformed,
-                            bottom_probe,
-                            "bottom",
+                            first_geometry,
+                            "client",
                             &output.name(),
                             &window_id,
                         );
@@ -1319,33 +1395,12 @@ fn render_surface(
                         .first()
                         .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
                     {
-                        let probe_width = first_geometry.size.w.min(4);
-                        let left_probe = smithay::utils::Rectangle::new(
-                            first_geometry.loc,
-                            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
-                        );
-                        let right_probe = smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                first_geometry.loc.x + first_geometry.size.w.saturating_sub(probe_width),
-                                first_geometry.loc.y,
-                            )),
-                            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
-                        );
-                        log_gap_readback_probe(
+                        log_gap_readback_edge_probes(
                             &mut backend.renderer,
                             scale,
                             &transformed,
-                            left_probe,
-                            "left",
-                            &output.name(),
-                            &window_id,
-                        );
-                        log_gap_readback_probe(
-                            &mut backend.renderer,
-                            scale,
-                            &transformed,
-                            right_probe,
-                            "right",
+                            first_geometry,
+                            "client",
                             &output.name(),
                             &window_id,
                         );
@@ -1746,7 +1801,8 @@ fn log_gap_readback_probe(
     output_scale: Scale<f64>,
     elements: &[TtyRenderElements],
     probe_rect: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-    side: &'static str,
+    side: &str,
+    subject: &str,
     output_name: &str,
     window_id: &str,
 ) {
@@ -1815,6 +1871,7 @@ fn log_gap_readback_probe(
     tracing::info!(
         output = output_name,
         window_id,
+        subject,
         side,
         probe_rect = ?probe_rect,
         output_scale = output_scale.x,
@@ -1824,6 +1881,134 @@ fn log_gap_readback_probe(
         max_alpha,
         "gap readback tty client edge probe"
     );
+}
+
+fn log_gap_readback_edge_probes(
+    renderer: &mut GlesRenderer,
+    output_scale: Scale<f64>,
+    elements: &[TtyRenderElements],
+    first_geometry: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+    subject: &str,
+    output_name: &str,
+    window_id: &str,
+) {
+    for probe in [1, 2, 4] {
+        let probe_width = first_geometry.size.w.min(probe);
+        let probe_height = first_geometry.size.h.min(probe);
+
+        let left_probe = smithay::utils::Rectangle::new(
+            first_geometry.loc,
+            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
+        );
+        let top_probe = smithay::utils::Rectangle::new(
+            first_geometry.loc,
+            smithay::utils::Size::from((first_geometry.size.w, probe_height)),
+        );
+        let right_probe = smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((
+                first_geometry.loc.x + first_geometry.size.w.saturating_sub(probe_width),
+                first_geometry.loc.y,
+            )),
+            smithay::utils::Size::from((probe_width, first_geometry.size.h)),
+        );
+        let bottom_probe = smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((
+                first_geometry.loc.x,
+                first_geometry.loc.y + first_geometry.size.h.saturating_sub(probe_height),
+            )),
+            smithay::utils::Size::from((first_geometry.size.w, probe_height)),
+        );
+
+        let left_side = format!("left-{probe}px");
+        let top_side = format!("top-{probe}px");
+        let right_side = format!("right-{probe}px");
+        let bottom_side = format!("bottom-{probe}px");
+
+        log_gap_readback_probe(
+            renderer,
+            output_scale,
+            elements,
+            left_probe,
+            &left_side,
+            subject,
+            output_name,
+            window_id,
+        );
+        log_gap_readback_probe(
+            renderer,
+            output_scale,
+            elements,
+            top_probe,
+            &top_side,
+            subject,
+            output_name,
+            window_id,
+        );
+        log_gap_readback_probe(
+            renderer,
+            output_scale,
+            elements,
+            right_probe,
+            &right_side,
+            subject,
+            output_name,
+            window_id,
+        );
+        log_gap_readback_probe(
+            renderer,
+            output_scale,
+            elements,
+            bottom_probe,
+            &bottom_side,
+            subject,
+            output_name,
+            window_id,
+        );
+    }
+
+    for inset in [1, 2, 4, 8] {
+        if first_geometry.size.w > inset {
+            let right_inset_probe = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    first_geometry.loc.x + first_geometry.size.w - 1 - inset,
+                    first_geometry.loc.y,
+                )),
+                smithay::utils::Size::from((1, first_geometry.size.h)),
+            );
+            let right_side = format!("right-inset-{inset}px");
+            log_gap_readback_probe(
+                renderer,
+                output_scale,
+                elements,
+                right_inset_probe,
+                &right_side,
+                subject,
+                output_name,
+                window_id,
+            );
+        }
+
+        if first_geometry.size.h > inset {
+            let bottom_inset_probe = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    first_geometry.loc.x,
+                    first_geometry.loc.y + first_geometry.size.h - 1 - inset,
+                )),
+                smithay::utils::Size::from((first_geometry.size.w, 1)),
+            );
+            let bottom_side = format!("bottom-inset-{inset}px");
+            log_gap_readback_probe(
+                renderer,
+                output_scale,
+                elements,
+                bottom_inset_probe,
+                &bottom_side,
+                subject,
+                output_name,
+                window_id,
+            );
+        }
+    }
 }
 
 #[allow(dead_code)]

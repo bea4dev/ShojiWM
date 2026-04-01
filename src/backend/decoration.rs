@@ -6,7 +6,7 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::{Logical, Point, Rectangle, Scale},
+    utils::{Logical, Physical, Point, Rectangle, Scale},
 };
 use tracing::trace;
 
@@ -40,6 +40,54 @@ pub enum DecorationSceneError {
     Gles(#[from] GlesError),
     #[error(transparent)]
     Shader(#[from] ShaderEffectError),
+}
+
+fn gap_disable_decoration_clip_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_DISABLE_DECORATION_CLIP").is_some()
+}
+
+fn gap_disable_border_inner_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_DISABLE_BORDER_INNER").is_some()
+}
+
+fn gap_disable_titlebar_clip_enabled(height: i32) -> bool {
+    std::env::var_os("SHOJI_GAP_DISABLE_TITLEBAR_CLIP").is_some() && height == 30
+}
+
+fn gap_shrink_border_hole_px() -> f32 {
+    std::env::var_os("SHOJI_GAP_SHRINK_BORDER_HOLE")
+        .and_then(|value| value.to_str().and_then(|value| value.parse::<f32>().ok()))
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn shrink_rounded_clip_by_pixels(
+    clip: RoundedClip,
+    geometry: Rectangle<i32, Physical>,
+    local_rect: Rectangle<i32, Logical>,
+    shrink_px: f32,
+) -> RoundedClip {
+    if shrink_px <= 0.0 {
+        return clip;
+    }
+
+    let geom_w = geometry.size.w.max(1) as f32;
+    let geom_h = geometry.size.h.max(1) as f32;
+    let local_w = local_rect.size.w.max(1) as f32;
+    let local_h = local_rect.size.h.max(1) as f32;
+
+    let shrink_x = shrink_px * local_w / geom_w;
+    let shrink_y = shrink_px * local_h / geom_h;
+
+    RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: (clip.rect.x + shrink_x).min(local_w),
+            y: (clip.rect.y + shrink_y).min(local_h),
+            width: (clip.rect.width - shrink_x * 2.0).max(0.0),
+            height: (clip.rect.height - shrink_y * 2.0).max(0.0),
+        },
+        radius: (clip.radius - shrink_x.max(shrink_y)).max(0.0),
+    }
 }
 
 pub fn rounded_elements_for_output(
@@ -267,59 +315,58 @@ fn rounded_rect_element(
         width: cached.rect.width as f32,
         height: cached.rect.height as f32,
     });
+    let hole_geometry = cached.hole_rect_precise.map(|hole_rect| {
+        relative_physical_rect_from_root_precise(
+            hole_rect,
+            decoration.layout.root.rect,
+            output_geo,
+            scale,
+        )
+    }).or_else(|| cached.hole_rect.map(|hole_rect| {
+        relative_physical_rect_from_root(
+            hole_rect,
+            decoration.layout.root.rect,
+            output_geo,
+            scale,
+            Some(hole_rect),
+        )
+    }));
     let quantized_border_inner = (cached.border_width > 0.0 && !cached.shared_inner_hole)
         .then(|| {
-        if let Some(hole_rect) = cached.hole_rect_precise {
-            let left = (((hole_rect.x - outer_rect_precise.x).max(0.0) as f64) * scale.x.abs().max(0.0001))
-                .round()
-                / scale.x.abs().max(0.0001);
-            let top = (((hole_rect.y - outer_rect_precise.y).max(0.0) as f64) * scale.y.abs().max(0.0001))
-                .round()
-                / scale.y.abs().max(0.0001);
-            let right = ((((outer_rect_precise.x + outer_rect_precise.width)
-                - (hole_rect.x + hole_rect.width))
-                .max(0.0) as f64)
-                * scale.x.abs().max(0.0001))
-                .round()
-                / scale.x.abs().max(0.0001);
-            let bottom = ((((outer_rect_precise.y + outer_rect_precise.height)
-                - (hole_rect.y + hole_rect.height))
-                .max(0.0) as f64)
-                * scale.y.abs().max(0.0001))
-                .round()
-                / scale.y.abs().max(0.0001);
+        if let Some(hole_rect) = cached.hole_rect {
             RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
-                    x: left as f32,
-                    y: top as f32,
-                    width: (outer_rect_precise.width - left as f32 - right as f32).max(0.0),
-                    height: (outer_rect_precise.height - top as f32 - bottom as f32).max(0.0),
+                    x: (hole_rect.x - cached.rect.x).max(0) as f32,
+                    y: (hole_rect.y - cached.rect.y).max(0) as f32,
+                    width: hole_rect.width.max(0) as f32,
+                    height: hole_rect.height.max(0) as f32,
                 },
                 radius: snapped_radius_f32(
                     cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
                 ),
             }
-        } else if let Some(hole_rect) = cached.hole_rect {
-            let left = ((((hole_rect.x - cached.rect.x).max(0)) as f64) * scale.x.abs().max(0.0001))
-                .round()
-                / scale.x.abs().max(0.0001);
-            let top = ((((hole_rect.y - cached.rect.y).max(0)) as f64) * scale.y.abs().max(0.0001))
-                .round()
-                / scale.y.abs().max(0.0001);
-            let right = ((((cached.rect.x + cached.rect.width) - (hole_rect.x + hole_rect.width)).max(0) as f64)
-                * scale.x.abs().max(0.0001))
-                .round()
-                / scale.x.abs().max(0.0001);
-            let bottom = ((((cached.rect.y + cached.rect.height) - (hole_rect.y + hole_rect.height)).max(0) as f64)
-                * scale.y.abs().max(0.0001))
-                .round()
-                / scale.y.abs().max(0.0001);
+        } else if let Some(hole_rect) = cached.hole_rect_precise {
+            let outer_geometry = geometry;
+            let hole_geometry = relative_physical_rect_from_root_precise(
+                hole_rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            );
+            let left_px = (hole_geometry.loc.x - outer_geometry.loc.x).max(0);
+            let top_px = (hole_geometry.loc.y - outer_geometry.loc.y).max(0);
+            let outer_width_px = outer_geometry.size.w.max(1) as f32;
+            let outer_height_px = outer_geometry.size.h.max(1) as f32;
             RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
-                    x: left as f32,
-                    y: top as f32,
-                    width: (cached.rect.width as f32 - left as f32 - right as f32).max(0.0),
-                    height: (cached.rect.height as f32 - top as f32 - bottom as f32).max(0.0),
+                    x: left_px as f32 * cached.rect.width.max(1) as f32 / outer_width_px,
+                    y: top_px as f32 * cached.rect.height.max(1) as f32 / outer_height_px,
+                    width: hole_geometry.size.w.max(0) as f32
+                        * cached.rect.width.max(1) as f32
+                        / outer_width_px,
+                    height: hole_geometry.size.h.max(0) as f32
+                        * cached.rect.height.max(1) as f32
+                        / outer_height_px,
                 },
                 radius: snapped_radius_f32(
                     cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
@@ -345,7 +392,12 @@ fn rounded_rect_element(
         }
     });
 
-    let clip = cached.clip_rect_precise.map(|clip_rect| RoundedClip {
+    let clip = if (gap_disable_decoration_clip_enabled() && cached.source_kind != "window-border")
+        || gap_disable_titlebar_clip_enabled(cached.rect.height)
+    {
+        None
+    } else {
+        cached.clip_rect_precise.map(|clip_rect| RoundedClip {
         rect: snapped_precise_logical_rect_in_element_space(
             clip_rect,
             outer_rect_precise,
@@ -364,7 +416,8 @@ fn rounded_rect_element(
             scale,
         ),
         radius: snapped_logical_radius(cached.clip_radius, scale),
-    }));
+    }))
+    };
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect_precise.map(|hole_rect| RoundedClip {
             rect: snapped_precise_logical_rect_in_element_space(
@@ -391,36 +444,75 @@ fn rounded_rect_element(
             ),
         }))
     });
+    let inner = if cached.source_kind == "window-border" {
+        inner.map(|clip| {
+            shrink_rounded_clip_by_pixels(
+                clip,
+                geometry,
+                local_rect,
+                gap_shrink_border_hole_px(),
+            )
+        })
+    } else {
+        inner
+    };
+    // For the shared border/content edge, prefer the shader's border_width-derived inner edge.
+    // This keeps the border and its content on the same basis instead of feeding a separately
+    // quantized inner rect into the shader.
+    let inner = if cached.source_kind == "window-border" && cached.shared_inner_hole {
+        None
+    } else {
+        inner
+    };
+    let inner = if gap_disable_border_inner_enabled() && cached.source_kind == "window-border" {
+        None
+    } else {
+        inner
+    };
 
     let state = decoration
         .rounded_cache
         .entry(cached.stable_key.clone())
         .or_default();
-    let element = state.element(
-        renderer,
-        RoundedRectSpec {
-            rect: local_rect,
-            geometry,
-            color: [
-                cached.color.r as f32 / 255.0,
-                cached.color.g as f32 / 255.0,
-                cached.color.b as f32 / 255.0,
-                cached.color.a as f32 / 255.0,
-            ],
-            alpha,
-            radius: outer_radius,
-            shape: if cached.border_width > 0.0 {
-                RoundedShapeKind::Border {
-                    width: cached.border_width,
-                }
-            } else {
-                RoundedShapeKind::Fill
-            },
-            inner,
-            clip,
-            render_scale: scale.x as f32,
+    let render_scale = if cached.source_kind == "window-border" {
+        hole_geometry.zip(cached.hole_rect).map(|(hole_geometry, hole_rect)| {
+            hole_geometry.size.w.max(1) as f32 / hole_rect.width.max(1) as f32
+        })
+    } else {
+        None
+    }
+    .unwrap_or_else(|| geometry.size.w.max(1) as f32 / local_rect.size.w.max(1) as f32);
+    let spec = RoundedRectSpec {
+        rect: local_rect,
+        geometry,
+        color: [
+            cached.color.r as f32 / 255.0,
+            cached.color.g as f32 / 255.0,
+            cached.color.b as f32 / 255.0,
+            cached.color.a as f32 / 255.0,
+        ],
+        alpha,
+        radius: outer_radius,
+        shape: if cached.border_width > 0.0 {
+            RoundedShapeKind::Border {
+                width: cached.border_width,
+            }
+        } else {
+            RoundedShapeKind::Fill
         },
-    )?;
+        inner,
+        clip,
+        render_scale,
+    };
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            stable_key = %cached.stable_key,
+            source_kind = %cached.source_kind,
+            spec = ?spec,
+            "gap debug rounded decoration spec"
+        );
+    }
+    let element = state.element(renderer, spec)?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
         let inner_physical = inner.map(|inner| {
@@ -511,15 +603,19 @@ fn shader_effect_element(
         .shader_cache
         .entry(cached.stable_key.clone())
         .or_default();
-    let element = state.element(
-        renderer,
-        ShaderEffectSpec {
-            rect: local_rect,
-            geometry,
-            shader: cached.shader.clone(),
-            alpha_bits: alpha.to_bits(),
-            render_scale: scale.x as f32,
-            clip_rect: cached.clip_rect.map(|clip_rect| {
+    let render_scale = geometry.size.w.max(1) as f32 / local_rect.size.w.max(1) as f32;
+    let spec = ShaderEffectSpec {
+        rect: local_rect,
+        geometry,
+        shader: cached.shader.clone(),
+        alpha_bits: alpha.to_bits(),
+        render_scale,
+            clip_rect: if gap_disable_decoration_clip_enabled()
+                || gap_disable_titlebar_clip_enabled(cached.rect.height)
+            {
+                None
+            } else {
+            cached.clip_rect.map(|clip_rect| {
                 snapped_logical_rect_in_element_space(
                     clip_rect,
                     cached.rect,
@@ -535,13 +631,27 @@ fn shader_effect_element(
                         scale,
                     )
                 })
-            }),
-            clip_radius: cached
+            })
+        },
+            clip_radius: if gap_disable_decoration_clip_enabled()
+                || gap_disable_titlebar_clip_enabled(cached.rect.height)
+            {
+                0
+            } else {
+            cached
                 .clip_radius_precise
                 .map(|radius| radius.round() as i32)
-                .unwrap_or(cached.clip_radius),
+                .unwrap_or(cached.clip_radius)
         },
-    )?;
+    };
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            stable_key = %cached.stable_key,
+            spec = ?spec,
+            "gap debug shader decoration spec"
+        );
+    }
+    let element = state.element(renderer, spec)?;
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
         tracing::info!(

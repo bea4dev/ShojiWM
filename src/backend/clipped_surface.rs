@@ -136,6 +136,21 @@ impl ClippedSurfaceElement {
         let inner = if (clip_scale.x - output_scale.x).abs() < f64::EPSILON
             && (clip_scale.y - output_scale.y).abs() < f64::EPSILON
         {
+            let source_inset_px = std::env::var_os("SHOJI_GAP_SOURCE_INSET")
+                .and_then(|value| value.to_str().and_then(|value| value.parse::<i32>().ok()))
+                .unwrap_or(0)
+                .max(0);
+            let physical_clip = Rectangle::new(
+                Point::from((
+                    physical_clip.loc.x,
+                    physical_clip.loc.y,
+                )),
+                (
+                    physical_clip.size.w.saturating_sub(source_inset_px),
+                    physical_clip.size.h.saturating_sub(source_inset_px),
+                )
+                    .into(),
+            );
             match CropRenderElement::from_element(inner, output_scale, physical_clip) {
                 Some(cropped) => ClippedSurfaceInner::Simple(cropped),
                 None => return Err(GlesError::FramebufferBindingError),
