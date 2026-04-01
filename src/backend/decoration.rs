@@ -106,6 +106,67 @@ fn shrink_rounded_clip_by_pixels(
     }
 }
 
+fn align_shared_clip_edges_to_outer(
+    mut clip: RoundedClip,
+    clip_rect_precise: Option<crate::backend::visual::PreciseLogicalRect>,
+    clip_rect_logical: Option<LogicalRect>,
+    outer_rect_precise: crate::backend::visual::PreciseLogicalRect,
+    outer_rect_logical: LogicalRect,
+    local_rect: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> RoundedClip {
+    let epsilon_x = (1.0 / scale.x.abs().max(0.0001)) as f32;
+    let epsilon_y = (1.0 / scale.y.abs().max(0.0001)) as f32;
+    let local_right = local_rect.size.w.max(0) as f32;
+    let local_bottom = local_rect.size.h.max(0) as f32;
+
+    let shared_left = clip_rect_precise
+        .map(|rect| (rect.x - outer_rect_precise.x).abs() <= epsilon_x)
+        .or_else(|| clip_rect_logical.map(|rect| rect.x == outer_rect_logical.x))
+        .unwrap_or(false);
+    let shared_top = clip_rect_precise
+        .map(|rect| (rect.y - outer_rect_precise.y).abs() <= epsilon_y)
+        .or_else(|| clip_rect_logical.map(|rect| rect.y == outer_rect_logical.y))
+        .unwrap_or(false);
+    let shared_right = clip_rect_precise
+        .map(|rect| {
+            ((rect.x + rect.width) - (outer_rect_precise.x + outer_rect_precise.width)).abs()
+                <= epsilon_x
+        })
+        .or_else(|| {
+            clip_rect_logical.map(|rect| {
+                rect.x + rect.width == outer_rect_logical.x + outer_rect_logical.width
+            })
+        })
+        .unwrap_or(false);
+    let shared_bottom = clip_rect_precise
+        .map(|rect| {
+            ((rect.y + rect.height) - (outer_rect_precise.y + outer_rect_precise.height)).abs()
+                <= epsilon_y
+        })
+        .or_else(|| {
+            clip_rect_logical.map(|rect| {
+                rect.y + rect.height == outer_rect_logical.y + outer_rect_logical.height
+            })
+        })
+        .unwrap_or(false);
+
+    if shared_left {
+        clip.rect.x = 0.0;
+    }
+    if shared_top {
+        clip.rect.y = 0.0;
+    }
+    if shared_right {
+        clip.rect.width = (local_right - clip.rect.x).max(0.0);
+    }
+    if shared_bottom {
+        clip.rect.height = (local_bottom - clip.rect.y).max(0.0);
+    }
+
+    clip
+}
+
 pub fn rounded_elements_for_output(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -416,27 +477,51 @@ fn rounded_rect_element(
     {
         None
     } else {
-        cached.clip_rect_precise.map(|clip_rect| RoundedClip {
-        rect: snapped_precise_logical_rect_for_element(
-            clip_rect,
-            outer_rect_precise,
-            output_geo.loc,
-            scale,
-        ),
-        radius: snapped_radius_f32(cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32)),
-    }).or_else(|| cached.clip_rect.map(|clip_rect| RoundedClip {
-        rect: snapped_logical_rect_from_relative_physical(
-            relative_physical_rect_from_root(
-                clip_rect,
-                cached.rect,
-                output_geo,
-                scale,
-                Some(clip_rect),
-            ),
-            scale,
-        ),
-        radius: snapped_logical_radius(cached.clip_radius, scale),
-    }))
+        cached.clip_rect_precise
+            .map(|clip_rect| {
+                align_shared_clip_edges_to_outer(
+                    RoundedClip {
+                        rect: snapped_precise_logical_rect_for_element(
+                            clip_rect,
+                            outer_rect_precise,
+                            output_geo.loc,
+                            scale,
+                        ),
+                        radius: snapped_radius_f32(
+                            cached.clip_radius_precise.unwrap_or(cached.clip_radius as f32),
+                        ),
+                    },
+                    Some(clip_rect),
+                    None,
+                    outer_rect_precise,
+                    cached.rect,
+                    local_rect,
+                    scale,
+                )
+            })
+            .or_else(|| cached.clip_rect.map(|clip_rect| {
+                align_shared_clip_edges_to_outer(
+                    RoundedClip {
+                        rect: snapped_logical_rect_from_relative_physical(
+                            relative_physical_rect_from_root(
+                                clip_rect,
+                                cached.rect,
+                                output_geo,
+                                scale,
+                                Some(clip_rect),
+                            ),
+                            scale,
+                        ),
+                        radius: snapped_logical_radius(cached.clip_radius, scale),
+                    },
+                    None,
+                    Some(clip_rect),
+                    outer_rect_precise,
+                    cached.rect,
+                    local_rect,
+                    scale,
+                )
+            }))
     };
     let inner = quantized_border_inner.or_else(|| {
         cached.hole_rect_precise.map(|hole_rect| RoundedClip {
@@ -687,6 +772,18 @@ fn rounded_rect_element(
                 geometry.size.h - (inner.loc.y + inner.size.h),
             )
         });
+        let geometry_right = geometry.loc.x + geometry.size.w;
+        let geometry_bottom = geometry.loc.y + geometry.size.h;
+        let expected_inner_right_global = expected_inner_physical_global
+            .map(|rect| rect.loc.x + rect.size.w);
+        let expected_inner_bottom_global = expected_inner_physical_global
+            .map(|rect| rect.loc.y + rect.size.h);
+        let derived_inner_right_global = derived_inner_physical_global
+            .map(|rect| rect.loc.x + rect.size.w);
+        let derived_inner_bottom_global = derived_inner_physical_global
+            .map(|rect| rect.loc.y + rect.size.h);
+        let clip_right_global = clip_physical_global.map(|rect| rect.loc.x + rect.size.w);
+        let clip_bottom_global = clip_physical_global.map(|rect| rect.loc.y + rect.size.h);
         tracing::info!(
             stable_key = %cached.stable_key,
             source_kind = %cached.source_kind,
@@ -712,6 +809,16 @@ fn rounded_rect_element(
             derived_inner_physical_precise = ?derived_inner_physical_precise,
             derived_inner_physical_global_precise = ?derived_inner_physical_global_precise,
             derived_inner_physical_global = ?derived_inner_physical_global,
+            geometry_right,
+            geometry_bottom,
+            expected_inner_right_global,
+            expected_inner_bottom_global,
+            derived_inner_right_global,
+            derived_inner_bottom_global,
+            expected_inner_right_gap_px = expected_inner_right_global.map(|right| geometry_right - right),
+            expected_inner_bottom_gap_px = expected_inner_bottom_global.map(|bottom| geometry_bottom - bottom),
+            derived_inner_right_gap_px = derived_inner_right_global.map(|right| geometry_right - right),
+            derived_inner_bottom_gap_px = derived_inner_bottom_global.map(|bottom| geometry_bottom - bottom),
             derived_vs_expected_delta = ?derived_vs_expected_delta,
             snapped_inner = ?inner,
             inner_physical = ?inner_physical,
@@ -722,6 +829,10 @@ fn rounded_rect_element(
             clip_physical_precise = ?clip_physical_precise,
             clip_physical_global_precise = ?clip_physical_global_precise,
             clip_physical_global = ?clip_physical_global,
+            clip_right_global,
+            clip_bottom_global,
+            clip_right_gap_px = clip_right_global.map(|right| geometry_right - right),
+            clip_bottom_gap_px = clip_bottom_global.map(|bottom| geometry_bottom - bottom),
             geometry = ?geometry,
             "gap debug rounded decoration element"
         );

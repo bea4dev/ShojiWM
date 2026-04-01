@@ -4,7 +4,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle},
 };
 use std::time::{Duration, Instant};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::state::ShojiWM;
 use crate::backend::{
@@ -2262,6 +2262,169 @@ fn node_kind_name(kind: &super::DecorationNodeKind) -> &'static str {
     }
 }
 
+fn gap_debug_layout_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_LAYOUT_DEBUG").is_some()
+        || std::env::var_os("SHOJI_GAP_DEBUG").is_some()
+}
+
+fn resolved_rect_right(rect: crate::ssd::ResolvedLogicalRect) -> f32 {
+    rect.x.to_f32() + rect.width.to_f32()
+}
+
+fn resolved_rect_bottom(rect: crate::ssd::ResolvedLogicalRect) -> f32 {
+    rect.y.to_f32() + rect.height.to_f32()
+}
+
+fn format_resolved_rect(rect: crate::ssd::ResolvedLogicalRect) -> String {
+    format!(
+        "x={:.3}, y={:.3}, w={:.3}, h={:.3}, right={:.3}, bottom={:.3}",
+        rect.x.to_f32(),
+        rect.y.to_f32(),
+        rect.width.to_f32(),
+        rect.height.to_f32(),
+        resolved_rect_right(rect),
+        resolved_rect_bottom(rect),
+    )
+}
+
+fn log_gap_layout_tree(
+    snapshot: &WaylandWindowSnapshot,
+    client_rect: LogicalRect,
+    layout: &ComputedDecorationTree,
+) {
+    let Some(slot_rect) = layout.window_slot_rect() else {
+        return;
+    };
+    let Some(slot_resolved_rect) = layout.root.resolved_window_slot_rect() else {
+        return;
+    };
+
+    let root = &layout.root;
+    let root_content_rect = root.resolved_content_rect.round_to_logical_rect();
+    info!(
+        window_id = snapshot.id,
+        title = snapshot.title,
+        client_rect = %format_rect(client_rect),
+        root_rect = %format_rect(root.rect),
+        root_rect_resolved = %format_resolved_rect(root.resolved_rect),
+        root_content_rect = %format_rect(root_content_rect),
+        root_content_rect_resolved = %format_resolved_rect(root.resolved_content_rect),
+        slot_rect = %format_rect(slot_rect),
+        slot_rect_resolved = %format_resolved_rect(slot_resolved_rect),
+        logical_slot_right_delta_vs_client = (slot_rect.x + slot_rect.width) - (client_rect.x + client_rect.width),
+        logical_slot_bottom_delta_vs_client = (slot_rect.y + slot_rect.height) - (client_rect.y + client_rect.height),
+        resolved_slot_right_delta_vs_client = resolved_rect_right(slot_resolved_rect)
+            - (client_rect.x + client_rect.width) as f32,
+        resolved_slot_bottom_delta_vs_client = resolved_rect_bottom(slot_resolved_rect)
+            - (client_rect.y + client_rect.height) as f32,
+        logical_root_content_right_delta_vs_slot = (root_content_rect.x + root_content_rect.width)
+            - (slot_rect.x + slot_rect.width),
+        logical_root_content_bottom_delta_vs_slot = (root_content_rect.y + root_content_rect.height)
+            - (slot_rect.y + slot_rect.height),
+        resolved_root_content_right_delta_vs_slot = resolved_rect_right(root.resolved_content_rect)
+            - resolved_rect_right(slot_resolved_rect),
+        resolved_root_content_bottom_delta_vs_slot = resolved_rect_bottom(root.resolved_content_rect)
+            - resolved_rect_bottom(slot_resolved_rect),
+        "gap layout summary"
+    );
+
+    log_gap_layout_node(snapshot, root, None, 0);
+}
+
+fn log_gap_layout_node(
+    snapshot: &WaylandWindowSnapshot,
+    node: &super::ComputedDecorationNode,
+    parent: Option<&super::ComputedDecorationNode>,
+    depth: usize,
+) {
+    let rect_right = node.rect.x + node.rect.width;
+    let rect_bottom = node.rect.y + node.rect.height;
+    let content_rect = node.resolved_content_rect.round_to_logical_rect();
+    let content_right = content_rect.x + content_rect.width;
+    let content_bottom = content_rect.y + content_rect.height;
+
+    let parent_outer_left_delta = parent.map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_rect.x.to_f32());
+    let parent_content_left_delta =
+        parent.map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_content_rect.x.to_f32());
+    let parent_outer_top_delta = parent.map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_rect.y.to_f32());
+    let parent_content_top_delta =
+        parent.map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_content_rect.y.to_f32());
+    let parent_outer_right_delta = parent.map(|parent| {
+        (parent.rect.x + parent.rect.width) - rect_right
+    });
+    let parent_content_right_delta = parent.map(|parent| {
+        let parent_content_rect = parent.resolved_content_rect.round_to_logical_rect();
+        (parent_content_rect.x + parent_content_rect.width) - rect_right
+    });
+    let parent_outer_right_delta_resolved = parent.map(|parent| {
+        resolved_rect_right(parent.resolved_rect) - resolved_rect_right(node.resolved_rect)
+    });
+    let parent_content_right_delta_resolved = parent.map(|parent| {
+        resolved_rect_right(parent.resolved_content_rect) - resolved_rect_right(node.resolved_rect)
+    });
+
+    let child_union = (!node.children.is_empty()).then(|| {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_right = f32::NEG_INFINITY;
+        let mut max_bottom = f32::NEG_INFINITY;
+        for child in &node.children {
+            min_x = min_x.min(child.resolved_rect.x.to_f32());
+            min_y = min_y.min(child.resolved_rect.y.to_f32());
+            max_right = max_right.max(resolved_rect_right(child.resolved_rect));
+            max_bottom = max_bottom.max(resolved_rect_bottom(child.resolved_rect));
+        }
+        (min_x, min_y, max_right, max_bottom)
+    });
+
+    info!(
+        window_id = snapshot.id,
+        depth,
+        kind = node_kind_name(&node.kind),
+        stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
+        rect = %format_rect(node.rect),
+        rect_resolved = %format_resolved_rect(node.resolved_rect),
+        rect_right,
+        rect_bottom,
+        content_rect = %format_rect(content_rect),
+        content_rect_resolved = %format_resolved_rect(node.resolved_content_rect),
+        content_right,
+        content_bottom,
+        border_width_logical = node.resolved_border_width.round_to_i32(),
+        border_width_resolved = node.resolved_border_width.to_f32(),
+        border_radius_logical = node.resolved_border_radius.round_to_i32(),
+        border_radius_resolved = node.resolved_border_radius.to_f32(),
+        parent_kind = parent
+            .map(|parent| node_kind_name(&parent.kind))
+            .unwrap_or("<root>"),
+        parent_outer_left_delta,
+        parent_content_left_delta,
+        parent_outer_top_delta,
+        parent_content_top_delta,
+        parent_outer_right_delta,
+        parent_content_right_delta,
+        parent_outer_right_delta_resolved,
+        parent_content_right_delta_resolved,
+        child_union_left_resolved = child_union.map(|union| union.0),
+        child_union_top_resolved = child_union.map(|union| union.1),
+        child_union_right_resolved = child_union.map(|union| union.2),
+        child_union_bottom_resolved = child_union.map(|union| union.3),
+        child_union_right_delta_from_outer = child_union
+            .map(|union| resolved_rect_right(node.resolved_rect) - union.2),
+        child_union_right_delta_from_content = child_union
+            .map(|union| resolved_rect_right(node.resolved_content_rect) - union.2),
+        child_union_bottom_delta_from_outer = child_union
+            .map(|union| resolved_rect_bottom(node.resolved_rect) - union.3),
+        child_union_bottom_delta_from_content = child_union
+            .map(|union| resolved_rect_bottom(node.resolved_content_rect) - union.3),
+        "gap layout node"
+    );
+
+    for child in &node.children {
+        log_gap_layout_node(snapshot, child, Some(node), depth + 1);
+    }
+}
+
 fn log_decoration_refresh(
     reason: &str,
     snapshot: &WaylandWindowSnapshot,
@@ -2290,6 +2453,10 @@ fn log_decoration_refresh(
         buffer_count = buffers.len(),
         "updated window decoration layout"
     );
+
+    if gap_debug_layout_enabled() {
+        log_gap_layout_tree(snapshot, client_rect, layout);
+    }
 
     for (index, buffer) in buffers.iter().enumerate() {
         trace!(
