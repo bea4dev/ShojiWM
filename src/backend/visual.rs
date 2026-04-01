@@ -25,6 +25,15 @@ pub struct PreciseLogicalRect {
     pub height: f32,
 }
 
+pub fn precise_rect_from_logical(rect: LogicalRect) -> PreciseLogicalRect {
+    PreciseLogicalRect {
+        x: rect.x as f32,
+        y: rect.y as f32,
+        width: rect.width as f32,
+        height: rect.height as f32,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RectSnapMode {
     SharedEdges,
@@ -550,6 +559,33 @@ pub fn transformed_rect(
     let height = (top.max(bottom) - top.min(bottom)).ceil() as i32;
 
     LogicalRect::new(x, y, width.max(0), height.max(0))
+}
+
+pub fn transformed_precise_rect(
+    rect: PreciseLogicalRect,
+    reference_rect: LogicalRect,
+    transform: WindowTransform,
+) -> PreciseLogicalRect {
+    let origin_x =
+        reference_rect.x as f64 + reference_rect.width as f64 * transform.origin.x;
+    let origin_y =
+        reference_rect.y as f64 + reference_rect.height as f64 * transform.origin.y;
+
+    let left = origin_x + (rect.x as f64 - origin_x) * transform.scale_x + transform.translate_x;
+    let top = origin_y + (rect.y as f64 - origin_y) * transform.scale_y + transform.translate_y;
+    let rect_right = rect.x as f64 + rect.width as f64;
+    let rect_bottom = rect.y as f64 + rect.height as f64;
+    let right =
+        origin_x + (rect_right - origin_x) * transform.scale_x + transform.translate_x;
+    let bottom =
+        origin_y + (rect_bottom - origin_y) * transform.scale_y + transform.translate_y;
+
+    PreciseLogicalRect {
+        x: left.min(right) as f32,
+        y: top.min(bottom) as f32,
+        width: (left.max(right) - left.min(right)).max(0.0) as f32,
+        height: (top.max(bottom) - top.min(bottom)).max(0.0) as f32,
+    }
 }
 
 pub fn inverse_transform_point(

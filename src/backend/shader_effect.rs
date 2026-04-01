@@ -24,7 +24,7 @@ use smithay::{
                 UniformName,
             },
             utils::{CommitCounter, OpaqueRegions},
-            Bind, Frame as _, FrameContext as _, ImportMem, Offscreen, Renderer, Texture, ContextId,
+            Bind, ExportMem, Frame as _, FrameContext as _, ImportMem, Offscreen, Renderer, Texture, ContextId,
         },
     },
     utils::{user_data::UserDataMap, Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
@@ -1380,6 +1380,125 @@ pub fn apply_effect_pipeline(
     run_effect_pipeline(renderer, effect, &mut ctx, sample_region, output_size)
 }
 
+pub fn log_gap_texture_region_readback(
+    renderer: &mut GlesRenderer,
+    texture: &GlesTexture,
+    src_region: Option<Rectangle<i32, Buffer>>,
+    output_size: (i32, i32),
+    subject: &str,
+    label: &str,
+    output_name: &str,
+    window_id: &str,
+) {
+    if output_size.0 <= 0 || output_size.1 <= 0 {
+        return;
+    }
+
+    let Ok(mut target) =
+        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, output_size.into())
+    else {
+        return;
+    };
+    let element = TextureRenderElement::from_static_texture(
+        Id::new(),
+        renderer.context_id(),
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        texture.clone(),
+        1,
+        Transform::Normal,
+        Some(1.0),
+        src_region.map(|region| {
+            Rectangle::new(
+                Point::from((region.loc.x as f64, region.loc.y as f64)),
+                (region.size.w as f64, region.size.h as f64).into(),
+            )
+        }),
+        Some(output_size.into()),
+        None,
+        Kind::Unspecified,
+    );
+    let Ok(mut framebuffer) = renderer.bind(&mut target) else {
+        return;
+    };
+    let mut damage_tracker = OutputDamageTracker::new(output_size, 1.0, Transform::Normal);
+    let Ok(_) = damage_tracker.render_output(
+        renderer,
+        &mut framebuffer,
+        0,
+        &[element],
+        [0.0, 0.0, 0.0, 0.0],
+    ) else {
+        return;
+    };
+
+    let output_rect = Rectangle::from_size(Size::<i32, Buffer>::from(output_size));
+    let Ok(mapping) = renderer.copy_framebuffer(&framebuffer, output_rect, Fourcc::Abgr8888) else {
+        return;
+    };
+    let Ok(bytes) = renderer.map_texture(&mapping) else {
+        return;
+    };
+    drop(framebuffer);
+
+    let width = output_size.0 as usize;
+    let height = output_size.1 as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let mut left_gap_px = 0usize;
+    while left_gap_px < width && column_is_fully_transparent(&bytes, width, height, left_gap_px) {
+        left_gap_px += 1;
+    }
+
+    let mut right_gap_px = 0usize;
+    while right_gap_px < width
+        && column_is_fully_transparent(&bytes, width, height, width - 1 - right_gap_px)
+    {
+        right_gap_px += 1;
+    }
+
+    let mut top_gap_px = 0usize;
+    while top_gap_px < height && row_is_fully_transparent(&bytes, width, top_gap_px) {
+        top_gap_px += 1;
+    }
+
+    let mut bottom_gap_px = 0usize;
+    while bottom_gap_px < height
+        && row_is_fully_transparent(&bytes, width, height - 1 - bottom_gap_px)
+    {
+        bottom_gap_px += 1;
+    }
+
+    let nonzero_bounds = first_last_nonzero_alpha(&bytes, width, height);
+    let first_nonzero = nonzero_bounds.map(|(x, y, _, _)| (x as i32, y as i32));
+    let last_nonzero = nonzero_bounds.map(|(_, _, x, y)| (x as i32, y as i32));
+    let left_columns = summarize_edge_columns(&bytes, width, height, false);
+    let right_columns = summarize_edge_columns(&bytes, width, height, true);
+    let top_rows = summarize_edge_rows(&bytes, width, height, false);
+    let bottom_rows = summarize_edge_rows(&bytes, width, height, true);
+
+    tracing::info!(
+        output = output_name,
+        window_id,
+        subject,
+        label,
+        src_region = ?src_region,
+        output_size = ?output_size,
+        first_nonzero = ?first_nonzero,
+        last_nonzero = ?last_nonzero,
+        left_gap_px,
+        right_gap_px,
+        top_gap_px,
+        bottom_gap_px,
+        left_columns = ?left_columns,
+        right_columns = ?right_columns,
+        top_rows = ?top_rows,
+        bottom_rows = ?bottom_rows,
+        "gap readback shader texture summary"
+    );
+}
+
 pub fn invalidation_sample_rect(
     effect: &CompiledEffect,
     visible_rect: Rectangle<i32, Logical>,
@@ -1417,6 +1536,107 @@ fn invalidation_sample_rect_for_policy(
             .map(|policy| invalidation_sample_rect_for_policy(policy, visible_rect))
             .unwrap_or(visible_rect),
     }
+}
+
+fn column_is_fully_transparent(bytes: &[u8], width: usize, height: usize, x: usize) -> bool {
+    (0..height).all(|y| alpha_at(bytes, width, x, y) == 0)
+}
+
+fn row_is_fully_transparent(bytes: &[u8], width: usize, y: usize) -> bool {
+    (0..width).all(|x| alpha_at(bytes, width, x, y) == 0)
+}
+
+fn alpha_at(bytes: &[u8], width: usize, x: usize, y: usize) -> u8 {
+    let idx = (y * width + x) * 4 + 3;
+    bytes.get(idx).copied().unwrap_or(0)
+}
+
+fn first_last_nonzero_alpha(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    let mut first = None;
+    let mut last = None;
+    for y in 0..height {
+        for x in 0..width {
+            if alpha_at(bytes, width, x, y) != 0 {
+                first.get_or_insert((x, y));
+                last = Some((x, y));
+            }
+        }
+    }
+    first.zip(last).map(|((fx, fy), (lx, ly))| (fx, fy, lx, ly))
+}
+
+fn summarize_edge_columns(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    from_right: bool,
+) -> Vec<String> {
+    let sample_count = width.min(4);
+    (0..sample_count)
+        .map(|offset| {
+            let x = if from_right { width - 1 - offset } else { offset };
+            summarize_column(bytes, width, height, x, offset)
+        })
+        .collect()
+}
+
+fn summarize_edge_rows(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    from_bottom: bool,
+) -> Vec<String> {
+    let sample_count = height.min(4);
+    (0..sample_count)
+        .map(|offset| {
+            let y = if from_bottom { height - 1 - offset } else { offset };
+            summarize_row(bytes, width, y, offset)
+        })
+        .collect()
+}
+
+fn summarize_column(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    offset: usize,
+) -> String {
+    let mut transparent = 0usize;
+    let mut min_alpha = u8::MAX;
+    let mut max_alpha = 0u8;
+    for y in 0..height {
+        let alpha = alpha_at(bytes, width, x, y);
+        if alpha == 0 {
+            transparent += 1;
+        }
+        min_alpha = min_alpha.min(alpha);
+        max_alpha = max_alpha.max(alpha);
+    }
+    format!(
+        "offset={offset},x={x},transparent={transparent}/{height},min_alpha={min_alpha},max_alpha={max_alpha}"
+    )
+}
+
+fn summarize_row(bytes: &[u8], width: usize, y: usize, offset: usize) -> String {
+    let mut transparent = 0usize;
+    let mut min_alpha = u8::MAX;
+    let mut max_alpha = 0u8;
+    for x in 0..width {
+        let alpha = alpha_at(bytes, width, x, y);
+        if alpha == 0 {
+            transparent += 1;
+        }
+        min_alpha = min_alpha.min(alpha);
+        max_alpha = max_alpha.max(alpha);
+    }
+    format!(
+        "offset={offset},y={y},transparent={transparent}/{width},min_alpha={min_alpha},max_alpha={max_alpha}"
+    )
 }
 
 fn source_damage_intersects_policy(

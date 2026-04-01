@@ -107,7 +107,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     window.transform.opacity = opacity;
 
     const borderColor = window.isFocused(focused => focused ? "#d7ba7d" : "#4f5666");
-    const titlebarBackground = window.isFocused(focused => focused ? "#1f2430" : "#2a2f3a");
+    const titlebarBackground = window.isFocused(focused => focused ? "#1f243080" : "#2a2f3a80");
     const titleColor = window.isFocused(focused => focused ? "#f5f7fa" : "#c9d1d9");
 
     const titlebarStyle: SSDStyle = {
