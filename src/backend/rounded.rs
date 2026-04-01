@@ -36,7 +36,9 @@ pub struct RoundedRectSpec {
     pub shape: RoundedShapeKind,
     pub inner_mode: RoundedInnerMode,
     pub clip: Option<RoundedClip>,
-    pub render_scale: f32,
+    pub outer_render_scale: f32,
+    pub inner_render_scale: f32,
+    pub clip_render_scale: f32,
     pub debug_inner_only: f32,
     pub debug_clip_only: f32,
     pub debug_shell_only: f32,
@@ -190,7 +192,15 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
                     smithay::backend::renderer::gles::UniformType::_4f,
                 ),
                 UniformName::new(
-                    "render_scale",
+                    "outer_render_scale",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "inner_render_scale",
+                    smithay::backend::renderer::gles::UniformType::_1f,
+                ),
+                UniformName::new(
+                    "clip_render_scale",
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
                 UniformName::new(
@@ -279,7 +289,9 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
             "inner_radius",
             [inner_radius, inner_radius, inner_radius, inner_radius],
         ),
-        Uniform::new("render_scale", spec.render_scale.max(0.0001)),
+        Uniform::new("outer_render_scale", spec.outer_render_scale.max(0.0001)),
+        Uniform::new("inner_render_scale", spec.inner_render_scale.max(0.0001)),
+        Uniform::new("clip_render_scale", spec.clip_render_scale.max(0.0001)),
         Uniform::new("debug_inner_only", spec.debug_inner_only),
         Uniform::new("debug_clip_only", spec.debug_clip_only),
         Uniform::new("debug_shell_only", spec.debug_shell_only),

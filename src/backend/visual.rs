@@ -185,6 +185,45 @@ pub fn snapped_precise_logical_rect_in_element_space(
     }
 }
 
+pub fn snapped_precise_logical_rect_for_element(
+    rect: PreciseLogicalRect,
+    element_rect: PreciseLogicalRect,
+    snap_origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> SnappedLogicalRect {
+    let scale_x = scale.x.abs().max(0.0001) as f32;
+    let scale_y = scale.y.abs().max(0.0001) as f32;
+
+    let element_left_px = ((element_rect.x - snap_origin.x as f32) * scale_x).round();
+    let element_top_px = ((element_rect.y - snap_origin.y as f32) * scale_y).round();
+    let element_right_px =
+        (((element_rect.x + element_rect.width) - snap_origin.x as f32) * scale_x).round();
+    let element_bottom_px =
+        (((element_rect.y + element_rect.height) - snap_origin.y as f32) * scale_y).round();
+
+    let snapped_left_px = ((rect.x - snap_origin.x as f32) * scale_x).round();
+    let snapped_top_px = ((rect.y - snap_origin.y as f32) * scale_y).round();
+    let snapped_right_px =
+        (((rect.x + rect.width) - snap_origin.x as f32) * scale_x).round();
+    let snapped_bottom_px =
+        (((rect.y + rect.height) - snap_origin.y as f32) * scale_y).round();
+
+    let local_left_px = snapped_left_px - element_left_px;
+    let local_top_px = snapped_top_px - element_top_px;
+    let local_width_px = (snapped_right_px - snapped_left_px).max(0.0);
+    let local_height_px = (snapped_bottom_px - snapped_top_px).max(0.0);
+
+    let element_width_px = (element_right_px - element_left_px).max(1.0);
+    let element_height_px = (element_bottom_px - element_top_px).max(1.0);
+
+    SnappedLogicalRect {
+        x: local_left_px * element_rect.width.max(0.0001) / element_width_px,
+        y: local_top_px * element_rect.height.max(0.0001) / element_height_px,
+        width: local_width_px * element_rect.width.max(0.0001) / element_width_px,
+        height: local_height_px * element_rect.height.max(0.0001) / element_height_px,
+    }
+}
+
 pub fn precise_logical_rect_in_element_space(
     rect: PreciseLogicalRect,
     element_rect: PreciseLogicalRect,

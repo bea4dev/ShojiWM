@@ -785,11 +785,49 @@ fn render_surface(
                     ordered_background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in ordered_background_items {
                         if let Some(root_origin) = root_origin {
+                            let debug_stable = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                decoration_state
+                                    .buffers
+                                    .iter()
+                                    .find(|buffer| buffer.order == order)
+                                    .map(|buffer| (buffer.stable_key.clone(), buffer.source_kind))
+                            } else {
+                                None
+                            };
+                            let pre_transform_geometry = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                Some(smithay::backend::renderer::element::Element::geometry(
+                                    &element,
+                                    scale,
+                                ))
+                            } else {
+                                None
+                            };
                             let items = transform_decoration_elements(
                                 vec![element],
                                 root_origin,
                                 composition_visual,
                             )?;
+                            if let (Some((stable_key, source_kind)), Some(pre_transform_geometry)) =
+                                (debug_stable, pre_transform_geometry)
+                            {
+                                let post_transform_geometry = items
+                                    .first()
+                                    .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                                tracing::info!(
+                                    output = %output.name(),
+                                    window_id = %window_id,
+                                    stable_key = %stable_key,
+                                    source_kind = %source_kind,
+                                    order,
+                                    root_origin = ?root_origin,
+                                    visual_origin = ?composition_visual.origin,
+                                    visual_scale = ?composition_visual.scale,
+                                    visual_translation = ?composition_visual.translation,
+                                    pre_transform_geometry = ?pre_transform_geometry,
+                                    post_transform_geometry = ?post_transform_geometry,
+                                    "gap debug tty transformed decoration geometry"
+                                );
+                            }
                             if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
                                 && !use_full_window_snapshot
                                 && let Some(first_geometry) = items
@@ -1137,6 +1175,26 @@ fn render_surface(
                             let titlebar_shader = decoration.shader_buffers.iter().find(|buffer| {
                                 buffer.rect.height == 30
                             });
+                            let titlebar_shader_precise = titlebar_shader.and_then(|buffer| {
+                                buffer
+                                    .rect_precise
+                                    .map(|rect| crate::backend::visual::PreciseLogicalRect {
+                                        x: rect.x - decoration.layout.root.rect.x as f32,
+                                        y: rect.y - decoration.layout.root.rect.y as f32,
+                                        width: rect.width,
+                                        height: rect.height,
+                                    })
+                            });
+                            let titlebar_shader_clip_precise = titlebar_shader.and_then(|buffer| {
+                                buffer
+                                    .clip_rect_precise
+                                    .map(|rect| crate::backend::visual::PreciseLogicalRect {
+                                        x: rect.x - decoration.layout.root.rect.x as f32,
+                                        y: rect.y - decoration.layout.root.rect.y as f32,
+                                        width: rect.width,
+                                        height: rect.height,
+                                    })
+                            });
                             let titlebar_shader_physical = titlebar_shader.map(|buffer| {
                                 buffer
                                     .rect_precise
@@ -1156,6 +1214,48 @@ fn render_surface(
                                         )
                                     })
                             });
+                            let titlebar_shader_clip_physical_precise = titlebar_shader_clip_precise.map(|clip| {
+                                let scale_x = scale.x.abs().max(0.0001) as f32;
+                                let scale_y = scale.y.abs().max(0.0001) as f32;
+                                (
+                                    clip.x * scale_x,
+                                    clip.y * scale_y,
+                                    clip.width * scale_x,
+                                    clip.height * scale_y,
+                                )
+                            });
+                            let titlebar_shader_clip_physical_global_precise =
+                                titlebar_shader_clip_physical_precise;
+                            let border_expected_inner_precise = border_buffer
+                                .and_then(|buffer| buffer.hole_rect_precise)
+                                .map(|rect| crate::backend::visual::PreciseLogicalRect {
+                                    x: rect.x - decoration.layout.root.rect.x as f32,
+                                    y: rect.y - decoration.layout.root.rect.y as f32,
+                                    width: rect.width,
+                                    height: rect.height,
+                                });
+                            let border_expected_inner_physical_precise =
+                                border_expected_inner_precise.map(|rect| {
+                                    let scale_x = scale.x.abs().max(0.0001) as f32;
+                                    let scale_y = scale.y.abs().max(0.0001) as f32;
+                                    (
+                                        rect.x * scale_x,
+                                        rect.y * scale_y,
+                                    rect.width * scale_x,
+                                    rect.height * scale_y,
+                                )
+                            });
+                            let shader_clip_vs_border_inner_precise =
+                                titlebar_shader_clip_physical_global_precise
+                                    .zip(border_expected_inner_physical_precise)
+                                    .map(|(shader, border)| {
+                                        (
+                                            shader.0 - border.0,
+                                            shader.1 - border.1,
+                                            (shader.0 + shader.2) - (border.0 + border.2),
+                                            (shader.1 + shader.3) - (border.1 + border.3),
+                                        )
+                                    });
                             let content_clip_physical =
                                 smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
                                     smithay::utils::Point::from((expected_left, expected_top)),
@@ -1190,6 +1290,13 @@ fn render_surface(
                                 titlebar_shader_physical = ?titlebar_shader_physical,
                                 titlebar_fill_physical = ?titlebar_fill_physical,
                                 content_clip_physical = ?content_clip_physical,
+                                border_expected_inner_precise = ?border_expected_inner_precise,
+                                border_expected_inner_physical_precise = ?border_expected_inner_physical_precise,
+                                titlebar_shader_precise = ?titlebar_shader_precise,
+                                titlebar_shader_clip_precise = ?titlebar_shader_clip_precise,
+                                titlebar_shader_clip_physical_precise = ?titlebar_shader_clip_physical_precise,
+                                titlebar_shader_clip_physical_global_precise = ?titlebar_shader_clip_physical_global_precise,
+                                shader_clip_vs_border_inner_precise = ?shader_clip_vs_border_inner_precise,
                                 first_button_physical = ?first_button_physical,
                                 button_delta = ?button_delta,
                                 "gap debug tty border physical compare"

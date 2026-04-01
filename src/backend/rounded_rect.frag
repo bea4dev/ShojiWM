@@ -9,7 +9,9 @@ uniform float border_width;
 uniform float inner_enabled;
 uniform vec4 inner_rect;
 uniform vec4 inner_radius;
-uniform float render_scale;
+uniform float outer_render_scale;
+uniform float inner_render_scale;
+uniform float clip_render_scale;
 uniform float debug_inner_only;
 uniform float debug_clip_only;
 uniform float debug_shell_only;
@@ -20,7 +22,7 @@ uniform vec4 clip_radius;
 
 varying vec2 v_coords;
 
-float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius) {
+float rounded_rect_alpha(vec2 coords, vec2 rect_size, vec4 radius, float render_scale) {
     vec2 half_size = rect_size * 0.5;
     vec2 p = coords - half_size;
     float r;
@@ -51,27 +53,27 @@ float rounded_rect_hard_alpha(vec2 coords, vec2 rect_size, vec4 radius) {
 
 void main() {
     vec2 coords = v_coords * size;
-    float shape_alpha = rounded_rect_alpha(coords, size, corner_radius);
+    float shape_alpha = rounded_rect_alpha(coords, size, corner_radius, outer_render_scale);
     float debug_outer_alpha = rounded_rect_hard_alpha(coords, size, corner_radius);
     float debug_inner_alpha = 0.0;
     float debug_clip_alpha = 0.0;
 
     if (inner_enabled > 0.5) {
         vec2 inner_coords = coords - inner_rect.xy;
-        float inner_alpha = rounded_rect_alpha(inner_coords, inner_rect.zw, inner_radius);
+        float inner_alpha = rounded_rect_alpha(inner_coords, inner_rect.zw, inner_radius, inner_render_scale);
         debug_inner_alpha = rounded_rect_hard_alpha(inner_coords, inner_rect.zw, inner_radius);
         shape_alpha = max(shape_alpha - inner_alpha, 0.0);
     } else if (border_width > 0.0) {
         vec2 inner_size = max(size - vec2(border_width * 2.0), vec2(0.0));
         vec2 inner_coords = coords - vec2(border_width);
         vec4 inner_radius = max(corner_radius - vec4(border_width), vec4(0.0));
-        float inner_alpha = rounded_rect_alpha(inner_coords, inner_size, inner_radius);
+        float inner_alpha = rounded_rect_alpha(inner_coords, inner_size, inner_radius, inner_render_scale);
         shape_alpha = max(shape_alpha - inner_alpha, 0.0);
     }
 
     if (clip_enabled > 0.5) {
         vec2 clip_coords = coords - clip_rect.xy;
-        float clip_alpha = rounded_rect_alpha(clip_coords, clip_rect.zw, clip_radius);
+        float clip_alpha = rounded_rect_alpha(clip_coords, clip_rect.zw, clip_radius, clip_render_scale);
         debug_clip_alpha = rounded_rect_hard_alpha(clip_coords, clip_rect.zw, clip_radius);
         shape_alpha *= clip_alpha;
     }
