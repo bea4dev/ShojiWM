@@ -114,7 +114,11 @@ impl ClippedSurfaceElement {
             ((snapped_clip_rect.width - element_rect_logical.width) * output_scale_x).abs(),
             ((snapped_clip_rect.height - element_rect_logical.height) * output_scale_y).abs(),
         );
-        if clip_size_delta_px.0 <= 1.0 && clip_size_delta_px.1 <= 1.0 {
+        // Keep the clip rect on the shared-edge grid unless the difference is
+        // just floating point noise. Treating a real 1px size difference as
+        // equivalent collapses the client width back to the surface geometry
+        // and reintroduces the visible right-edge gap against decoration boxes.
+        if clip_size_delta_px.0 <= 0.01 && clip_size_delta_px.1 <= 0.01 {
             snapped_clip_rect.x = element_rect_logical.x;
             snapped_clip_rect.y = element_rect_logical.y;
             snapped_clip_rect.width = element_rect_logical.width;
