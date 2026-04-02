@@ -12,7 +12,7 @@ use tracing::trace;
 
 use crate::{
     backend::visual::{
-        PreciseLogicalRect, RectSnapMode, relative_physical_rect_from_root,
+        RectSnapMode, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, snapped_logical_radius,
         snapped_precise_logical_rect_for_element, snapped_precise_logical_rect_in_element_space,
         relative_physical_rect_from_root_snapped_edges,
@@ -613,26 +613,6 @@ fn rounded_rect_element(
         let scale_x = scale.x.abs().max(0.0001) as f32;
         ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0)
     };
-    let geometry_from_precise_origin_size = |rect: PreciseLogicalRect| {
-        let scale_x = scale.x.abs().max(0.0001) as f32;
-        let scale_y = scale.y.abs().max(0.0001) as f32;
-        let root_left_px =
-            (((decoration.layout.root.rect.x - output_geo.loc.x) as f64) * scale.x.abs().max(0.0001))
-                .round() as i32;
-        let root_top_px =
-            (((decoration.layout.root.rect.y - output_geo.loc.y) as f64) * scale.y.abs().max(0.0001))
-                .round() as i32;
-        let left_px = (((rect.x - output_geo.loc.x as f32) * scale_x).round()) as i32;
-        let top_px = (((rect.y - output_geo.loc.y as f32) * scale_y).round()) as i32;
-        Rectangle::new(
-            Point::from((left_px - root_left_px, top_px - root_top_px)),
-            (
-                (rect.width * scale_x).round().max(0.0) as i32,
-                (rect.height * scale_y).round().max(0.0) as i32,
-            )
-                .into(),
-        )
-    };
     let outer_radius = snapped_radius_f32(cached.radius_precise.unwrap_or(cached.radius as f32));
     let border_fit = cached
         .owner_node_id
@@ -656,16 +636,12 @@ fn rounded_rect_element(
     let geometry = cached
         .rect_precise
         .map(|rect| {
-            if matches!(border_fit, crate::ssd::BorderFit::Normal) && cached.border_width > 0.0 {
-                geometry_from_precise_origin_size(rect)
-            } else {
-                relative_physical_rect_from_root_precise(
-                    rect,
-                    decoration.layout.root.rect,
-                    output_geo,
-                    scale,
-                )
-            }
+            relative_physical_rect_from_root_precise(
+                rect,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            )
         })
         .unwrap_or_else(|| {
             relative_physical_rect_from_root_snapped_edges(
@@ -930,34 +906,38 @@ fn rounded_rect_element(
         cached.border_width
     };
     let render_inner = if use_physical_anchor_space {
-        border_anchor_hole_geometry.or(hole_geometry).map(|hole_geometry| RoundedClip {
+        let border_width_x = (cached.border_width.max(0.0) * scale_x).round().max(0.0);
+        let border_width_y = (cached.border_width.max(0.0) * scale_y).round().max(0.0);
+        let derived_render_inner = || RoundedClip {
             rect: crate::backend::visual::SnappedLogicalRect {
-                x: (hole_geometry.loc.x - geometry.loc.x).max(0) as f32,
-                y: (hole_geometry.loc.y - geometry.loc.y).max(0) as f32,
-                width: hole_geometry.size.w.max(0) as f32,
-                height: hole_geometry.size.h.max(0) as f32,
+                x: border_width_x,
+                y: border_width_y,
+                width: (geometry.size.w as f32 - border_width_x * 2.0).max(0.0),
+                height: (geometry.size.h as f32 - border_width_y * 2.0).max(0.0),
             },
-            radius: ((cached
-                .hole_radius_precise
-                .unwrap_or(cached.hole_radius as f32)
-                .max(0.0)
-                * scale_x)
-                .round()
-                .max(0.0)),
-        })
-        .or_else(|| {
-            let border_width_x = (cached.border_width.max(0.0) * scale_x).round().max(0.0);
-            let border_width_y = (cached.border_width.max(0.0) * scale_y).round().max(0.0);
-            Some(RoundedClip {
+            radius: (render_outer_radius - border_width_x.max(border_width_y)).max(0.0),
+        };
+
+        if matches!(border_fit, crate::ssd::BorderFit::Normal) {
+            Some(derived_render_inner())
+        } else {
+            border_anchor_hole_geometry.or(hole_geometry).map(|hole_geometry| RoundedClip {
                 rect: crate::backend::visual::SnappedLogicalRect {
-                    x: border_width_x,
-                    y: border_width_y,
-                    width: (geometry.size.w as f32 - border_width_x * 2.0).max(0.0),
-                    height: (geometry.size.h as f32 - border_width_y * 2.0).max(0.0),
+                    x: (hole_geometry.loc.x - geometry.loc.x).max(0) as f32,
+                    y: (hole_geometry.loc.y - geometry.loc.y).max(0) as f32,
+                    width: hole_geometry.size.w.max(0) as f32,
+                    height: hole_geometry.size.h.max(0) as f32,
                 },
-                radius: (render_outer_radius - border_width_x.max(border_width_y)).max(0.0),
+                radius: ((cached
+                    .hole_radius_precise
+                    .unwrap_or(cached.hole_radius as f32)
+                    .max(0.0)
+                    * scale_x)
+                    .round()
+                    .max(0.0)),
             })
-        })
+            .or_else(|| Some(derived_render_inner()))
+        }
     } else {
         inner
     };
@@ -1003,6 +983,49 @@ fn rounded_rect_element(
         })
     } else {
         clip
+    };
+    let shader_outer_rect = if cached.border_width > 0.0 {
+        if let Some(inner) = render_inner {
+            let thickness = render_border_width.max(0.0);
+            let mut left = (inner.rect.x - thickness).max(0.0);
+            let mut top = (inner.rect.y - thickness).max(0.0);
+            let mut right =
+                (inner.rect.x + inner.rect.width + thickness).min(shader_rect.size.w as f32);
+            let mut bottom =
+                (inner.rect.y + inner.rect.height + thickness).min(shader_rect.size.h as f32);
+            if left <= 1.0 {
+                left = 0.0;
+            }
+            if top <= 1.0 {
+                top = 0.0;
+            }
+            if (shader_rect.size.w as f32 - right).abs() <= 1.0 {
+                right = shader_rect.size.w as f32;
+            }
+            if (shader_rect.size.h as f32 - bottom).abs() <= 1.0 {
+                bottom = shader_rect.size.h as f32;
+            }
+            [
+                left,
+                top,
+                (right - left).max(0.0),
+                (bottom - top).max(0.0),
+            ]
+        } else {
+            [
+                0.0,
+                0.0,
+                shader_rect.size.w as f32,
+                shader_rect.size.h as f32,
+            ]
+        }
+    } else {
+        [
+            0.0,
+            0.0,
+            shader_rect.size.w as f32,
+            shader_rect.size.h as f32,
+        ]
     };
     let prefer_derived_inner =
         matches!(border_fit, crate::ssd::BorderFit::FitChildren) && cached.shared_inner_hole && render_inner.is_none();
@@ -1094,6 +1117,7 @@ fn rounded_rect_element(
     let spec = RoundedRectSpec {
         rect: local_rect,
         shader_rect,
+        shader_outer_rect,
         geometry,
         color: [
             cached.color.r as f32 / 255.0,

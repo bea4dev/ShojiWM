@@ -30,6 +30,7 @@ pub enum RoundedShapeKind {
 pub struct RoundedRectSpec {
     pub rect: Rectangle<i32, Logical>,
     pub shader_rect: Rectangle<i32, Logical>,
+    pub shader_outer_rect: [f32; 4],
     pub geometry: Rectangle<i32, Physical>,
     pub color: [f32; 4],
     pub alpha: f32,
@@ -178,6 +179,10 @@ fn shader_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesE
                     smithay::backend::renderer::gles::UniformType::_4f,
                 ),
                 UniformName::new(
+                    "outer_rect",
+                    smithay::backend::renderer::gles::UniformType::_4f,
+                ),
+                UniformName::new(
                     "border_width",
                     smithay::backend::renderer::gles::UniformType::_1f,
                 ),
@@ -294,6 +299,7 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
                 [fallback_radius, fallback_radius, fallback_radius, fallback_radius]
             },
         ),
+        Uniform::new("outer_rect", spec.shader_outer_rect),
         Uniform::new("border_width", border_width),
         Uniform::new("inner_enabled", inner_enabled),
         Uniform::new("inner_rect", local_inner_rect),

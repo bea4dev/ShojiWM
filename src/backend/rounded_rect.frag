@@ -5,6 +5,7 @@ uniform vec2 size;
 
 uniform vec4 color;
 uniform vec4 corner_radius;
+uniform vec4 outer_rect;
 uniform float border_width;
 uniform float inner_enabled;
 uniform vec4 inner_rect;
@@ -53,8 +54,9 @@ float rounded_rect_hard_alpha(vec2 coords, vec2 rect_size, vec4 radius) {
 
 void main() {
     vec2 coords = v_coords * size;
-    float shape_alpha = rounded_rect_alpha(coords, size, corner_radius, outer_render_scale);
-    float debug_outer_alpha = rounded_rect_hard_alpha(coords, size, corner_radius);
+    vec2 outer_coords = coords - outer_rect.xy;
+    float shape_alpha = rounded_rect_alpha(outer_coords, outer_rect.zw, corner_radius, outer_render_scale);
+    float debug_outer_alpha = rounded_rect_hard_alpha(outer_coords, outer_rect.zw, corner_radius);
     float debug_inner_alpha = 0.0;
     float debug_clip_alpha = 0.0;
 
