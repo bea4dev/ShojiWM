@@ -18,6 +18,11 @@ uniform vec2 clip_size;
 uniform vec4 corner_radius;
 uniform float rect_bounds_enabled;
 uniform mat3 input_to_clip;
+uniform vec2 sample_uv_tl;
+uniform vec2 sample_uv_br;
+uniform vec2 adjusted_sample_uv_br;
+uniform vec2 sample_buffer_size;
+uniform float sample_uv_compensation_enabled;
 
 float rounded_alpha(vec2 coords, vec2 size) {
     if (rect_bounds_enabled > 0.5 && (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y)) {
@@ -38,7 +43,23 @@ float rounded_alpha(vec2 coords, vec2 size) {
 }
 
 void main() {
-    vec4 color = texture2D(tex, v_coords);
+    vec2 sample_coords = v_coords;
+    if (sample_uv_compensation_enabled > 0.5) {
+        vec2 original_range = max(sample_uv_br - sample_uv_tl, vec2(0.000001));
+        vec2 range_coords = (v_coords - sample_uv_tl) / original_range;
+        sample_coords = mix(sample_uv_tl, adjusted_sample_uv_br, range_coords);
+        sample_coords = clamp(sample_coords, vec2(0.0), vec2(1.0));
+
+        // Emulate nearest-neighbor edge repeat when we compensate a one-pixel
+        // projection mismatch. This keeps the client sharp instead of blending
+        // the last texel into the corrected edge.
+        vec2 safe_buffer_size = max(sample_buffer_size, vec2(1.0));
+        vec2 texel_size = vec2(1.0) / safe_buffer_size;
+        sample_coords = (floor(sample_coords * safe_buffer_size) + 0.5) * texel_size;
+        sample_coords = clamp(sample_coords, texel_size * 0.5, vec2(1.0) - texel_size * 0.5);
+    }
+
+    vec4 color = texture2D(tex, sample_coords);
     vec2 normalized = (input_to_clip * vec3(v_coords, 1.0)).xy;
     vec2 coords = normalized * clip_size;
     color *= rounded_alpha(coords, clip_size);

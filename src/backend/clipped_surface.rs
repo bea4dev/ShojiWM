@@ -16,6 +16,44 @@ use crate::backend::visual::{
     SnappedLogicalRect, snapped_precise_logical_rect_relative_with_mode,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SampleUvCompensation {
+    uv_tl: [f32; 2],
+    uv_br: [f32; 2],
+    adjusted_uv_br: [f32; 2],
+    buffer_size: [f32; 2],
+    sampled_texels: [f32; 2],
+    projected_pixels: [f32; 2],
+    misalignment: [f32; 2],
+    enabled: bool,
+}
+
+fn compute_sample_uv_compensation(
+    src_loc: Vector2<f32>,
+    src_size: Vector2<f32>,
+    buffer_size: Vector2<f32>,
+    projected_pixels: Vector2<f32>,
+) -> SampleUvCompensation {
+    let safe_buffer = Vector2::new(buffer_size.x.max(1.0), buffer_size.y.max(1.0));
+    let uv_tl = src_loc.div_element_wise(safe_buffer);
+    let uv_br = (src_loc + src_size).div_element_wise(safe_buffer);
+    let sampled_texels = (uv_br - uv_tl).mul_element_wise(safe_buffer);
+    let misalignment = sampled_texels - projected_pixels;
+    let adjusted_uv_br = uv_br - misalignment.div_element_wise(safe_buffer);
+    let enabled = misalignment.x.abs() > 0.01 || misalignment.y.abs() > 0.01;
+
+    SampleUvCompensation {
+        uv_tl: [uv_tl.x, uv_tl.y],
+        uv_br: [uv_br.x, uv_br.y],
+        adjusted_uv_br: [adjusted_uv_br.x, adjusted_uv_br.y],
+        buffer_size: [safe_buffer.x, safe_buffer.y],
+        sampled_texels: [sampled_texels.x, sampled_texels.y],
+        projected_pixels: [projected_pixels.x, projected_pixels.y],
+        misalignment: [misalignment.x, misalignment.y],
+        enabled,
+    }
+}
+
 #[derive(Debug)]
 enum ClippedSurfaceInner {
     Mapped(WaylandSurfaceRenderElement<GlesRenderer>),
@@ -31,6 +69,11 @@ pub struct ClippedSurfaceElement {
     rect_bounds_enabled: f32,
     output_scale: f32,
     clip_scale: f32,
+    sample_uv_tl: [f32; 2],
+    sample_uv_br: [f32; 2],
+    adjusted_sample_uv_br: [f32; 2],
+    sample_buffer_size: [f32; 2],
+    sample_uv_compensation_enabled: f32,
 }
 
 #[derive(Debug)]
@@ -73,6 +116,26 @@ impl ClippedSurfaceElement {
                     UniformName::new(
                         "input_to_clip",
                         smithay::backend::renderer::gles::UniformType::Matrix3x3,
+                    ),
+                    UniformName::new(
+                        "sample_uv_tl",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "sample_uv_br",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "adjusted_sample_uv_br",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "sample_buffer_size",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "sample_uv_compensation_enabled",
+                        smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                 ],
             )?);
@@ -138,6 +201,17 @@ impl ClippedSurfaceElement {
             )
                 .into(),
         );
+        let buffer_size = inner.buffer_size();
+        let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
+        let view = inner.view();
+        let src_loc = Vector2::new(view.src.loc.x as f32, view.src.loc.y as f32);
+        let src_size = Vector2::new(view.src.size.w as f32, view.src.size.h as f32);
+        let sample_uv_compensation = compute_sample_uv_compensation(
+            src_loc,
+            src_size,
+            buffer_size,
+            Vector2::new(physical_clip.size.w as f32, physical_clip.size.h as f32),
+        );
         if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
             tracing::info!(
                 output_origin = ?output_origin,
@@ -153,6 +227,7 @@ impl ClippedSurfaceElement {
                 aligned_clip_rect = ?snapped_clip_rect,
                 element_rect_logical = ?element_rect_logical,
                 clip_size_delta_px = ?clip_size_delta_px,
+                sample_uv_compensation = ?sample_uv_compensation,
                 "gap debug clipped surface raw element"
             );
         }
@@ -199,6 +274,15 @@ impl ClippedSurfaceElement {
             rect_bounds_enabled: 1.0,
             output_scale: output_scale.x as f32,
             clip_scale: clip_scale.x as f32,
+            sample_uv_tl: sample_uv_compensation.uv_tl,
+            sample_uv_br: sample_uv_compensation.uv_br,
+            adjusted_sample_uv_br: sample_uv_compensation.adjusted_uv_br,
+            sample_buffer_size: sample_uv_compensation.buffer_size,
+            sample_uv_compensation_enabled: if sample_uv_compensation.enabled {
+                1.0
+            } else {
+                0.0
+            },
         })
     }
 
@@ -278,6 +362,14 @@ impl ClippedSurfaceElement {
                     matrices: vec![input_to_clip_array],
                     transpose: false,
                 },
+            ),
+            Uniform::new("sample_uv_tl", self.sample_uv_tl),
+            Uniform::new("sample_uv_br", self.sample_uv_br),
+            Uniform::new("adjusted_sample_uv_br", self.adjusted_sample_uv_br),
+            Uniform::new("sample_buffer_size", self.sample_buffer_size),
+            Uniform::new(
+                "sample_uv_compensation_enabled",
+                self.sample_uv_compensation_enabled,
             ),
         ]
     }
@@ -387,5 +479,52 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_sample_uv_compensation;
+    use cgmath::Vector2;
+
+    #[test]
+    fn leaves_matching_projection_unchanged() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(2646.0, 1586.0),
+            Vector2::new(2646.0, 1586.0),
+            Vector2::new(2646.0, 1586.0),
+        );
+
+        assert!(!compensation.enabled);
+        assert_eq!(compensation.adjusted_uv_br, compensation.uv_br);
+    }
+
+    #[test]
+    fn expands_sampling_when_projection_is_one_pixel_wider() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(2646.0, 1586.0),
+            Vector2::new(2646.0, 1586.0),
+            Vector2::new(2647.0, 1586.0),
+        );
+
+        assert!(compensation.enabled);
+        assert!(compensation.adjusted_uv_br[0] > compensation.uv_br[0]);
+        assert_eq!(compensation.adjusted_uv_br[1], compensation.uv_br[1]);
+    }
+
+    #[test]
+    fn shrinks_sampling_when_projection_is_one_pixel_shorter() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(1230.0, 796.0),
+            Vector2::new(1230.0, 796.0),
+            Vector2::new(1230.0, 795.0),
+        );
+
+        assert!(compensation.enabled);
+        assert_eq!(compensation.adjusted_uv_br[0], compensation.uv_br[0]);
+        assert!(compensation.adjusted_uv_br[1] < compensation.uv_br[1]);
     }
 }
