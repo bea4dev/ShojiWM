@@ -1330,6 +1330,29 @@ fn window_border_inner_clip_logical(
     })
 }
 
+fn normal_border_inner_rect(
+    node: &super::ComputedDecorationNode,
+) -> Option<LogicalRect> {
+    node.style.border?;
+    let border_width = node.resolved_border_width.round_to_i32().max(0);
+    let rect = node.rect.inset(super::Edges::all(border_width));
+    (rect.width > 0 && rect.height > 0).then_some(rect)
+}
+
+fn normal_border_inner_rect_precise(
+    node: &super::ComputedDecorationNode,
+) -> Option<PreciseLogicalRect> {
+    node.style.border?;
+    let border_width = node.resolved_border_width;
+    let rect = node.resolved_rect.inset(super::ResolvedLayoutEdges {
+        top: border_width,
+        right: border_width,
+        bottom: border_width,
+        left: border_width,
+    });
+    (rect.width.raw() > 0 && rect.height.raw() > 0).then(|| precise_rect_from_resolved(rect))
+}
+
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
@@ -1858,12 +1881,35 @@ fn collect_cached_buffers(
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
     let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
     let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
-    let window_border_inner_clip_resolved = window_border_inner_clip_resolved(node);
-    let window_border_inner_clip_precise = window_border_inner_clip_resolved
-        .map(|clip| precise_rect_from_resolved(clip.rect));
-    let window_border_inner_radius_precise = window_border_inner_clip_resolved
-        .map(|clip| clip.radius.to_f32().max(0.0));
-    let window_border_inner_clip = window_border_inner_clip_logical(node);
+    let border_fit = node.style.effective_border_fit(&node.kind);
+    let fit_children = matches!(border_fit, super::BorderFit::FitChildren);
+    let window_border_inner_clip_resolved = if fit_children {
+        window_border_inner_clip_resolved(node)
+    } else {
+        None
+    };
+    let window_border_inner_clip_precise = if fit_children {
+        window_border_inner_clip_resolved
+            .map(|clip| precise_rect_from_resolved(clip.rect))
+    } else {
+        normal_border_inner_rect_precise(node)
+    };
+    let window_border_inner_radius_precise = if fit_children {
+        window_border_inner_clip_resolved
+            .map(|clip| clip.radius.to_f32().max(0.0))
+    } else {
+        Some((node.resolved_border_radius - node.resolved_border_width).to_f32().max(0.0))
+    };
+    let window_border_inner_clip = if fit_children {
+        window_border_inner_clip_logical(node)
+    } else {
+        normal_border_inner_rect(node).map(|rect| super::DecorationClip {
+            rect,
+            radius: (node.resolved_border_radius - node.resolved_border_width)
+                .round_to_i32()
+                .max(0),
+        })
+    };
     let child_clip = window_border_inner_clip.or(node.effective_clip);
     let child_resolved_clip = window_border_inner_clip_resolved
         .or(node.resolved_effective_clip);
@@ -1910,7 +1956,7 @@ fn collect_cached_buffers(
                             border_width: node.resolved_border_width.to_f32().max(0.0),
                             hole_rect: window_border_inner_rect,
                             hole_rect_precise: window_border_inner_clip_precise.or_else(|| {
-                                (!node.children.is_empty()).then(|| {
+                                (fit_children && !node.children.is_empty()).then(|| {
                                     precise_rect_from_resolved(
                                         window_border_inner_clip_resolved
                                             .map(|clip| clip.rect)
@@ -1926,13 +1972,13 @@ fn collect_cached_buffers(
                                         .max(0)
                                 }),
                             hole_radius_precise: window_border_inner_radius_precise.or_else(|| {
-                                (!node.children.is_empty()).then(|| {
+                                (fit_children && !node.children.is_empty()).then(|| {
                                     (node.resolved_border_radius - node.resolved_border_width)
                                         .to_f32()
                                         .max(0.0)
                                 })
                             }),
-                            shared_inner_hole: !node.children.is_empty(),
+                            shared_inner_hole: !node.children.is_empty() && fit_children,
                             clip_rect: current_clip_rect,
                             clip_radius: current_clip_radius,
                             clip_rect_precise: current_clip_rect_precise,

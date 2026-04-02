@@ -679,6 +679,7 @@ pub struct DecorationStyle {
     pub border_right: Option<BorderStyle>,
     pub border_bottom: Option<BorderStyle>,
     pub border_left: Option<BorderStyle>,
+    pub border_fit: Option<BorderFit>,
     pub border_radius: Option<i32>,
     pub visible: Option<bool>,
     pub cursor: Option<String>,
@@ -731,6 +732,12 @@ pub enum AlignItems {
     Center,
     End,
     Stretch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderFit {
+    Normal,
+    FitChildren,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1614,6 +1621,13 @@ impl DecorationNode {
 }
 
 impl DecorationStyle {
+    pub(crate) fn effective_border_fit(&self, kind: &DecorationNodeKind) -> BorderFit {
+        self.border_fit.unwrap_or(match kind {
+            DecorationNodeKind::WindowBorder => BorderFit::FitChildren,
+            _ => BorderFit::Normal,
+        })
+    }
+
     fn resolved_content_inset(&self, scale: f64) -> ResolvedLayoutEdges {
         let border = self
             .border
@@ -1731,6 +1745,7 @@ fn layout_style_equivalent(left: &DecorationStyle, right: &DecorationStyle) -> b
         && left.border_right.map(|border| border.width) == right.border_right.map(|border| border.width)
         && left.border_bottom.map(|border| border.width) == right.border_bottom.map(|border| border.width)
         && left.border_left.map(|border| border.width) == right.border_left.map(|border| border.width)
+        && left.border_fit == right.border_fit
         && left.font_size == right.font_size
         && left.font_weight == right.font_weight
         && left.font_family == right.font_family

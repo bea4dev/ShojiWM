@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderStyle, BoxNode, ButtonNode,
+    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode, ButtonNode,
     Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
     EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LayoutDirection, LabelNode,
     NoiseKind, NoiseStage, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
@@ -186,6 +186,7 @@ pub struct WireStyle {
     pub border_right: Option<WireBorderValue>,
     pub border_bottom: Option<WireBorderValue>,
     pub border_left: Option<WireBorderValue>,
+    pub border_fit: Option<String>,
     pub border_radius: Option<i32>,
     pub visible: Option<bool>,
     pub cursor: Option<String>,
@@ -246,6 +247,8 @@ pub enum DecorationBridgeError {
     InvalidAlignItems(String),
     #[error("invalid justifyContent value: {0}")]
     InvalidJustifyContent(String),
+    #[error("invalid borderFit value: {0}")]
+    InvalidBorderFit(String),
     #[error("invalid color string: {0}")]
     InvalidColor(String),
 }
@@ -541,6 +544,7 @@ impl TryFrom<WireStyle> for DecorationStyle {
             border_right: value.border_right.map(|border| parse_border(border)).transpose()?,
             border_bottom: value.border_bottom.map(|border| parse_border(border)).transpose()?,
             border_left: value.border_left.map(|border| parse_border(border)).transpose()?,
+            border_fit: value.border_fit.map(parse_border_fit).transpose()?,
             border_radius: value.border_radius,
             visible: value.visible,
             cursor: value.cursor,
@@ -553,6 +557,14 @@ impl TryFrom<WireStyle> for DecorationStyle {
             text_align: value.text_align,
             line_height: value.line_height,
         })
+    }
+}
+
+fn parse_border_fit(input: String) -> Result<BorderFit, DecorationBridgeError> {
+    match input.as_str() {
+        "normal" => Ok(BorderFit::Normal),
+        "fit-children" => Ok(BorderFit::FitChildren),
+        other => Err(DecorationBridgeError::InvalidBorderFit(other.into())),
     }
 }
 

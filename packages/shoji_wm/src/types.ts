@@ -356,6 +356,7 @@ export interface SSDStyle {
   borderRight?: MaybeSignal<BorderValue>;
   borderBottom?: MaybeSignal<BorderValue>;
   borderLeft?: MaybeSignal<BorderValue>;
+  borderFit?: MaybeSignal<"normal" | "fit-children">;
   borderRadius?: MaybeSignal<number>;
   visible?: MaybeSignal<boolean>;
   cursor?: MaybeSignal<string>;

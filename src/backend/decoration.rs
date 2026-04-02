@@ -157,16 +157,32 @@ fn union_physical_rect(
     }
 }
 
-fn window_border_anchor_union_geometry(
+fn is_descendant_owner(owner: &str, parent: &str) -> bool {
+    owner.len() > parent.len()
+        && owner.starts_with(parent)
+        && owner.as_bytes().get(parent.len()) == Some(&b'.')
+}
+
+fn bordered_node_anchor_union_geometry(
     decoration: &crate::ssd::WindowDecorationState,
     border_stable_key: &str,
+    border_owner_id: Option<&str>,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> Option<Rectangle<i32, Physical>> {
     let mut union = None;
+    let path_prefix = border_stable_key
+        .split_once(':')
+        .map(|(path, _)| format!("{path}/"));
 
     for buffer in &decoration.buffers {
-        if buffer.stable_key == border_stable_key || buffer.source_kind == "window-border" {
+        let is_descendant = path_prefix
+            .as_deref()
+            .is_some_and(|prefix| buffer.stable_key.starts_with(prefix))
+            || border_owner_id.zip(buffer.owner_node_id.as_deref()).is_some_and(|(parent, owner)| {
+                is_descendant_owner(owner, parent)
+            });
+        if !is_descendant {
             continue;
         }
         let rect = buffer
@@ -191,6 +207,15 @@ fn window_border_anchor_union_geometry(
     }
 
     for buffer in &decoration.shader_buffers {
+        let is_descendant = path_prefix
+            .as_deref()
+            .is_some_and(|prefix| buffer.stable_key.starts_with(prefix))
+            || border_owner_id.zip(buffer.owner_node_id.as_deref()).is_some_and(|(parent, owner)| {
+                is_descendant_owner(owner, parent)
+            });
+        if !is_descendant {
+            continue;
+        }
         let rect = buffer
             .rect_precise
             .map(|rect| {
@@ -212,14 +237,72 @@ fn window_border_anchor_union_geometry(
         union = Some(union_physical_rect(union, rect));
     }
 
-    if let Some(content_clip) = decoration.content_clip {
-        let rect = relative_physical_rect_from_root_precise(
-            content_clip.rect_precise,
-            decoration.layout.root.rect,
-            output_geo,
-            scale,
-        );
+    for buffer in &decoration.text_buffers {
+        let is_descendant = border_owner_id.zip(buffer.owner_node_id.as_deref()).is_some_and(|(parent, owner)| {
+            is_descendant_owner(owner, parent)
+        });
+        if !is_descendant {
+            continue;
+        }
+        let rect = buffer
+            .rect_precise
+            .map(|rect| {
+                relative_physical_rect_from_root_precise(
+                    rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    buffer.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            });
         union = Some(union_physical_rect(union, rect));
+    }
+
+    for buffer in &decoration.icon_buffers {
+        let is_descendant = border_owner_id.zip(buffer.owner_node_id.as_deref()).is_some_and(|(parent, owner)| {
+            is_descendant_owner(owner, parent)
+        });
+        if !is_descendant {
+            continue;
+        }
+        let rect = buffer
+            .rect_precise
+            .map(|rect| {
+                relative_physical_rect_from_root_precise(
+                    rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    buffer.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            });
+        union = Some(union_physical_rect(union, rect));
+    }
+
+    if union.is_none() {
+        if let Some(content_clip) = decoration.content_clip {
+            let rect = relative_physical_rect_from_root_precise(
+                content_clip.rect_precise,
+                decoration.layout.root.rect,
+                output_geo,
+                scale,
+            );
+            union = Some(union_physical_rect(union, rect));
+        }
     }
 
     union
@@ -574,11 +657,12 @@ fn rounded_rect_element(
         )
     }));
     let border_anchor_hole_geometry =
-        (cached.source_kind == "window-border" && cached.border_width > 0.0)
+        (cached.shared_inner_hole && cached.border_width > 0.0)
             .then(|| {
-                window_border_anchor_union_geometry(
+                bordered_node_anchor_union_geometry(
                     decoration,
                     &cached.stable_key,
+                    cached.owner_node_id.as_deref(),
                     output_geo,
                     scale,
                 )
@@ -602,7 +686,7 @@ fn rounded_rect_element(
                 / outer_height_px,
         }
     });
-    let anchored_border_inner = (cached.source_kind == "window-border" && cached.border_width > 0.0)
+    let anchored_border_inner = (cached.shared_inner_hole && cached.border_width > 0.0)
         .then(|| {
             border_anchor_hole_precise.map(|hole_rect| {
                 render_inner_clip_from_precise_anchors(
@@ -781,7 +865,8 @@ fn rounded_rect_element(
     } else {
         inner
     };
-    let use_physical_anchor_space = cached.source_kind == "window-border" && cached.border_width > 0.0;
+    let use_physical_anchor_space =
+        cached.shared_inner_hole && cached.border_width > 0.0 && border_anchor_hole_geometry.is_some();
     let scale_x = scale.x.abs().max(0.0001) as f32;
     let scale_y = scale.y.abs().max(0.0001) as f32;
     let shader_rect = if use_physical_anchor_space {
@@ -837,7 +922,7 @@ fn rounded_rect_element(
         inner
     };
     let prefer_derived_inner =
-        cached.source_kind == "window-border" && cached.shared_inner_hole && render_inner.is_none();
+        cached.shared_inner_hole && render_inner.is_none();
     let inner_mode = if cached.border_width > 0.0 {
         if prefer_derived_inner {
             crate::backend::rounded::RoundedInnerMode::DerivedInset
