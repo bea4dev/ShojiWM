@@ -106,6 +106,125 @@ fn shrink_rounded_clip_by_pixels(
     }
 }
 
+fn render_inner_clip_from_precise_anchors(
+    outer_rect_precise: crate::backend::visual::PreciseLogicalRect,
+    outer_geometry: Rectangle<i32, Physical>,
+    inner_rect_precise: crate::backend::visual::PreciseLogicalRect,
+    inner_radius: f32,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> RoundedClip {
+    let inner_geometry = relative_physical_rect_from_root_precise(
+        inner_rect_precise,
+        root_rect,
+        output_geo,
+        scale,
+    );
+    let outer_width_px = outer_geometry.size.w.max(1) as f32;
+    let outer_height_px = outer_geometry.size.h.max(1) as f32;
+    let outer_width = outer_rect_precise.width.max(0.0001);
+    let outer_height = outer_rect_precise.height.max(0.0001);
+
+    RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: (inner_geometry.loc.x - outer_geometry.loc.x).max(0) as f32 * outer_width
+                / outer_width_px,
+            y: (inner_geometry.loc.y - outer_geometry.loc.y).max(0) as f32 * outer_height
+                / outer_height_px,
+            width: inner_geometry.size.w.max(0) as f32 * outer_width / outer_width_px,
+            height: inner_geometry.size.h.max(0) as f32 * outer_height / outer_height_px,
+        },
+        radius: inner_radius.max(0.0),
+    }
+}
+
+fn union_physical_rect(
+    current: Option<Rectangle<i32, Physical>>,
+    rect: Rectangle<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    if let Some(current) = current {
+        let left = current.loc.x.min(rect.loc.x);
+        let top = current.loc.y.min(rect.loc.y);
+        let right = (current.loc.x + current.size.w).max(rect.loc.x + rect.size.w);
+        let bottom = (current.loc.y + current.size.h).max(rect.loc.y + rect.size.h);
+        Rectangle::new(
+            Point::from((left, top)),
+            ((right - left).max(0), (bottom - top).max(0)).into(),
+        )
+    } else {
+        rect
+    }
+}
+
+fn window_border_anchor_union_geometry(
+    decoration: &crate::ssd::WindowDecorationState,
+    border_stable_key: &str,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    let mut union = None;
+
+    for buffer in &decoration.buffers {
+        if buffer.stable_key == border_stable_key || buffer.source_kind == "window-border" {
+            continue;
+        }
+        let rect = buffer
+            .rect_precise
+            .map(|rect| {
+                relative_physical_rect_from_root_precise(
+                    rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    buffer.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            });
+        union = Some(union_physical_rect(union, rect));
+    }
+
+    for buffer in &decoration.shader_buffers {
+        let rect = buffer
+            .rect_precise
+            .map(|rect| {
+                relative_physical_rect_from_root_precise(
+                    rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    buffer.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            });
+        union = Some(union_physical_rect(union, rect));
+    }
+
+    if let Some(content_clip) = decoration.content_clip {
+        let rect = relative_physical_rect_from_root_precise(
+            content_clip.rect_precise,
+            decoration.layout.root.rect,
+            output_geo,
+            scale,
+        );
+        union = Some(union_physical_rect(union, rect));
+    }
+
+    union
+}
+
 fn align_shared_clip_edges_to_outer(
     mut clip: RoundedClip,
     clip_rect_precise: Option<crate::backend::visual::PreciseLogicalRect>,
@@ -454,7 +573,53 @@ fn rounded_rect_element(
             Some(hole_rect),
         )
     }));
-    let quantized_border_inner = (cached.border_width > 0.0 && !cached.shared_inner_hole)
+    let border_anchor_hole_geometry =
+        (cached.source_kind == "window-border" && cached.border_width > 0.0)
+            .then(|| {
+                window_border_anchor_union_geometry(
+                    decoration,
+                    &cached.stable_key,
+                    output_geo,
+                    scale,
+                )
+            })
+            .flatten();
+    let border_anchor_hole_precise = border_anchor_hole_geometry.map(|hole_geometry| {
+        let outer_width_px = geometry.size.w.max(1) as f32;
+        let outer_height_px = geometry.size.h.max(1) as f32;
+        crate::backend::visual::PreciseLogicalRect {
+            x: outer_rect_precise.x
+                + (hole_geometry.loc.x - geometry.loc.x).max(0) as f32
+                    * outer_rect_precise.width.max(0.0001)
+                    / outer_width_px,
+            y: outer_rect_precise.y
+                + (hole_geometry.loc.y - geometry.loc.y).max(0) as f32
+                    * outer_rect_precise.height.max(0.0001)
+                    / outer_height_px,
+            width: hole_geometry.size.w.max(0) as f32 * outer_rect_precise.width.max(0.0001)
+                / outer_width_px,
+            height: hole_geometry.size.h.max(0) as f32 * outer_rect_precise.height.max(0.0001)
+                / outer_height_px,
+        }
+    });
+    let anchored_border_inner = (cached.source_kind == "window-border" && cached.border_width > 0.0)
+        .then(|| {
+            border_anchor_hole_precise.map(|hole_rect| {
+                render_inner_clip_from_precise_anchors(
+                    outer_rect_precise,
+                    geometry,
+                    hole_rect,
+                    snapped_radius_f32(
+                        cached.hole_radius_precise.unwrap_or(cached.hole_radius as f32),
+                    ),
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+        })
+        .flatten();
+    let quantized_border_inner = anchored_border_inner.or_else(|| (cached.border_width > 0.0 && !cached.shared_inner_hole)
         .then(|| {
         if let Some(hole_rect) = cached.hole_rect {
             RoundedClip {
@@ -513,7 +678,7 @@ fn rounded_rect_element(
                 radius: (outer_radius - logical_border_radius).max(0.0),
             }
         }
-    });
+    }));
 
     let clip = if (gap_disable_decoration_clip_enabled() && cached.source_kind != "window-border")
         || gap_disable_titlebar_clip_enabled(cached.rect.height)
@@ -616,13 +781,68 @@ fn rounded_rect_element(
     } else {
         inner
     };
+    let use_physical_anchor_space = cached.source_kind == "window-border" && cached.border_width > 0.0;
+    let scale_x = scale.x.abs().max(0.0001) as f32;
+    let scale_y = scale.y.abs().max(0.0001) as f32;
+    let shader_rect = if use_physical_anchor_space {
+        Rectangle::new(
+            Point::from((0, 0)),
+            (geometry.size.w.max(1), geometry.size.h.max(1)).into(),
+        )
+    } else {
+        local_rect
+    };
+    let render_outer_radius = if use_physical_anchor_space {
+        (outer_radius * scale_x).round().max(0.0)
+    } else {
+        outer_radius
+    };
+    let render_border_width = if use_physical_anchor_space {
+        let border_width_x = (cached.border_width.max(0.0) * scale_x).round().max(0.0);
+        let border_width_y = (cached.border_width.max(0.0) * scale_y).round().max(0.0);
+        border_width_x.max(border_width_y)
+    } else {
+        cached.border_width
+    };
+    let render_inner = if use_physical_anchor_space {
+        border_anchor_hole_geometry.or(hole_geometry).map(|hole_geometry| RoundedClip {
+            rect: crate::backend::visual::SnappedLogicalRect {
+                x: (hole_geometry.loc.x - geometry.loc.x).max(0) as f32,
+                y: (hole_geometry.loc.y - geometry.loc.y).max(0) as f32,
+                width: hole_geometry.size.w.max(0) as f32,
+                height: hole_geometry.size.h.max(0) as f32,
+            },
+            radius: ((cached
+                .hole_radius_precise
+                .unwrap_or(cached.hole_radius as f32)
+                .max(0.0)
+                * scale_x)
+                .round()
+                .max(0.0)),
+        })
+        .or_else(|| {
+            let border_width_x = (cached.border_width.max(0.0) * scale_x).round().max(0.0);
+            let border_width_y = (cached.border_width.max(0.0) * scale_y).round().max(0.0);
+            Some(RoundedClip {
+                rect: crate::backend::visual::SnappedLogicalRect {
+                    x: border_width_x,
+                    y: border_width_y,
+                    width: (geometry.size.w as f32 - border_width_x * 2.0).max(0.0),
+                    height: (geometry.size.h as f32 - border_width_y * 2.0).max(0.0),
+                },
+                radius: (render_outer_radius - border_width_x.max(border_width_y)).max(0.0),
+            })
+        })
+    } else {
+        inner
+    };
     let prefer_derived_inner =
-        cached.source_kind == "window-border" && cached.shared_inner_hole;
+        cached.source_kind == "window-border" && cached.shared_inner_hole && render_inner.is_none();
     let inner_mode = if cached.border_width > 0.0 {
         if prefer_derived_inner {
             crate::backend::rounded::RoundedInnerMode::DerivedInset
         } else {
-            inner
+            render_inner
                 .map(crate::backend::rounded::RoundedInnerMode::Explicit)
                 .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
         }
@@ -634,15 +854,25 @@ fn rounded_rect_element(
         .rounded_cache
         .entry(cached.stable_key.clone())
         .or_default();
-    let outer_render_scale =
-        geometry.size.w.max(1) as f32 / local_rect.size.w.max(1) as f32;
-    let inner_render_scale = match (inner, hole_geometry) {
+    let outer_render_scale = if use_physical_anchor_space {
+        1.0
+    } else {
+        geometry.size.w.max(1) as f32 / local_rect.size.w.max(1) as f32
+    };
+    let inner_render_scale = match (render_inner, hole_geometry) {
         (Some(inner), Some(hole_geometry)) => {
-            hole_geometry.size.w.max(1) as f32 / inner.rect.width.max(0.0001)
+            if use_physical_anchor_space {
+                1.0
+            } else {
+                hole_geometry.size.w.max(1) as f32 / inner.rect.width.max(0.0001)
+            }
         }
         (Some(inner), None) => {
-            let scale_x = scale.x.abs().max(0.0001) as f32;
-            (inner.rect.width * scale_x).round().max(1.0) / inner.rect.width.max(0.0001)
+            if use_physical_anchor_space {
+                1.0
+            } else {
+                (inner.rect.width * scale_x).round().max(1.0) / inner.rect.width.max(0.0001)
+            }
         }
         _ => outer_render_scale,
     };
@@ -672,7 +902,9 @@ fn rounded_rect_element(
         }
         _ => outer_render_scale,
     };
-    let corner_radii = if cached.border_width <= 0.0 {
+    let corner_radii = if use_physical_anchor_space {
+        [render_outer_radius, render_outer_radius, render_outer_radius, render_outer_radius]
+    } else if cached.border_width <= 0.0 {
         clip.map(|clip| corner_radii_from_clip(outer_radius, clip, local_rect))
             .unwrap_or([outer_radius, outer_radius, outer_radius, outer_radius])
     } else {
@@ -685,6 +917,7 @@ fn rounded_rect_element(
     };
     let spec = RoundedRectSpec {
         rect: local_rect,
+        shader_rect,
         geometry,
         color: [
             cached.color.r as f32 / 255.0,
@@ -693,11 +926,11 @@ fn rounded_rect_element(
             cached.color.a as f32 / 255.0,
         ],
         alpha,
-        radius: outer_radius,
+        radius: render_outer_radius,
         corner_radii,
         shape: if cached.border_width > 0.0 {
             RoundedShapeKind::Border {
-                width: cached.border_width,
+                width: render_border_width,
             }
         } else {
             RoundedShapeKind::Fill

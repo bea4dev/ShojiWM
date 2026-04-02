@@ -29,6 +29,7 @@ pub enum RoundedShapeKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoundedRectSpec {
     pub rect: Rectangle<i32, Logical>,
+    pub shader_rect: Rectangle<i32, Logical>,
     pub geometry: Rectangle<i32, Physical>,
     pub color: [f32; 4],
     pub alpha: f32,
@@ -95,7 +96,7 @@ impl RoundedElementState {
             shader,
             id: self.id.clone(),
             commit_counter: self.commit_counter,
-            area: spec.rect,
+            area: spec.shader_rect,
             geometry: spec.geometry,
             alpha: spec.alpha.clamp(0.0, 1.0),
             additional_uniforms: uniforms,

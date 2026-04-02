@@ -265,6 +265,28 @@ impl ComputedDecorationNode {
         }
     }
 
+    pub(crate) fn resolved_children_union_rect(&self) -> Option<ResolvedLogicalRect> {
+        let mut children = self.children.iter();
+        let first = children.next()?;
+        let mut union = first.resolved_bounds_rect();
+
+        for child in children {
+            let child_bounds = child.resolved_bounds_rect();
+            let min_x = union.x.min(child_bounds.x);
+            let min_y = union.y.min(child_bounds.y);
+            let max_x = (union.x + union.width).max(child_bounds.x + child_bounds.width);
+            let max_y = (union.y + union.height).max(child_bounds.y + child_bounds.height);
+            union = ResolvedLogicalRect {
+                x: min_x,
+                y: min_y,
+                width: ResolvedLayoutValue::from_raw((max_x.raw() - min_x.raw()).max(0)),
+                height: ResolvedLayoutValue::from_raw((max_y.raw() - min_y.raw()).max(0)),
+            };
+        }
+
+        Some(union)
+    }
+
     pub(crate) fn sync_root_bounds(&mut self, scale: f64) {
         self.resolved_rect = self.resolved_bounds_rect();
         self.rect = self.resolved_rect.round_to_logical_rect();
@@ -930,6 +952,15 @@ impl ResolvedLogicalRect {
             self.height.round_to_i32(),
         )
     }
+
+    pub(crate) fn to_precise_logical_rect(self) -> crate::backend::visual::PreciseLogicalRect {
+        crate::backend::visual::PreciseLogicalRect {
+            x: self.x.to_f32(),
+            y: self.y.to_f32(),
+            width: self.width.to_f32(),
+            height: self.height.to_f32(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1101,21 +1132,29 @@ fn layout_box_children(
 
     let mut base_sizes = Vec::with_capacity(node.children.len());
     let mut flexes = Vec::with_capacity(node.children.len());
+    let mut shrink_factors = Vec::with_capacity(node.children.len());
 
     let mut base_sum = ResolvedLayoutValue::ZERO;
     let mut total_flex = 0.0f32;
+    let mut total_shrink = 0.0f32;
 
     for child in &node.children {
         let base = child.preferred_main_size_resolved(direction, window_slot_size, scale);
         let flex = child.flex_grow_for_layout();
+        let shrink = child.flex_shrink_for_layout(direction);
         base_sizes.push(base);
         flexes.push(flex);
+        shrink_factors.push(shrink);
         base_sum = base_sum + base;
         total_flex += flex;
+        total_shrink += shrink;
     }
 
     let remaining = ResolvedLayoutValue::from_raw(
         (main_available.raw() - total_gap.raw() - base_sum.raw()).max(0),
+    );
+    let overflow = ResolvedLayoutValue::from_raw(
+        (total_gap.raw() + base_sum.raw() - main_available.raw()).max(0),
     );
     let mut allocated = base_sizes;
 
@@ -1137,6 +1176,43 @@ fn layout_box_children(
             };
             allocated[idx] = allocated[idx] + share;
             distributed = distributed + share;
+        }
+    } else if overflow.raw() > 0 && total_shrink > 0.0 {
+        let shrink_indices = shrink_factors
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, shrink)| (*shrink > 0.0).then_some(idx))
+            .collect::<Vec<_>>();
+        let mut remaining_overflow = overflow.raw();
+
+        for (position, idx) in shrink_indices.iter().copied().enumerate() {
+            if remaining_overflow <= 0 {
+                break;
+            }
+
+            let requested = if position + 1 == shrink_indices.len() {
+                remaining_overflow
+            } else {
+                (((overflow.raw() as f32) * (shrink_factors[idx] / total_shrink)).round() as i32)
+                    .max(0)
+                    .min(remaining_overflow)
+            };
+            let actual = requested.min(allocated[idx].raw().max(0));
+            allocated[idx] =
+                ResolvedLayoutValue::from_raw((allocated[idx].raw() - actual).max(0));
+            remaining_overflow -= actual;
+        }
+
+        if remaining_overflow > 0 {
+            for idx in shrink_indices.iter().copied().rev() {
+                if remaining_overflow <= 0 {
+                    break;
+                }
+                let actual = remaining_overflow.min(allocated[idx].raw().max(0));
+                allocated[idx] =
+                    ResolvedLayoutValue::from_raw((allocated[idx].raw() - actual).max(0));
+                remaining_overflow -= actual;
+            }
         }
     }
 
@@ -1286,6 +1362,21 @@ impl DecorationNode {
     fn flex_grow_for_layout(&self) -> f32 {
         self.style.flex_grow.unwrap_or_else(|| {
             if matches!(self.kind, DecorationNodeKind::WindowSlot) {
+                1.0
+            } else {
+                0.0
+            }
+        })
+    }
+
+    fn flex_shrink_for_layout(&self, direction: LayoutDirection) -> f32 {
+        self.style.flex_shrink.unwrap_or_else(|| {
+            let explicit_main_size = match direction {
+                LayoutDirection::Row => self.style.width,
+                LayoutDirection::Column => self.style.height,
+            };
+
+            if explicit_main_size.is_none() || matches!(self.kind, DecorationNodeKind::WindowSlot) {
                 1.0
             } else {
                 0.0
@@ -2656,6 +2747,106 @@ mod tests {
         assert_eq!(
             (icon.resolved_rect.x - label.resolved_rect.x - label.resolved_rect.width).to_f32(),
             3.125
+        );
+    }
+
+    #[test]
+    fn stretched_column_shrinks_auto_child_to_fit_fractional_height() {
+        let top_border = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(2),
+            background: Some(Color::BLACK),
+            ..Default::default()
+        });
+
+        let bottom_border = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(2),
+            background: Some(Color::BLACK),
+            ..Default::default()
+        });
+
+        let middle_column = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Row,
+            }))
+            .with_style(DecorationStyle {
+                height: Some(30),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Row,
+            }))
+            .with_style(DecorationStyle {
+                height: Some(30),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let anchor_column = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![top_border, middle_column, bottom_border]);
+
+        let root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                border_radius: Some(20),
+                ..Default::default()
+            })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Row,
+                }))
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        width: Some(2),
+                        ..Default::default()
+                    }),
+                    anchor_column,
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        width: Some(2),
+                        ..Default::default()
+                    }),
+                ]),
+            ]);
+
+        let layout = DecorationTree::new(root)
+            .layout_for_client_with_scale(LogicalRect::new(82, 39, 1512, 906), 1.25)
+            .expect("layout should succeed");
+
+        let stretched_column = &layout.root.children[0].children[1];
+        let top = &stretched_column.children[0];
+        let middle = &stretched_column.children[1];
+        let bottom = &stretched_column.children[2];
+
+        assert_eq!(top.resolved_rect.y, stretched_column.resolved_rect.y);
+        assert_eq!(
+            bottom.resolved_rect.bottom(),
+            stretched_column.resolved_rect.bottom()
+        );
+        assert_eq!(
+            top.resolved_rect.height.raw()
+                + middle.resolved_rect.height.raw()
+                + bottom.resolved_rect.height.raw(),
+            stretched_column.resolved_rect.height.raw()
         );
     }
 
