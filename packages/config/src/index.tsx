@@ -138,83 +138,75 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                 paddingRight: 0,
             }}
         >
-            <BorderAnchor width={2}>
-                <Box direction="row">
-                    <Box style={{ background: "#1f243080", width: 2 }} />
-                    <Box style={{ background: "#1f246080", width: 2 }} />
-                    <Box style={{ background: "#1f249080", width: 2 }} />
-                    <Box direction="column">
-                        <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
-                            <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
-                            <Label
-                                text={window.title}
-                                style={{
-                                    color: titleColor,
-                                    fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-                                    fontSize: 13,
-                                    fontWeight: 600,
-                                }}
-                            />
-                            <Box style={{ flexGrow: 1 }} />
-                            <TestComponent />
-                            <Button
-                                id="window.close"
-                                style={applyInteractionStyle(
-                                    {
-                                        width: 18,
-                                        height: 18,
-                                        borderRadius: 9,
-                                        background: "#8a1c1c",
-                                    },
-                                    {
-                                        hovered: { background: "#b32626" },
-                                        active: { background: "#d63b3b" },
-                                        focused: { border: { px: 1, color: "#f5f7fa" } },
-                                    },
-                                    closeState,
-                                )}
-                                onClick={window.close}
-                            />
-                        </ShaderEffect>
-                        <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
-                            <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
-                            <Label
-                                text={window.title}
-                                style={{
-                                    color: titleColor,
-                                    fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-                                    fontSize: 13,
-                                    fontWeight: 600,
-                                }}
-                            />
-                            <Box style={{ flexGrow: 1 }} />
-                            <TestComponent />
-                            <Button
-                                id="window.close"
-                                style={applyInteractionStyle(
-                                    {
-                                        width: 18,
-                                        height: 18,
-                                        borderRadius: 9,
-                                        background: "#8a1c1c",
-                                    },
-                                    {
-                                        hovered: { background: "#b32626" },
-                                        active: { background: "#d63b3b" },
-                                        focused: { border: { px: 1, color: "#f5f7fa" } },
-                                    },
-                                    closeState,
-                                )}
-                                onClick={window.close}
-                            />
-                        </ShaderEffect>
-                        <ClientWindow />
-                    </Box>
-                    <Box style={{ background: "#1f2430", width: 2 }} />
-                    <Box style={{ background: "#1f2460", width: 2 }} />
-                    <Box style={{ background: "#1f2490", width: 2 }} />
+            <Box direction="row">
+                <Box direction="column">
+                    <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
+                        <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+                        <Label
+                            text={window.title}
+                            style={{
+                                color: titleColor,
+                                fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
+                                fontSize: 13,
+                                fontWeight: 600,
+                            }}
+                        />
+                        <Box style={{ flexGrow: 1 }} />
+                        <TestComponent />
+                        <Button
+                            id="window.close"
+                            style={applyInteractionStyle(
+                                {
+                                    width: 18,
+                                    height: 18,
+                                    borderRadius: 9,
+                                    background: "#8a1c1c",
+                                },
+                                {
+                                    hovered: { background: "#b32626" },
+                                    active: { background: "#d63b3b" },
+                                    focused: { border: { px: 1, color: "#f5f7fa" } },
+                                },
+                                closeState,
+                            )}
+                            onClick={window.close}
+                        />
+                    </ShaderEffect>
+                    <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
+                        <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+                        <Label
+                            text={window.title}
+                            style={{
+                                color: titleColor,
+                                fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
+                                fontSize: 13,
+                                fontWeight: 600,
+                            }}
+                        />
+                        <Box style={{ flexGrow: 1 }} />
+                        <TestComponent />
+                        <Button
+                            id="window.close"
+                            style={applyInteractionStyle(
+                                {
+                                    width: 18,
+                                    height: 18,
+                                    borderRadius: 9,
+                                    background: "#8a1c1c",
+                                },
+                                {
+                                    hovered: { background: "#b32626" },
+                                    active: { background: "#d63b3b" },
+                                    focused: { border: { px: 1, color: "#f5f7fa" } },
+                                },
+                                closeState,
+                            )}
+                            onClick={window.close}
+                        />
+                    </ShaderEffect>
+                    <ClientWindow />
                 </Box>
-            </BorderAnchor>
+            </Box>
         </WindowBorder>
     );
 };

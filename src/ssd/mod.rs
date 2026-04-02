@@ -1133,6 +1133,7 @@ fn layout_box_children(
     let mut base_sizes = Vec::with_capacity(node.children.len());
     let mut flexes = Vec::with_capacity(node.children.len());
     let mut shrink_factors = Vec::with_capacity(node.children.len());
+    let mut auto_main_flags = Vec::with_capacity(node.children.len());
 
     let mut base_sum = ResolvedLayoutValue::ZERO;
     let mut total_flex = 0.0f32;
@@ -1142,9 +1143,11 @@ fn layout_box_children(
         let base = child.preferred_main_size_resolved(direction, window_slot_size, scale);
         let flex = child.flex_grow_for_layout();
         let shrink = child.flex_shrink_for_layout(direction);
+        let auto_main = child.expands_auto_main_axis(direction, window_slot_size, scale);
         base_sizes.push(base);
         flexes.push(flex);
         shrink_factors.push(shrink);
+        auto_main_flags.push(auto_main);
         base_sum = base_sum + base;
         total_flex += flex;
         total_shrink += shrink;
@@ -1176,6 +1179,15 @@ fn layout_box_children(
             };
             allocated[idx] = allocated[idx] + share;
             distributed = distributed + share;
+        }
+    } else if remaining.raw() > 0 {
+        if let Some(idx) = auto_main_flags
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, auto)| (*auto).then_some(idx))
+        {
+            allocated[idx] = allocated[idx] + remaining;
         }
     } else if overflow.raw() > 0 && total_shrink > 0.0 {
         let shrink_indices = shrink_factors
@@ -1382,6 +1394,20 @@ impl DecorationNode {
                 0.0
             }
         })
+    }
+
+    fn expands_auto_main_axis(
+        &self,
+        direction: LayoutDirection,
+        window_slot_size: Option<(i32, i32)>,
+        scale: f64,
+    ) -> bool {
+        let explicit_main_size = match direction {
+            LayoutDirection::Row => self.style.width,
+            LayoutDirection::Column => self.style.height,
+        };
+
+        explicit_main_size.is_none() && self.auto_size_resolved(window_slot_size, scale).is_some()
     }
 
     fn intrinsic_size(&self, window_slot_size: Option<(i32, i32)>) -> Option<(i32, i32)> {
