@@ -128,7 +128,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     });
 
     return (
-        <Box style={{ border: { px: 2, color: "#FFFFFF" }, borderFit: "normal", padding: 10 }}>
+        <Box style={{ border: { px: 2, color: "#FFFFFF" }, padding: 10, borderFit: "normal" }}>
             <WindowBorder
                 style={{
                     border: { px: 2, color: borderColor },
