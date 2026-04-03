@@ -132,7 +132,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             <WindowBorder
                 style={{
                     border: { px: 2, color: borderColor },
-                    borderRadius: 20,
+                    borderRadius: 40,
                     background: "#10131900",
                     padding: 0,
                     paddingX: 0,

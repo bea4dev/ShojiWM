@@ -532,6 +532,22 @@ fn clip_affects_local_rect(clip: RoundedClip, local_rect: Rectangle<i32, Logical
     !clip_contains_local_rect(clip, local_rect) || clip.radius > 0.0
 }
 
+fn local_clip_from_physical_geometry(
+    clip_geometry: Rectangle<i32, Physical>,
+    geometry: Rectangle<i32, Physical>,
+    radius: f32,
+) -> RoundedClip {
+    RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: (clip_geometry.loc.x - geometry.loc.x) as f32,
+            y: (clip_geometry.loc.y - geometry.loc.y) as f32,
+            width: clip_geometry.size.w.max(0) as f32,
+            height: clip_geometry.size.h.max(0) as f32,
+        },
+        radius,
+    }
+}
+
 fn corner_radii_from_clip(
     fallback_radius: f32,
     clip: RoundedClip,
@@ -1189,20 +1205,16 @@ fn rounded_rect_element(
                     output_geo,
                     scale,
                 );
-                RoundedClip {
-                    rect: crate::backend::visual::SnappedLogicalRect {
-                        x: (clip_geometry.loc.x - geometry.loc.x).max(0) as f32,
-                        y: (clip_geometry.loc.y - geometry.loc.y).max(0) as f32,
-                        width: clip_geometry.size.w.max(0) as f32,
-                        height: clip_geometry.size.h.max(0) as f32,
-                    },
-                    radius: (cached
+                local_clip_from_physical_geometry(
+                    clip_geometry,
+                    geometry,
+                    (cached
                         .clip_radius_precise
                         .unwrap_or(cached.clip_radius as f32)
                         * scale_x)
                         .round()
                         .max(0.0),
-                }
+                )
             })
             .or_else(|| {
                 cached.clip_rect.map(|clip_rect| {
@@ -1213,17 +1225,13 @@ fn rounded_rect_element(
                         scale,
                         Some(clip_rect),
                     );
-                    RoundedClip {
-                        rect: crate::backend::visual::SnappedLogicalRect {
-                            x: (clip_geometry.loc.x - geometry.loc.x).max(0) as f32,
-                            y: (clip_geometry.loc.y - geometry.loc.y).max(0) as f32,
-                            width: clip_geometry.size.w.max(0) as f32,
-                            height: clip_geometry.size.h.max(0) as f32,
-                        },
-                        radius: (cached.clip_radius.max(0) as f32 * scale_x)
+                    local_clip_from_physical_geometry(
+                        clip_geometry,
+                        geometry,
+                        (cached.clip_radius.max(0) as f32 * scale_x)
                             .round()
                             .max(0.0),
-                    }
+                    )
                 })
             })
     } else {
@@ -1620,6 +1628,20 @@ mod tests {
         let local_rect = Rectangle::new(Point::from((0, 0)), (100, 30).into());
 
         assert!(clip_affects_local_rect(clip, local_rect));
+    }
+
+    #[test]
+    fn local_clip_from_physical_geometry_preserves_negative_offsets() {
+        let geometry = Rectangle::new(Point::from((1841, 13)), (23, 23).into());
+        let clip_geometry = Rectangle::new(Point::from((16, 6)), (1891, 1208).into());
+
+        let clip = local_clip_from_physical_geometry(clip_geometry, geometry, 18.0);
+
+        assert!(clip.rect.x < 0.0);
+        assert!(clip.rect.y < 0.0);
+        assert_eq!(clip.rect.width, 1891.0);
+        assert_eq!(clip.rect.height, 1208.0);
+        assert_eq!(clip.radius, 18.0);
     }
 }
 

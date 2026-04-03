@@ -1495,11 +1495,14 @@ fn slot_content_clip_for_node(
                 )
                     .into(),
             ),
-            radius: clip.radius.round_to_i32().max(0),
+            // Client surfaces should stay rectangular inside the reserved slot.
+            // The surrounding WindowBorder descendants use the rounded mask;
+            // the client content itself should not inherit that corner radius.
+            radius: 0,
             rect_precise: shared_geometry
                 .map(|geometry| geometry.rect_precise)
                 .unwrap_or_else(|| precise_rect_from_resolved(clip.rect)),
-            radius_precise: clip.radius.to_f32().max(0.0),
+            radius_precise: 0.0,
             snap_mode: RectSnapMode::SharedEdges,
         });
     }
@@ -3504,6 +3507,8 @@ mod tests {
         assert_eq!(clip.rect.loc.y, slot.y);
         assert_eq!(clip.rect.size.w, slot.width);
         assert_eq!(clip.rect.size.h, slot.height);
+        assert_eq!(clip.radius, 0);
+        assert_eq!(clip.radius_precise, 0.0);
     }
 
     #[test]
