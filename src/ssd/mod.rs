@@ -2169,15 +2169,11 @@ fn effective_clip_for_node_resolved(
     content_rect: ResolvedLogicalRect,
     scale: f64,
 ) -> Option<ResolvedDecorationClip> {
-    let node_clip = if matches!(node.kind, DecorationNodeKind::WindowBorder) {
-        None
-    } else {
-        node.style.border.map(|border| ResolvedDecorationClip {
-            rect: content_rect,
-            radius: ResolvedLayoutValue::from_i32(node.style.border_radius.unwrap_or(0))
-                - ResolvedLayoutValue::from_i32(border.width.max(0)).snap_edge(scale),
-        })
-    };
+    let node_clip = node.style.border.map(|border| ResolvedDecorationClip {
+        rect: content_rect,
+        radius: ResolvedLayoutValue::from_i32(node.style.border_radius.unwrap_or(0))
+            - ResolvedLayoutValue::from_i32(border.width.max(0)).snap_edge(scale),
+    });
 
     match (inherited_clip, node_clip) {
         (Some(parent), Some(current)) => intersect_resolved_decoration_clips(parent, current),
@@ -3054,49 +3050,6 @@ mod tests {
             (icon.resolved_rect.x - label.resolved_rect.x - label.resolved_rect.width).to_f32(),
             3.125
         );
-    }
-
-    #[test]
-    fn window_border_does_not_propagate_clip_to_descendants() {
-        let tree = DecorationTree::new(
-            DecorationNode::new(DecorationNodeKind::WindowBorder)
-                .with_style(DecorationStyle {
-                    border: Some(BorderStyle {
-                        width: 2,
-                        color: Color::WHITE,
-                    }),
-                    border_radius: Some(18),
-                    ..Default::default()
-                })
-                .with_children(vec![
-                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
-                    }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::ShaderEffect(ShaderEffectNode {
-                            direction: LayoutDirection::Row,
-                            shader: CompiledEffect {
-                                input: EffectInput::Backdrop,
-                                invalidate: EffectInvalidationPolicy::Always,
-                                pipeline: Vec::new(),
-                            },
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
-        );
-
-        let layout = tree
-            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.5)
-            .expect("layout should succeed");
-
-        let titlebar = &layout.root.children[0].children[0];
-        assert_eq!(titlebar.effective_clip, None);
-        assert_eq!(titlebar.resolved_effective_clip, None);
     }
 
     #[test]

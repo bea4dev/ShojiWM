@@ -47,12 +47,10 @@ pub struct WindowDecorationState {
 #[derive(Debug, Clone, Copy)]
 pub struct ContentClip {
     pub rect: Rectangle<i32, Logical>,
-    pub rect_precise: PreciseLogicalRect,
-    pub snap_mode: RectSnapMode,
-    pub mask_rect: Rectangle<i32, Logical>,
-    pub mask_rect_precise: PreciseLogicalRect,
     pub radius: i32,
+    pub rect_precise: PreciseLogicalRect,
     pub radius_precise: f32,
+    pub snap_mode: RectSnapMode,
 }
 
 impl WindowDecorationState {
@@ -1272,7 +1270,7 @@ fn content_clip_for_layout(
     layout: &ComputedDecorationTree,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> Option<ContentClip> {
-    slot_content_clip_for_node(&layout.root, None, None, None, None, shared_edges)
+    slot_content_clip_for_node(&layout.root, None, shared_edges)
 }
 
 fn window_border_inner_clip_resolved(
@@ -1281,11 +1279,12 @@ fn window_border_inner_clip_resolved(
     if !matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
         return None;
     }
-    Some(crate::ssd::ResolvedDecorationClip {
+    node.style.border?;
+    Some(node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
         rect: node.resolved_content_rect,
         radius: (node.resolved_border_radius - node.resolved_border_width)
             .max(crate::ssd::ResolvedLayoutValue::ZERO),
-    })
+    }))
 }
 
 fn window_border_inner_hole_rect(
@@ -1333,6 +1332,7 @@ fn window_border_inner_clip_logical(
     if !matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
         return None;
     }
+    node.style.border?;
     let border_width = node.resolved_border_width.round_to_i32().max(0);
     let rect = window_border_inner_hole_rect(node, border_width);
     if rect.width <= 0 || rect.height <= 0 {
@@ -1372,9 +1372,6 @@ fn normal_border_inner_rect_precise(
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
-    nearest_window_border_mask: Option<super::DecorationClip>,
-    nearest_window_border_mask_resolved: Option<crate::ssd::ResolvedDecorationClip>,
-    nearest_window_border_mask_precise: Option<PreciseLogicalRect>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
@@ -1387,28 +1384,9 @@ fn slot_content_clip_for_node(
     } else {
         nearest_border
     };
-    let next_window_border_mask = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-        window_border_inner_clip_logical(node).or(nearest_window_border_mask)
-    } else {
-        nearest_window_border_mask
-    };
-    let next_window_border_mask_resolved = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-        window_border_inner_clip_resolved(node).or(nearest_window_border_mask_resolved)
-    } else {
-        nearest_window_border_mask_resolved
-    };
-    let next_window_border_mask_precise = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-        node.stable_id
-            .as_deref()
-            .and_then(|stable_id| shared_edges.get(stable_id))
-            .map(|geometry| geometry.content_rect_precise)
-            .or(nearest_window_border_mask_precise)
-    } else {
-        nearest_window_border_mask_precise
-    };
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
-        let (border_width, border_radius) = next_border.unwrap_or((0, 0));
+        let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
         let inherited_clip = node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
             rect: node.resolved_rect,
             radius: (node.resolved_border_radius - node.resolved_border_width)
@@ -1433,87 +1411,34 @@ fn slot_content_clip_for_node(
             .as_deref()
             .and_then(|stable_id| shared_edges.get(stable_id))
             .copied();
-        let destination = crate::ssd::ResolvedDecorationClip {
+        let clip = crate::ssd::ResolvedDecorationClip {
             rect: clip_rect,
-            radius: inherited_clip.radius.max(
-                crate::ssd::ResolvedLayoutValue::from_i32((border_radius - border_width).max(0)),
-            ),
+            radius: inherited_clip.radius,
         };
-        let mask_logical = next_window_border_mask.unwrap_or(super::DecorationClip {
-            rect: inherited_clip.rect.round_to_logical_rect(),
-            radius: inherited_clip.radius.round_to_i32().max(0),
-        });
-        let mask = next_window_border_mask_resolved.unwrap_or(crate::ssd::ResolvedDecorationClip {
-            rect: inherited_clip.rect,
-            radius: inherited_clip.radius.max(
-                crate::ssd::ResolvedLayoutValue::from_i32((border_radius - border_width).max(0)),
-            ),
-        });
-        let mask_rect_precise = next_window_border_mask_precise
-            .unwrap_or_else(|| precise_rect_from_resolved(mask.rect));
-        if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
-            tracing::info!(
-                stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
-                resolved_rect = ?node.resolved_rect,
-                destination_rect = ?destination.rect,
-                destination_rect_precise = ?shared_geometry
-                    .map(|geometry| geometry.rect_precise)
-                    .unwrap_or_else(|| precise_rect_from_resolved(destination.rect)),
-                inherited_clip = ?inherited_clip,
-                nearest_window_border_mask = ?next_window_border_mask,
-                nearest_window_border_mask_resolved = ?next_window_border_mask_resolved,
-                nearest_window_border_mask_precise = ?next_window_border_mask_precise,
-                mask_rect = ?mask.rect,
-                mask_rect_logical = ?mask_logical.rect,
-                mask_rect_precise = ?mask_rect_precise,
-                "gap debug window_slot content clip build"
-            );
-        }
         return Some(ContentClip {
             rect: Rectangle::new(
                 Point::from((
-                    destination.rect.x.round_to_i32(),
-                    destination.rect.y.round_to_i32(),
+                    clip.rect.x.round_to_i32(),
+                    clip.rect.y.round_to_i32(),
                 )),
                 (
-                    destination.rect.width.round_to_i32(),
-                    destination.rect.height.round_to_i32(),
+                    clip.rect.width.round_to_i32(),
+                    clip.rect.height.round_to_i32(),
                 )
                     .into(),
             ),
+            radius: clip.radius.round_to_i32().max(0),
             rect_precise: shared_geometry
                 .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| precise_rect_from_resolved(destination.rect)),
+                .unwrap_or_else(|| precise_rect_from_resolved(clip.rect)),
+            radius_precise: clip.radius.to_f32().max(0.0),
             snap_mode: RectSnapMode::SharedEdges,
-            mask_rect: Rectangle::new(
-                Point::from((
-                    mask_logical.rect.x,
-                    mask_logical.rect.y,
-                )),
-                (
-                    mask_logical.rect.width,
-                    mask_logical.rect.height,
-                )
-                    .into(),
-            ),
-            mask_rect_precise: mask_rect_precise,
-            radius: mask.radius.round_to_i32().max(0),
-            radius_precise: mask.radius.to_f32().max(0.0),
         });
     }
 
     node.children
         .iter()
-        .find_map(|child| {
-            slot_content_clip_for_node(
-                child,
-                next_border,
-                next_window_border_mask,
-                next_window_border_mask_resolved,
-                next_window_border_mask_precise,
-                shared_edges,
-            )
-        })
+        .find_map(|child| slot_content_clip_for_node(child, next_border, shared_edges))
 }
 
 impl DecorationTree {
@@ -1682,8 +1607,6 @@ fn build_cached_buffers_and_shaders(
         "root".to_string(),
         None,
         None,
-        None,
-        None,
         order_map,
         dirty_node_ids,
         shared_edges,
@@ -1710,8 +1633,6 @@ fn build_text_buffers(
     collect_text_buffers(
         &layout.root,
         "root".into(),
-        None,
-        None,
         order_map,
         None,
         &shared_edges,
@@ -1734,8 +1655,6 @@ fn build_icon_buffers(
     collect_icon_buffers(
         &layout.root,
         "root".into(),
-        None,
-        None,
         order_map,
         None,
         &shared_edges,
@@ -1785,8 +1704,6 @@ fn rebuild_partial_text_buffers(
     collect_text_buffers(
         &layout.root,
         "root".into(),
-        None,
-        None,
         order_map,
         Some(&dirty_node_ids),
         &shared_edges,
@@ -1814,8 +1731,6 @@ fn rebuild_partial_icon_buffers(
     collect_icon_buffers(
         &layout.root,
         "root".into(),
-        None,
-        None,
         order_map,
         Some(&dirty_node_ids),
         &shared_edges,
@@ -1963,8 +1878,19 @@ fn collect_render_orders(
 
     if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
         if background.a > 0 {
-            map.insert(format!("{path}:fill"), *order);
-            *order += 1;
+            if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+                map.insert(format!("{path}:fill-top"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-bottom"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-left"), *order);
+                *order += 1;
+                map.insert(format!("{path}:fill-right"), *order);
+                *order += 1;
+            } else {
+                map.insert(format!("{path}:fill"), *order);
+                *order += 1;
+            }
         }
     }
 }
@@ -1974,8 +1900,6 @@ fn collect_cached_buffers(
     path: String,
     ancestor_clip: Option<super::DecorationClip>,
     ancestor_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
-    window_border_mask_clip: Option<super::DecorationClip>,
-    window_border_mask_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
@@ -1998,28 +1922,10 @@ fn collect_cached_buffers(
         .copied();
 
     let node_radius = node.resolved_border_radius.round_to_i32().max(0);
-    let apply_window_border_mask = matches!(
-        node.kind,
-        super::DecorationNodeKind::Box(_)
-            | super::DecorationNodeKind::ShaderEffect(_)
-            | super::DecorationNodeKind::WindowSlot
-    );
-    let inherited_mask_clip = if apply_window_border_mask {
-        window_border_mask_clip.or(ancestor_clip)
-    } else {
-        ancestor_clip
-    };
-    let inherited_mask_resolved_clip = if apply_window_border_mask {
-            window_border_mask_resolved_clip.or(ancestor_resolved_clip)
-        } else {
-            ancestor_resolved_clip
-        };
-    let current_clip_rect = inherited_mask_clip.map(|clip| clip.rect);
-    let current_clip_radius = inherited_mask_clip.map(|clip| clip.radius).unwrap_or(0);
-    let current_clip_rect_precise =
-        inherited_mask_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
-    let current_clip_radius_precise =
-        inherited_mask_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
+    let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
+    let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
+    let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
+    let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
     let border_fit = node.style.effective_border_fit(&node.kind);
     let fit_children = matches!(border_fit, super::BorderFit::FitChildren);
     let window_border_inner_clip_resolved = if fit_children {
@@ -2049,16 +1955,9 @@ fn collect_cached_buffers(
                 .max(0),
         })
     };
-    // WindowBorder's inner hole is not a descendant clip. It is a shell mask
-    // for the border/background itself, while the client slot derives its own
-    // content clip from the nearest WindowBorder in `content_clip_for_layout`.
-    // Propagating the inner clip as an ancestor clip incorrectly cuts titlebar
-    // shaders and other unrelated descendants.
-    let child_clip = node.effective_clip;
-    let child_resolved_clip = node.resolved_effective_clip;
-    let next_window_border_mask_clip = window_border_inner_clip.or(window_border_mask_clip);
-    let next_window_border_mask_resolved_clip =
-        window_border_inner_clip_resolved.or(window_border_mask_resolved_clip);
+    let child_clip = window_border_inner_clip.or(node.effective_clip);
+    let child_resolved_clip = window_border_inner_clip_resolved
+        .or(node.resolved_effective_clip);
     let window_border_inner_rect = window_border_inner_clip
         .map(|clip| clip.rect)
         .or_else(|| {
@@ -2078,9 +1977,9 @@ fn collect_cached_buffers(
                 if let Some(border) = node.style.border {
                     let color = border.color.with_opacity(node.style.opacity);
                     if color.a > 0 && border.width > 0 {
-                        let current_order =
+                    let current_order =
                             *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
-                        let buffer = CachedDecorationBuffer {
+                        buffers.push(CachedDecorationBuffer {
                             owner_node_id: node.stable_id.clone(),
                             stable_key: format!("{path}:border"),
                             order: current_order,
@@ -2137,29 +2036,7 @@ fn collect_cached_buffers(
                             clip_rect_precise: current_clip_rect_precise,
                             clip_radius_precise: current_clip_radius_precise,
                             source_kind: node_kind_name(&node.kind),
-                        };
-                        if std::env::var_os("SHOJI_GAP_DEBUG").is_some()
-                            && matches!(node.kind, super::DecorationNodeKind::WindowBorder)
-                        {
-                            tracing::info!(
-                                stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
-                                stable_key = %buffer.stable_key,
-                                order = buffer.order,
-                                border_fit = ?border_fit,
-                                child_count = node.children.len(),
-                                rect = ?buffer.rect,
-                                rect_precise = ?buffer.rect_precise,
-                                hole_rect = ?buffer.hole_rect,
-                                hole_rect_precise = ?buffer.hole_rect_precise,
-                                hole_radius = buffer.hole_radius,
-                                hole_radius_precise = ?buffer.hole_radius_precise,
-                                shared_inner_hole = buffer.shared_inner_hole,
-                                clip_rect = ?buffer.clip_rect,
-                                clip_rect_precise = ?buffer.clip_rect_precise,
-                                "gap debug window_border buffer build"
-                            );
-                        }
-                        buffers.push(buffer);
+                        });
                     }
                 }
 
@@ -2186,116 +2063,82 @@ fn collect_cached_buffers(
 
                 if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
                     if background.a > 0 {
-                        let fill_hole_rect = matches!(node.kind, super::DecorationNodeKind::WindowBorder)
-                            .then_some(window_border_inner_rect)
-                            .flatten();
-                        let fill_hole_rect_precise = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            shared_geometry
-                                .map(|geometry| geometry.content_rect_precise)
-                                .or(window_border_inner_clip_precise)
+                        if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
+                            if let Some(inner_rect) = window_border_inner_rect {
+                                push_cached_fill(
+                                    buffers,
+                                    *order_map
+                                        .get(&format!("{path}:fill-top"))
+                                        .unwrap_or(&usize::MAX),
+                                    format!("{path}:fill-top"),
+                                    node.rect,
+                                    Some(precise_rect_from_resolved(node.resolved_rect)),
+                                    background,
+                                    node.stable_id.clone(),
+                                    node_radius,
+                                    Some(node.resolved_border_radius.to_f32().max(0.0)),
+                                    0.0,
+                                    Some(inner_rect),
+                                    window_border_inner_clip
+                                        .map(|clip| clip.radius.max(0))
+                                        .unwrap_or_else(|| {
+                                            (node.resolved_border_radius - node.resolved_border_width)
+                                                .round_to_i32()
+                                                .max(0)
+                                        }),
+                                    window_border_inner_clip
+                                        .map(|clip| precise_rect_from_logical(clip.rect)),
+                                    window_border_inner_clip
+                                        .map(|clip| clip.radius.max(0) as f32),
+                                    current_clip_rect_precise,
+                                    current_clip_radius_precise,
+                                    None,
+                                    0,
+                                );
+                            } else {
+                                push_cached_fill(
+                                    buffers,
+                                    *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
+                                    format!("{path}:fill"),
+                                    node.rect,
+                                    Some(precise_rect_from_resolved(node.resolved_rect)),
+                                    background,
+                                    node.stable_id.clone(),
+                                    node_radius,
+                                    Some(node.resolved_border_radius.to_f32().max(0.0)),
+                                    0.0,
+                                    None,
+                                    0,
+                                    None,
+                                    None,
+                                    current_clip_rect_precise,
+                                    current_clip_radius_precise,
+                                    None,
+                                    0,
+                                );
+                            }
                         } else {
-                            None
-                        };
-                        let fill_hole_radius = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            window_border_inner_clip
-                                .map(|clip| clip.radius.max(0))
-                                .unwrap_or_else(|| {
-                                    (node.resolved_border_radius - node.resolved_border_width)
-                                        .round_to_i32()
-                                        .max(0)
-                                })
-                        } else {
-                            0
-                        };
-                        let fill_hole_radius_precise = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            window_border_inner_clip_resolved
-                                .map(|clip| clip.radius.to_f32().max(0.0))
-                                .or_else(|| Some(
-                                    (node.resolved_border_radius - node.resolved_border_width)
-                                        .to_f32()
-                                        .max(0.0),
-                                ))
-                        } else {
-                            None
-                        };
-                        let fill_stable_key = format!("{path}:fill");
-                        let fill_rect_precise = Some(
-                            shared_geometry
-                                .map(|geometry| geometry.rect_precise)
-                                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
-                        );
-                        let fill_hole_rect = matches!(node.kind, super::DecorationNodeKind::WindowBorder)
-                            .then_some(window_border_inner_rect)
-                            .flatten();
-                        let fill_hole_rect_precise = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            shared_geometry
-                                .map(|geometry| geometry.content_rect_precise)
-                                .or(window_border_inner_clip_precise)
-                        } else {
-                            None
-                        };
-                        let fill_hole_radius = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            window_border_inner_clip
-                                .map(|clip| clip.radius.max(0))
-                                .unwrap_or_else(|| {
-                                    (node.resolved_border_radius - node.resolved_border_width)
-                                        .round_to_i32()
-                                        .max(0)
-                                })
-                        } else {
-                            0
-                        };
-                        let fill_hole_radius_precise = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-                            window_border_inner_clip_resolved
-                                .map(|clip| clip.radius.to_f32().max(0.0))
-                                .or_else(|| Some(
-                                    (node.resolved_border_radius - node.resolved_border_width)
-                                        .to_f32()
-                                        .max(0.0),
-                                ))
-                        } else {
-                            None
-                        };
-                        if std::env::var_os("SHOJI_GAP_DEBUG").is_some()
-                            && matches!(node.kind, super::DecorationNodeKind::WindowBorder)
-                        {
-                            tracing::info!(
-                                stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
-                                stable_key = %fill_stable_key,
-                                order = *order_map.get(&fill_stable_key).unwrap_or(&usize::MAX),
-                                border_fit = ?border_fit,
-                                child_count = node.children.len(),
-                                rect = ?node.rect,
-                                rect_precise = ?fill_rect_precise,
-                                hole_rect = ?fill_hole_rect,
-                                hole_rect_precise = ?fill_hole_rect_precise,
-                                hole_radius = fill_hole_radius,
-                                hole_radius_precise = ?fill_hole_radius_precise,
-                                clip_rect = ?current_clip_rect,
-                                clip_rect_precise = ?current_clip_rect_precise,
-                                "gap debug window_border fill build"
+                            push_cached_fill(
+                                buffers,
+                                *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
+                                format!("{path}:fill"),
+                                node.rect,
+                                Some(precise_rect_from_resolved(node.resolved_rect)),
+                                background,
+                                node.stable_id.clone(),
+                                node_radius,
+                                Some(node.resolved_border_radius.to_f32().max(0.0)),
+                                0.0,
+                                None,
+                                0,
+                                None,
+                                None,
+                                current_clip_rect_precise,
+                                current_clip_radius_precise,
+                                current_clip_rect,
+                                current_clip_radius,
                             );
                         }
-                        push_cached_fill(
-                            buffers,
-                            *order_map.get(&fill_stable_key).unwrap_or(&usize::MAX),
-                            fill_stable_key,
-                            node.rect,
-                            fill_rect_precise,
-                            background,
-                            node.stable_id.clone(),
-                            node_radius,
-                            Some(node.resolved_border_radius.to_f32().max(0.0)),
-                            0.0,
-                            fill_hole_rect,
-                            fill_hole_radius,
-                            fill_hole_rect_precise,
-                            fill_hole_radius_precise,
-                            current_clip_rect_precise,
-                            current_clip_radius_precise,
-                            current_clip_rect,
-                            current_clip_radius,
-                        );
                     }
                 }
             }
@@ -2306,8 +2149,6 @@ fn collect_cached_buffers(
                     format!("{path}/child-{index}"),
                     child_clip,
                     child_resolved_clip,
-                    next_window_border_mask_clip,
-                    next_window_border_mask_resolved_clip,
                     order_map,
                     dirty_node_ids,
                     shared_edges,
@@ -2322,8 +2163,6 @@ fn collect_cached_buffers(
 fn collect_text_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
-    window_border_mask_clip: Option<super::DecorationClip>,
-    window_border_mask_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
@@ -2339,8 +2178,6 @@ fn collect_text_buffers(
         collect_text_buffers(
             child,
             format!("{path}/child-{index}"),
-            window_border_inner_clip_logical(node).or(window_border_mask_clip),
-            window_border_inner_clip_resolved(node).or(window_border_mask_resolved_clip),
             order_map,
             dirty_node_ids,
             shared_edges,
@@ -2417,8 +2254,6 @@ fn collect_text_buffers(
 fn collect_icon_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
-    window_border_mask_clip: Option<super::DecorationClip>,
-    window_border_mask_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
@@ -2435,8 +2270,6 @@ fn collect_icon_buffers(
         collect_icon_buffers(
             child,
             format!("{path}/child-{index}"),
-            window_border_inner_clip_logical(node).or(window_border_mask_clip),
-            window_border_inner_clip_resolved(node).or(window_border_mask_resolved_clip),
             order_map,
             dirty_node_ids,
             shared_edges,
@@ -3522,20 +3355,11 @@ mod tests {
         let shared_edges = build_shared_edge_geometry_map(&layout);
         let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
             .expect("content clip should exist");
-        let edge_tree = build_shared_edge_tree(&layout);
-        let window_border_precise =
-            precise_rect_from_shared_edge_rect(&edge_tree, edge_tree.root.content_rect);
 
         assert_eq!(clip.rect.loc.x, slot.x);
         assert_eq!(clip.rect.loc.y, slot.y);
         assert_eq!(clip.rect.size.w, slot.width);
         assert_eq!(clip.rect.size.h, slot.height);
-        assert_eq!(clip.radius, 16);
-        assert!(clip.mask_rect.loc.y < clip.rect.loc.y);
-        assert!(clip.mask_rect.size.h > clip.rect.size.h);
-        assert!(clip.mask_rect_precise.y < clip.rect_precise.y);
-        assert!(clip.mask_rect_precise.height > clip.rect_precise.height);
-        assert_eq!(clip.mask_rect_precise, window_border_precise);
     }
 
     #[test]
@@ -3693,142 +3517,5 @@ mod tests {
         assert_eq!(header_box.rect.bottom, window_slot.rect.top);
         assert_eq!(header_box.rect.left, window_slot.rect.left);
         assert_eq!(header_box.rect.right, window_slot.rect.right);
-    }
-
-    #[test]
-    fn window_border_background_fill_uses_single_hole_buffer() {
-        let tree = DecorationTree::new(
-            DecorationNode::new(DecorationNodeKind::WindowBorder)
-                .with_style(DecorationStyle {
-                    background: Some(Color::WHITE),
-                    border: Some(BorderStyle {
-                        width: 2,
-                        color: Color::WHITE,
-                    }),
-                    border_radius: Some(18),
-                    ..Default::default()
-                })
-                .with_children(vec![
-                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
-                    }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
-        );
-
-        let layout = tree
-            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.5)
-            .expect("layout should succeed");
-        let order_map = build_render_order_map(&layout);
-        let buffers = build_cached_buffers(&layout, &order_map);
-
-        let fill = buffers
-            .iter()
-            .find(|buffer| buffer.stable_key == "root:fill")
-            .expect("window border background fill should exist");
-
-        assert!(fill.hole_rect.is_some());
-        assert!(fill.hole_rect_precise.is_some());
-        assert!(buffers.iter().all(|buffer| {
-            !buffer.stable_key.ends_with(":fill-top")
-                && !buffer.stable_key.ends_with(":fill-bottom")
-                && !buffer.stable_key.ends_with(":fill-left")
-                && !buffer.stable_key.ends_with(":fill-right")
-        }));
-    }
-
-    #[test]
-    fn window_border_background_fill_has_hole_without_visible_border() {
-        let tree = DecorationTree::new(
-            DecorationNode::new(DecorationNodeKind::WindowBorder)
-                .with_style(DecorationStyle {
-                    background: Some(Color::WHITE),
-                    border_radius: Some(18),
-                    ..Default::default()
-                })
-                .with_children(vec![
-                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
-                    }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
-        );
-
-        let layout = tree
-            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.5)
-            .expect("layout should succeed");
-        let order_map = build_render_order_map(&layout);
-        let buffers = build_cached_buffers(&layout, &order_map);
-
-        let fill = buffers
-            .iter()
-            .find(|buffer| buffer.stable_key == "root:fill")
-            .expect("window border background fill should exist");
-
-        assert!(fill.hole_rect.is_some());
-        assert!(fill.hole_rect_precise.is_some());
-    }
-
-    #[test]
-    fn window_border_inner_mask_is_not_propagated_to_titlebar_descendants() {
-        let tree = DecorationTree::new(
-            DecorationNode::new(DecorationNodeKind::WindowBorder)
-                .with_style(DecorationStyle {
-                    border: Some(BorderStyle {
-                        width: 2,
-                        color: Color::WHITE,
-                    }),
-                    border_radius: Some(18),
-                    ..Default::default()
-                })
-                .with_children(vec![
-                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
-                    }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            background: Some(Color::WHITE),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
-        );
-
-        let layout = tree
-            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.5)
-            .expect("layout should succeed");
-        let order_map = build_render_order_map(&layout);
-        let buffers = build_cached_buffers(&layout, &order_map);
-
-        let titlebar_fill = buffers
-            .iter()
-            .find(|buffer| buffer.source_kind == "fill" && buffer.rect.height == 30)
-            .expect("titlebar fill should exist");
-
-        assert_eq!(titlebar_fill.clip_rect, None);
-        assert_eq!(titlebar_fill.clip_rect_precise, None);
     }
 }
