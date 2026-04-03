@@ -267,6 +267,7 @@ impl ClippedSurfaceElement {
                         mapped_geometry = ?mapped.geometry(output_scale),
                         element_geometry = ?render_geometry,
                         mapped_src = ?mapped.src(),
+                        corner_radius = ?clip.corner_radii_precise,
                         "gap debug clipped surface mapped crop"
                     );
                 }
@@ -280,8 +281,8 @@ impl ClippedSurfaceElement {
             clip_rect: snapped_clip_rect,
             corner_radius: {
                 let scale_x = clip_scale.x.abs().max(0.0001) as f32;
-                let radius = ((clip.radius_precise.max(0.0) * scale_x).round() / scale_x).max(0.0);
-                [radius, radius, radius, radius]
+                clip.corner_radii_precise
+                    .map(|radius| ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0))
             },
             rect_bounds_enabled: 1.0,
             output_scale: output_scale.x as f32,

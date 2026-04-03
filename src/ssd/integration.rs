@@ -55,6 +55,8 @@ pub struct ContentClip {
     pub radius: i32,
     pub rect_precise: PreciseLogicalRect,
     pub radius_precise: f32,
+    pub corner_radii: [i32; 4],
+    pub corner_radii_precise: [f32; 4],
     pub snap_mode: RectSnapMode,
 }
 
@@ -1477,15 +1479,12 @@ fn slot_content_clip_for_node(
                 .max(0),
             ),
         };
-        let shared_geometry = node
-            .stable_id
-            .as_deref()
-            .and_then(|stable_id| shared_edges.get(stable_id))
-            .copied();
         let clip = crate::ssd::ResolvedDecorationClip {
             rect: clip_rect,
             radius: inherited_clip.radius,
         };
+        let corner_radii_precise = corner_radii_for_slot_clip_resolved(inherited_clip, clip.rect);
+        let corner_radii = corner_radii_precise.map(|radius| radius.round().max(0.0) as i32);
         return Some(ContentClip {
             rect: Rectangle::new(
                 Point::from((clip.rect.x.round_to_i32(), clip.rect.y.round_to_i32())),
@@ -1499,10 +1498,10 @@ fn slot_content_clip_for_node(
             // The surrounding WindowBorder descendants use the rounded mask;
             // the client content itself should not inherit that corner radius.
             radius: 0,
-            rect_precise: shared_geometry
-                .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| precise_rect_from_resolved(clip.rect)),
+            rect_precise: precise_rect_from_resolved(clip.rect),
             radius_precise: 0.0,
+            corner_radii,
+            corner_radii_precise,
             snap_mode: RectSnapMode::SharedEdges,
         });
     }
@@ -1510,6 +1509,51 @@ fn slot_content_clip_for_node(
     node.children
         .iter()
         .find_map(|child| slot_content_clip_for_node(child, next_border, shared_edges))
+}
+
+fn corner_radii_for_slot_clip_resolved(
+    mask: crate::ssd::ResolvedDecorationClip,
+    clip_rect: crate::ssd::ResolvedLogicalRect,
+) -> [f32; 4] {
+    let radius = mask.radius.to_f32().max(0.0);
+    if radius <= 0.0 {
+        return [0.0; 4];
+    }
+
+    let shares_left = resolved_edge_matches(clip_rect.x, mask.rect.x);
+    let shares_top = resolved_edge_matches(clip_rect.y, mask.rect.y);
+    let shares_right = resolved_edge_matches(clip_rect.right(), mask.rect.right());
+    let shares_bottom = resolved_edge_matches(clip_rect.bottom(), mask.rect.bottom());
+
+    [
+        if shares_top && shares_left {
+            radius
+        } else {
+            0.0
+        },
+        if shares_top && shares_right {
+            radius
+        } else {
+            0.0
+        },
+        if shares_bottom && shares_right {
+            radius
+        } else {
+            0.0
+        },
+        if shares_bottom && shares_left {
+            radius
+        } else {
+            0.0
+        },
+    ]
+}
+
+fn resolved_edge_matches(
+    left: crate::ssd::ResolvedLayoutValue,
+    right: crate::ssd::ResolvedLayoutValue,
+) -> bool {
+    (left.raw() - right.raw()).abs() <= 1
 }
 
 impl DecorationTree {
@@ -3509,6 +3553,67 @@ mod tests {
         assert_eq!(clip.rect.size.h, slot.height);
         assert_eq!(clip.radius, 0);
         assert_eq!(clip.radius_precise, 0.0);
+        assert_eq!(clip.corner_radii[0], 0);
+        assert_eq!(clip.corner_radii[1], 0);
+        assert!(clip.corner_radii[2] > 0);
+        assert!(clip.corner_radii[3] > 0);
+        assert_eq!(clip.corner_radii_precise[0], 0.0);
+        assert_eq!(clip.corner_radii_precise[1], 0.0);
+        assert!(clip.corner_radii_precise[2] > 0.0);
+        assert!(clip.corner_radii_precise[3] > 0.0);
+    }
+
+    #[test]
+    fn content_clip_keeps_all_shared_corners_when_slot_fills_inner_mask() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    border_radius: Some(18),
+                    ..Default::default()
+                })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
+            .expect("layout should succeed");
+        let shared_edges = build_shared_edge_geometry_map(&layout);
+        let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
+            .expect("content clip should exist");
+
+        assert!(clip.corner_radii.iter().all(|radius| *radius > 0));
+        assert!(clip.corner_radii_precise.iter().all(|radius| *radius > 0.0));
+    }
+
+    #[test]
+    fn slot_corner_radii_tolerate_one_subpixel_shared_edge_drift() {
+        let sub = crate::ssd::ResolvedLayoutValue::from_raw(1);
+        let mask = crate::ssd::ResolvedDecorationClip {
+            rect: crate::ssd::ResolvedLogicalRect {
+                x: crate::ssd::ResolvedLayoutValue::from_raw(100),
+                y: crate::ssd::ResolvedLayoutValue::from_raw(200),
+                width: crate::ssd::ResolvedLayoutValue::from_raw(1000),
+                height: crate::ssd::ResolvedLayoutValue::from_raw(800),
+            },
+            radius: crate::ssd::ResolvedLayoutValue::from_i32(18),
+        };
+        let clip_rect = crate::ssd::ResolvedLogicalRect {
+            x: mask.rect.x + sub,
+            y: mask.rect.y + crate::ssd::ResolvedLayoutValue::from_raw(200),
+            width: crate::ssd::ResolvedLayoutValue::from_raw(999),
+            height: crate::ssd::ResolvedLayoutValue::from_raw(600),
+        };
+
+        let radii = corner_radii_for_slot_clip_resolved(mask, clip_rect);
+
+        assert_eq!(radii[0], 0.0);
+        assert_eq!(radii[1], 0.0);
+        assert!(radii[2] > 0.0);
+        assert!(radii[3] > 0.0);
     }
 
     #[test]
