@@ -240,8 +240,9 @@ impl ShojiWM {
             decoration.tree = crate::ssd::DecorationTree::new(node);
             if let Ok(layout) = decoration.tree.layout_for_client(decoration.client_rect) {
                 decoration.layout = layout;
+                let shared_edges = build_shared_edge_geometry_map(&decoration.layout);
                 decoration.content_clip =
-                    content_clip_for_layout(&decoration.tree, &decoration.layout);
+                    content_clip_for_layout(&decoration.tree, &decoration.layout, &shared_edges);
                 let order_map = build_render_order_map(&decoration.layout);
                 decoration.buffers = build_cached_buffers(&decoration.layout, &order_map);
                 decoration.shader_buffers = build_shader_buffers(&decoration.layout, &order_map);
@@ -589,7 +590,8 @@ impl ShojiWM {
                     previous_root,
                     transformed_root_rect(layout.root.rect, evaluation.transform),
                 );
-                let content_clip = content_clip_for_layout(&tree, &layout);
+                let shared_edges = build_shared_edge_geometry_map(&layout);
+                let content_clip = content_clip_for_layout(&tree, &layout, &shared_edges);
                 let order_map = build_render_order_map(&layout);
                 let buffers = build_cached_buffers(&layout, &order_map);
                 let mut shader_buffers = build_shader_buffers(&layout, &order_map);
@@ -687,7 +689,9 @@ impl ShojiWM {
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
                     cached.visual_transform = evaluation.transform;
-                    cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                    let shared_edges = build_shared_edge_geometry_map(&cached.layout);
+                    cached.content_clip =
+                        content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
                     let order_map = build_render_order_map(&cached.layout);
                     cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                     cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
@@ -795,7 +799,9 @@ impl ShojiWM {
                                 cached.layout_scale,
                             );
                             cached.layout.root.sync_root_bounds(cached.layout_scale);
-                            cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                            let shared_edges = build_shared_edge_geometry_map(&cached.layout);
+                            cached.content_clip =
+                                content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
                             let order_map = build_render_order_map(&cached.layout);
                             if dirty_node_ids.is_empty() {
                                 cached.buffers = build_cached_buffers(&cached.layout, &order_map);
@@ -859,7 +865,9 @@ impl ShojiWM {
                                 .layout_for_client_with_scale(client_rect, layout_scale)
                                 .map_err(super::DecorationEvaluationError::Layout)?;
                             cached.layout_scale = layout_scale;
-                            cached.content_clip = content_clip_for_layout(&cached.tree, &cached.layout);
+                            let shared_edges = build_shared_edge_geometry_map(&cached.layout);
+                            cached.content_clip =
+                                content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
                             let order_map = build_render_order_map(&cached.layout);
                             cached.buffers = build_cached_buffers(&cached.layout, &order_map);
                             cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
@@ -1009,8 +1017,13 @@ impl ShojiWM {
                             .layout
                             .root
                             .sync_root_bounds(closing.decoration.layout_scale);
-                        closing.decoration.content_clip =
-                            content_clip_for_layout(&closing.decoration.tree, &closing.decoration.layout);
+                        let shared_edges =
+                            build_shared_edge_geometry_map(&closing.decoration.layout);
+                        closing.decoration.content_clip = content_clip_for_layout(
+                            &closing.decoration.tree,
+                            &closing.decoration.layout,
+                            &shared_edges,
+                        );
                         let order_map = build_render_order_map(&closing.decoration.layout);
                         if dirty_node_ids.is_empty() {
                             closing.decoration.buffers =
@@ -1078,7 +1091,9 @@ impl ShojiWM {
                                 closing.decoration.layout_scale,
                             )
                             .map_err(super::DecorationEvaluationError::Layout)?;
-                        let content_clip = content_clip_for_layout(&closing.decoration.tree, &layout);
+                        let shared_edges = build_shared_edge_geometry_map(&layout);
+                        let content_clip =
+                            content_clip_for_layout(&closing.decoration.tree, &layout, &shared_edges);
                         let order_map = build_render_order_map(&layout);
                         let buffers = build_cached_buffers(&layout, &order_map);
                         let shader_buffers = build_shader_buffers(&layout, &order_map);
@@ -1253,8 +1268,9 @@ impl ShojiWM {
 fn content_clip_for_layout(
     _tree: &DecorationTree,
     layout: &ComputedDecorationTree,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> Option<ContentClip> {
-    slot_content_clip_for_node(&layout.root, None)
+    slot_content_clip_for_node(&layout.root, None, shared_edges)
 }
 
 fn window_border_inner_clip_resolved(
@@ -1356,6 +1372,7 @@ fn normal_border_inner_rect_precise(
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
         node.style.border.map(|border| {
@@ -1389,6 +1406,11 @@ fn slot_content_clip_for_node(
                     .max(0),
             ),
         };
+        let shared_geometry = node
+            .stable_id
+            .as_deref()
+            .and_then(|stable_id| shared_edges.get(stable_id))
+            .copied();
         let clip = crate::ssd::ResolvedDecorationClip {
             rect: clip_rect,
             radius: inherited_clip.radius,
@@ -1406,7 +1428,9 @@ fn slot_content_clip_for_node(
                     .into(),
             ),
             radius: clip.radius.round_to_i32().max(0),
-            rect_precise: precise_rect_from_resolved(clip.rect),
+            rect_precise: shared_geometry
+                .map(|geometry| geometry.rect_precise)
+                .unwrap_or_else(|| precise_rect_from_resolved(clip.rect)),
             radius_precise: clip.radius.to_f32().max(0.0),
             snap_mode: RectSnapMode::SharedEdges,
         });
@@ -1414,7 +1438,7 @@ fn slot_content_clip_for_node(
 
     node.children
         .iter()
-        .find_map(|child| slot_content_clip_for_node(child, next_border))
+        .find_map(|child| slot_content_clip_for_node(child, next_border, shared_edges))
 }
 
 impl DecorationTree {
@@ -1554,7 +1578,9 @@ fn build_cached_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedDecorationBuffer> {
-    let (buffers, _) = build_cached_buffers_and_shaders(layout, order_map, None);
+    let shared_edges = build_shared_edge_geometry_map(layout);
+    let (buffers, _) =
+        build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
     buffers
 }
 
@@ -1562,7 +1588,9 @@ fn build_shader_buffers(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedShaderEffect> {
-    let (_, buffers) = build_cached_buffers_and_shaders(layout, order_map, None);
+    let shared_edges = build_shared_edge_geometry_map(layout);
+    let (_, buffers) =
+        build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
     buffers
 }
 
@@ -1570,6 +1598,7 @@ fn build_cached_buffers_and_shaders(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
     let mut buffers = Vec::new();
     let mut shader_buffers = Vec::new();
@@ -1580,6 +1609,7 @@ fn build_cached_buffers_and_shaders(
         None,
         order_map,
         dirty_node_ids,
+        shared_edges,
         &mut buffers,
         &mut shader_buffers,
     );
@@ -1650,7 +1680,8 @@ fn rebuild_partial_buffers(
         .iter()
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
-    build_cached_buffers_and_shaders(layout, order_map, Some(&dirty_node_ids))
+    let shared_edges = build_shared_edge_geometry_map(layout);
+    build_cached_buffers_and_shaders(layout, order_map, Some(&dirty_node_ids), &shared_edges)
 }
 
 fn rebuild_partial_text_buffers(
@@ -1863,6 +1894,7 @@ fn collect_cached_buffers(
     ancestor_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
     buffers: &mut Vec<CachedDecorationBuffer>,
     shader_buffers: &mut Vec<CachedShaderEffect>,
 ) {
@@ -1875,6 +1907,11 @@ fn collect_cached_buffers(
             .as_deref()
             .is_some_and(|stable_id| dirty_node_ids.contains(stable_id))
     });
+    let shared_geometry = node
+        .stable_id
+        .as_deref()
+        .and_then(|stable_id| shared_edges.get(stable_id))
+        .copied();
 
     let node_radius = node.resolved_border_radius.round_to_i32().max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
@@ -1932,14 +1969,18 @@ fn collect_cached_buffers(
                 if let Some(border) = node.style.border {
                     let color = border.color.with_opacity(node.style.opacity);
                     if color.a > 0 && border.width > 0 {
-                        let current_order =
+                    let current_order =
                             *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
                         buffers.push(CachedDecorationBuffer {
                             owner_node_id: node.stable_id.clone(),
                             stable_key: format!("{path}:border"),
                             order: current_order,
                             rect: node.rect,
-                            rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
+                            rect_precise: Some(
+                                shared_geometry
+                                    .map(|geometry| geometry.rect_precise)
+                                    .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+                            ),
                             color,
                             buffer: SolidColorBuffer::new(
                                 (node.rect.width.max(1), node.rect.height.max(1)),
@@ -1955,7 +1996,10 @@ fn collect_cached_buffers(
                                 .then(|| node.resolved_border_radius.to_f32().max(0.0)),
                             border_width: node.resolved_border_width.to_f32().max(0.0),
                             hole_rect: window_border_inner_rect,
-                            hole_rect_precise: window_border_inner_clip_precise.or_else(|| {
+                            hole_rect_precise: shared_geometry
+                                .map(|geometry| geometry.content_rect_precise)
+                                .or(window_border_inner_clip_precise)
+                                .or_else(|| {
                                 (fit_children && !node.children.is_empty()).then(|| {
                                     precise_rect_from_resolved(
                                         window_border_inner_clip_resolved
@@ -1996,7 +2040,11 @@ fn collect_cached_buffers(
                         stable_key: format!("{path}:shader"),
                         order: current_order,
                         rect: node.rect,
-                        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
+                        rect_precise: Some(
+                            shared_geometry
+                                .map(|geometry| geometry.rect_precise)
+                                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+                        ),
                         shader: effect.shader.clone(),
                         clip_rect: current_clip_rect,
                         clip_radius: current_clip_radius,
@@ -2095,6 +2143,7 @@ fn collect_cached_buffers(
                     child_resolved_clip,
                     order_map,
                     dirty_node_ids,
+                    shared_edges,
                     buffers,
                     shader_buffers,
                 );
@@ -2333,6 +2382,423 @@ fn format_resolved_rect(rect: crate::ssd::ResolvedLogicalRect) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SharedEdgeId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedEdgeAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SharedEdgeSpec {
+    axis: SharedEdgeAxis,
+    logical_raw: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SharedEdgeRect {
+    left: SharedEdgeId,
+    top: SharedEdgeId,
+    right: SharedEdgeId,
+    bottom: SharedEdgeId,
+}
+
+#[derive(Debug, Clone)]
+struct SharedEdgeTreeNode {
+    stable_id: String,
+    kind: &'static str,
+    rect: SharedEdgeRect,
+    content_rect: SharedEdgeRect,
+    clip_rect: Option<SharedEdgeRect>,
+    children: Vec<SharedEdgeTreeNode>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedEdgeTree {
+    edges: Vec<SharedEdgeSpec>,
+    root: SharedEdgeTreeNode,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SharedEdgeNodeGeometry {
+    rect_precise: PreciseLogicalRect,
+    content_rect_precise: PreciseLogicalRect,
+    clip_rect_precise: Option<PreciseLogicalRect>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SharedEdgeNodeRefs {
+    rect: SharedEdgeRect,
+    content: SharedEdgeRect,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SharedEdgeBuildContext {
+    parent: Option<SharedEdgeNodeRefs>,
+    previous_sibling: Option<SharedEdgeNodeRefs>,
+}
+
+#[derive(Default)]
+struct SharedEdgeBuilder {
+    next_id: u32,
+    edges: Vec<SharedEdgeSpec>,
+}
+
+impl SharedEdgeBuilder {
+    fn edge(
+        &mut self,
+        axis: SharedEdgeAxis,
+        logical_raw: i32,
+        candidates: &[SharedEdgeId],
+    ) -> SharedEdgeId {
+        if let Some(existing) = candidates.iter().copied().find(|candidate| {
+            let spec = self.spec(*candidate);
+            spec.axis == axis && spec.logical_raw == logical_raw
+        }) {
+            return existing;
+        }
+
+        let id = SharedEdgeId(self.next_id);
+        self.next_id += 1;
+        self.edges.push(SharedEdgeSpec {
+            axis,
+            logical_raw,
+        });
+        id
+    }
+
+    fn spec(&self, id: SharedEdgeId) -> SharedEdgeSpec {
+        self.edges[id.0 as usize]
+    }
+
+    fn rect_from_resolved(
+        &mut self,
+        rect: crate::ssd::ResolvedLogicalRect,
+        context: SharedEdgeBuildContext,
+    ) -> SharedEdgeRect {
+        let mut left_candidates = Vec::new();
+        let mut top_candidates = Vec::new();
+        let mut right_candidates = Vec::new();
+        let mut bottom_candidates = Vec::new();
+
+        if let Some(parent) = context.parent {
+            left_candidates.extend([parent.rect.left, parent.content.left]);
+            top_candidates.extend([parent.rect.top, parent.content.top]);
+            right_candidates.extend([parent.rect.right, parent.content.right]);
+            bottom_candidates.extend([parent.rect.bottom, parent.content.bottom]);
+        }
+
+        if let Some(previous) = context.previous_sibling {
+            left_candidates.extend([
+                previous.rect.left,
+                previous.rect.right,
+                previous.content.left,
+                previous.content.right,
+            ]);
+            top_candidates.extend([
+                previous.rect.top,
+                previous.rect.bottom,
+                previous.content.top,
+                previous.content.bottom,
+            ]);
+            right_candidates.extend([
+                previous.rect.left,
+                previous.rect.right,
+                previous.content.left,
+                previous.content.right,
+            ]);
+            bottom_candidates.extend([
+                previous.rect.top,
+                previous.rect.bottom,
+                previous.content.top,
+                previous.content.bottom,
+            ]);
+        }
+
+        SharedEdgeRect {
+            left: self.edge(SharedEdgeAxis::Vertical, rect.x.raw(), &left_candidates),
+            top: self.edge(SharedEdgeAxis::Horizontal, rect.y.raw(), &top_candidates),
+            right: self.edge(
+                SharedEdgeAxis::Vertical,
+                (rect.x + rect.width).raw(),
+                &right_candidates,
+            ),
+            bottom: self.edge(
+                SharedEdgeAxis::Horizontal,
+                (rect.y + rect.height).raw(),
+                &bottom_candidates,
+            ),
+        }
+    }
+
+    fn inner_rect_from_resolved(
+        &mut self,
+        rect: crate::ssd::ResolvedLogicalRect,
+        context: SharedEdgeBuildContext,
+        rect_refs: SharedEdgeRect,
+    ) -> SharedEdgeRect {
+        let mut left_candidates = vec![rect_refs.left];
+        let mut top_candidates = vec![rect_refs.top];
+        let mut right_candidates = vec![rect_refs.right];
+        let mut bottom_candidates = vec![rect_refs.bottom];
+
+        if let Some(parent) = context.parent {
+            left_candidates.extend([parent.rect.left, parent.content.left]);
+            top_candidates.extend([parent.rect.top, parent.content.top]);
+            right_candidates.extend([parent.rect.right, parent.content.right]);
+            bottom_candidates.extend([parent.rect.bottom, parent.content.bottom]);
+        }
+
+        if let Some(previous) = context.previous_sibling {
+            left_candidates.extend([
+                previous.rect.left,
+                previous.rect.right,
+                previous.content.left,
+                previous.content.right,
+            ]);
+            top_candidates.extend([
+                previous.rect.top,
+                previous.rect.bottom,
+                previous.content.top,
+                previous.content.bottom,
+            ]);
+            right_candidates.extend([
+                previous.rect.left,
+                previous.rect.right,
+                previous.content.left,
+                previous.content.right,
+            ]);
+            bottom_candidates.extend([
+                previous.rect.top,
+                previous.rect.bottom,
+                previous.content.top,
+                previous.content.bottom,
+            ]);
+        }
+
+        SharedEdgeRect {
+            left: self.edge(SharedEdgeAxis::Vertical, rect.x.raw(), &left_candidates),
+            top: self.edge(SharedEdgeAxis::Horizontal, rect.y.raw(), &top_candidates),
+            right: self.edge(
+                SharedEdgeAxis::Vertical,
+                (rect.x + rect.width).raw(),
+                &right_candidates,
+            ),
+            bottom: self.edge(
+                SharedEdgeAxis::Horizontal,
+                (rect.y + rect.height).raw(),
+                &bottom_candidates,
+            ),
+        }
+    }
+
+    fn build_node(
+        &mut self,
+        node: &super::ComputedDecorationNode,
+        context: SharedEdgeBuildContext,
+    ) -> SharedEdgeTreeNode {
+        let rect = self.rect_from_resolved(node.resolved_rect, context);
+        let content_rect =
+            self.inner_rect_from_resolved(node.resolved_content_rect, context, rect);
+        let clip_rect = node.resolved_effective_clip.map(|clip| {
+            self.inner_rect_from_resolved(clip.rect, context, content_rect)
+        });
+        let refs = SharedEdgeNodeRefs {
+            rect,
+            content: content_rect,
+        };
+        let mut previous_sibling = None;
+        let mut children = Vec::with_capacity(node.children.len());
+        for child in &node.children {
+            let child_context = SharedEdgeBuildContext {
+                parent: Some(refs),
+                previous_sibling,
+            };
+            let child_node = self.build_node(child, child_context);
+            previous_sibling = Some(SharedEdgeNodeRefs {
+                rect: child_node.rect,
+                content: child_node.content_rect,
+            });
+            children.push(child_node);
+        }
+
+        SharedEdgeTreeNode {
+            stable_id: node.stable_id.as_deref().unwrap_or("<none>").to_string(),
+            kind: node_kind_name(&node.kind),
+            rect,
+            content_rect,
+            clip_rect,
+            children,
+        }
+    }
+}
+
+fn build_shared_edge_tree(layout: &ComputedDecorationTree) -> SharedEdgeTree {
+    let mut builder = SharedEdgeBuilder::default();
+    let root = builder.build_node(&layout.root, SharedEdgeBuildContext::default());
+    SharedEdgeTree {
+        edges: builder.edges,
+        root,
+    }
+}
+
+fn precise_rect_from_shared_edge_rect(
+    tree: &SharedEdgeTree,
+    rect: SharedEdgeRect,
+) -> PreciseLogicalRect {
+    let left = tree.edges[rect.left.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let top = tree.edges[rect.top.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let right = tree.edges[rect.right.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let bottom = tree.edges[rect.bottom.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+
+    PreciseLogicalRect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    }
+}
+
+fn collect_shared_edge_node_geometry(
+    tree: &SharedEdgeTree,
+    node: &SharedEdgeTreeNode,
+    out: &mut std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+) {
+    if node.stable_id != "<none>" {
+        out.insert(
+            node.stable_id.clone(),
+            SharedEdgeNodeGeometry {
+                rect_precise: precise_rect_from_shared_edge_rect(tree, node.rect),
+                content_rect_precise: precise_rect_from_shared_edge_rect(tree, node.content_rect),
+                clip_rect_precise: node
+                    .clip_rect
+                    .map(|rect| precise_rect_from_shared_edge_rect(tree, rect)),
+            },
+        );
+    }
+
+    for child in &node.children {
+        collect_shared_edge_node_geometry(tree, child, out);
+    }
+}
+
+fn build_shared_edge_geometry_map(
+    layout: &ComputedDecorationTree,
+) -> std::collections::HashMap<String, SharedEdgeNodeGeometry> {
+    let tree = build_shared_edge_tree(layout);
+    let mut map = std::collections::HashMap::new();
+    collect_shared_edge_node_geometry(&tree, &tree.root, &mut map);
+    map
+}
+
+fn format_shared_edge_id(id: SharedEdgeId) -> String {
+    format!("e{}", id.0)
+}
+
+fn format_shared_edge_rect(rect: SharedEdgeRect) -> String {
+    format!(
+        "L={}, T={}, R={}, B={}",
+        format_shared_edge_id(rect.left),
+        format_shared_edge_id(rect.top),
+        format_shared_edge_id(rect.right),
+        format_shared_edge_id(rect.bottom),
+    )
+}
+
+fn format_shared_edge_rect_values(rect: SharedEdgeRect, tree: &SharedEdgeTree) -> String {
+    let left = tree.edges[rect.left.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let top = tree.edges[rect.top.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let right = tree.edges[rect.right.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    let bottom = tree.edges[rect.bottom.0 as usize].logical_raw as f32
+        / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
+    format!(
+        "left={left:.3}, top={top:.3}, right={right:.3}, bottom={bottom:.3}"
+    )
+}
+
+fn log_gap_shared_edge_tree(
+    snapshot: &WaylandWindowSnapshot,
+    layout: &ComputedDecorationTree,
+) {
+    let tree = build_shared_edge_tree(layout);
+    let slot_node = find_shared_edge_node_by_kind(&tree.root, "window-slot");
+
+    info!(
+        window_id = snapshot.id,
+        title = snapshot.title,
+        edge_count = tree.edges.len(),
+        root_rect_edges = %format_shared_edge_rect(tree.root.rect),
+        root_content_edges = %format_shared_edge_rect(tree.root.content_rect),
+        slot_rect_edges = slot_node.map(|node| format_shared_edge_rect(node.rect)),
+        slot_content_edges = slot_node.map(|node| format_shared_edge_rect(node.content_rect)),
+        "gap shared edge summary"
+    );
+
+    log_gap_shared_edge_node(snapshot, &tree, &tree.root, None, 0);
+}
+
+fn find_shared_edge_node_by_kind<'a>(
+    node: &'a SharedEdgeTreeNode,
+    kind: &str,
+) -> Option<&'a SharedEdgeTreeNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+
+    node.children
+        .iter()
+        .find_map(|child| find_shared_edge_node_by_kind(child, kind))
+}
+
+fn log_gap_shared_edge_node(
+    snapshot: &WaylandWindowSnapshot,
+    tree: &SharedEdgeTree,
+    node: &SharedEdgeTreeNode,
+    parent: Option<&SharedEdgeTreeNode>,
+    depth: usize,
+) {
+    info!(
+        window_id = snapshot.id,
+        depth,
+        kind = node.kind,
+        stable_id = node.stable_id,
+        rect_edges = %format_shared_edge_rect(node.rect),
+        rect_edge_values = %format_shared_edge_rect_values(node.rect, tree),
+        content_edges = %format_shared_edge_rect(node.content_rect),
+        content_edge_values = %format_shared_edge_rect_values(node.content_rect, tree),
+        clip_edges = node.clip_rect.map(format_shared_edge_rect),
+        clip_edge_values = node
+            .clip_rect
+            .map(|rect| format_shared_edge_rect_values(rect, tree)),
+        shares_parent_content_left = parent
+            .map(|parent| node.rect.left == parent.content_rect.left),
+        shares_parent_content_top = parent
+            .map(|parent| node.rect.top == parent.content_rect.top),
+        shares_parent_content_right = parent
+            .map(|parent| node.rect.right == parent.content_rect.right),
+        shares_parent_content_bottom = parent
+            .map(|parent| node.rect.bottom == parent.content_rect.bottom),
+        rect_shares_own_content_left = node.rect.left == node.content_rect.left,
+        rect_shares_own_content_top = node.rect.top == node.content_rect.top,
+        rect_shares_own_content_right = node.rect.right == node.content_rect.right,
+        rect_shares_own_content_bottom = node.rect.bottom == node.content_rect.bottom,
+        "gap shared edge node"
+    );
+
+    for child in &node.children {
+        log_gap_shared_edge_node(snapshot, tree, child, Some(node), depth + 1);
+    }
+}
+
 fn log_gap_layout_tree(
     snapshot: &WaylandWindowSnapshot,
     client_rect: LogicalRect,
@@ -2374,6 +2840,7 @@ fn log_gap_layout_tree(
         "gap layout summary"
     );
 
+    log_gap_shared_edge_tree(snapshot, layout);
     log_gap_layout_node(snapshot, root, None, 0);
 }
 
@@ -2839,11 +3306,170 @@ mod tests {
             .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
             .expect("layout should succeed");
         let slot = layout.window_slot_rect().expect("slot should exist");
-        let clip = content_clip_for_layout(&tree, &layout).expect("content clip should exist");
+        let shared_edges = build_shared_edge_geometry_map(&layout);
+        let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
+            .expect("content clip should exist");
 
         assert_eq!(clip.rect.loc.x, slot.x);
         assert_eq!(clip.rect.loc.y, slot.y);
         assert_eq!(clip.rect.size.w, slot.width);
         assert_eq!(clip.rect.size.h, slot.height);
+    }
+
+    #[test]
+    fn shared_edge_tree_reuses_parent_content_edges_for_window_border() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Column,
+                    }))
+                    .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+                ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.75)
+            .expect("layout should succeed");
+        let edge_tree = build_shared_edge_tree(&layout);
+        let window_border = &edge_tree.root.children[0];
+
+        assert_eq!(edge_tree.root.content_rect.left, window_border.rect.left);
+        assert_eq!(edge_tree.root.content_rect.top, window_border.rect.top);
+        assert_eq!(edge_tree.root.content_rect.right, window_border.rect.right);
+        assert_eq!(edge_tree.root.content_rect.bottom, window_border.rect.bottom);
+    }
+
+    #[test]
+    fn shared_edge_tree_reuses_box_edges_when_content_matches_rect() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Column,
+                    }))
+                    .with_children(vec![
+                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                            direction: LayoutDirection::Row,
+                        }))
+                        .with_style(DecorationStyle {
+                            height: Some(30),
+                            ..Default::default()
+                        }),
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                    ]),
+                ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.75)
+            .expect("layout should succeed");
+        let edge_tree = build_shared_edge_tree(&layout);
+        let inner_box = &edge_tree.root.children[0];
+        let window_slot = &inner_box.children[1];
+
+        assert_eq!(inner_box.rect.left, inner_box.content_rect.left);
+        assert_eq!(inner_box.rect.top, inner_box.content_rect.top);
+        assert_eq!(inner_box.rect.right, inner_box.content_rect.right);
+        assert_eq!(inner_box.rect.bottom, inner_box.content_rect.bottom);
+
+        assert_eq!(inner_box.content_rect.left, window_slot.rect.left);
+        assert_eq!(inner_box.content_rect.right, window_slot.rect.right);
+    }
+
+    #[test]
+    fn shared_edge_tree_reuses_adjacent_row_sibling_boundary() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_children(vec![
+                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                            direction: LayoutDirection::Column,
+                        }))
+                        .with_style(DecorationStyle {
+                            width: Some(120),
+                            ..Default::default()
+                        }),
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                    ]),
+                ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.75)
+            .expect("layout should succeed");
+        let edge_tree = build_shared_edge_tree(&layout);
+        let row_box = &edge_tree.root.children[0];
+        let left_box = &row_box.children[0];
+        let window_slot = &row_box.children[1];
+
+        assert_eq!(left_box.rect.right, window_slot.rect.left);
+        assert_eq!(left_box.rect.top, window_slot.rect.top);
+        assert_eq!(left_box.rect.bottom, window_slot.rect.bottom);
+    }
+
+    #[test]
+    fn shared_edge_tree_reuses_adjacent_column_sibling_boundary() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Column,
+                    }))
+                    .with_children(vec![
+                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                            direction: LayoutDirection::Row,
+                        }))
+                        .with_style(DecorationStyle {
+                            height: Some(48),
+                            ..Default::default()
+                        }),
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                    ]),
+                ]),
+        );
+
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.75)
+            .expect("layout should succeed");
+        let edge_tree = build_shared_edge_tree(&layout);
+        let column_box = &edge_tree.root.children[0];
+        let header_box = &column_box.children[0];
+        let window_slot = &column_box.children[1];
+
+        assert_eq!(header_box.rect.bottom, window_slot.rect.top);
+        assert_eq!(header_box.rect.left, window_slot.rect.left);
+        assert_eq!(header_box.rect.right, window_slot.rect.right);
     }
 }

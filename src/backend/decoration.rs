@@ -106,6 +106,39 @@ fn shrink_rounded_clip_by_pixels(
     }
 }
 
+fn border_outer_geometry_from_inner(
+    inner_rect_precise: crate::backend::visual::PreciseLogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    border_width: f32,
+) -> Rectangle<i32, Physical> {
+    let inner_geometry = relative_physical_rect_from_root_precise(
+        inner_rect_precise,
+        root_rect,
+        output_geo,
+        scale,
+    );
+    let border_x = ((border_width.max(0.0) as f64) * scale.x.abs().max(0.0001))
+        .round()
+        .max(0.0) as i32;
+    let border_y = ((border_width.max(0.0) as f64) * scale.y.abs().max(0.0001))
+        .round()
+        .max(0.0) as i32;
+
+    Rectangle::new(
+        Point::from((
+            inner_geometry.loc.x - border_x,
+            inner_geometry.loc.y - border_y,
+        )),
+        (
+            inner_geometry.size.w + border_x * 2,
+            inner_geometry.size.h + border_y * 2,
+        )
+            .into(),
+    )
+}
+
 fn render_inner_clip_from_precise_anchors(
     outer_rect_precise: crate::backend::visual::PreciseLogicalRect,
     outer_geometry: Rectangle<i32, Physical>,
@@ -633,24 +666,85 @@ fn rounded_rect_element(
                 crate::ssd::BorderFit::Normal
             }
         });
-    let geometry = cached
-        .rect_precise
-        .map(|rect| {
-            relative_physical_rect_from_root_precise(
-                rect,
-                decoration.layout.root.rect,
-                output_geo,
-                scale,
-            )
-        })
-        .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(
-                cached.rect,
-                decoration.layout.root.rect,
-                output_geo,
-                scale,
-            )
-        });
+    let geometry = if cached.border_width > 0.0 {
+        cached
+            .hole_rect_precise
+            .map(|hole_rect| {
+                border_outer_geometry_from_inner(
+                    hole_rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                    cached.border_width,
+                )
+            })
+            .or_else(|| {
+                cached.hole_rect.map(|hole_rect| {
+                    let inner_geometry = relative_physical_rect_from_root_snapped_edges(
+                        hole_rect,
+                        decoration.layout.root.rect,
+                        output_geo,
+                        scale,
+                    );
+                    let border_x = ((cached.border_width.max(0.0) as f64)
+                        * scale.x.abs().max(0.0001))
+                        .round()
+                        .max(0.0) as i32;
+                    let border_y = ((cached.border_width.max(0.0) as f64)
+                        * scale.y.abs().max(0.0001))
+                        .round()
+                        .max(0.0) as i32;
+                    Rectangle::new(
+                        Point::from((
+                            inner_geometry.loc.x - border_x,
+                            inner_geometry.loc.y - border_y,
+                        )),
+                        (
+                            inner_geometry.size.w + border_x * 2,
+                            inner_geometry.size.h + border_y * 2,
+                        )
+                            .into(),
+                    )
+                })
+            })
+            .or_else(|| {
+                cached.rect_precise.map(|rect| {
+                    relative_physical_rect_from_root_precise(
+                        rect,
+                        decoration.layout.root.rect,
+                        output_geo,
+                        scale,
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    cached.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+    } else {
+        cached
+            .rect_precise
+            .map(|rect| {
+                relative_physical_rect_from_root_precise(
+                    rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+            .unwrap_or_else(|| {
+                relative_physical_rect_from_root_snapped_edges(
+                    cached.rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                )
+            })
+    };
     let outer_rect_precise = cached.rect_precise.unwrap_or(crate::backend::visual::PreciseLogicalRect {
         x: cached.rect.x as f32,
         y: cached.rect.y as f32,
