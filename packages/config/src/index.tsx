@@ -36,7 +36,7 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {
         resolution: "best",
         position: "auto",
-        scale: 1.75,
+        scale: 1.25,
     };
     display["DP-4"] = {
         resolution: "best",
@@ -128,7 +128,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     });
 
     return (
-        <Box style={{ border: { px: 2, color: "#FFFFFF" }, padding: 0, borderFit: "normal" }}>
+        <Box style={{ border: { px: 2, color: "#FFFFFF80" }, padding: 0, borderFit: "normal", background: "#FFFF00" }}>
             <WindowBorder
                 style={{
                     border: { px: 2, color: borderColor },
