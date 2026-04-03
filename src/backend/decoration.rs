@@ -666,7 +666,7 @@ fn rounded_rect_element(
                 crate::ssd::BorderFit::Normal
             }
         });
-    let geometry = if cached.border_width > 0.0 {
+    let geometry = if cached.border_width > 0.0 && cached.source_kind != "button" {
         cached
             .hole_rect_precise
             .map(|hole_rect| {
