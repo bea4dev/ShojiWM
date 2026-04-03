@@ -11,7 +11,7 @@ use smithay::{
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
-use crate::backend::visual::{SnappedLogicalRect, snapped_precise_logical_rect_in_element_space};
+use crate::backend::visual::{SnappedLogicalRect, precise_logical_rect_in_element_space};
 use crate::ssd::ContentClip;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -157,11 +157,8 @@ impl ClippedSurfaceElement {
             )),
             clip.mask_rect.size,
         );
-        let mut snapped_clip_rect = snapped_precise_logical_rect_in_element_space(
-            clip.mask_rect_precise,
-            clip.rect_precise,
-            clip_scale,
-        );
+        let mut snapped_clip_rect =
+            precise_logical_rect_in_element_space(clip.mask_rect_precise, clip.rect_precise);
         let element_geometry = inner.geometry(output_scale);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
