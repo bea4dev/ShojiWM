@@ -87,6 +87,7 @@ impl ClippedSurfaceElement {
         clip_scale: Scale<f64>,
         output_origin: Point<i32, Logical>,
         clip: ContentClip,
+        forced_geometry: Option<Rectangle<i32, Physical>>,
     ) -> Result<Self, GlesError> {
         if renderer
             .egl_context()
@@ -201,6 +202,7 @@ impl ClippedSurfaceElement {
             )
                 .into(),
         );
+        let render_geometry = forced_geometry.unwrap_or(physical_clip);
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
@@ -210,7 +212,7 @@ impl ClippedSurfaceElement {
             src_loc,
             src_size,
             buffer_size,
-            Vector2::new(physical_clip.size.w as f32, physical_clip.size.h as f32),
+            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32),
         );
         if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
             tracing::info!(
@@ -224,6 +226,7 @@ impl ClippedSurfaceElement {
                 raw_view = ?inner.view(),
                 raw_transform = ?inner.transform(),
                 clip = ?clip,
+                aligned_clip_rect_precise = ?snapped_clip_rect,
                 aligned_clip_rect = ?snapped_clip_rect,
                 element_rect_logical = ?element_rect_logical,
                 clip_size_delta_px = ?clip_size_delta_px,
@@ -248,11 +251,12 @@ impl ClippedSurfaceElement {
                     tracing::info!(
                         local_clip = ?local_clip,
                         physical_clip = ?physical_clip,
+                        render_geometry = ?render_geometry,
                         output_origin = ?output_origin,
                         output_scale = ?output_scale,
                         clip_scale = ?clip_scale,
                         mapped_geometry = ?mapped.geometry(output_scale),
-                        element_geometry = ?physical_clip,
+                        element_geometry = ?render_geometry,
                         mapped_src = ?mapped.src(),
                         "gap debug clipped surface mapped crop"
                     );
@@ -262,7 +266,7 @@ impl ClippedSurfaceElement {
 
         Ok(Self {
             inner,
-            geometry: physical_clip,
+            geometry: render_geometry,
             program: program.0.clone(),
             clip_rect: snapped_clip_rect,
             corner_radius: {

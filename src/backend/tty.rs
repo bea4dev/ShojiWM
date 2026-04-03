@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, time::{Duration, Instant}};
+use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 use std::hash::{Hash, Hasher};
 
 use smithay::{
@@ -52,8 +52,9 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     backend::damage, backend::damage_blink, backend::decoration, backend::snapshot, backend::window as window_render,
     backend::visual::{
-        WindowVisualState, relative_physical_rect_from_root, root_physical_origin,
-        transformed_root_rect, window_visual_state,
+        WindowVisualState, relative_physical_rect_from_root,
+        relative_physical_rect_from_root_precise, root_physical_origin, transformed_root_rect,
+        window_visual_state,
     },
     config::DisplayModePreference,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
@@ -71,6 +72,39 @@ type GbmDrmOutput =
         Option<smithay::desktop::utils::OutputPresentationFeedback>,
         DrmDeviceFd,
     >;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TitlebarFillFrameState {
+    first_pre_fill: Option<Rectangle<i32, smithay::utils::Physical>>,
+    second_pre_fill: Option<Rectangle<i32, smithay::utils::Physical>>,
+}
+
+fn previous_titlebar_fill_state(
+    key: &str,
+    current: TitlebarFillFrameState,
+) -> Option<TitlebarFillFrameState> {
+    static STATE: OnceLock<Mutex<HashMap<String, TitlebarFillFrameState>>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = state.lock().ok()?;
+    guard.insert(key.to_string(), current)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ClientFrameState {
+    client_geometry: Option<Rectangle<i32, smithay::utils::Physical>>,
+    content_clip_physical: Option<Rectangle<i32, smithay::utils::Physical>>,
+    fill_client_edge_delta: Option<(i32, i32, i32, i32)>,
+}
+
+fn previous_client_frame_state(
+    key: &str,
+    current: ClientFrameState,
+) -> Option<ClientFrameState> {
+    static STATE: OnceLock<Mutex<HashMap<String, ClientFrameState>>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = state.lock().ok()?;
+    guard.insert(key.to_string(), current)
+}
 
 struct SurfaceData {
     output: Output,
@@ -630,18 +664,52 @@ fn render_surface(
             if closing_window_snapshots.contains_key(&window_id) {
                 continue;
             }
-            let precise_client_location = window_decorations
+            let preliminary_physical_location =
+                (window_location - output_geo.loc).to_physical_precise_round(scale);
+            let visual_state = window_decorations
                 .get(window)
-                .and_then(|decoration| decoration.content_clip)
-                .map(|clip| {
-                    smithay::utils::Point::<f64, smithay::utils::Logical>::from((
-                        clip.rect_precise.x as f64 - output_geo.loc.x as f64,
-                        clip.rect_precise.y as f64 - output_geo.loc.y as f64,
-                    ))
-                    .to_physical_precise_round(scale)
+                .map(|decoration| {
+                    window_visual_state(
+                        decoration.layout.root.rect,
+                        decoration.visual_transform,
+                        output_geo,
+                        scale,
+                    )
+                })
+                .unwrap_or(WindowVisualState {
+                    origin: preliminary_physical_location,
+                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                    translation: (0, 0).into(),
+                    opacity: 1.0,
                 });
-            let physical_location = precise_client_location
-                .unwrap_or_else(|| (window_location - output_geo.loc).to_physical_precise_round(scale));
+            let snap_scale = Scale::from((
+                scale.x * visual_state.scale.x.max(0.0),
+                scale.y * visual_state.scale.y.max(0.0),
+            ));
+            let client_physical_geometry = window_decorations
+                .get(window)
+                .and_then(|decoration| {
+                    decoration.content_clip.map(|clip| {
+                        let root_origin =
+                            root_physical_origin(decoration.layout.root.rect, output_geo, scale);
+                        let local_geometry = relative_physical_rect_from_root_precise(
+                            clip.rect_precise,
+                            decoration.layout.root.rect,
+                            output_geo,
+                            scale,
+                        );
+                        smithay::utils::Rectangle::new(
+                            smithay::utils::Point::from((
+                                root_origin.x + local_geometry.loc.x,
+                                root_origin.y + local_geometry.loc.y,
+                            )),
+                            local_geometry.size,
+                        )
+                    })
+                });
+            let physical_location = client_physical_geometry
+                .map(|geometry| geometry.loc)
+                .unwrap_or(preliminary_physical_location);
             let direct_surface_count = window_render::surface_elements(
                 window,
                 &mut backend.renderer,
@@ -660,26 +728,6 @@ fn render_surface(
             if !has_backdrop_source {
                 continue;
             }
-            let visual_state = window_decorations
-                .get(window)
-                .map(|decoration| {
-                    window_visual_state(
-                        decoration.layout.root.rect,
-                        decoration.visual_transform,
-                        output_geo,
-                        scale,
-                    )
-                })
-                .unwrap_or(WindowVisualState {
-                    origin: physical_location,
-                    scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: (0, 0).into(),
-                    opacity: 1.0,
-                });
-            let snap_scale = Scale::from((
-                scale.x * visual_state.scale.x.max(0.0),
-                scale.y * visual_state.scale.y.max(0.0),
-            ));
             let use_full_window_snapshot = false;
                 let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
                 let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
@@ -1086,6 +1134,7 @@ fn render_surface(
                         window,
                         &mut backend.renderer,
                         physical_location,
+                        client_physical_geometry,
                         output_geo.loc,
                         scale,
                         scale,
@@ -1442,6 +1491,7 @@ fn render_surface(
                     window,
                     &mut backend.renderer,
                     physical_location,
+                    client_physical_geometry,
                     output_geo.loc,
                     scale,
                     snap_scale,
@@ -1531,6 +1581,38 @@ fn render_surface(
                         let second_fill = titlebar_fills.get(1).cloned();
                         let first_pre_fill = titlebar_pre_fills.first().cloned();
                         let second_pre_fill = titlebar_pre_fills.get(1).cloned();
+                        let first_pre_fill_geometry =
+                            first_pre_fill.as_ref().map(|(_, _, _, geometry)| *geometry);
+                        let second_pre_fill_geometry =
+                            second_pre_fill.as_ref().map(|(_, _, _, geometry)| *geometry);
+                        let fill_frame_key = format!("{}:{}", output.name(), window_id);
+                        let previous_fill_state = previous_titlebar_fill_state(
+                            &fill_frame_key,
+                            TitlebarFillFrameState {
+                                first_pre_fill: first_pre_fill_geometry,
+                                second_pre_fill: second_pre_fill_geometry,
+                            },
+                        );
+                        let fill_delta =
+                            |current: Option<Rectangle<i32, smithay::utils::Physical>>,
+                             previous: Option<Rectangle<i32, smithay::utils::Physical>>| {
+                                current.zip(previous).map(|(current, previous)| {
+                                    (
+                                        current.loc.x - previous.loc.x,
+                                        current.loc.y - previous.loc.y,
+                                        current.size.w - previous.size.w,
+                                        current.size.h - previous.size.h,
+                                    )
+                                })
+                            };
+                        let first_pre_fill_delta = fill_delta(
+                            first_pre_fill_geometry,
+                            previous_fill_state.and_then(|state| state.first_pre_fill),
+                        );
+                        let second_pre_fill_delta = fill_delta(
+                            second_pre_fill_geometry,
+                            previous_fill_state.and_then(|state| state.second_pre_fill),
+                        );
                         let sibling_gap =
                             |upper: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
                              lower: smithay::utils::Rectangle<i32, smithay::utils::Physical>| {
@@ -1557,6 +1639,68 @@ fn render_surface(
                                         client.size.w - fill.size.w,
                                     )
                                 })
+                            });
+                        let content_clip_physical = window_decorations
+                            .get(window)
+                            .and_then(|decoration| {
+                                let content_clip = decoration.content_clip?;
+                                let root_origin = root_physical_origin(
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                );
+                                let local_geometry = relative_physical_rect_from_root_precise(
+                                    content_clip.rect_precise,
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                );
+                                Some(smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::from((
+                                        root_origin.x + local_geometry.loc.x,
+                                        root_origin.y + local_geometry.loc.y,
+                                    )),
+                                    local_geometry.size,
+                                ))
+                            });
+                        let frame_key = format!("{}:{}", output.name(), window_id);
+                        let previous_client_state = previous_client_frame_state(
+                            &frame_key,
+                            ClientFrameState {
+                                client_geometry: first_geometry,
+                                content_clip_physical,
+                                fill_client_edge_delta,
+                            },
+                        );
+                        let rect_delta =
+                            |current: Option<Rectangle<i32, smithay::utils::Physical>>,
+                             previous: Option<Rectangle<i32, smithay::utils::Physical>>| {
+                                current.zip(previous).map(|(current, previous)| {
+                                    (
+                                        current.loc.x - previous.loc.x,
+                                        current.loc.y - previous.loc.y,
+                                        current.size.w - previous.size.w,
+                                        current.size.h - previous.size.h,
+                                    )
+                                })
+                            };
+                        let client_geometry_delta = rect_delta(
+                            first_geometry,
+                            previous_client_state.and_then(|state| state.client_geometry),
+                        );
+                        let content_clip_physical_delta = rect_delta(
+                            content_clip_physical,
+                            previous_client_state.and_then(|state| state.content_clip_physical),
+                        );
+                        let fill_client_edge_delta_delta = fill_client_edge_delta
+                            .zip(previous_client_state.and_then(|state| state.fill_client_edge_delta))
+                            .map(|(current, previous)| {
+                                (
+                                    current.0 - previous.0,
+                                    current.1 - previous.1,
+                                    current.2 - previous.2,
+                                    current.3 - previous.3,
+                                )
                             });
                         let matching_fill = |
                             ui_key: &str,
@@ -1628,13 +1772,19 @@ fn render_surface(
                             titlebar_pre_fills = ?titlebar_pre_fills,
                             titlebar_fills = ?titlebar_fills,
                             first_pre_fill = ?first_pre_fill,
+                            first_pre_fill_delta = ?first_pre_fill_delta,
                             first_fill = ?first_fill,
                             second_pre_fill = ?second_pre_fill,
+                            second_pre_fill_delta = ?second_pre_fill_delta,
                             second_fill = ?second_fill,
                             client_geometry = ?first_geometry,
+                            client_geometry_delta = ?client_geometry_delta,
+                            content_clip_physical = ?content_clip_physical,
+                            content_clip_physical_delta = ?content_clip_physical_delta,
                             shader_to_shader_gap = ?shader_to_shader_gap,
                             shader_to_client_gap = ?shader_to_client_gap,
                             fill_client_edge_delta = ?fill_client_edge_delta,
+                            fill_client_edge_delta_delta = ?fill_client_edge_delta_delta,
                             titlebar_ui_pre_transform_relative = ?titlebar_ui_pre_transform_relative,
                             titlebar_ui_relative = ?titlebar_ui_relative,
                             "gap debug tty sibling geometry summary"
@@ -1645,7 +1795,11 @@ fn render_surface(
                             first_fill = ?first_fill.as_ref().map(|(_, stable_key, _, geometry)| (stable_key, geometry)),
                             second_fill = ?second_fill.as_ref().map(|(_, stable_key, _, geometry)| (stable_key, geometry)),
                             client_geometry = ?first_geometry,
+                            client_geometry_delta = ?client_geometry_delta,
+                            content_clip_physical = ?content_clip_physical,
+                            content_clip_physical_delta = ?content_clip_physical_delta,
                             fill_client_edge_delta = ?fill_client_edge_delta,
+                            fill_client_edge_delta_delta = ?fill_client_edge_delta_delta,
                             edge_delta = ?edge_delta,
                             "gap debug tty frame summary"
                         );

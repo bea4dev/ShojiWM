@@ -9,7 +9,7 @@ use smithay::{
         ImportAll, Renderer,
     },
     desktop::{layer_map_for_output, LayerSurface, PopupManager, Window, WindowSurface},
-    utils::{Logical, Physical, Point, Scale},
+    utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{compositor::{RectangleKind, RegionAttributes}, shell::wlr_layer::Layer as WlrLayer},
 };
 
@@ -341,6 +341,7 @@ pub fn clipped_surface_elements(
     window: &Window,
     renderer: &mut GlesRenderer,
     location: Point<i32, Physical>,
+    geometry: Option<Rectangle<i32, Physical>>,
     output_origin: Point<i32, Logical>,
     output_scale: Scale<f64>,
     clip_scale: Scale<f64>,
@@ -363,6 +364,7 @@ pub fn clipped_surface_elements(
                     clip_scale,
                     output_origin,
                     clip,
+                    geometry,
                 )
             })
             .collect(),

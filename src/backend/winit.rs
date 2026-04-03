@@ -27,8 +27,9 @@ use tracing::{info, trace, warn};
 use crate::{
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
     backend::visual::{
-        WindowVisualState, relative_physical_rect_from_root, root_physical_origin,
-        transformed_root_rect, window_visual_state,
+        WindowVisualState, relative_physical_rect_from_root,
+        relative_physical_rect_from_root_precise, root_physical_origin, transformed_root_rect,
+        window_visual_state,
     },
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ShojiWM,
@@ -181,8 +182,58 @@ pub fn init_winit(
                             if state.closing_window_snapshots.contains_key(&window_id) {
                                 continue;
                             }
-                            let physical_location =
+                            let preliminary_physical_location =
                                 (window_location - output_geo.loc).to_physical_precise_round(scale);
+                            let visual_state = state
+                                .window_decorations
+                                .get(window)
+                                .map(|decoration| {
+                                    window_visual_state(
+                                        decoration.layout.root.rect,
+                                        decoration.visual_transform,
+                                        output_geo,
+                                        scale,
+                                    )
+                                })
+                                .unwrap_or(WindowVisualState {
+                                    origin: preliminary_physical_location,
+                                    scale: smithay::utils::Scale::from((1.0, 1.0)),
+                                    translation: (0, 0).into(),
+                                    opacity: 1.0,
+                                });
+                            let snap_scale = smithay::utils::Scale::from((
+                                scale.x * visual_state.scale.x.max(0.0),
+                                scale.y * visual_state.scale.y.max(0.0),
+                            ));
+                            let client_physical_geometry = state
+                                .window_decorations
+                                .get(window)
+                                .and_then(|decoration| {
+                                    decoration.content_clip.map(|clip| {
+                                        let root_origin = root_physical_origin(
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                        );
+                                        let local_geometry =
+                                            relative_physical_rect_from_root_precise(
+                                                clip.rect_precise,
+                                                decoration.layout.root.rect,
+                                                output_geo,
+                                                scale,
+                                            );
+                                        smithay::utils::Rectangle::new(
+                                            smithay::utils::Point::from((
+                                                root_origin.x + local_geometry.loc.x,
+                                                root_origin.y + local_geometry.loc.y,
+                                            )),
+                                            local_geometry.size,
+                                        )
+                                    })
+                                });
+                            let physical_location = client_physical_geometry
+                                .map(|geometry| geometry.loc)
+                                .unwrap_or(preliminary_physical_location);
                             let direct_surface_count = window_render::surface_elements(
                                 window,
                                 renderer,
@@ -217,27 +268,6 @@ pub fn init_winit(
                             if !has_backdrop_source {
                                 continue;
                             }
-                            let visual_state = state
-                                .window_decorations
-                                .get(window)
-                                .map(|decoration| {
-                                    window_visual_state(
-                                        decoration.layout.root.rect,
-                                        decoration.visual_transform,
-                                        output_geo,
-                                        scale,
-                                    )
-                                })
-                                .unwrap_or(WindowVisualState {
-                                    origin: physical_location,
-                                    scale: smithay::utils::Scale::from((1.0, 1.0)),
-                                    translation: (0, 0).into(),
-                                    opacity: 1.0,
-                                });
-                            let snap_scale = smithay::utils::Scale::from((
-                                scale.x * visual_state.scale.x.max(0.0),
-                                scale.y * visual_state.scale.y.max(0.0),
-                            ));
                             let root_origin = state
                                 .window_decorations
                                 .get(window)
@@ -434,6 +464,7 @@ pub fn init_winit(
                                     window,
                                     renderer,
                                     physical_location,
+                                    client_physical_geometry,
                                     output_geo.loc,
                                     scale,
                                     snap_scale,
