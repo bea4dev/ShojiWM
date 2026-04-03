@@ -139,6 +139,140 @@ fn border_outer_geometry_from_inner(
     )
 }
 
+fn border_px_for_scale(border_width: f32, scale: Scale<f64>) -> (i32, i32) {
+    let border_x = ((border_width.max(0.0) as f64) * scale.x.abs().max(0.0001))
+        .round()
+        .max(0.0) as i32;
+    let border_y = ((border_width.max(0.0) as f64) * scale.y.abs().max(0.0001))
+        .round()
+        .max(0.0) as i32;
+    (border_x, border_y)
+}
+
+fn paired_outer_geometry_from_border_buffer(
+    border_cached: &crate::ssd::CachedDecorationBuffer,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    if border_cached.border_width <= 0.0 {
+        return None;
+    }
+
+    border_cached
+        .hole_rect_precise
+        .map(|hole_rect| {
+            border_outer_geometry_from_inner(
+                hole_rect,
+                root_rect,
+                output_geo,
+                scale,
+                border_cached.border_width,
+            )
+        })
+        .or_else(|| {
+            border_cached.hole_rect.map(|hole_rect| {
+                let inner_geometry = relative_physical_rect_from_root_snapped_edges(
+                    hole_rect,
+                    root_rect,
+                    output_geo,
+                    scale,
+                );
+                let border_x = ((border_cached.border_width.max(0.0) as f64)
+                    * scale.x.abs().max(0.0001))
+                    .round()
+                    .max(0.0) as i32;
+                let border_y = ((border_cached.border_width.max(0.0) as f64)
+                    * scale.y.abs().max(0.0001))
+                    .round()
+                    .max(0.0) as i32;
+                Rectangle::new(
+                    Point::from((
+                        inner_geometry.loc.x - border_x,
+                        inner_geometry.loc.y - border_y,
+                    )),
+                    (
+                        inner_geometry.size.w + border_x * 2,
+                        inner_geometry.size.h + border_y * 2,
+                    )
+                        .into(),
+                )
+            })
+        })
+}
+
+fn owner_border_buffer<'a>(
+    decoration: &'a crate::ssd::WindowDecorationState,
+    cached: &crate::ssd::CachedDecorationBuffer,
+) -> Option<&'a crate::ssd::CachedDecorationBuffer> {
+    let owner_node_id = cached.owner_node_id.as_deref()?;
+    decoration.buffers.iter().find(|candidate| {
+        candidate.owner_node_id.as_deref() == Some(owner_node_id)
+            && candidate.border_width > 0.0
+            && candidate.stable_key.ends_with(":border")
+    })
+}
+
+fn cached_outer_geometry(
+    cached: &crate::ssd::CachedDecorationBuffer,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    cached
+        .rect_precise
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale)
+        })
+        .unwrap_or_else(|| {
+            relative_physical_rect_from_root_snapped_edges(
+                cached.rect,
+                root_rect,
+                output_geo,
+                scale,
+            )
+        })
+}
+
+fn border_outer_geometry(
+    cached: &crate::ssd::CachedDecorationBuffer,
+    border_fit: crate::ssd::BorderFit,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    if matches!(border_fit, crate::ssd::BorderFit::Normal) && !cached.shared_inner_hole {
+        cached_outer_geometry(cached, root_rect, output_geo, scale)
+    } else {
+        paired_outer_geometry_from_border_buffer(cached, root_rect, output_geo, scale)
+            .unwrap_or_else(|| cached_outer_geometry(cached, root_rect, output_geo, scale))
+    }
+}
+
+fn thickness_preserving_inner_from_geometry(
+    geometry: Rectangle<i32, Physical>,
+    border_width: f32,
+    outer_radius: f32,
+    scale: Scale<f64>,
+) -> RoundedClip {
+    let (border_x, border_y) = border_px_for_scale(border_width, scale);
+    let border_x = border_x as f32;
+    let border_y = border_y as f32;
+    let radius_px = ((outer_radius.max(0.0) as f64) * scale.x.abs().max(0.0001))
+        .round()
+        .max(0.0) as f32;
+
+    RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: border_x,
+            y: border_y,
+            width: (geometry.size.w as f32 - border_x * 2.0).max(0.0),
+            height: (geometry.size.h as f32 - border_y * 2.0).max(0.0),
+        },
+        radius: (radius_px - border_x.max(border_y)).max(0.0),
+    }
+}
+
 fn render_inner_clip_from_precise_anchors(
     outer_rect_precise: crate::backend::visual::PreciseLogicalRect,
     outer_geometry: Rectangle<i32, Physical>,
@@ -666,84 +800,43 @@ fn rounded_rect_element(
                 crate::ssd::BorderFit::Normal
             }
         });
-    let geometry = if cached.border_width > 0.0 && cached.source_kind != "button" {
-        cached
-            .hole_rect_precise
-            .map(|hole_rect| {
-                border_outer_geometry_from_inner(
-                    hole_rect,
-                    decoration.layout.root.rect,
-                    output_geo,
-                    scale,
-                    cached.border_width,
-                )
-            })
-            .or_else(|| {
-                cached.hole_rect.map(|hole_rect| {
-                    let inner_geometry = relative_physical_rect_from_root_snapped_edges(
-                        hole_rect,
-                        decoration.layout.root.rect,
-                        output_geo,
-                        scale,
-                    );
-                    let border_x = ((cached.border_width.max(0.0) as f64)
-                        * scale.x.abs().max(0.0001))
-                        .round()
-                        .max(0.0) as i32;
-                    let border_y = ((cached.border_width.max(0.0) as f64)
-                        * scale.y.abs().max(0.0001))
-                        .round()
-                        .max(0.0) as i32;
-                    Rectangle::new(
-                        Point::from((
-                            inner_geometry.loc.x - border_x,
-                            inner_geometry.loc.y - border_y,
-                        )),
-                        (
-                            inner_geometry.size.w + border_x * 2,
-                            inner_geometry.size.h + border_y * 2,
-                        )
-                            .into(),
-                    )
-                })
-            })
-            .or_else(|| {
-                cached.rect_precise.map(|rect| {
-                    relative_physical_rect_from_root_precise(
-                        rect,
-                        decoration.layout.root.rect,
-                        output_geo,
-                        scale,
-                    )
-                })
+    let geometry = if cached.border_width > 0.0 {
+        border_outer_geometry(
+            cached,
+            border_fit,
+            decoration.layout.root.rect,
+            output_geo,
+            scale,
+        )
+    } else if let Some(border_cached) = owner_border_buffer(decoration, cached) {
+        let owner_border_fit = border_cached
+            .owner_node_id
+            .as_deref()
+            .and_then(|owner_id| {
+                decoration
+                    .layout
+                    .root
+                    .stable_id
+                    .as_deref()
+                    .filter(|root_id| *root_id == owner_id)
+                    .map(|_| decoration.layout.root.style.effective_border_fit(&decoration.layout.root.kind))
             })
             .unwrap_or_else(|| {
-                relative_physical_rect_from_root_snapped_edges(
-                    cached.rect,
-                    decoration.layout.root.rect,
-                    output_geo,
-                    scale,
-                )
-            })
+                if border_cached.source_kind == "window-border" {
+                    crate::ssd::BorderFit::FitChildren
+                } else {
+                    crate::ssd::BorderFit::Normal
+                }
+            });
+        border_outer_geometry(
+            border_cached,
+            owner_border_fit,
+            decoration.layout.root.rect,
+            output_geo,
+            scale,
+        )
     } else {
-        cached
-            .rect_precise
-            .map(|rect| {
-                relative_physical_rect_from_root_precise(
-                    rect,
-                    decoration.layout.root.rect,
-                    output_geo,
-                    scale,
-                )
-            })
-            .unwrap_or_else(|| {
-                relative_physical_rect_from_root_snapped_edges(
-                    cached.rect,
-                    decoration.layout.root.rect,
-                    output_geo,
-                    scale,
-                )
-            })
+        cached_outer_geometry(cached, decoration.layout.root.rect, output_geo, scale)
     };
     let outer_rect_precise = cached.rect_precise.unwrap_or(crate::backend::visual::PreciseLogicalRect {
         x: cached.rect.x as f32,
@@ -1000,17 +1093,8 @@ fn rounded_rect_element(
         cached.border_width
     };
     let render_inner = if use_physical_anchor_space {
-        let border_width_x = (cached.border_width.max(0.0) * scale_x).round().max(0.0);
-        let border_width_y = (cached.border_width.max(0.0) * scale_y).round().max(0.0);
-        let derived_render_inner = || RoundedClip {
-            rect: crate::backend::visual::SnappedLogicalRect {
-                x: border_width_x,
-                y: border_width_y,
-                width: (geometry.size.w as f32 - border_width_x * 2.0).max(0.0),
-                height: (geometry.size.h as f32 - border_width_y * 2.0).max(0.0),
-            },
-            radius: (render_outer_radius - border_width_x.max(border_width_y)).max(0.0),
-        };
+        let derived_render_inner =
+            || thickness_preserving_inner_from_geometry(geometry, cached.border_width, outer_radius, scale);
 
         if matches!(border_fit, crate::ssd::BorderFit::Normal) {
             Some(derived_render_inner())
@@ -1079,40 +1163,12 @@ fn rounded_rect_element(
         clip
     };
     let shader_outer_rect = if cached.border_width > 0.0 {
-        if let Some(inner) = render_inner {
-            let thickness = render_border_width.max(0.0);
-            let mut left = (inner.rect.x - thickness).max(0.0);
-            let mut top = (inner.rect.y - thickness).max(0.0);
-            let mut right =
-                (inner.rect.x + inner.rect.width + thickness).min(shader_rect.size.w as f32);
-            let mut bottom =
-                (inner.rect.y + inner.rect.height + thickness).min(shader_rect.size.h as f32);
-            if left <= 1.0 {
-                left = 0.0;
-            }
-            if top <= 1.0 {
-                top = 0.0;
-            }
-            if (shader_rect.size.w as f32 - right).abs() <= 1.0 {
-                right = shader_rect.size.w as f32;
-            }
-            if (shader_rect.size.h as f32 - bottom).abs() <= 1.0 {
-                bottom = shader_rect.size.h as f32;
-            }
-            [
-                left,
-                top,
-                (right - left).max(0.0),
-                (bottom - top).max(0.0),
-            ]
-        } else {
-            [
-                0.0,
-                0.0,
-                shader_rect.size.w as f32,
-                shader_rect.size.h as f32,
-            ]
-        }
+        [
+            0.0,
+            0.0,
+            shader_rect.size.w as f32,
+            shader_rect.size.h as f32,
+        ]
     } else {
         [
             0.0,

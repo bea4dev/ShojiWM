@@ -1237,8 +1237,14 @@ fn layout_box_children(
 
     let mut cursor = direction.main_origin_resolved(content_rect);
     let mut children = Vec::with_capacity(node.children.len());
+    let layout_debug_enabled = std::env::var_os("SHOJI_GAP_LAYOUT_CHILD_DEBUG").is_some();
+    let direction_name = match direction {
+        LayoutDirection::Row => "row",
+        LayoutDirection::Column => "column",
+    };
+    let parent_stable_id = node.stable_id.as_deref().unwrap_or("<none>");
 
-    for (child, main_size) in node.children.iter().zip(allocated.into_iter()) {
+    for (index, (child, main_size)) in node.children.iter().zip(allocated.into_iter()).enumerate() {
         let child_align = node.style.align_items;
         let cross_size = child.preferred_cross_size_resolved(
             direction,
@@ -1251,9 +1257,74 @@ fn layout_box_children(
             content_rect,
             child_align,
             cross_size,
+            scale,
         );
 
         let child_rect = direction.rect_resolved(cursor, cross_origin, main_size, cross_size);
+        if layout_debug_enabled {
+            let scale_f32 = scale.abs().max(0.0001) as f32;
+            let (parent_cross_start, parent_cross_len, child_cross_start, child_cross_len) =
+                match direction {
+                    LayoutDirection::Row => (
+                        content_rect.y.to_f32(),
+                        content_rect.height.to_f32(),
+                        child_rect.y.to_f32(),
+                        child_rect.height.to_f32(),
+                    ),
+                    LayoutDirection::Column => (
+                        content_rect.x.to_f32(),
+                        content_rect.width.to_f32(),
+                        child_rect.x.to_f32(),
+                        child_rect.width.to_f32(),
+                    ),
+                };
+            let parent_cross_start_px = (parent_cross_start * scale_f32).round() as i32;
+            let parent_cross_end_px =
+                ((parent_cross_start + parent_cross_len) * scale_f32).round() as i32;
+            let child_cross_start_px = (child_cross_start * scale_f32).round() as i32;
+            let child_cross_len_px = (child_cross_len * scale_f32).round().max(0.0) as i32;
+            let child_cross_end_px = child_cross_start_px + child_cross_len_px;
+            let child_center_twice_px = child_cross_start_px * 2 + child_cross_len_px;
+            let parent_center_twice_px = parent_cross_start_px + parent_cross_end_px;
+            let child_stable_id = child.stable_id.as_deref().unwrap_or("<none>");
+            let child_kind = match &child.kind {
+                DecorationNodeKind::Box(_) => "box",
+                DecorationNodeKind::Label(_) => "label",
+                DecorationNodeKind::Button(_) => "button",
+                DecorationNodeKind::AppIcon => "app-icon",
+                DecorationNodeKind::ShaderEffect(_) => "shader-effect",
+                DecorationNodeKind::WindowBorder => "window-border",
+                DecorationNodeKind::WindowSlot => "window-slot",
+            };
+            tracing::info!(
+                parent_stable_id,
+                child_stable_id,
+                child_kind,
+                child_index = index,
+                direction = direction_name,
+                align = ?child_align.unwrap_or(AlignItems::Stretch),
+                scale,
+                content_rect = ?content_rect,
+                cursor_raw = cursor.raw(),
+                cursor_resolved = cursor.to_f32(),
+                main_size_raw = main_size.raw(),
+                main_size_resolved = main_size.to_f32(),
+                cross_available_raw = cross_available.raw(),
+                cross_available_resolved = cross_available.to_f32(),
+                cross_size_raw = cross_size.raw(),
+                cross_size_resolved = cross_size.to_f32(),
+                cross_origin_raw = cross_origin.raw(),
+                cross_origin_resolved = cross_origin.to_f32(),
+                parent_cross_start_px,
+                parent_cross_end_px,
+                child_cross_start_px,
+                child_cross_len_px,
+                child_cross_end_px,
+                center_delta_twice_px = child_center_twice_px - parent_center_twice_px,
+                child_rect = ?child_rect,
+                "gap layout child placement"
+            );
+        }
         children.push(layout_node_resolved(
             child,
             child_rect,
@@ -1848,22 +1919,46 @@ impl LayoutDirection {
         rect: ResolvedLogicalRect,
         align: Option<AlignItems>,
         child_cross_size: ResolvedLayoutValue,
+        scale: f64,
     ) -> ResolvedLayoutValue {
         let align = align.unwrap_or(AlignItems::Stretch);
-        let available = self.cross_len_resolved(rect);
-        let remaining = ResolvedLayoutValue::from_raw((available.raw() - child_cross_size.raw()).max(0));
+        let scale = scale.abs().max(0.0001) as f32;
 
         match (self, align) {
             (LayoutDirection::Row, AlignItems::Center) => {
-                rect.y + ResolvedLayoutValue::from_raw(remaining.raw() / 2)
+                let top_px = (rect.y.to_f32() * scale).round() as i32;
+                let bottom_px = ((rect.y.to_f32() + rect.height.to_f32()) * scale).round() as i32;
+                let child_px = (child_cross_size.to_f32() * scale).round().max(0.0) as i32;
+                let aligned_px = top_px + ((bottom_px - top_px - child_px).max(0) / 2);
+                ResolvedLayoutValue::from_f32(aligned_px as f32 / scale)
             }
-            (LayoutDirection::Row, AlignItems::End) => rect.y + remaining,
-            (LayoutDirection::Row, _) => rect.y,
+            (LayoutDirection::Row, AlignItems::End) => {
+                let bottom_px = ((rect.y.to_f32() + rect.height.to_f32()) * scale).round() as i32;
+                let child_px = (child_cross_size.to_f32() * scale).round().max(0.0) as i32;
+                let aligned_px = bottom_px - child_px;
+                ResolvedLayoutValue::from_f32(aligned_px as f32 / scale)
+            }
+            (LayoutDirection::Row, _) => {
+                let top_px = (rect.y.to_f32() * scale).round() as i32;
+                ResolvedLayoutValue::from_f32(top_px as f32 / scale)
+            }
             (LayoutDirection::Column, AlignItems::Center) => {
-                rect.x + ResolvedLayoutValue::from_raw(remaining.raw() / 2)
+                let left_px = (rect.x.to_f32() * scale).round() as i32;
+                let right_px = ((rect.x.to_f32() + rect.width.to_f32()) * scale).round() as i32;
+                let child_px = (child_cross_size.to_f32() * scale).round().max(0.0) as i32;
+                let aligned_px = left_px + ((right_px - left_px - child_px).max(0) / 2);
+                ResolvedLayoutValue::from_f32(aligned_px as f32 / scale)
             }
-            (LayoutDirection::Column, AlignItems::End) => rect.x + remaining,
-            (LayoutDirection::Column, _) => rect.x,
+            (LayoutDirection::Column, AlignItems::End) => {
+                let right_px = ((rect.x.to_f32() + rect.width.to_f32()) * scale).round() as i32;
+                let child_px = (child_cross_size.to_f32() * scale).round().max(0.0) as i32;
+                let aligned_px = right_px - child_px;
+                ResolvedLayoutValue::from_f32(aligned_px as f32 / scale)
+            }
+            (LayoutDirection::Column, _) => {
+                let left_px = (rect.x.to_f32() * scale).round() as i32;
+                ResolvedLayoutValue::from_f32(left_px as f32 / scale)
+            }
         }
     }
 

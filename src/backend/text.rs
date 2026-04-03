@@ -40,6 +40,7 @@ thread_local! {
 #[derive(Debug, Clone)]
 pub struct CachedDecorationLabel {
     pub owner_node_id: Option<String>,
+    pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
     pub rect_precise: Option<PreciseLogicalRect>,
@@ -112,6 +113,7 @@ impl TextRasterizer {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationLabel {
                 owner_node_id: None,
+                stable_key: String::new(),
                 order: 0,
                 rect: spec.rect,
                 rect_precise: spec.rect_precise,
@@ -138,6 +140,7 @@ impl TextRasterizer {
         let rendered = self.render_label_pixels(spec)?;
         Some(CachedDecorationLabel {
             owner_node_id: None,
+            stable_key: String::new(),
             order: 0,
             rect: spec.rect,
             rect_precise: spec.rect_precise,

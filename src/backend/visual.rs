@@ -383,21 +383,19 @@ pub fn relative_physical_rect_from_root(
     output_scale: Scale<f64>,
     shared_rect: Option<LogicalRect>,
 ) -> Rectangle<i32, Physical> {
+    let _ = output_geo;
     let scale_x = output_scale.x.abs().max(0.0001);
     let scale_y = output_scale.y.abs().max(0.0001);
-    let root_left_px = (((root_rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let root_top_px = (((root_rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
-
     let anchored_left = shared_rect.is_some_and(|shared| rect.x == shared.x);
     let anchored_top = shared_rect.is_some_and(|shared| rect.y == shared.y);
 
     let left_px = if anchored_left {
-        ((((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32) - root_left_px
+        (((rect.x - root_rect.x) as f64) * scale_x).round() as i32
     } else {
         (((rect.x - root_rect.x) as f64) * scale_x).round() as i32
     };
     let top_px = if anchored_top {
-        ((((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32) - root_top_px
+        (((rect.y - root_rect.y) as f64) * scale_y).round() as i32
     } else {
         (((rect.y - root_rect.y) as f64) * scale_y).round() as i32
     };
@@ -447,18 +445,17 @@ pub fn relative_physical_rect_from_root_precise(
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
+    let _ = output_geo;
     let scale_x = output_scale.x.abs().max(0.0001) as f32;
     let scale_y = output_scale.y.abs().max(0.0001) as f32;
-    let root_left_px =
-        (((root_rect.x - output_geo.loc.x) as f64) * output_scale.x.abs().max(0.0001)).round() as i32;
-    let root_top_px =
-        (((root_rect.y - output_geo.loc.y) as f64) * output_scale.y.abs().max(0.0001)).round() as i32;
-    let left_px = (((rect.x - output_geo.loc.x as f32) * scale_x).round()) as i32;
-    let top_px = (((rect.y - output_geo.loc.y as f32) * scale_y).round()) as i32;
-    let right_px = ((((rect.x + rect.width) - output_geo.loc.x as f32) * scale_x).round()) as i32;
-    let bottom_px = ((((rect.y + rect.height) - output_geo.loc.y as f32) * scale_y).round()) as i32;
+    let root_x = root_rect.x as f32;
+    let root_y = root_rect.y as f32;
+    let left_px = (((rect.x - root_x) * scale_x).round()) as i32;
+    let top_px = (((rect.y - root_y) * scale_y).round()) as i32;
+    let right_px = ((((rect.x + rect.width) - root_x) * scale_x).round()) as i32;
+    let bottom_px = ((((rect.y + rect.height) - root_y) * scale_y).round()) as i32;
     Rectangle::new(
-        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        Point::from((left_px, top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
     )
 }

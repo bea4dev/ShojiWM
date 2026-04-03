@@ -691,6 +691,24 @@ fn render_surface(
                     &'static str,
                     smithay::utils::Rectangle<i32, smithay::utils::Physical>,
                 )> = Vec::new();
+                let mut debug_background_pre_geometries: Vec<(
+                    usize,
+                    String,
+                    &'static str,
+                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                )> = Vec::new();
+                let mut debug_ui_geometries: Vec<(
+                    usize,
+                    String,
+                    &'static str,
+                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                )> = Vec::new();
+                let mut debug_ui_pre_geometries: Vec<(
+                    usize,
+                    String,
+                    &'static str,
+                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                )> = Vec::new();
                 let root_origin = window_decorations
                     .get(window)
                     .map(|decoration| root_physical_origin(decoration.layout.root.rect, output_geo, scale));
@@ -829,6 +847,12 @@ fn render_surface(
                                 let post_transform_geometry = items
                                     .first()
                                     .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                                debug_background_pre_geometries.push((
+                                    order,
+                                    stable_key.clone(),
+                                    source_kind,
+                                    pre_transform_geometry,
+                                ));
                                 if let Some(post_transform_geometry) = post_transform_geometry {
                                     debug_background_geometries.push((
                                         order,
@@ -886,11 +910,54 @@ fn render_surface(
                     if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
                 )? {
                     if let Some(root_origin) = root_origin {
+                        let stable_key = window_decorations
+                            .get(window)
+                            .and_then(|decoration| {
+                                decoration
+                                    .icon_buffers
+                                    .iter()
+                                    .find(|buffer| buffer.order == order)
+                                    .map(|buffer| buffer.stable_key.clone())
+                            })
+                            .unwrap_or_else(|| format!("icon-order-{order}"));
+                        let pre_transform_geometry =
+                            smithay::backend::renderer::element::Element::geometry(&element, scale);
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
                             composition_visual,
                         )?;
+                        let post_transform_geometry = items
+                            .first()
+                            .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                        debug_ui_pre_geometries.push((
+                            order,
+                            stable_key.clone(),
+                            "app-icon",
+                            pre_transform_geometry,
+                        ));
+                        if let Some(post_transform_geometry) = post_transform_geometry {
+                            debug_ui_geometries.push((
+                                order,
+                                stable_key.clone(),
+                                "app-icon",
+                                post_transform_geometry,
+                            ));
+                        }
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            stable_key = %stable_key,
+                            source_kind = %"app-icon",
+                            order,
+                            root_origin = ?root_origin,
+                            visual_origin = ?composition_visual.origin,
+                            visual_scale = ?composition_visual.scale,
+                            visual_translation = ?composition_visual.translation,
+                            pre_transform_geometry = ?pre_transform_geometry,
+                            post_transform_geometry = ?post_transform_geometry,
+                            "gap debug tty transformed decoration geometry"
+                        );
                         if use_full_window_snapshot {
                             snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {
@@ -908,11 +975,54 @@ fn render_surface(
                     if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
                 )? {
                     if let Some(root_origin) = root_origin {
+                        let stable_key = window_decorations
+                            .get(window)
+                            .and_then(|decoration| {
+                                decoration
+                                    .text_buffers
+                                    .iter()
+                                    .find(|buffer| buffer.order == order)
+                                    .map(|buffer| buffer.stable_key.clone())
+                            })
+                            .unwrap_or_else(|| format!("label-order-{order}"));
+                        let pre_transform_geometry =
+                            smithay::backend::renderer::element::Element::geometry(&element, scale);
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
                             composition_visual,
                         )?;
+                        let post_transform_geometry = items
+                            .first()
+                            .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                        debug_ui_pre_geometries.push((
+                            order,
+                            stable_key.clone(),
+                            "label",
+                            pre_transform_geometry,
+                        ));
+                        if let Some(post_transform_geometry) = post_transform_geometry {
+                            debug_ui_geometries.push((
+                                order,
+                                stable_key.clone(),
+                                "label",
+                                post_transform_geometry,
+                            ));
+                        }
+                        tracing::info!(
+                            output = %output.name(),
+                            window_id = %window_id,
+                            stable_key = %stable_key,
+                            source_kind = %"label",
+                            order,
+                            root_origin = ?root_origin,
+                            visual_origin = ?composition_visual.origin,
+                            visual_scale = ?composition_visual.scale,
+                            visual_translation = ?composition_visual.translation,
+                            pre_transform_geometry = ?pre_transform_geometry,
+                            post_transform_geometry = ?post_transform_geometry,
+                            "gap debug tty transformed decoration geometry"
+                        );
                         if use_full_window_snapshot {
                             snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {
@@ -1407,8 +1517,20 @@ fn render_surface(
                             .cloned()
                             .collect::<Vec<_>>();
                         titlebar_fills.sort_by_key(|(order, _, _, _)| *order);
+                        let mut titlebar_pre_fills = debug_background_pre_geometries
+                            .iter()
+                            .filter(|(_, stable_key, source_kind, geometry)| {
+                                *source_kind == "fill"
+                                    && stable_key.ends_with(":fill")
+                                    && geometry.size.w > 200
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        titlebar_pre_fills.sort_by_key(|(order, _, _, _)| *order);
                         let first_fill = titlebar_fills.first().cloned();
                         let second_fill = titlebar_fills.get(1).cloned();
+                        let first_pre_fill = titlebar_pre_fills.first().cloned();
+                        let second_pre_fill = titlebar_pre_fills.get(1).cloned();
                         let sibling_gap =
                             |upper: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
                              lower: smithay::utils::Rectangle<i32, smithay::utils::Physical>| {
@@ -1436,17 +1558,85 @@ fn render_surface(
                                     )
                                 })
                             });
+                        let matching_fill = |
+                            ui_key: &str,
+                            fills: &Vec<(
+                                usize,
+                                String,
+                                &'static str,
+                                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                            )>,
+                        | {
+                            fills
+                                .iter()
+                                .filter_map(|(order, fill_key, source_kind, geometry)| {
+                                    let fill_base = fill_key.strip_suffix(":fill")?;
+                                    (ui_key.starts_with(fill_base)
+                                        && ui_key.as_bytes().get(fill_base.len()) == Some(&b'/'))
+                                        .then_some((*order, fill_key.clone(), *source_kind, *geometry))
+                                })
+                                .max_by_key(|(_, fill_key, _, _)| fill_key.len())
+                        };
+                        let titlebar_ui_pre_transform_relative = Some(
+                            debug_ui_pre_geometries
+                                .iter()
+                                .filter_map(|(order, key, source_kind, geometry)| {
+                                    let (_, fill_key, _, fill) =
+                                        matching_fill(key, &titlebar_pre_fills)?;
+                                    Some((
+                                        *order,
+                                        key.clone(),
+                                        *source_kind,
+                                        fill_key,
+                                        (
+                                            geometry.loc.x - fill.loc.x,
+                                            geometry.loc.y - fill.loc.y,
+                                            geometry.size.w - fill.size.w,
+                                            geometry.size.h - fill.size.h,
+                                        ),
+                                    ))
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                        let titlebar_ui_relative = Some(
+                            debug_ui_geometries
+                                .iter()
+                                .filter_map(|(order, key, source_kind, geometry)| {
+                                    let (_, fill_key, _, fill) = matching_fill(key, &titlebar_fills)?;
+                                    Some((
+                                        *order,
+                                        key.clone(),
+                                        *source_kind,
+                                        fill_key,
+                                        (
+                                            geometry.loc.x - fill.loc.x,
+                                            geometry.loc.y - fill.loc.y,
+                                            geometry.size.w - fill.size.w,
+                                            geometry.size.h - fill.size.h,
+                                        ),
+                                    ))
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                         tracing::info!(
                             output = %output.name(),
                             window_id = %window_id,
+                            background_pre_geometries = ?debug_background_pre_geometries,
                             background_geometries = ?debug_background_geometries,
+                            ui_pre_geometries = ?debug_ui_pre_geometries,
+                            ui_geometries = ?debug_ui_geometries,
+                            titlebar_pre_fills = ?titlebar_pre_fills,
                             titlebar_fills = ?titlebar_fills,
+                            first_pre_fill = ?first_pre_fill,
                             first_fill = ?first_fill,
+                            second_pre_fill = ?second_pre_fill,
                             second_fill = ?second_fill,
                             client_geometry = ?first_geometry,
                             shader_to_shader_gap = ?shader_to_shader_gap,
                             shader_to_client_gap = ?shader_to_client_gap,
                             fill_client_edge_delta = ?fill_client_edge_delta,
+                            titlebar_ui_pre_transform_relative = ?titlebar_ui_pre_transform_relative,
+                            titlebar_ui_relative = ?titlebar_ui_relative,
                             "gap debug tty sibling geometry summary"
                         );
                         tracing::info!(

@@ -1628,12 +1628,14 @@ fn build_text_buffers(
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
 ) -> Vec<CachedDecorationLabel> {
+    let shared_edges = build_shared_edge_geometry_map(layout);
     let mut buffers = Vec::new();
     collect_text_buffers(
         &layout.root,
         "root".into(),
         order_map,
         None,
+        &shared_edges,
         raster_scale,
         rasterizer,
         &mut buffers,
@@ -1648,12 +1650,14 @@ fn build_icon_buffers(
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
+    let shared_edges = build_shared_edge_geometry_map(layout);
     let mut buffers = Vec::new();
     collect_icon_buffers(
         &layout.root,
         "root".into(),
         order_map,
         None,
+        &shared_edges,
         raster_scale,
         snapshot,
         rasterizer,
@@ -1695,12 +1699,14 @@ fn rebuild_partial_text_buffers(
         .iter()
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
+    let shared_edges = build_shared_edge_geometry_map(layout);
     let mut buffers = Vec::new();
     collect_text_buffers(
         &layout.root,
         "root".into(),
         order_map,
         Some(&dirty_node_ids),
+        &shared_edges,
         raster_scale,
         rasterizer,
         &mut buffers,
@@ -1720,12 +1726,14 @@ fn rebuild_partial_icon_buffers(
         .iter()
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
+    let shared_edges = build_shared_edge_geometry_map(layout);
     let mut buffers = Vec::new();
     collect_icon_buffers(
         &layout.root,
         "root".into(),
         order_map,
         Some(&dirty_node_ids),
+        &shared_edges,
         raster_scale,
         snapshot,
         rasterizer,
@@ -2157,6 +2165,7 @@ fn collect_text_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     buffers: &mut Vec<CachedDecorationLabel>,
@@ -2171,6 +2180,7 @@ fn collect_text_buffers(
             format!("{path}/child-{index}"),
             order_map,
             dirty_node_ids,
+            shared_edges,
             raster_scale,
             rasterizer,
             buffers,
@@ -2189,6 +2199,11 @@ fn collect_text_buffers(
     let super::DecorationNodeKind::Label(label) = &node.kind else {
         return;
     };
+    let shared_geometry = node
+        .stable_id
+        .as_deref()
+        .and_then(|stable_id| shared_edges.get(stable_id))
+        .copied();
     let color = node.style.color.unwrap_or(super::Color::WHITE);
     if color.a == 0 {
         return;
@@ -2196,7 +2211,11 @@ fn collect_text_buffers(
 
     let spec = LabelSpec {
         rect: node.rect,
-        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
+        rect_precise: Some(
+            shared_geometry
+                .map(|geometry| geometry.rect_precise)
+                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+        ),
         text: label.text.clone(),
         color: color.with_opacity(node.style.opacity),
         font_size: node.style.font_size.unwrap_or(13),
@@ -2210,13 +2229,21 @@ fn collect_text_buffers(
     if let Some(buffer) = rasterizer.render_label(&spec) {
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
+        buffer.stable_key = format!("{path}:label");
         buffer.order = *order_map.get(&format!("{path}:label")).unwrap_or(&usize::MAX);
-        buffer.rect_precise = Some(precise_rect_from_resolved(node.resolved_rect));
+        buffer.rect_precise = Some(
+            shared_geometry
+                .map(|geometry| geometry.rect_precise)
+                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+        );
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
-        buffer.clip_rect_precise = node
-            .resolved_effective_clip
-            .map(|clip| precise_rect_from_resolved(clip.rect));
+        buffer.clip_rect_precise = shared_geometry
+            .and_then(|geometry| geometry.clip_rect_precise)
+            .or_else(|| {
+                node.resolved_effective_clip
+                    .map(|clip| precise_rect_from_resolved(clip.rect))
+            });
         buffer.clip_radius_precise = node
             .resolved_effective_clip
             .map(|clip| clip.radius.to_f32().max(0.0));
@@ -2229,6 +2256,7 @@ fn collect_icon_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
+    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
     raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
@@ -2244,6 +2272,7 @@ fn collect_icon_buffers(
             format!("{path}/child-{index}"),
             order_map,
             dirty_node_ids,
+            shared_edges,
             raster_scale,
             snapshot,
             rasterizer,
@@ -2263,10 +2292,19 @@ fn collect_icon_buffers(
     let super::DecorationNodeKind::AppIcon = &node.kind else {
         return;
     };
+    let shared_geometry = node
+        .stable_id
+        .as_deref()
+        .and_then(|stable_id| shared_edges.get(stable_id))
+        .copied();
 
     let spec = IconSpec {
         rect: node.rect,
-        rect_precise: Some(precise_rect_from_resolved(node.resolved_rect)),
+        rect_precise: Some(
+            shared_geometry
+                .map(|geometry| geometry.rect_precise)
+                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+        ),
         icon: snapshot.icon.clone(),
         app_id: snapshot.app_id.clone(),
         raster_scale,
@@ -2275,13 +2313,21 @@ fn collect_icon_buffers(
     if let Some(buffer) = rasterizer.render_icon(&spec) {
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
+        buffer.stable_key = format!("{path}:icon");
         buffer.order = *order_map.get(&format!("{path}:icon")).unwrap_or(&usize::MAX);
-        buffer.rect_precise = Some(precise_rect_from_resolved(node.resolved_rect));
+        buffer.rect_precise = Some(
+            shared_geometry
+                .map(|geometry| geometry.rect_precise)
+                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+        );
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
-        buffer.clip_rect_precise = node
-            .resolved_effective_clip
-            .map(|clip| precise_rect_from_resolved(clip.rect));
+        buffer.clip_rect_precise = shared_geometry
+            .and_then(|geometry| geometry.clip_rect_precise)
+            .or_else(|| {
+                node.resolved_effective_clip
+                    .map(|clip| precise_rect_from_resolved(clip.rect))
+            });
         buffer.clip_radius_precise = node
             .resolved_effective_clip
             .map(|clip| clip.radius.to_f32().max(0.0));

@@ -35,6 +35,7 @@ use crate::backend::visual::{
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
     pub owner_node_id: Option<String>,
+    pub stable_key: String,
     pub order: usize,
     pub rect: LogicalRect,
     pub rect_precise: Option<PreciseLogicalRect>,
@@ -109,6 +110,7 @@ impl IconRasterizer {
             cached.last_used_at = Instant::now();
             return Some(CachedDecorationIcon {
                 owner_node_id: None,
+                stable_key: String::new(),
                 order: 0,
                 rect: spec.rect,
                 rect_precise: spec.rect_precise,
@@ -141,6 +143,7 @@ impl IconRasterizer {
         );
         Some(CachedDecorationIcon {
             owner_node_id: None,
+            stable_key: String::new(),
             order: 0,
             rect: spec.rect,
             rect_precise: spec.rect_precise,
