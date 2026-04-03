@@ -203,6 +203,15 @@ impl ClippedSurfaceElement {
                 .into(),
         );
         let render_geometry = forced_geometry.unwrap_or(physical_clip);
+        let render_rect_logical = SnappedLogicalRect {
+            x: render_geometry.loc.x as f32 / output_scale_x,
+            y: render_geometry.loc.y as f32 / output_scale_y,
+            width: render_geometry.size.w as f32 / output_scale_x,
+            height: render_geometry.size.h as f32 / output_scale_y,
+        };
+        if forced_geometry.is_some() {
+            snapped_clip_rect = render_rect_logical;
+        }
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
