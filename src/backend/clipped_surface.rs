@@ -11,7 +11,7 @@ use smithay::{
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
-use crate::backend::visual::{SnappedLogicalRect, snapped_precise_logical_rect_relative_with_mode};
+use crate::backend::visual::{SnappedLogicalRect, snapped_precise_logical_rect_in_element_space};
 use crate::ssd::ContentClip;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,16 +152,15 @@ impl ClippedSurfaceElement {
 
         let local_clip = Rectangle::new(
             Point::from((
-                clip.mask_rect.loc.x - output_origin.x,
-                clip.mask_rect.loc.y - output_origin.y,
+                clip.mask_rect.loc.x - clip.rect.loc.x,
+                clip.mask_rect.loc.y - clip.rect.loc.y,
             )),
             clip.mask_rect.size,
         );
-        let mut snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
+        let mut snapped_clip_rect = snapped_precise_logical_rect_in_element_space(
             clip.mask_rect_precise,
-            output_origin,
+            clip.rect_precise,
             clip_scale,
-            clip.snap_mode,
         );
         let element_geometry = inner.geometry(output_scale);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
@@ -186,12 +185,18 @@ impl ClippedSurfaceElement {
             snapped_clip_rect.width = element_rect_logical.width;
             snapped_clip_rect.height = element_rect_logical.height;
         }
-        let physical_left = (snapped_clip_rect.x as f64 * output_scale.x).round() as i32;
-        let physical_top = (snapped_clip_rect.y as f64 * output_scale.y).round() as i32;
-        let physical_right = ((snapped_clip_rect.x + snapped_clip_rect.width) as f64
+        let physical_left = (((clip.mask_rect_precise.x - clip.rect_precise.x) as f64)
             * output_scale.x)
             .round() as i32;
-        let physical_bottom = ((snapped_clip_rect.y + snapped_clip_rect.height) as f64
+        let physical_top = (((clip.mask_rect_precise.y - clip.rect_precise.y) as f64)
+            * output_scale.y)
+            .round() as i32;
+        let physical_right = ((((clip.mask_rect_precise.x + clip.mask_rect_precise.width)
+            - clip.rect_precise.x) as f64)
+            * output_scale.x)
+            .round() as i32;
+        let physical_bottom = ((((clip.mask_rect_precise.y + clip.mask_rect_precise.height)
+            - clip.rect_precise.y) as f64)
             * output_scale.y)
             .round() as i32;
         let physical_clip: Rectangle<i32, Physical> = Rectangle::new(
@@ -229,6 +234,8 @@ impl ClippedSurfaceElement {
                 aligned_clip_rect_precise = ?snapped_clip_rect,
                 aligned_clip_rect = ?snapped_clip_rect,
                 element_rect_logical = ?element_rect_logical,
+                slot_rect_precise = ?clip.rect_precise,
+                mask_rect_precise = ?clip.mask_rect_precise,
                 clip_size_delta_px = ?clip_size_delta_px,
                 sample_uv_compensation = ?sample_uv_compensation,
                 "gap debug clipped surface raw element"
@@ -298,11 +305,6 @@ impl ClippedSurfaceElement {
         let (clip_size, corner_radius, input_to_clip_array) = match &self.inner {
             ClippedSurfaceInner::Mapped(inner) => {
                 let element_geometry = self.geometry;
-
-                let element_loc = Vector2::new(
-                    element_geometry.loc.x as f32 / self.output_scale.max(0.0001),
-                    element_geometry.loc.y as f32 / self.output_scale.max(0.0001),
-                );
                 let element_size = Vector2::new(
                     element_geometry.size.w as f32 / self.output_scale.max(0.0001),
                     element_geometry.size.h as f32 / self.output_scale.max(0.0001),
@@ -334,9 +336,7 @@ impl ClippedSurfaceElement {
                         element_size.x / clip_size.x,
                         element_size.y / clip_size.y,
                     )
-                    * Matrix3::from_translation(
-                        (element_loc - clip_loc).div_element_wise(element_size),
-                    )
+                    * Matrix3::from_translation((-clip_loc).div_element_wise(element_size))
                     * Matrix3::from_nonuniform_scale(
                         buffer_size.x / src_size.x,
                         buffer_size.y / src_size.y,
