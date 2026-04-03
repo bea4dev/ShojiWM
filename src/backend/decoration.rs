@@ -537,6 +537,9 @@ fn clip_contains_local_rect(
     clip: RoundedClip,
     local_rect: Rectangle<i32, Logical>,
 ) -> bool {
+    if clip.radius > 0.0 {
+        return false;
+    }
     let epsilon = 1.0;
     let local_right = local_rect.size.w.max(0) as f32;
     let local_bottom = local_rect.size.h.max(0) as f32;
@@ -861,7 +864,10 @@ fn rounded_rect_element(
         )
     }));
     let border_anchor_hole_geometry =
-        (matches!(border_fit, crate::ssd::BorderFit::FitChildren) && cached.shared_inner_hole && cached.border_width > 0.0)
+        (matches!(border_fit, crate::ssd::BorderFit::FitChildren)
+            && cached.shared_inner_hole
+            && cached.border_width > 0.0
+            && cached.hole_rect_precise.is_none())
             .then(|| {
                 bordered_node_anchor_union_geometry(
                     decoration,
@@ -1187,6 +1193,10 @@ fn rounded_rect_element(
                 .map(crate::backend::rounded::RoundedInnerMode::Explicit)
                 .unwrap_or(crate::backend::rounded::RoundedInnerMode::DerivedInset)
         }
+    } else if render_inner.is_some() {
+        crate::backend::rounded::RoundedInnerMode::Explicit(
+            render_inner.expect("checked is_some above"),
+        )
     } else {
         crate::backend::rounded::RoundedInnerMode::None
     };
@@ -1306,6 +1316,31 @@ fn rounded_rect_element(
             0.0
         },
     };
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some()
+        && (cached.source_kind == "window-border"
+            || (cached.source_kind == "fill" && cached.hole_rect_precise.is_some()))
+    {
+        tracing::info!(
+            stable_key = %cached.stable_key,
+            source_kind = %cached.source_kind,
+            owner_node_id = ?cached.owner_node_id,
+            border_fit = ?border_fit,
+            rect = ?cached.rect,
+            rect_precise = ?cached.rect_precise,
+            geometry = ?geometry,
+            outer_rect_precise = ?outer_rect_precise,
+            hole_rect = ?cached.hole_rect,
+            hole_rect_precise = ?cached.hole_rect_precise,
+            hole_geometry = ?hole_geometry,
+            border_anchor_hole_geometry = ?border_anchor_hole_geometry,
+            render_inner = ?render_inner,
+            render_clip = ?render_clip,
+            inner_mode = ?inner_mode,
+            clip = ?clip,
+            spec = ?spec,
+            "gap debug window_border render"
+        );
+    }
     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
         tracing::info!(
             stable_key = %cached.stable_key,

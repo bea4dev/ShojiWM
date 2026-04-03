@@ -93,6 +93,8 @@ fn previous_titlebar_fill_state(
 struct ClientFrameState {
     client_geometry: Option<Rectangle<i32, smithay::utils::Physical>>,
     content_clip_physical: Option<Rectangle<i32, smithay::utils::Physical>>,
+    mask_clip_physical: Option<Rectangle<i32, smithay::utils::Physical>>,
+    mask_border_delta: Option<(i32, i32, i32, i32)>,
     fill_client_edge_delta: Option<(i32, i32, i32, i32)>,
 }
 
@@ -1663,12 +1665,76 @@ fn render_surface(
                                     local_geometry.size,
                                 ))
                             });
+                        let mask_clip_physical = window_decorations
+                            .get(window)
+                            .and_then(|decoration| {
+                                let content_clip = decoration.content_clip?;
+                                let root_origin = root_physical_origin(
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                );
+                                let local_geometry = relative_physical_rect_from_root_precise(
+                                    content_clip.mask_rect_precise,
+                                    decoration.layout.root.rect,
+                                    output_geo,
+                                    scale,
+                                );
+                                Some(smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::from((
+                                        root_origin.x + local_geometry.loc.x,
+                                        root_origin.y + local_geometry.loc.y,
+                                    )),
+                                    local_geometry.size,
+                                ))
+                            });
+                        let window_border_mask_physical = window_decorations
+                            .get(window)
+                            .and_then(|decoration| {
+                                decoration
+                                    .buffers
+                                    .iter()
+                                    .find(|buffer| buffer.source_kind == "window-border")
+                                    .and_then(|buffer| buffer.hole_rect_precise)
+                                    .map(|hole_rect| {
+                                        let root_origin = root_physical_origin(
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                        );
+                                        let local_geometry = relative_physical_rect_from_root_precise(
+                                            hole_rect,
+                                            decoration.layout.root.rect,
+                                            output_geo,
+                                            scale,
+                                        );
+                                        smithay::utils::Rectangle::new(
+                                            smithay::utils::Point::from((
+                                                root_origin.x + local_geometry.loc.x,
+                                                root_origin.y + local_geometry.loc.y,
+                                            )),
+                                            local_geometry.size,
+                                        )
+                                    })
+                            });
+                        let mask_border_delta = mask_clip_physical
+                            .zip(window_border_mask_physical)
+                            .map(|(mask, border)| {
+                                (
+                                    mask.loc.x - border.loc.x,
+                                    mask.loc.y - border.loc.y,
+                                    (mask.loc.x + mask.size.w) - (border.loc.x + border.size.w),
+                                    (mask.loc.y + mask.size.h) - (border.loc.y + border.size.h),
+                                )
+                            });
                         let frame_key = format!("{}:{}", output.name(), window_id);
                         let previous_client_state = previous_client_frame_state(
                             &frame_key,
                             ClientFrameState {
                                 client_geometry: first_geometry,
                                 content_clip_physical,
+                                mask_clip_physical,
+                                mask_border_delta,
                                 fill_client_edge_delta,
                             },
                         );
@@ -1692,6 +1758,20 @@ fn render_surface(
                             content_clip_physical,
                             previous_client_state.and_then(|state| state.content_clip_physical),
                         );
+                        let mask_clip_physical_delta = rect_delta(
+                            mask_clip_physical,
+                            previous_client_state.and_then(|state| state.mask_clip_physical),
+                        );
+                        let mask_border_delta_delta = mask_border_delta
+                            .zip(previous_client_state.and_then(|state| state.mask_border_delta))
+                            .map(|(current, previous)| {
+                                (
+                                    current.0 - previous.0,
+                                    current.1 - previous.1,
+                                    current.2 - previous.2,
+                                    current.3 - previous.3,
+                                )
+                            });
                         let fill_client_edge_delta_delta = fill_client_edge_delta
                             .zip(previous_client_state.and_then(|state| state.fill_client_edge_delta))
                             .map(|(current, previous)| {
@@ -1781,6 +1861,11 @@ fn render_surface(
                             client_geometry_delta = ?client_geometry_delta,
                             content_clip_physical = ?content_clip_physical,
                             content_clip_physical_delta = ?content_clip_physical_delta,
+                            mask_clip_physical = ?mask_clip_physical,
+                            mask_clip_physical_delta = ?mask_clip_physical_delta,
+                            window_border_mask_physical = ?window_border_mask_physical,
+                            mask_border_delta = ?mask_border_delta,
+                            mask_border_delta_delta = ?mask_border_delta_delta,
                             shader_to_shader_gap = ?shader_to_shader_gap,
                             shader_to_client_gap = ?shader_to_client_gap,
                             fill_client_edge_delta = ?fill_client_edge_delta,
@@ -1798,6 +1883,11 @@ fn render_surface(
                             client_geometry_delta = ?client_geometry_delta,
                             content_clip_physical = ?content_clip_physical,
                             content_clip_physical_delta = ?content_clip_physical_delta,
+                            mask_clip_physical = ?mask_clip_physical,
+                            mask_clip_physical_delta = ?mask_clip_physical_delta,
+                            window_border_mask_physical = ?window_border_mask_physical,
+                            mask_border_delta = ?mask_border_delta,
+                            mask_border_delta_delta = ?mask_border_delta_delta,
                             fill_client_edge_delta = ?fill_client_edge_delta,
                             fill_client_edge_delta_delta = ?fill_client_edge_delta_delta,
                             edge_delta = ?edge_delta,

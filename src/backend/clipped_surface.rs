@@ -154,13 +154,13 @@ impl ClippedSurfaceElement {
 
         let local_clip = Rectangle::new(
             Point::from((
-                clip.rect.loc.x - output_origin.x,
-                clip.rect.loc.y - output_origin.y,
+                clip.mask_rect.loc.x - output_origin.x,
+                clip.mask_rect.loc.y - output_origin.y,
             )),
-            clip.rect.size,
+            clip.mask_rect.size,
         );
         let mut snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
-            clip.rect_precise,
+            clip.mask_rect_precise,
             output_origin,
             clip_scale,
             clip.snap_mode,
@@ -209,9 +209,6 @@ impl ClippedSurfaceElement {
             width: render_geometry.size.w as f32 / output_scale_x,
             height: render_geometry.size.h as f32 / output_scale_y,
         };
-        if forced_geometry.is_some() {
-            snapped_clip_rect = render_rect_logical;
-        }
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
@@ -235,8 +232,13 @@ impl ClippedSurfaceElement {
                 raw_view = ?inner.view(),
                 raw_transform = ?inner.transform(),
                 clip = ?clip,
+                local_clip = ?local_clip,
+                logical_mask_rect = ?clip.mask_rect,
+                precise_mask_rect = ?clip.mask_rect_precise,
                 aligned_clip_rect_precise = ?snapped_clip_rect,
                 aligned_clip_rect = ?snapped_clip_rect,
+                physical_clip = ?physical_clip,
+                render_rect_logical = ?render_rect_logical,
                 element_rect_logical = ?element_rect_logical,
                 clip_size_delta_px = ?clip_size_delta_px,
                 sample_uv_compensation = ?sample_uv_compensation,
