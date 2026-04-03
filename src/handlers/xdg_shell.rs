@@ -20,8 +20,7 @@ use smithay::{
         compositor::with_states,
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
-            decoration::XdgDecorationHandler,
+            XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
         },
     },
 };
@@ -32,7 +31,11 @@ use crate::{
 };
 use tracing::{debug, info, warn};
 
-fn apply_decoration_mode(state: &mut ShojiWM, toplevel: &ToplevelSurface, mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
+fn apply_decoration_mode(
+    state: &mut ShojiWM,
+    toplevel: &ToplevelSurface,
+    mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+) {
     toplevel.with_pending_state(|pending| {
         pending.decoration_mode = Some(mode);
     });
@@ -93,7 +96,10 @@ impl XdgShellHandler for ShojiWM {
         };
 
         self.space.map_element(window, initial_location, false);
-        debug!(window_count = self.space.elements().count(), "mapped new toplevel into space");
+        debug!(
+            window_count = self.space.elements().count(),
+            "mapped new toplevel into space"
+        );
         self.schedule_redraw();
     }
 

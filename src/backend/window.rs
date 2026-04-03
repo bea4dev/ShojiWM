@@ -1,16 +1,18 @@
 use smithay::{
     backend::renderer::{
+        ImportAll, Renderer,
         element::{
-            Element,
-            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            AsRenderElements, Kind,
+            AsRenderElements, Element, Kind,
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
         gles::GlesRenderer,
-        ImportAll, Renderer,
     },
-    desktop::{layer_map_for_output, LayerSurface, PopupManager, Window, WindowSurface},
+    desktop::{LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output},
     utils::{Logical, Physical, Point, Rectangle, Scale},
-    wayland::{compositor::{RectangleKind, RegionAttributes}, shell::wlr_layer::Layer as WlrLayer},
+    wayland::{
+        compositor::{RectangleKind, RegionAttributes},
+        shell::wlr_layer::Layer as WlrLayer,
+    },
 };
 
 use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
@@ -30,7 +32,12 @@ fn subtract_logical_rect(
 
     let mut out = Vec::new();
     if top > base.y {
-        out.push(crate::ssd::LogicalRect::new(base.x, base.y, base.width, top - base.y));
+        out.push(crate::ssd::LogicalRect::new(
+            base.x,
+            base.y,
+            base.width,
+            top - base.y,
+        ));
     }
     if bottom < base.y + base.height {
         out.push(crate::ssd::LogicalRect::new(
@@ -41,7 +48,12 @@ fn subtract_logical_rect(
         ));
     }
     if left > base.x {
-        out.push(crate::ssd::LogicalRect::new(base.x, top, left - base.x, bottom - top));
+        out.push(crate::ssd::LogicalRect::new(
+            base.x,
+            top,
+            left - base.x,
+            bottom - top,
+        ));
     }
     if right < base.x + base.width {
         out.push(crate::ssd::LogicalRect::new(
@@ -142,15 +154,9 @@ pub fn layer_surfaces_for_output(
     output: &smithay::output::Output,
 ) -> (Vec<LayerSurface>, Vec<LayerSurface>) {
     let map = layer_map_for_output(output);
-    let (lower, upper): (Vec<LayerSurface>, Vec<LayerSurface>) = map
-        .layers()
-        .rev()
-        .cloned()
-        .partition(|surface| {
-            matches!(
-                surface.layer(),
-                WlrLayer::Background | WlrLayer::Bottom
-            )
+    let (lower, upper): (Vec<LayerSurface>, Vec<LayerSurface>) =
+        map.layers().rev().cloned().partition(|surface| {
+            matches!(surface.layer(), WlrLayer::Background | WlrLayer::Bottom)
         });
     (upper, lower)
 }

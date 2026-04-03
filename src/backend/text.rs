@@ -5,6 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{
+    backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender},
+    backend::visual::{
+        PreciseLogicalRect, relative_physical_rect_from_root_precise,
+        relative_physical_rect_from_root_snapped_edges,
+    },
+    ssd::{Color, LogicalRect, WindowDecorationState},
+};
 use cosmic_text::{
     Align, Attrs, Buffer, Color as CosmicColor, Family as CosmicFamily, FontSystem, Metrics,
     Shaping, Style as CosmicStyle, SwashCache, Weight as CosmicWeight, Wrap,
@@ -14,8 +22,8 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             element::{
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
             gles::{GlesError, GlesRenderer},
         },
@@ -23,14 +31,6 @@ use smithay::{
     desktop::{Space, Window},
     output::Output,
     utils::{Logical, Rectangle, Scale as OutputScale},
-};
-use crate::{
-    backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender},
-    backend::visual::{
-        PreciseLogicalRect, relative_physical_rect_from_root_precise,
-        relative_physical_rect_from_root_snapped_edges,
-    },
-    ssd::{Color, LogicalRect, WindowDecorationState},
 };
 
 thread_local! {
@@ -180,8 +180,8 @@ impl TextRasterizer {
         let target_width = (logical_width * raster_scale as f32).round().max(1.0) as i32;
         let target_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
         let font_size = spec.font_size.max(1) as f32 * raster_scale as f32;
-        let line_height = spec.line_height.unwrap_or(spec.font_size.max(1) + 4) as f32
-            * raster_scale as f32;
+        let line_height =
+            spec.line_height.unwrap_or(spec.font_size.max(1) + 4) as f32 * raster_scale as f32;
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
@@ -215,13 +215,7 @@ impl TextRasterizer {
                         if px < 0 || py < 0 || px >= target_width || py >= target_height {
                             continue;
                         }
-                        blend_pixel(
-                            &mut pixels,
-                            target_width,
-                            px,
-                            py,
-                            color.as_rgba_tuple(),
-                        );
+                        blend_pixel(&mut pixels, target_width, px, py, color.as_rgba_tuple());
                     }
                 }
             });
@@ -328,7 +322,12 @@ pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
     spec.rect.width.hash(&mut hasher);
     spec.rect.height.hash(&mut hasher);
     spec.rect_precise
-        .map(|rect| ((rect.width * 1024.0).round() as i32, (rect.height * 1024.0).round() as i32))
+        .map(|rect| {
+            (
+                (rect.width * 1024.0).round() as i32,
+                (rect.height * 1024.0).round() as i32,
+            )
+        })
         .hash(&mut hasher);
     spec.color.r.hash(&mut hasher);
     spec.color.g.hash(&mut hasher);
@@ -426,8 +425,8 @@ pub fn ordered_text_elements_for_window(
                 scale,
                 alpha,
             )
-                .transpose()
-                .map(|result| result.map(|element| (label.order, element)))
+            .transpose()
+            .map(|result| result.map(|element| (label.order, element)))
         })
         .collect()
 }
@@ -451,8 +450,8 @@ pub fn ordered_text_elements_for_decoration(
                 scale,
                 alpha,
             )
-                .transpose()
-                .map(|result| result.map(|element| (label.order, element)))
+            .transpose()
+            .map(|result| result.map(|element| (label.order, element)))
         })
         .collect()
 }
@@ -495,16 +494,9 @@ fn memory_text_element(
 
     let physical = label
         .rect_precise
-        .map(|rect| {
-            relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale)
-        })
+        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale))
         .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(
-                label.rect,
-                root_rect,
-                output_geo,
-                scale,
-            )
+            relative_physical_rect_from_root_snapped_edges(label.rect, root_rect, output_geo, scale)
         });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -515,7 +507,17 @@ fn memory_text_element(
         None,
         Kind::Unspecified,
     )?;
-    if let Some(clip_rect) = label.clip_rect {
+    let clip_rect = label.clip_rect.or_else(|| {
+        label.clip_rect_precise.map(|clip_rect| {
+            LogicalRect::new(
+                clip_rect.x.round() as i32,
+                clip_rect.y.round() as i32,
+                clip_rect.width.round().max(0.0) as i32,
+                clip_rect.height.round().max(0.0) as i32,
+            )
+        })
+    });
+    if let Some(clip_rect) = clip_rect {
         let clipped = crate::backend::clipped_memory::ClippedMemoryElement::new(
             renderer,
             element,

@@ -1,6 +1,6 @@
 pub mod async_assets;
-pub mod clipped_surface;
 pub mod clipped_memory;
+pub mod clipped_surface;
 pub mod damage;
 pub mod damage_blink;
 pub mod decoration;
@@ -25,8 +25,8 @@ use smithay::{
     backend::{
         drm::DrmNode,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        session::{libseat::LibSeatSession, Session},
-        udev::{primary_gpu, UdevBackend},
+        session::{Session, libseat::LibSeatSession},
+        udev::{UdevBackend, primary_gpu},
     },
     reexports::{calloop::EventLoop, input::Libinput, wayland_server::Display},
 };
@@ -254,9 +254,9 @@ fn select_tty_devices(
         let selected = candidates
             .iter()
             .filter(|candidate| {
-                override_values.iter().any(|value| {
-                    path_matches_override(&candidate.path, OsStr::new(value))
-                })
+                override_values
+                    .iter()
+                    .any(|value| path_matches_override(&candidate.path, OsStr::new(value)))
             })
             .collect::<Vec<_>>();
 
@@ -300,7 +300,11 @@ fn select_tty_devices(
         .filter(|candidate| !candidate.connected_connectors.is_empty())
         .collect::<Vec<_>>();
     if !connected.is_empty() {
-        if let Some(primary_connected) = connected.iter().copied().find(|candidate| candidate.is_primary) {
+        if let Some(primary_connected) = connected
+            .iter()
+            .copied()
+            .find(|candidate| candidate.is_primary)
+        {
             return Ok(vec![primary_connected]);
         }
 
@@ -321,7 +325,9 @@ fn select_tty_devices(
         return Ok(vec![primary[0]]);
     }
 
-    warn!("no connected drm connectors detected and no primary gpu match found; falling back to first drm device");
+    warn!(
+        "no connected drm connectors detected and no primary gpu match found; falling back to first drm device"
+    );
     Ok(vec![&candidates[0]])
 }
 

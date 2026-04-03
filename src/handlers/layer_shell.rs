@@ -1,8 +1,9 @@
 use smithay::{
     desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     output::Output,
-    reexports::{
-        wayland_server::{Resource, protocol::{wl_output, wl_surface::WlSurface}},
+    reexports::wayland_server::{
+        Resource,
+        protocol::{wl_output, wl_surface::WlSurface},
     },
     wayland::{
         compositor::{get_parent, with_states},
@@ -66,10 +67,16 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         root = parent;
     }
 
-    let Some(output) = state.space.outputs().find(|output| {
-        let map = layer_map_for_output(output);
-        map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL).is_some()
-    }).cloned() else {
+    let Some(output) = state
+        .space
+        .outputs()
+        .find(|output| {
+            let map = layer_map_for_output(output);
+            map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        })
+        .cloned()
+    else {
         return;
     };
 
@@ -94,23 +101,27 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     }
 
     if let Some(layer) = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL) {
-        let layer_rect = map.layer_geometry(&layer).map(|geo| {
-            crate::ssd::LogicalRect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h)
-        });
+        let layer_rect = map
+            .layer_geometry(&layer)
+            .map(|geo| crate::ssd::LogicalRect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h));
         let owner = format!("{}", layer_surface_id(&root));
         match layer.layer() {
             Layer::Background | Layer::Bottom => {
                 state.lower_layer_scene_generation =
                     state.lower_layer_scene_generation.wrapping_add(1);
                 if let Some(rect) = layer_rect {
-                    state.lower_layer_source_damage.push(crate::state::OwnedDamageRect { owner, rect });
+                    state
+                        .lower_layer_source_damage
+                        .push(crate::state::OwnedDamageRect { owner, rect });
                 }
             }
             Layer::Top | Layer::Overlay => {
                 state.upper_layer_scene_generation =
                     state.upper_layer_scene_generation.wrapping_add(1);
                 if let Some(rect) = layer_rect {
-                    state.upper_layer_source_damage.push(crate::state::OwnedDamageRect { owner, rect });
+                    state
+                        .upper_layer_source_damage
+                        .push(crate::state::OwnedDamageRect { owner, rect });
                 }
             }
         }

@@ -9,14 +9,14 @@ use std::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::config::RuntimeDisplayConfigUpdate;
+use super::window_model::{
+    WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
+};
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
     DecorationTree, WindowTransform, WireCompiledEffect, decode_tree_json,
 };
-use super::window_model::{
-    WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
-};
+use crate::config::RuntimeDisplayConfigUpdate;
 
 /// Dynamic decoration evaluation boundary.
 ///
@@ -599,14 +599,12 @@ impl NodeDecorationEvaluator {
 
         let mut child = command.spawn()?;
         let stderr_log = spawn_stderr_drain(&mut child);
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("missing runtime stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("missing runtime stdout".into()))?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            DecorationEvaluationError::RuntimeProtocol("missing runtime stdin".into())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            DecorationEvaluationError::RuntimeProtocol("missing runtime stdout".into())
+        })?;
 
         Ok(NodeDecorationRuntime {
             child,
@@ -698,20 +696,23 @@ impl NodeDecorationEvaluator {
     pub fn background_effect_config(
         &self,
     ) -> Result<Option<BackgroundEffectConfig>, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig {
             request_id,
             display_state: &display_state,
         })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
         let mut line = String::new();
@@ -720,7 +721,11 @@ impl NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -769,7 +774,6 @@ impl NodeDecorationEvaluator {
             .transpose()
             .map_err(DecorationEvaluationError::Bridge)
     }
-
 }
 
 impl Clone for NodeDecorationEvaluator {
@@ -893,14 +897,17 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         window: &WaylandWindowSnapshot,
         now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::Evaluate {
             request_id,
@@ -908,7 +915,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             now_ms,
             display_state: &display_state,
         })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
         let mut line = String::new();
@@ -917,7 +924,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -982,14 +993,17 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         window_id: &str,
         now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::EvaluateCached {
             request_id,
@@ -1006,7 +1020,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1070,10 +1088,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         &self,
         now_ms: u64,
     ) -> Result<DecorationSchedulerTick, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
 
         let Some(_) = runtime_guard.as_ref() else {
             return Ok(DecorationSchedulerTick::default());
@@ -1082,14 +1099,18 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::SchedulerTick {
             request_id,
             now_ms,
             display_state: &display_state,
         })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
         let mut line = String::new();
@@ -1098,7 +1119,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1153,10 +1178,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
     }
 
     fn window_closed(&self, window_id: &str) -> Result<(), DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
 
         let Some(_) = runtime_guard.as_ref() else {
             return Ok(());
@@ -1165,7 +1189,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::WindowClosed {
             request_id,
@@ -1181,7 +1209,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1233,10 +1265,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         handler_id: &str,
         now_ms: u64,
     ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
 
         let Some(_) = runtime_guard.as_ref() else {
             return Ok(DecorationHandlerInvocation::default());
@@ -1245,7 +1276,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::InvokeHandler {
             request_id,
@@ -1263,7 +1298,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1328,10 +1367,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         window_id: &str,
         now_ms: u64,
     ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
 
         let Some(_) = runtime_guard.as_ref() else {
             return Ok(DecorationHandlerInvocation::default());
@@ -1340,7 +1378,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::StartClose {
             request_id,
@@ -1357,7 +1399,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1433,14 +1479,17 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         layers: &[WaylandLayerSnapshot],
         now_ms: u64,
     ) -> Result<LayerEffectEvaluationResult, DecorationEvaluationError> {
-        let mut runtime_guard = self
-            .runtime
-            .lock()
-            .map_err(|_| DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into()))?;
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self.display_state.lock().map(|guard| guard.clone()).unwrap_or_default();
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
 
         let request = serde_json::to_string(&RuntimeRequest::EvaluateLayerEffects {
             request_id,
@@ -1458,7 +1507,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
         };
         if bytes == 0 {
-            let status = runtime.child.try_wait()?.and_then(|status| status.code()).unwrap_or(-1);
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
             let stderr = runtime
                 .stderr_log
                 .lock()
@@ -1555,22 +1608,30 @@ mod tests {
             .expect("evaluation should succeed");
 
         let title_node = &tree.root.children[0].children[0].children[0];
-        assert!(matches!(&title_node.kind, DecorationNodeKind::Label(label) if label.text == "Kitty"));
+        assert!(
+            matches!(&title_node.kind, DecorationNodeKind::Label(label) if label.text == "Kitty")
+        );
     }
 
     #[test]
     fn evaluator_changes_border_color_for_focused_window() {
-        let focused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(true), 0)
-            .expect("focused evaluation should succeed");
-        let unfocused = evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false), 0)
-            .expect("unfocused evaluation should succeed");
+        let focused =
+            evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(true), 0)
+                .expect("focused evaluation should succeed");
+        let unfocused =
+            evaluate_dynamic_decoration(&StaticDecorationEvaluator, &make_window(false), 0)
+                .expect("unfocused evaluation should succeed");
 
         assert_ne!(focused.root.style.border, unfocused.root.style.border);
     }
 
     #[test]
     fn node_evaluator_can_decode_runtime_output() {
-        use std::{fs, os::unix::fs::PermissionsExt, time::{SystemTime, UNIX_EPOCH}};
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{SystemTime, UNIX_EPOCH},
+        };
 
         let temp_dir = std::env::temp_dir().join(format!(
             "shoji_wm-node-eval-{}",
@@ -1591,9 +1652,7 @@ cat <<'JSON'
 "##,
         )
         .expect("write mock evaluator");
-        let mut permissions = fs::metadata(&script_path)
-            .expect("metadata")
-            .permissions();
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&script_path, permissions).expect("chmod");
 

@@ -1,24 +1,21 @@
 use std::{cell::RefCell, collections::HashMap, time::Duration};
 
 use smithay::{
-    backend::renderer::element::{
-        default_primary_scanout_output_compare, RenderElementStates,
-    },
+    backend::renderer::element::{RenderElementStates, default_primary_scanout_output_compare},
     desktop::{
+        Space, Window, layer_map_for_output,
         utils::{
-            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
-            update_surface_primary_scanout_output, with_surfaces_surface_tree, OutputPresentationFeedback,
+            OutputPresentationFeedback, surface_presentation_feedback_flags_from_states,
+            surface_primary_scanout_output, update_surface_primary_scanout_output,
+            with_surfaces_surface_tree,
         },
-        layer_map_for_output, Space, Window,
     },
     output::Output,
-    reexports::wayland_server::{backend::ClientId, Client, Resource},
+    reexports::wayland_server::{Client, Resource, backend::ClientId},
     utils::{Monotonic, Time},
     wayland::{
-        commit_timing::CommitTimerBarrierStateUserData,
-        compositor::CompositorHandler,
-        fifo::FifoBarrierCachedState,
-        fractional_scale::with_fractional_scale,
+        commit_timing::CommitTimerBarrierStateUserData, compositor::CompositorHandler,
+        fifo::FifoBarrierCachedState, fractional_scale::with_fractional_scale,
     },
 };
 
@@ -110,7 +107,11 @@ pub fn take_presentation_feedback(
             &mut output_presentation_feedback,
             surface_primary_scanout_output,
             |surface, _| {
-                surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+                surface_presentation_feedback_flags_from_states(
+                    surface,
+                    None,
+                    render_element_states,
+                )
             },
         );
     }
@@ -127,29 +128,30 @@ impl ShojiWM {
     ) {
         let throttle = Some(Duration::from_secs(1));
 
-        let should_send = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-                           states: &smithay::wayland::compositor::SurfaceData| {
-            let current_primary_output = surface_primary_scanout_output(surface, states);
-            if current_primary_output.as_ref() != Some(output) {
-                return None;
-            }
-
-            if let Some(sequence) = frame_callback_sequence {
-                let frame_throttling_state = states
-                    .data_map
-                    .get_or_insert(SurfaceFrameThrottlingState::default);
-                let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
-                if let Some((last_output, last_sequence)) = &*last_sent_at
-                    && last_output == output
-                    && *last_sequence == sequence
-                {
+        let should_send =
+            |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+             states: &smithay::wayland::compositor::SurfaceData| {
+                let current_primary_output = surface_primary_scanout_output(surface, states);
+                if current_primary_output.as_ref() != Some(output) {
                     return None;
                 }
-                *last_sent_at = Some((output.clone(), sequence));
-            }
 
-            Some(output.clone())
-        };
+                if let Some(sequence) = frame_callback_sequence {
+                    let frame_throttling_state = states
+                        .data_map
+                        .get_or_insert(SurfaceFrameThrottlingState::default);
+                    let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
+                    if let Some((last_output, last_sequence)) = &*last_sent_at
+                        && last_output == output
+                        && *last_sequence == sequence
+                    {
+                        return None;
+                    }
+                    *last_sent_at = Some((output.clone(), sequence));
+                }
+
+                Some(output.clone())
+            };
 
         self.space.elements().for_each(|window| {
             if self.space.outputs_for_element(window).contains(output) {
@@ -203,7 +205,8 @@ impl ShojiWM {
 
         let dh = self.display_handle.clone();
         for client in clients.into_values() {
-            self.client_compositor_state(&client).blocker_cleared(self, &dh);
+            self.client_compositor_state(&client)
+                .blocker_cleared(self, &dh);
         }
     }
 
@@ -217,7 +220,8 @@ impl ShojiWM {
                     let primary_scanout_output = surface_primary_scanout_output(surface, states);
                     if let Some(output) = primary_scanout_output.as_ref() {
                         with_fractional_scale(states, |fractional_scale| {
-                            fractional_scale.set_preferred_scale(output.current_scale().fractional_scale());
+                            fractional_scale
+                                .set_preferred_scale(output.current_scale().fractional_scale());
                         });
                     }
                     let fifo_barrier = states
@@ -241,7 +245,8 @@ impl ShojiWM {
                 let primary_scanout_output = surface_primary_scanout_output(surface, states);
                 if let Some(output) = primary_scanout_output.as_ref() {
                     with_fractional_scale(states, |fractional_scale| {
-                        fractional_scale.set_preferred_scale(output.current_scale().fractional_scale());
+                        fractional_scale
+                            .set_preferred_scale(output.current_scale().fractional_scale());
                     });
                 }
                 let fifo_barrier = states
@@ -262,7 +267,8 @@ impl ShojiWM {
 
         let dh = self.display_handle.clone();
         for client in clients.into_values() {
-            self.client_compositor_state(&client).blocker_cleared(self, &dh);
+            self.client_compositor_state(&client)
+                .blocker_cleared(self, &dh);
         }
     }
 

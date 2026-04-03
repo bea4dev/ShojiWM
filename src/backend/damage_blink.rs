@@ -1,6 +1,6 @@
 use smithay::{
     backend::renderer::{
-        element::{solid::SolidColorRenderElement, Id, Kind},
+        element::{Id, Kind, solid::SolidColorRenderElement},
         utils::CommitCounter,
     },
     utils::{Logical, Point, Rectangle, Scale},

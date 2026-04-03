@@ -1,16 +1,20 @@
-use crate::{grabs::resize_grab, handlers::{layer_shell, xdg_shell}, state::{ClientState, ShojiWM}};
+use crate::{
+    grabs::resize_grab,
+    handlers::{layer_shell, xdg_shell},
+    state::{ClientState, ShojiWM},
+};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_shm,
     reexports::wayland_server::{
-        Resource,
+        Client, Resource,
         protocol::{wl_buffer, wl_surface::WlSurface},
-        Client,
     },
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState,
+            CompositorClientState, CompositorHandler, CompositorState, get_parent,
+            is_sync_subsurface,
         },
         shm::{ShmHandler, ShmState},
     },
@@ -29,8 +33,10 @@ impl CompositorHandler for ShojiWM {
     fn commit(&mut self, surface: &WlSurface) {
         trace!(surface = ?surface.id(), "wl_surface commit received");
         self.scene_generation = self.scene_generation.wrapping_add(1);
-        let mut pending_source_damage: Option<(smithay::desktop::Window, Vec<crate::ssd::LogicalRect>)> =
-            None;
+        let mut pending_source_damage: Option<(
+            smithay::desktop::Window,
+            Vec<crate::ssd::LogicalRect>,
+        )> = None;
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -55,14 +61,18 @@ impl CompositorHandler for ShojiWM {
             let commit_time = std::time::Duration::from(self.clock.now());
             self.window_commit_times.insert(window.clone(), commit_time);
             self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
-            self.window_source_damage.extend(source_damage.into_iter().map(|rect| {
-                crate::state::OwnedDamageRect {
-                    owner: snapshot.id.clone(),
-                    rect,
-                }
-            }));
+            self.window_source_damage
+                .extend(
+                    source_damage
+                        .into_iter()
+                        .map(|rect| crate::state::OwnedDamageRect {
+                            owner: snapshot.id.clone(),
+                            rect,
+                        }),
+                );
             if let Some(decoration) = self.window_decorations.get(&window) {
-                self.pending_decoration_damage.push(decoration.layout.root.rect);
+                self.pending_decoration_damage
+                    .push(decoration.layout.root.rect);
             }
             debug!(surface = ?window.toplevel().unwrap().wl_surface().id(), "toplevel commit matched mapped window");
         }

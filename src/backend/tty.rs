@@ -1,48 +1,54 @@
-use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 use std::hash::{Hash, Hasher};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use smithay::{
     backend::{
-        allocator::{gbm::GbmAllocator, Fourcc},
+        allocator::{Fourcc, gbm::GbmAllocator},
         drm::{
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
             compositor::FrameFlags,
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
         },
-        egl::{context::ContextPriority, EGLContext, EGLDisplay},
+        egl::{EGLContext, EGLDisplay, context::ContextPriority},
         renderer::{
-            Bind, ExportMem, Offscreen,
+            Bind, ExportMem, ImportDma, ImportEgl, ImportMemWl, Offscreen,
             damage::OutputDamageTracker,
             element::{
+                AsRenderElements,
                 memory::MemoryRenderBuffer,
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
                 texture::TextureRenderElement,
                 utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
-                AsRenderElements,
             },
             gles::{GlesRenderer, GlesTexture},
-            ImportDma, ImportEgl, ImportMemWl,
         },
-        session::{libseat::LibSeatSession, Session},
+        session::{Session, libseat::LibSeatSession},
     },
     desktop::layer_map_for_output,
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
-        calloop::{timer::{TimeoutAction, Timer}, EventLoop, LoopHandle},
+        calloop::{
+            EventLoop, LoopHandle,
+            timer::{TimeoutAction, Timer},
+        },
         drm::control::{connector, crtc},
         gbm::{BufferObjectFlags, Device, Format},
         rustix::fs::OFlags,
-        wayland_server::Resource,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+        wayland_server::Resource,
     },
     render_elements,
     utils::{DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Transform},
     wayland::{
-        background_effect::BackgroundEffectSurfaceCachedState,
-        compositor,
+        background_effect::BackgroundEffectSurfaceCachedState, compositor,
         dmabuf::DmabufFeedbackBuilder,
     },
 };
@@ -50,28 +56,32 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    backend::damage, backend::damage_blink, backend::decoration, backend::snapshot, backend::window as window_render,
+    backend::damage,
+    backend::damage_blink,
+    backend::decoration,
+    backend::snapshot,
     backend::visual::{
         WindowVisualState, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, root_physical_origin, transformed_root_rect,
         window_visual_state,
     },
+    backend::window as window_render,
     config::DisplayModePreference,
+    drawing::PointerRenderElement,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
-    drawing::PointerRenderElement, state::ShojiWM,
+    state::ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
 
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
-type GbmDrmOutput =
-    DrmOutput<
-        GbmAllocator<DrmDeviceFd>,
-        GbmFramebufferExporter<DrmDeviceFd>,
-        Option<smithay::desktop::utils::OutputPresentationFeedback>,
-        DrmDeviceFd,
-    >;
+type GbmDrmOutput = DrmOutput<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    Option<smithay::desktop::utils::OutputPresentationFeedback>,
+    DrmDeviceFd,
+>;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct TitlebarFillFrameState {
@@ -96,10 +106,7 @@ struct ClientFrameState {
     fill_client_edge_delta: Option<(i32, i32, i32, i32)>,
 }
 
-fn previous_client_frame_state(
-    key: &str,
-    current: ClientFrameState,
-) -> Option<ClientFrameState> {
+fn previous_client_frame_state(key: &str, current: ClientFrameState) -> Option<ClientFrameState> {
     static STATE: OnceLock<Mutex<HashMap<String, ClientFrameState>>> = OnceLock::new();
     let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = state.lock().ok()?;
@@ -276,7 +283,10 @@ fn frame_finish(
     surface.next_frame_target = Some(presentation_clock + surface.frame_duration);
     if let Ok(user_data) = submit_result {
         let clock = presentation_clock;
-        let sequence = metadata.as_ref().map(|metadata| metadata.sequence).unwrap_or(0);
+        let sequence = metadata
+            .as_ref()
+            .map(|metadata| metadata.sequence)
+            .unwrap_or(0);
         let flags = if metadata
             .as_ref()
             .is_some_and(|metadata| matches!(metadata.time, DrmEventTime::Monotonic(_)))
@@ -686,27 +696,25 @@ fn render_surface(
                 scale.x * visual_state.scale.x.max(0.0),
                 scale.y * visual_state.scale.y.max(0.0),
             ));
-            let client_physical_geometry = window_decorations
-                .get(window)
-                .and_then(|decoration| {
-                    decoration.content_clip.map(|clip| {
-                        let root_origin =
-                            root_physical_origin(decoration.layout.root.rect, output_geo, scale);
-                        let local_geometry = relative_physical_rect_from_root_precise(
-                            clip.rect_precise,
-                            decoration.layout.root.rect,
-                            output_geo,
-                            scale,
-                        );
-                        smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                root_origin.x + local_geometry.loc.x,
-                                root_origin.y + local_geometry.loc.y,
-                            )),
-                            local_geometry.size,
-                        )
-                    })
-                });
+            let client_physical_geometry = window_decorations.get(window).and_then(|decoration| {
+                decoration.content_clip.map(|clip| {
+                    let root_origin =
+                        root_physical_origin(decoration.layout.root.rect, output_geo, scale);
+                    let local_geometry = relative_physical_rect_from_root_precise(
+                        clip.rect_precise,
+                        decoration.layout.root.rect,
+                        output_geo,
+                        scale,
+                    );
+                    smithay::utils::Rectangle::new(
+                        smithay::utils::Point::from((
+                            root_origin.x + local_geometry.loc.x,
+                            root_origin.y + local_geometry.loc.y,
+                        )),
+                        local_geometry.size,
+                    )
+                })
+            });
             let physical_location = client_physical_geometry
                 .map(|geometry| geometry.loc)
                 .unwrap_or(preliminary_physical_location);
@@ -729,47 +737,47 @@ fn render_surface(
                 continue;
             }
             let use_full_window_snapshot = false;
-                let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
-                let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
-                let mut snapshot_ui_items: Vec<(usize, TtyRenderElements)> = Vec::new();
-                let mut snapshot_backdrop_items: Vec<(usize, TtyRenderElements)> = Vec::new();
-                let mut debug_background_geometries: Vec<(
-                    usize,
-                    String,
-                    &'static str,
-                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                )> = Vec::new();
-                let mut debug_background_pre_geometries: Vec<(
-                    usize,
-                    String,
-                    &'static str,
-                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                )> = Vec::new();
-                let mut debug_ui_geometries: Vec<(
-                    usize,
-                    String,
-                    &'static str,
-                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                )> = Vec::new();
-                let mut debug_ui_pre_geometries: Vec<(
-                    usize,
-                    String,
-                    &'static str,
-                    smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                )> = Vec::new();
-                let root_origin = window_decorations
-                    .get(window)
-                    .map(|decoration| root_physical_origin(decoration.layout.root.rect, output_geo, scale));
-                let composition_visual = if use_full_window_snapshot {
-                    WindowVisualState {
-                        origin: Point::from((0, 0)),
-                        scale: Scale::from((1.0, 1.0)),
-                        translation: Point::from((0, 0)),
-                        opacity: 1.0,
-                    }
-                } else {
-                    visual_state
-                };
+            let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+            let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+            let mut snapshot_ui_items: Vec<(usize, TtyRenderElements)> = Vec::new();
+            let mut snapshot_backdrop_items: Vec<(usize, TtyRenderElements)> = Vec::new();
+            let mut debug_background_geometries: Vec<(
+                usize,
+                String,
+                &'static str,
+                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+            )> = Vec::new();
+            let mut debug_background_pre_geometries: Vec<(
+                usize,
+                String,
+                &'static str,
+                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+            )> = Vec::new();
+            let mut debug_ui_geometries: Vec<(
+                usize,
+                String,
+                &'static str,
+                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+            )> = Vec::new();
+            let mut debug_ui_pre_geometries: Vec<(
+                usize,
+                String,
+                &'static str,
+                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+            )> = Vec::new();
+            let root_origin = window_decorations.get(window).map(|decoration| {
+                root_physical_origin(decoration.layout.root.rect, output_geo, scale)
+            });
+            let composition_visual = if use_full_window_snapshot {
+                WindowVisualState {
+                    origin: Point::from((0, 0)),
+                    scale: Scale::from((1.0, 1.0)),
+                    translation: Point::from((0, 0)),
+                    opacity: 1.0,
+                }
+            } else {
+                visual_state
+            };
             if decoration_ready {
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     &mut backend.renderer,
@@ -785,7 +793,11 @@ fn render_surface(
                     &windows_top_to_bottom,
                     _window_index,
                     window,
-                    if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
+                    if use_full_window_snapshot {
+                        1.0
+                    } else {
+                        visual_state.opacity
+                    },
                     decoration_ready,
                     false,
                 );
@@ -805,7 +817,11 @@ fn render_surface(
                             &windows_top_to_bottom,
                             _window_index,
                             window,
-                            if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
+                            if use_full_window_snapshot {
+                                1.0
+                            } else {
+                                visual_state.opacity
+                            },
                             effect_config,
                             false,
                         )
@@ -822,9 +838,9 @@ fn render_surface(
                         )?;
                         if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
                             && !use_full_window_snapshot
-                            && let Some(first_geometry) = items
-                                .first()
-                                .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale))
+                            && let Some(first_geometry) = items.first().map(|item| {
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
+                            })
                         {
                             log_gap_readback_edge_probes(
                                 &mut backend.renderer,
@@ -838,9 +854,11 @@ fn render_surface(
                         }
                         if use_full_window_snapshot {
                             if render_as_backdrop {
-                                snapshot_backdrop_items.extend(items.into_iter().map(|item| (order, item)));
+                                snapshot_backdrop_items
+                                    .extend(items.into_iter().map(|item| (order, item)));
                             } else {
-                                snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
+                                snapshot_ui_items
+                                    .extend(items.into_iter().map(|item| (order, item)));
                             }
                         } else {
                             let transformed = items.into_iter().map(|item| (order, item));
@@ -853,17 +871,26 @@ fn render_surface(
                     }
                 }
                 if let Some(decoration_state) = window_decorations.get_mut(window) {
-                    let mut ordered_background_items = decoration::ordered_background_elements_for_window(
-                        &mut backend.renderer,
-                        decoration_state,
-                        output_geo,
-                        if use_full_window_snapshot { scale } else { snap_scale },
-                        if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
-                    )
-                    .inspect_err(|error| {
-                        warn!(?error, "failed to build decoration background elements");
-                    })
-                    .unwrap_or_default();
+                    let mut ordered_background_items =
+                        decoration::ordered_background_elements_for_window(
+                            &mut backend.renderer,
+                            decoration_state,
+                            output_geo,
+                            if use_full_window_snapshot {
+                                scale
+                            } else {
+                                snap_scale
+                            },
+                            if use_full_window_snapshot {
+                                1.0
+                            } else {
+                                visual_state.opacity
+                            },
+                        )
+                        .inspect_err(|error| {
+                            warn!(?error, "failed to build decoration background elements");
+                        })
+                        .unwrap_or_default();
                     ordered_background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in ordered_background_items {
                         if let Some(root_origin) = root_origin {
@@ -876,14 +903,14 @@ fn render_surface(
                             } else {
                                 None
                             };
-                            let pre_transform_geometry = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
-                                Some(smithay::backend::renderer::element::Element::geometry(
-                                    &element,
-                                    scale,
-                                ))
-                            } else {
-                                None
-                            };
+                            let pre_transform_geometry =
+                                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                    Some(smithay::backend::renderer::element::Element::geometry(
+                                        &element, scale,
+                                    ))
+                                } else {
+                                    None
+                                };
                             let items = transform_decoration_elements(
                                 vec![element],
                                 root_origin,
@@ -892,9 +919,11 @@ fn render_surface(
                             if let (Some((stable_key, source_kind)), Some(pre_transform_geometry)) =
                                 (debug_stable, pre_transform_geometry)
                             {
-                                let post_transform_geometry = items
-                                    .first()
-                                    .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                                let post_transform_geometry = items.first().map(|item| {
+                                    smithay::backend::renderer::element::Element::geometry(
+                                        item, scale,
+                                    )
+                                });
                                 debug_background_pre_geometries.push((
                                     order,
                                     stable_key.clone(),
@@ -926,9 +955,11 @@ fn render_surface(
                             }
                             if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
                                 && !use_full_window_snapshot
-                                && let Some(first_geometry) = items
-                                    .first()
-                                    .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale))
+                                && let Some(first_geometry) = items.first().map(|item| {
+                                    smithay::backend::renderer::element::Element::geometry(
+                                        item, scale,
+                                    )
+                                })
                             {
                                 log_gap_readback_edge_probes(
                                     &mut backend.renderer,
@@ -941,9 +972,11 @@ fn render_surface(
                                 );
                             }
                             if use_full_window_snapshot {
-                                snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
+                                snapshot_ui_items
+                                    .extend(items.into_iter().map(|item| (order, item)));
                             } else {
-                                ordered_ui_elements.extend(items.into_iter().map(|item| (order, item)));
+                                ordered_ui_elements
+                                    .extend(items.into_iter().map(|item| (order, item)));
                             }
                         }
                     }
@@ -955,7 +988,11 @@ fn render_surface(
                     window_decorations,
                     &output,
                     window,
-                    if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
+                    if use_full_window_snapshot {
+                        1.0
+                    } else {
+                        visual_state.opacity
+                    },
                 )? {
                     if let Some(root_origin) = root_origin {
                         let stable_key = window_decorations
@@ -975,9 +1012,9 @@ fn render_surface(
                             root_origin,
                             composition_visual,
                         )?;
-                        let post_transform_geometry = items
-                            .first()
-                            .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                        let post_transform_geometry = items.first().map(|item| {
+                            smithay::backend::renderer::element::Element::geometry(item, scale)
+                        });
                         debug_ui_pre_geometries.push((
                             order,
                             stable_key.clone(),
@@ -1020,7 +1057,11 @@ fn render_surface(
                     window_decorations,
                     &output,
                     window,
-                    if use_full_window_snapshot { 1.0 } else { visual_state.opacity },
+                    if use_full_window_snapshot {
+                        1.0
+                    } else {
+                        visual_state.opacity
+                    },
                 )? {
                     if let Some(root_origin) = root_origin {
                         let stable_key = window_decorations
@@ -1040,9 +1081,9 @@ fn render_surface(
                             root_origin,
                             composition_visual,
                         )?;
-                        let post_transform_geometry = items
-                            .first()
-                            .map(|item| smithay::backend::renderer::element::Element::geometry(item, scale));
+                        let post_transform_geometry = items.first().map(|item| {
+                            smithay::backend::renderer::element::Element::geometry(item, scale)
+                        });
                         debug_ui_pre_geometries.push((
                             order,
                             stable_key.clone(),
@@ -1084,18 +1125,19 @@ fn render_surface(
                 snapshot_ui_items.sort_by_key(|(order, _)| *order);
                 snapshot_backdrop_items.sort_by_key(|(order, _)| *order);
                 if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
-                    let first_backdrop = ordered_backdrop_elements
-                        .first()
-                        .map(|(_, element)| smithay::backend::renderer::element::Element::geometry(element, scale));
-                    let first_snapshot_backdrop = snapshot_backdrop_items
-                        .first()
-                        .map(|(_, element)| smithay::backend::renderer::element::Element::geometry(element, scale));
-                    let first_ui = ordered_ui_elements
-                        .first()
-                        .map(|(_, element)| smithay::backend::renderer::element::Element::geometry(element, scale));
-                    let first_snapshot_item = snapshot_ui_items
-                        .first()
-                        .map(|(_, element)| smithay::backend::renderer::element::Element::geometry(element, scale));
+                    let first_backdrop = ordered_backdrop_elements.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
+                    let first_snapshot_backdrop =
+                        snapshot_backdrop_items.first().map(|(_, element)| {
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
+                        });
+                    let first_ui = ordered_ui_elements.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
+                    let first_snapshot_item = snapshot_ui_items.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     tracing::info!(
                         window_id = %window_id,
                         use_full_window_snapshot,
@@ -1157,15 +1199,11 @@ fn render_surface(
                     );
                 }
                 let _client_end_len = snapshot_scene.len();
-                snapshot_scene.extend(
-                    snapshot_ui_items
-                        .into_iter()
-                        .map(|(_, element)| element)
-                );
+                snapshot_scene.extend(snapshot_ui_items.into_iter().map(|(_, element)| element));
                 snapshot_scene.extend(
                     snapshot_backdrop_items
                         .into_iter()
-                        .map(|(_, element)| element)
+                        .map(|(_, element)| element),
                 );
                 let full_rect = window_decorations
                     .get(window)
@@ -1174,9 +1212,11 @@ fn render_surface(
                     .and_then(|full_rect| {
                         let existing_complete = complete_window_snapshots.remove(&window_id);
                         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
-                            let first_snapshot_geometry = snapshot_scene
-                                .first()
-                                .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                            let first_snapshot_geometry = snapshot_scene.first().map(|element| {
+                                smithay::backend::renderer::element::Element::geometry(
+                                    element, scale,
+                                )
+                            });
                             tracing::info!(
                                 window_id = %window_id,
                                 full_rect = ?full_rect,
@@ -1209,24 +1249,25 @@ fn render_surface(
                             visual_state.opacity,
                         )
                     })
-                    .and_then(|element| transform_snapshot_elements(vec![element], visual_state).ok())
+                    .and_then(|element| {
+                        transform_snapshot_elements(vec![element], visual_state).ok()
+                    })
                     .unwrap_or_default()
             } else if let Some(content_clip) = content_clip {
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                     if let Some(decoration) = window_decorations.get(window) {
-                        let border_buffer = decoration
-                            .buffers
-                            .iter()
-                            .find(|buffer| buffer.source_kind == "window-border" && buffer.border_width > 0.0);
-                        let border_fill = decoration
-                            .buffers
-                            .iter()
-                            .find(|buffer| buffer.source_kind == "fill" && buffer.hole_rect.is_some());
+                        let border_buffer = decoration.buffers.iter().find(|buffer| {
+                            buffer.source_kind == "window-border" && buffer.border_width > 0.0
+                        });
+                        let border_fill = decoration.buffers.iter().find(|buffer| {
+                            buffer.source_kind == "fill" && buffer.hole_rect.is_some()
+                        });
                         let snap_scale = Scale::from((
                             scale.x * visual_state.scale.x.max(0.0),
                             scale.y * visual_state.scale.y.max(0.0),
                         ));
-                        let border_width = (decoration.layout.root.rect.x + decoration.layout.root.rect.width)
+                        let border_width = (decoration.layout.root.rect.x
+                            + decoration.layout.root.rect.width)
                             - (content_clip.rect.loc.x + content_clip.rect.size.w);
                         let border_rect = Some(crate::ssd::LogicalRect::new(
                             content_clip.rect.loc.x - border_width,
@@ -1245,25 +1286,27 @@ fn render_surface(
                                 output_geo.loc,
                                 snap_scale,
                                 content_clip.snap_mode,
-                            )
-                        );
-                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
-                            crate::ssd::LogicalRect::new(
-                                content_clip.rect.loc.x,
-                                content_clip.rect.loc.y,
-                                content_clip.rect.size.w,
-                                content_clip.rect.size.h,
                             ),
-                            output_geo.loc,
-                            snap_scale,
-                            content_clip.snap_mode,
                         );
+                        let snapped_clip =
+                            crate::backend::visual::snapped_logical_rect_relative_with_mode(
+                                crate::ssd::LogicalRect::new(
+                                    content_clip.rect.loc.x,
+                                    content_clip.rect.loc.y,
+                                    content_clip.rect.size.w,
+                                    content_clip.rect.size.h,
+                                ),
+                                output_geo.loc,
+                                snap_scale,
+                                content_clip.snap_mode,
+                            );
                         let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
                         let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
                         let expected_right =
                             ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
-                        let expected_bottom =
-                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                        let expected_bottom = ((snapped_clip.y + snapped_clip.height) as f64
+                            * scale.y)
+                            .round() as i32;
                         tracing::info!(
                             output = %output.name(),
                             window_id = %window_id,
@@ -1355,28 +1398,29 @@ fn render_surface(
                                         )
                                     })
                             });
-                            let titlebar_shader = decoration.shader_buffers.iter().find(|buffer| {
-                                buffer.rect.height == 30
-                            });
+                            let titlebar_shader = decoration
+                                .shader_buffers
+                                .iter()
+                                .find(|buffer| buffer.rect.height == 30);
                             let titlebar_shader_precise = titlebar_shader.and_then(|buffer| {
-                                buffer
-                                    .rect_precise
-                                    .map(|rect| crate::backend::visual::PreciseLogicalRect {
+                                buffer.rect_precise.map(|rect| {
+                                    crate::backend::visual::PreciseLogicalRect {
                                         x: rect.x - decoration.layout.root.rect.x as f32,
                                         y: rect.y - decoration.layout.root.rect.y as f32,
                                         width: rect.width,
                                         height: rect.height,
-                                    })
+                                    }
+                                })
                             });
                             let titlebar_shader_clip_precise = titlebar_shader.and_then(|buffer| {
-                                buffer
-                                    .clip_rect_precise
-                                    .map(|rect| crate::backend::visual::PreciseLogicalRect {
+                                buffer.clip_rect_precise.map(|rect| {
+                                    crate::backend::visual::PreciseLogicalRect {
                                         x: rect.x - decoration.layout.root.rect.x as f32,
                                         y: rect.y - decoration.layout.root.rect.y as f32,
                                         width: rect.width,
                                         height: rect.height,
-                                    })
+                                    }
+                                })
                             });
                             let titlebar_shader_physical = titlebar_shader.map(|buffer| {
                                 buffer
@@ -1397,16 +1441,17 @@ fn render_surface(
                                         )
                                     })
                             });
-                            let titlebar_shader_clip_physical_precise = titlebar_shader_clip_precise.map(|clip| {
-                                let scale_x = scale.x.abs().max(0.0001) as f32;
-                                let scale_y = scale.y.abs().max(0.0001) as f32;
-                                (
-                                    clip.x * scale_x,
-                                    clip.y * scale_y,
-                                    clip.width * scale_x,
-                                    clip.height * scale_y,
-                                )
-                            });
+                            let titlebar_shader_clip_physical_precise =
+                                titlebar_shader_clip_precise.map(|clip| {
+                                    let scale_x = scale.x.abs().max(0.0001) as f32;
+                                    let scale_y = scale.y.abs().max(0.0001) as f32;
+                                    (
+                                        clip.x * scale_x,
+                                        clip.y * scale_y,
+                                        clip.width * scale_x,
+                                        clip.height * scale_y,
+                                    )
+                                });
                             let titlebar_shader_clip_physical_global_precise =
                                 titlebar_shader_clip_physical_precise;
                             let border_expected_inner_precise = border_buffer
@@ -1424,10 +1469,10 @@ fn render_surface(
                                     (
                                         rect.x * scale_x,
                                         rect.y * scale_y,
-                                    rect.width * scale_x,
-                                    rect.height * scale_y,
-                                )
-                            });
+                                        rect.width * scale_x,
+                                        rect.height * scale_y,
+                                    )
+                                });
                             let shader_clip_vs_border_inner_precise =
                                 titlebar_shader_clip_physical_global_precise
                                     .zip(border_expected_inner_physical_precise)
@@ -1442,7 +1487,11 @@ fn render_surface(
                             let content_clip_physical =
                                 smithay::utils::Rectangle::<i32, smithay::utils::Physical>::new(
                                     smithay::utils::Point::from((expected_left, expected_top)),
-                                    ((expected_right - expected_left).max(0), (expected_bottom - expected_top).max(0)).into(),
+                                    (
+                                        (expected_right - expected_left).max(0),
+                                        (expected_bottom - expected_top).max(0),
+                                    )
+                                        .into(),
                                 );
                             let first_button = decoration.buffers.iter().find(|buffer| {
                                 buffer.source_kind == "button" && buffer.border_width > 0.0
@@ -1456,7 +1505,8 @@ fn render_surface(
                                     buffer.clip_rect,
                                 )
                             });
-                            let button_delta = match (border_inner_physical, first_button_physical) {
+                            let button_delta = match (border_inner_physical, first_button_physical)
+                            {
                                 (Some(inner), Some(button)) => Some((
                                     button.loc.x - inner.loc.x,
                                     button.loc.y - inner.loc.y,
@@ -1504,9 +1554,9 @@ fn render_surface(
                 .unwrap_or_default();
                 let bypass_clip = std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some();
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
-                    let first_geometry = clipped
-                        .first()
-                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                    let first_geometry = clipped.first().map(|element| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     let window_geometry = window.geometry();
                     let decoration_client_rect = window_decorations
                         .get(window)
@@ -1518,23 +1568,25 @@ fn render_surface(
                             scale.x * visual_state.scale.x.max(0.0),
                             scale.y * visual_state.scale.y.max(0.0),
                         ));
-                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
-                            crate::ssd::LogicalRect::new(
-                                decoration.content_clip.unwrap().rect.loc.x,
-                                decoration.content_clip.unwrap().rect.loc.y,
-                                decoration.content_clip.unwrap().rect.size.w,
-                                decoration.content_clip.unwrap().rect.size.h,
-                            ),
-                            output_geo.loc,
-                            snap_scale,
-                            decoration.content_clip.unwrap().snap_mode,
-                        );
+                        let snapped_clip =
+                            crate::backend::visual::snapped_logical_rect_relative_with_mode(
+                                crate::ssd::LogicalRect::new(
+                                    decoration.content_clip.unwrap().rect.loc.x,
+                                    decoration.content_clip.unwrap().rect.loc.y,
+                                    decoration.content_clip.unwrap().rect.size.w,
+                                    decoration.content_clip.unwrap().rect.size.h,
+                                ),
+                                output_geo.loc,
+                                snap_scale,
+                                decoration.content_clip.unwrap().snap_mode,
+                            );
                         let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
                         let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
                         let expected_right =
                             ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
-                        let expected_bottom =
-                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                        let expected_bottom = ((snapped_clip.y + snapped_clip.height) as f64
+                            * scale.y)
+                            .round() as i32;
                         Some((
                             first_geometry.loc.x - expected_left,
                             first_geometry.loc.y - expected_top,
@@ -1583,8 +1635,9 @@ fn render_surface(
                         let second_pre_fill = titlebar_pre_fills.get(1).cloned();
                         let first_pre_fill_geometry =
                             first_pre_fill.as_ref().map(|(_, _, _, geometry)| *geometry);
-                        let second_pre_fill_geometry =
-                            second_pre_fill.as_ref().map(|(_, _, _, geometry)| *geometry);
+                        let second_pre_fill_geometry = second_pre_fill
+                            .as_ref()
+                            .map(|(_, _, _, geometry)| *geometry);
                         let fill_frame_key = format!("{}:{}", output.name(), window_id);
                         let previous_fill_state = previous_titlebar_fill_state(
                             &fill_frame_key,
@@ -1593,18 +1646,21 @@ fn render_surface(
                                 second_pre_fill: second_pre_fill_geometry,
                             },
                         );
-                        let fill_delta =
-                            |current: Option<Rectangle<i32, smithay::utils::Physical>>,
-                             previous: Option<Rectangle<i32, smithay::utils::Physical>>| {
-                                current.zip(previous).map(|(current, previous)| {
-                                    (
-                                        current.loc.x - previous.loc.x,
-                                        current.loc.y - previous.loc.y,
-                                        current.size.w - previous.size.w,
-                                        current.size.h - previous.size.h,
-                                    )
-                                })
-                            };
+                        let fill_delta = |current: Option<
+                            Rectangle<i32, smithay::utils::Physical>,
+                        >,
+                                          previous: Option<
+                            Rectangle<i32, smithay::utils::Physical>,
+                        >| {
+                            current.zip(previous).map(|(current, previous)| {
+                                (
+                                    current.loc.x - previous.loc.x,
+                                    current.loc.y - previous.loc.y,
+                                    current.size.w - previous.size.w,
+                                    current.size.h - previous.size.h,
+                                )
+                            })
+                        };
                         let first_pre_fill_delta = fill_delta(
                             first_pre_fill_geometry,
                             previous_fill_state.and_then(|state| state.first_pre_fill),
@@ -1613,18 +1669,26 @@ fn render_surface(
                             second_pre_fill_geometry,
                             previous_fill_state.and_then(|state| state.second_pre_fill),
                         );
-                        let sibling_gap =
-                            |upper: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                             lower: smithay::utils::Rectangle<i32, smithay::utils::Physical>| {
-                                (
-                                    lower.loc.x - upper.loc.x,
-                                    lower.loc.y - (upper.loc.y + upper.size.h),
-                                    (lower.loc.x + lower.size.w) - (upper.loc.x + upper.size.w),
-                                )
-                            };
-                        let shader_to_shader_gap = first_fill.as_ref().zip(second_fill.as_ref()).map(
-                            |((_, _, _, first), (_, _, _, second))| sibling_gap(*first, *second),
-                        );
+                        let sibling_gap = |upper: smithay::utils::Rectangle<
+                            i32,
+                            smithay::utils::Physical,
+                        >,
+                                           lower: smithay::utils::Rectangle<
+                            i32,
+                            smithay::utils::Physical,
+                        >| {
+                            (
+                                lower.loc.x - upper.loc.x,
+                                lower.loc.y - (upper.loc.y + upper.size.h),
+                                (lower.loc.x + lower.size.w) - (upper.loc.x + upper.size.w),
+                            )
+                        };
+                        let shader_to_shader_gap = first_fill
+                            .as_ref()
+                            .zip(second_fill.as_ref())
+                            .map(|((_, _, _, first), (_, _, _, second))| {
+                                sibling_gap(*first, *second)
+                            });
                         let shader_to_client_gap =
                             second_fill.as_ref().and_then(|(_, _, _, second)| {
                                 first_geometry.map(|client| sibling_gap(*second, client))
@@ -1640,9 +1704,8 @@ fn render_surface(
                                     )
                                 })
                             });
-                        let content_clip_physical = window_decorations
-                            .get(window)
-                            .and_then(|decoration| {
+                        let content_clip_physical =
+                            window_decorations.get(window).and_then(|decoration| {
                                 let content_clip = decoration.content_clip?;
                                 let root_origin = root_physical_origin(
                                     decoration.layout.root.rect,
@@ -1672,18 +1735,21 @@ fn render_surface(
                                 fill_client_edge_delta,
                             },
                         );
-                        let rect_delta =
-                            |current: Option<Rectangle<i32, smithay::utils::Physical>>,
-                             previous: Option<Rectangle<i32, smithay::utils::Physical>>| {
-                                current.zip(previous).map(|(current, previous)| {
-                                    (
-                                        current.loc.x - previous.loc.x,
-                                        current.loc.y - previous.loc.y,
-                                        current.size.w - previous.size.w,
-                                        current.size.h - previous.size.h,
-                                    )
-                                })
-                            };
+                        let rect_delta = |current: Option<
+                            Rectangle<i32, smithay::utils::Physical>,
+                        >,
+                                          previous: Option<
+                            Rectangle<i32, smithay::utils::Physical>,
+                        >| {
+                            current.zip(previous).map(|(current, previous)| {
+                                (
+                                    current.loc.x - previous.loc.x,
+                                    current.loc.y - previous.loc.y,
+                                    current.size.w - previous.size.w,
+                                    current.size.h - previous.size.h,
+                                )
+                            })
+                        };
                         let client_geometry_delta = rect_delta(
                             first_geometry,
                             previous_client_state.and_then(|state| state.client_geometry),
@@ -1693,7 +1759,10 @@ fn render_surface(
                             previous_client_state.and_then(|state| state.content_clip_physical),
                         );
                         let fill_client_edge_delta_delta = fill_client_edge_delta
-                            .zip(previous_client_state.and_then(|state| state.fill_client_edge_delta))
+                            .zip(
+                                previous_client_state
+                                    .and_then(|state| state.fill_client_edge_delta),
+                            )
                             .map(|(current, previous)| {
                                 (
                                     current.0 - previous.0,
@@ -1702,22 +1771,20 @@ fn render_surface(
                                     current.3 - previous.3,
                                 )
                             });
-                        let matching_fill = |
-                            ui_key: &str,
-                            fills: &Vec<(
-                                usize,
-                                String,
-                                &'static str,
-                                smithay::utils::Rectangle<i32, smithay::utils::Physical>,
-                            )>,
-                        | {
+                        let matching_fill = |ui_key: &str,
+                                             fills: &Vec<(
+                            usize,
+                            String,
+                            &'static str,
+                            smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+                        )>| {
                             fills
                                 .iter()
                                 .filter_map(|(order, fill_key, source_kind, geometry)| {
                                     let fill_base = fill_key.strip_suffix(":fill")?;
                                     (ui_key.starts_with(fill_base)
                                         && ui_key.as_bytes().get(fill_base.len()) == Some(&b'/'))
-                                        .then_some((*order, fill_key.clone(), *source_kind, *geometry))
+                                    .then_some((*order, fill_key.clone(), *source_kind, *geometry))
                                 })
                                 .max_by_key(|(_, fill_key, _, _)| fill_key.len())
                         };
@@ -1746,7 +1813,8 @@ fn render_surface(
                             debug_ui_geometries
                                 .iter()
                                 .filter_map(|(order, key, source_kind, geometry)| {
-                                    let (_, fill_key, _, fill) = matching_fill(key, &titlebar_fills)?;
+                                    let (_, fill_key, _, fill) =
+                                        matching_fill(key, &titlebar_fills)?;
                                     Some((
                                         *order,
                                         key.clone(),
@@ -1842,7 +1910,9 @@ fn render_surface(
                         );
                     }
                     let expand_px = std::env::var_os("SHOJI_GAP_EXPAND_RAW_EDGE")
-                        .and_then(|value| value.to_str().and_then(|value| value.parse::<i32>().ok()))
+                        .and_then(|value| {
+                            value.to_str().and_then(|value| value.parse::<i32>().ok())
+                        })
                         .unwrap_or(0)
                         .max(0);
                     if expand_px == 0 {
@@ -1854,13 +1924,16 @@ fn render_surface(
                         raw_elements
                             .into_iter()
                             .map(|element| {
-                                let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
-                                let scale_x =
-                                    (geometry.size.w.saturating_add(expand_px).max(1) as f64)
-                                        / geometry.size.w.max(1) as f64;
-                                let scale_y =
-                                    (geometry.size.h.saturating_add(expand_px).max(1) as f64)
-                                        / geometry.size.h.max(1) as f64;
+                                let geometry =
+                                    smithay::backend::renderer::element::Element::geometry(
+                                        &element, scale,
+                                    );
+                                let scale_x = (geometry.size.w.saturating_add(expand_px).max(1)
+                                    as f64)
+                                    / geometry.size.w.max(1) as f64;
+                                let scale_y = (geometry.size.h.saturating_add(expand_px).max(1)
+                                    as f64)
+                                    / geometry.size.h.max(1) as f64;
                                 TtyRenderElements::TransformedWindow(
                                     RelocateRenderElement::from_element(
                                         RescaleRenderElement::from_element(
@@ -1879,10 +1952,9 @@ fn render_surface(
                     transform_clipped_elements(clipped, visual_state)
                 };
                 if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
-                    if let Some(first_geometry) = transformed
-                        .first()
-                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
-                    {
+                    if let Some(first_geometry) = transformed.first().map(|element| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    }) {
                         log_gap_readback_edge_probes(
                             &mut backend.renderer,
                             scale,
@@ -1904,9 +1976,9 @@ fn render_surface(
                     visual_state.opacity,
                 );
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
-                    let first_geometry = surfaces
-                        .first()
-                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                    let first_geometry = surfaces.first().map(|element| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     let window_geometry = window.geometry();
                     let decoration_client_rect = window_decorations
                         .get(window)
@@ -1930,10 +2002,9 @@ fn render_surface(
                     TtyRenderElements::TransformedWindow,
                 );
                 if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
-                    if let Some(first_geometry) = transformed
-                        .first()
-                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
-                    {
+                    if let Some(first_geometry) = transformed.first().map(|element| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    }) {
                         log_gap_readback_edge_probes(
                             &mut backend.renderer,
                             scale,
@@ -1962,9 +2033,7 @@ fn render_surface(
 
             scene_elements.extend(popup_elements.into_iter());
             scene_elements.extend(client_elements.into_iter());
-            scene_elements.extend(
-                ordered_ui_elements.into_iter().map(|(_, element)| element),
-            );
+            scene_elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
             scene_elements.extend(
                 ordered_backdrop_elements
                     .into_iter()
@@ -2048,8 +2117,7 @@ fn render_surface(
         } else {
             None
         };
-        let _damage_profile_elapsed_ms =
-            damage_profile_started_at.elapsed().as_secs_f64() * 1000.0;
+        let _damage_profile_elapsed_ms = damage_profile_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let captured_blink_damage = if should_capture_blink {
             computed_damage
@@ -2105,7 +2173,12 @@ fn render_surface(
             //
             // Chrome on the TTY backend would otherwise frequently stick to ~60 fps on a 66 Hz
             // output. Keeping this metadata current made Chrome observe the real output cadence.
-            update_primary_scanout_output(&state.space, &output, &cursor_status_for_log, &result.states);
+            update_primary_scanout_output(
+                &state.space,
+                &output,
+                &cursor_status_for_log,
+                &result.states,
+            );
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, &result.states);
             surface
@@ -2156,7 +2229,9 @@ fn transform_window_elements(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     visual: WindowVisualState,
     direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> TtyRenderElements,
-    transformed: fn(RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>) -> TtyRenderElements,
+    transformed: fn(
+        RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    ) -> TtyRenderElements,
 ) -> Vec<TtyRenderElements> {
     if is_identity_visual(visual) {
         return elements.into_iter().map(direct).collect();
@@ -2166,11 +2241,7 @@ fn transform_window_elements(
         .into_iter()
         .map(|element| {
             transformed(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -2183,25 +2254,23 @@ fn transform_clipped_elements(
     visual: WindowVisualState,
 ) -> Vec<TtyRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(TtyRenderElements::Clipped).collect();
+        return elements
+            .into_iter()
+            .map(TtyRenderElements::Clipped)
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
             TtyRenderElements::TransformedClipped(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
         })
         .collect()
 }
-
 
 fn transform_text_elements(
     elements: Vec<crate::backend::text::DecorationTextureElements>,
@@ -2227,11 +2296,7 @@ fn transform_text_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             TtyRenderElements::TransformedText(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -2244,18 +2309,17 @@ fn transform_snapshot_elements(
     visual: WindowVisualState,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     if is_identity_visual(visual) {
-        return Ok(elements.into_iter().map(TtyRenderElements::Snapshot).collect());
+        return Ok(elements
+            .into_iter()
+            .map(TtyRenderElements::Snapshot)
+            .collect());
     }
 
     Ok(elements
         .into_iter()
         .map(|element| {
             TtyRenderElements::TransformedSnapshot(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -2287,11 +2351,7 @@ fn transform_decoration_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             TtyRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -2323,11 +2383,7 @@ fn transform_backdrop_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             TtyRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -2348,8 +2404,10 @@ fn log_gap_readback_probe(
     if probe_rect.size.w <= 0 || probe_rect.size.h <= 0 || elements.is_empty() {
         return;
     }
-    let probe_size =
-        smithay::utils::Size::<i32, smithay::utils::Buffer>::from((probe_rect.size.w, probe_rect.size.h));
+    let probe_size = smithay::utils::Size::<i32, smithay::utils::Buffer>::from((
+        probe_rect.size.w,
+        probe_rect.size.h,
+    ));
 
     let Ok(mut offscreen) =
         Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, probe_size)
@@ -2558,11 +2616,14 @@ fn capture_snapshot_from_output_elements(
     scale: smithay::utils::Scale<f64>,
     existing: Option<crate::backend::snapshot::LiveWindowSnapshot>,
     elements: &[TtyRenderElements],
-) -> Result<Option<crate::backend::snapshot::LiveWindowSnapshot>, smithay::backend::renderer::gles::GlesError> {
+) -> Result<
+    Option<crate::backend::snapshot::LiveWindowSnapshot>,
+    smithay::backend::renderer::gles::GlesError,
+> {
     let capture_origin: smithay::utils::Point<i32, smithay::utils::Physical> =
         (smithay::utils::Point::from((rect.x, rect.y)) - output_geo.loc)
-        .to_f64()
-        .to_physical_precise_round(scale);
+            .to_f64()
+            .to_physical_precise_round(scale);
     let relocated = elements
         .iter()
         .map(|element| {
@@ -2579,7 +2640,10 @@ fn capture_snapshot_from_output_elements(
 fn backdrop_shader_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &mut std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     _window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
@@ -2593,7 +2657,11 @@ fn backdrop_shader_elements_for_window(
     alpha: f32,
     has_backdrop_source: bool,
     apply_visual_transform: bool,
-) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement, bool)> {
+) -> Vec<(
+    usize,
+    crate::backend::shader_effect::StableBackdropTextureElement,
+    bool,
+)> {
     if !has_backdrop_source {
         let Some(decoration) = window_decorations.get(window) else {
             return Vec::new();
@@ -2638,7 +2706,11 @@ fn backdrop_shader_elements_for_window(
                 "{}@{}@{}",
                 cached.stable_key,
                 output.name(),
-                if apply_visual_transform { "visual" } else { "raw" }
+                if apply_visual_transform {
+                    "visual"
+                } else {
+                    "raw"
+                }
             );
             let uses_backdrop = cached.shader.uses_backdrop_input();
             let uses_xray = cached.shader.uses_xray_backdrop_input();
@@ -2668,7 +2740,11 @@ fn backdrop_shader_elements_for_window(
                         rect
                     }
                 })
-                .or_else(|| Some(crate::backend::visual::precise_rect_from_logical(display_rect)));
+                .or_else(|| {
+                    Some(crate::backend::visual::precise_rect_from_logical(
+                        display_rect,
+                    ))
+                });
             let source_effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
@@ -2745,14 +2821,20 @@ fn backdrop_shader_elements_for_window(
                 &{
                     let mut entries = Vec::new();
                     if uses_backdrop {
-                        entries.extend(relevant_source_damage.iter().filter(|entry| {
-                            entry.owner.starts_with("window:")
-                        }).cloned());
+                        entries.extend(
+                            relevant_source_damage
+                                .iter()
+                                .filter(|entry| entry.owner.starts_with("window:"))
+                                .cloned(),
+                        );
                     }
                     if uses_backdrop || uses_xray {
-                        entries.extend(relevant_source_damage.iter().filter(|entry| {
-                            entry.owner.starts_with("layer:")
-                        }).cloned());
+                        entries.extend(
+                            relevant_source_damage
+                                .iter()
+                                .filter(|entry| entry.owner.starts_with("layer:"))
+                                .cloned(),
+                        );
                     }
                     entries
                 },
@@ -2778,25 +2860,28 @@ fn backdrop_shader_elements_for_window(
                         )),
                         (display_rect.width, display_rect.height).into(),
                     );
-                    let clip_rect = cached.clip_rect.map(|clip_rect| {
-                        let clip = if apply_visual_transform {
-                            crate::backend::visual::transformed_rect(
-                                clip_rect,
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
+                    let clip_rect = cached
+                        .clip_rect
+                        .map(|clip_rect| {
+                            let clip = if apply_visual_transform {
+                                crate::backend::visual::transformed_rect(
+                                    clip_rect,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                )
+                            } else {
+                                clip_rect
+                            };
+                            crate::backend::visual::snapped_logical_rect_in_element_space(
+                                clip,
+                                display_rect,
+                                output_geo.loc,
+                                scale,
+                                crate::backend::visual::RectSnapMode::OriginAndSize,
                             )
-                        } else {
-                            clip_rect
-                        };
-                        crate::backend::visual::snapped_logical_rect_in_element_space(
-                            clip,
-                            display_rect,
-                            output_geo.loc,
-                            scale,
-                            crate::backend::visual::RectSnapMode::OriginAndSize,
-                        )
-                    }).or_else(|| {
-                        display_rect_precise.zip(cached.clip_rect_precise.map(|clip| {
+                        })
+                        .or_else(|| {
+                            display_rect_precise.zip(cached.clip_rect_precise.map(|clip| {
                             if apply_visual_transform {
                                 crate::backend::visual::transformed_precise_rect(
                                     clip,
@@ -2814,7 +2899,7 @@ fn backdrop_shader_elements_for_window(
                                 scale,
                             )
                         })
-                    });
+                        });
                     let local_sample_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
                             source_effect_rect.x - output_geo.loc.x,
@@ -2826,10 +2911,7 @@ fn backdrop_shader_elements_for_window(
                     let geometry = display_rect_precise
                         .map(|rect| {
                             crate::backend::visual::relative_physical_rect_from_root_precise(
-                                rect,
-                                root_rect,
-                                output_geo,
-                                scale,
+                                rect, root_rect, output_geo, scale,
                             )
                         })
                         .unwrap_or_else(|| {
@@ -2841,23 +2923,27 @@ fn backdrop_shader_elements_for_window(
                                 cached.clip_rect,
                             )
                         });
-                    let element = crate::backend::shader_effect::backdrop_shader_element_with_geometry(
-                        renderer,
-                        existing.id.clone(),
-                        existing.commit_counter,
-                        existing.texture,
-                        local_rect,
-                        geometry,
-                        local_sample_rect,
-                        local_capture_rect,
-                        &cached.shader,
-                        alpha,
-                        scale.x as f32,
-                        clip_rect,
-                        cached.clip_radius,
-                        format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
-                    )
-                    .ok()?;
+                    let element =
+                        crate::backend::shader_effect::backdrop_shader_element_with_geometry(
+                            renderer,
+                            existing.id.clone(),
+                            existing.commit_counter,
+                            existing.texture,
+                            local_rect,
+                            geometry,
+                            local_sample_rect,
+                            local_capture_rect,
+                            &cached.shader,
+                            alpha,
+                            scale.x as f32,
+                            clip_rect,
+                            cached.clip_radius,
+                            format!(
+                                "window-backdrop:{}:{}",
+                                decoration.snapshot.id, cached.stable_key
+                            ),
+                        )
+                        .ok()?;
                     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                         let geometry =
                             smithay::backend::renderer::element::Element::geometry(&element, scale);
@@ -2896,9 +2982,12 @@ fn backdrop_shader_elements_for_window(
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                        .to_f64()
-                        .to_physical_precise_round(scale),
+                    translation: smithay::utils::Point::from((
+                        -capture_offset.x,
+                        -capture_offset.y,
+                    ))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -2910,7 +2999,12 @@ fn backdrop_shader_elements_for_window(
                     )
                     .into_iter(),
                 );
-                capture_scene_texture_for_effect(renderer, actual_capture_geo, scale, &backdrop_scene)
+                capture_scene_texture_for_effect(
+                    renderer,
+                    actual_capture_geo,
+                    scale,
+                    &backdrop_scene,
+                )
             } else {
                 None
             };
@@ -3005,43 +3099,48 @@ fn backdrop_shader_elements_for_window(
                 )),
                 (display_rect.width, display_rect.height).into(),
             );
-            let clip_rect = cached.clip_rect.map(|clip_rect| {
-                let clip = if apply_visual_transform {
-                    crate::backend::visual::transformed_rect(
-                        clip_rect,
-                        decoration.layout.root.rect,
-                        decoration.visual_transform,
-                    )
-                } else {
-                    clip_rect
-                };
-                crate::backend::visual::snapped_logical_rect_in_element_space(
-                    clip,
-                    display_rect,
-                    output_geo.loc,
-                    scale,
-                    crate::backend::visual::RectSnapMode::OriginAndSize,
-                )
-            }).or_else(|| {
-                display_rect_precise.zip(cached.clip_rect_precise.map(|clip| {
-                    if apply_visual_transform {
-                        crate::backend::visual::transformed_precise_rect(
-                            clip,
+            let clip_rect = cached
+                .clip_rect
+                .map(|clip_rect| {
+                    let clip = if apply_visual_transform {
+                        crate::backend::visual::transformed_rect(
+                            clip_rect,
                             decoration.layout.root.rect,
                             decoration.visual_transform,
                         )
                     } else {
-                        clip
-                    }
-                })).map(|(rect, clip)| {
-                    crate::backend::visual::snapped_precise_logical_rect_for_element(
+                        clip_rect
+                    };
+                    crate::backend::visual::snapped_logical_rect_in_element_space(
                         clip,
-                        rect,
+                        display_rect,
                         output_geo.loc,
                         scale,
+                        crate::backend::visual::RectSnapMode::OriginAndSize,
                     )
                 })
-            });
+                .or_else(|| {
+                    display_rect_precise
+                        .zip(cached.clip_rect_precise.map(|clip| {
+                            if apply_visual_transform {
+                                crate::backend::visual::transformed_precise_rect(
+                                    clip,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                )
+                            } else {
+                                clip
+                            }
+                        }))
+                        .map(|(rect, clip)| {
+                            crate::backend::visual::snapped_precise_logical_rect_for_element(
+                                clip,
+                                rect,
+                                output_geo.loc,
+                                scale,
+                            )
+                        })
+                });
             let local_sample_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
                     source_effect_rect.x - output_geo.loc.x,
@@ -3053,10 +3152,7 @@ fn backdrop_shader_elements_for_window(
             let geometry = display_rect_precise
                 .map(|rect| {
                     crate::backend::visual::relative_physical_rect_from_root_precise(
-                        rect,
-                        root_rect,
-                        output_geo,
-                        scale,
+                        rect, root_rect, output_geo, scale,
                     )
                 })
                 .unwrap_or_else(|| {
@@ -3090,7 +3186,10 @@ fn backdrop_shader_elements_for_window(
                 scale.x as f32,
                 clip_rect,
                 cached.clip_radius,
-                format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
+                format!(
+                    "window-backdrop:{}:{}",
+                    decoration.snapshot.id, cached.stable_key
+                ),
             )
             .ok()?;
             if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
@@ -3122,7 +3221,9 @@ fn protocol_background_effect_rects_for_window(
     };
     let wl_surface = surface.wl_surface();
     let blur_region = compositor::with_states(wl_surface, |states| {
-        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        let mut cached = states
+            .cached_state
+            .get::<BackgroundEffectSurfaceCachedState>();
         cached.current().blur_region.clone()
     });
     let Some(region) = blur_region else {
@@ -3131,7 +3232,12 @@ fn protocol_background_effect_rects_for_window(
 
     crate::backend::window::region_rects_within_bounds(
         &region,
-        crate::ssd::LogicalRect::new(0, 0, decoration.client_rect.width, decoration.client_rect.height),
+        crate::ssd::LogicalRect::new(
+            0,
+            0,
+            decoration.client_rect.width,
+            decoration.client_rect.height,
+        ),
     )
     .into_iter()
     .map(|rect| {
@@ -3151,7 +3257,9 @@ fn protocol_background_effect_rects_for_layer(
 ) -> Vec<crate::ssd::LogicalRect> {
     let wl_surface = layer_surface.wl_surface();
     let blur_region = compositor::with_states(wl_surface, |states| {
-        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        let mut cached = states
+            .cached_state
+            .get::<BackgroundEffectSurfaceCachedState>();
         cached.current().blur_region.clone()
     });
     let Some(region) = blur_region else {
@@ -3181,13 +3289,20 @@ fn protocol_background_effect_rects_for_layer(
 }
 
 fn collect_window_source_damage(
-    window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     windows: impl IntoIterator<Item = smithay::desktop::Window>,
     source_damage: &[crate::state::OwnedDamageRect],
 ) -> Vec<crate::state::OwnedDamageRect> {
     let owners = windows
         .into_iter()
-        .filter_map(|window| window_decorations.get(&window).map(|decoration| decoration.snapshot.id.clone()))
+        .filter_map(|window| {
+            window_decorations
+                .get(&window)
+                .map(|decoration| decoration.snapshot.id.clone())
+        })
         .collect::<std::collections::HashSet<_>>();
     source_damage
         .iter()
@@ -3211,10 +3326,7 @@ fn collect_layer_source_damage(
         .collect()
 }
 
-fn logical_rects_intersect(
-    lhs: crate::ssd::LogicalRect,
-    rhs: crate::ssd::LogicalRect,
-) -> bool {
+fn logical_rects_intersect(lhs: crate::ssd::LogicalRect, rhs: crate::ssd::LogicalRect) -> bool {
     let left = lhs.x.max(rhs.x);
     let top = lhs.y.max(rhs.y);
     let right = (lhs.x + lhs.width).min(rhs.x + rhs.width);
@@ -3224,7 +3336,10 @@ fn logical_rects_intersect(
 
 fn contributor_window_scene_rect(
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     window: &smithay::desktop::Window,
 ) -> Option<(String, crate::ssd::LogicalRect)> {
     if let Some(decoration) = window_decorations.get(window) {
@@ -3252,12 +3367,17 @@ fn contributor_window_scene_rect(
 fn hash_window_scene_contributors(
     hasher: &mut std::collections::hash_map::DefaultHasher,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     windows: &[smithay::desktop::Window],
     effect_rect: crate::ssd::LogicalRect,
 ) {
     for window in windows {
-        let Some((window_id, rect)) = contributor_window_scene_rect(space, window_decorations, window) else {
+        let Some((window_id, rect)) =
+            contributor_window_scene_rect(space, window_decorations, window)
+        else {
             continue;
         };
         if !logical_rects_intersect(rect, effect_rect) {
@@ -3321,7 +3441,10 @@ fn layer_surface_scene_elements_for_capture(
 fn configured_background_effect_elements_for_layer(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &mut std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_scene_generation: u64,
@@ -3331,14 +3454,21 @@ fn configured_background_effect_elements_for_layer(
     windows_top_to_bottom: &[smithay::desktop::Window],
     layer_surface: &smithay::desktop::LayerSurface,
     alpha: f32,
-    layer_backdrop_cache: &mut std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
-    configured_layer_effects: &std::collections::HashMap<String, crate::ssd::BackgroundEffectConfig>,
+    layer_backdrop_cache: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::CachedBackdropTexture,
+    >,
+    configured_layer_effects: &std::collections::HashMap<
+        String,
+        crate::ssd::BackgroundEffectConfig,
+    >,
     configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let layer_id = crate::ssd::layer_runtime_id(layer_surface);
     let Some(effect_config) = configured_layer_effects
         .get(&layer_id)
-        .or(configured_background_effect) else {
+        .or(configured_background_effect)
+    else {
         return Ok(Vec::new());
     };
     let rects = protocol_background_effect_rects_for_layer(output, layer_surface);
@@ -3359,10 +3489,7 @@ fn configured_background_effect_elements_for_layer(
         })
         .unwrap_or(0);
     let capture_geo = smithay::utils::Rectangle::new(
-        smithay::utils::Point::from((
-            effect_rect.x - blur_padding,
-            effect_rect.y - blur_padding,
-        )),
+        smithay::utils::Point::from((effect_rect.x - blur_padding, effect_rect.y - blur_padding)),
         (
             effect_rect.width + blur_padding * 2,
             effect_rect.height + blur_padding * 2,
@@ -3439,7 +3566,8 @@ fn configured_background_effect_elements_for_layer(
     let Some(input_texture) = backdrop_texture
         .clone()
         .or_else(|| xray_texture.clone())
-        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok()) else {
+        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())
+    else {
         return Ok(Vec::new());
     };
     let texture = crate::backend::shader_effect::apply_effect_pipeline(
@@ -3457,13 +3585,14 @@ fn configured_background_effect_elements_for_layer(
         Some((effect_rect.width, effect_rect.height)),
         &effect_config.effect,
     )?;
-    let _captured_local_rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> = smithay::utils::Rectangle::new(
-        smithay::utils::Point::from((
-            effect_rect.x - output_geo.loc.x,
-            effect_rect.y - output_geo.loc.y,
-        )),
-        (effect_rect.width, effect_rect.height).into(),
-    );
+    let _captured_local_rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
+        smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((
+                effect_rect.x - output_geo.loc.x,
+                effect_rect.y - output_geo.loc.y,
+            )),
+            (effect_rect.width, effect_rect.height).into(),
+        );
 
     let mut elements = Vec::new();
     let stable_key = format!(
@@ -3529,40 +3658,43 @@ fn configured_background_effect_elements_for_layer(
             .cloned()
         {
             for rect in rects {
-            let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
-            let rect_local = smithay::utils::Rectangle::new(
-                smithay::utils::Point::from((
-                    rect.x - output_geo.loc.x,
-                    rect.y - output_geo.loc.y,
-                )),
-                (rect.width, rect.height).into(),
-            );
-            elements.push(TtyRenderElements::Backdrop(
-                crate::backend::shader_effect::backdrop_shader_element(
-                    renderer,
-                    existing
-                        .sub_elements
-                        .get(&rect_key)
-                        .map(|entry| entry.id.clone())
-                        .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                    existing
-                        .sub_elements
-                        .get(&rect_key)
-                        .map(|entry| entry.commit_counter)
-                        .unwrap_or_default(),
-                    existing.texture.clone(),
-                    rect_local,
-                    rect_local,
-                    captured_local_rect,
-                    &effect_config.effect,
-                    alpha,
-                    scale.x as f32,
-                    None,
-                    0,
-                    format!("layer-top:{}:{}", output.name(), rect_key),
-                )?,
-            ));
-        }
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    stable_key, rect.x, rect.y, rect.width, rect.height
+                );
+                let rect_local = smithay::utils::Rectangle::new(
+                    smithay::utils::Point::from((
+                        rect.x - output_geo.loc.x,
+                        rect.y - output_geo.loc.y,
+                    )),
+                    (rect.width, rect.height).into(),
+                );
+                elements.push(TtyRenderElements::Backdrop(
+                    crate::backend::shader_effect::backdrop_shader_element(
+                        renderer,
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.id.clone())
+                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.commit_counter)
+                            .unwrap_or_default(),
+                        existing.texture.clone(),
+                        rect_local,
+                        rect_local,
+                        captured_local_rect,
+                        &effect_config.effect,
+                        alpha,
+                        scale.x as f32,
+                        None,
+                        0,
+                        format!("layer-top:{}:{}", output.name(), rect_key),
+                    )?,
+                ));
+            }
             return Ok(elements);
         }
     }
@@ -3572,7 +3704,10 @@ fn configured_background_effect_elements_for_layer(
         .unwrap_or_default();
     let had_existing = layer_backdrop_cache.contains_key(&stable_key);
     for rect in &rects {
-        let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
+        let rect_key = format!(
+            "{}:{}:{}:{}:{}",
+            stable_key, rect.x, rect.y, rect.width, rect.height
+        );
         let entry = sub_elements.entry(rect_key).or_default();
         if had_existing {
             entry.commit_counter.increment();
@@ -3599,12 +3734,12 @@ fn configured_background_effect_elements_for_layer(
         },
     );
     for rect in rects {
-        let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
+        let rect_key = format!(
+            "{}:{}:{}:{}:{}",
+            stable_key, rect.x, rect.y, rect.width, rect.height
+        );
         let rect_local = smithay::utils::Rectangle::new(
-            smithay::utils::Point::from((
-                rect.x - output_geo.loc.x,
-                rect.y - output_geo.loc.y,
-            )),
+            smithay::utils::Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)),
             (rect.width, rect.height).into(),
         );
         elements.push(TtyRenderElements::Backdrop(
@@ -3644,7 +3779,10 @@ fn lower_layer_scene_elements(
     effect_config: Option<&crate::ssd::BackgroundEffectConfig>,
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_scene_generation: u64,
-    layer_backdrop_cache: &mut std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    layer_backdrop_cache: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::CachedBackdropTexture,
+    >,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
     let mut elements = Vec::new();
@@ -3738,40 +3876,43 @@ fn lower_layer_scene_elements(
                     .cloned()
                 {
                     for rect in rects {
-                    let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
-                    let rect_local = smithay::utils::Rectangle::new(
-                        smithay::utils::Point::from((
-                            rect.x - output_geo.loc.x,
-                            rect.y - output_geo.loc.y,
-                        )),
-                        (rect.width, rect.height).into(),
-                    );
-                    elements.push(TtyRenderElements::Backdrop(
-                        crate::backend::shader_effect::backdrop_shader_element(
-                            renderer,
-                            existing
-                                .sub_elements
-                                .get(&rect_key)
-                                .map(|entry| entry.id.clone())
-                                .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                            existing
-                                .sub_elements
-                                .get(&rect_key)
-                                .map(|entry| entry.commit_counter)
-                                .unwrap_or_default(),
-                            existing.texture.clone(),
-                            rect_local,
-                            rect_local,
-                            captured_local_rect,
-                            &effect_config.effect,
-                            1.0,
-                            scale.x as f32,
-                            None,
-                            0,
-                            format!("layer-lower:{}:{}", output.name(), rect_key),
-                        )?,
-                    ));
-                }
+                        let rect_key = format!(
+                            "{}:{}:{}:{}:{}",
+                            stable_key, rect.x, rect.y, rect.width, rect.height
+                        );
+                        let rect_local = smithay::utils::Rectangle::new(
+                            smithay::utils::Point::from((
+                                rect.x - output_geo.loc.x,
+                                rect.y - output_geo.loc.y,
+                            )),
+                            (rect.width, rect.height).into(),
+                        );
+                        elements.push(TtyRenderElements::Backdrop(
+                            crate::backend::shader_effect::backdrop_shader_element(
+                                renderer,
+                                existing
+                                    .sub_elements
+                                    .get(&rect_key)
+                                    .map(|entry| entry.id.clone())
+                                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                                existing
+                                    .sub_elements
+                                    .get(&rect_key)
+                                    .map(|entry| entry.commit_counter)
+                                    .unwrap_or_default(),
+                                existing.texture.clone(),
+                                rect_local,
+                                rect_local,
+                                captured_local_rect,
+                                &effect_config.effect,
+                                1.0,
+                                scale.x as f32,
+                                None,
+                                0,
+                                format!("layer-lower:{}:{}", output.name(), rect_key),
+                            )?,
+                        ));
+                    }
                     continue;
                 }
             }
@@ -3839,7 +3980,10 @@ fn lower_layer_scene_elements(
                 .unwrap_or_default();
             let had_existing = layer_backdrop_cache.contains_key(&stable_key);
             for rect in &rects {
-                let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    stable_key, rect.x, rect.y, rect.width, rect.height
+                );
                 let entry = sub_elements.entry(rect_key).or_default();
                 if had_existing {
                     entry.commit_counter.increment();
@@ -3866,7 +4010,10 @@ fn lower_layer_scene_elements(
                 },
             );
             for rect in rects {
-                let rect_key = format!("{}:{}:{}:{}:{}", stable_key, rect.x, rect.y, rect.width, rect.height);
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    stable_key, rect.x, rect.y, rect.width, rect.height
+                );
                 let rect_local = smithay::utils::Rectangle::new(
                     smithay::utils::Point::from((
                         rect.x - output_geo.loc.x,
@@ -3908,17 +4055,26 @@ fn lower_layer_scene_elements(
 fn upper_layer_scene_elements(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &mut std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_scene_generation: u64,
-    configured_layer_effects: &std::collections::HashMap<String, crate::ssd::BackgroundEffectConfig>,
+    configured_layer_effects: &std::collections::HashMap<
+        String,
+        crate::ssd::BackgroundEffectConfig,
+    >,
     configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
     windows_top_to_bottom: &[smithay::desktop::Window],
-    layer_backdrop_cache: &mut std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    layer_backdrop_cache: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::CachedBackdropTexture,
+    >,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let map = layer_map_for_output(output);
     let upper_layers: Vec<_> = [
@@ -3961,7 +4117,10 @@ fn upper_layer_scene_elements(
 fn configured_background_effect_elements_for_window(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &mut std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     _window_commit_times: &std::collections::HashMap<smithay::desktop::Window, std::time::Duration>,
     window_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_source_damage: &[crate::state::OwnedDamageRect],
@@ -3975,7 +4134,10 @@ fn configured_background_effect_elements_for_window(
     alpha: f32,
     effect_config: &crate::ssd::BackgroundEffectConfig,
     apply_visual_transform: bool,
-) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
+) -> Vec<(
+    usize,
+    crate::backend::shader_effect::StableBackdropTextureElement,
+)> {
     let Some(decoration) = window_decorations.get(window).cloned() else {
         return Vec::new();
     };
@@ -4149,9 +4311,12 @@ fn configured_background_effect_elements_for_window(
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                        .to_f64()
-                        .to_physical_precise_round(scale),
+                    translation: smithay::utils::Point::from((
+                        -capture_offset.x,
+                        -capture_offset.y,
+                    ))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -4163,7 +4328,12 @@ fn configured_background_effect_elements_for_window(
                     )
                     .into_iter(),
                 );
-                capture_scene_texture_for_effect(renderer, actual_capture_geo, scale, &backdrop_scene)
+                capture_scene_texture_for_effect(
+                    renderer,
+                    actual_capture_geo,
+                    scale,
+                    &backdrop_scene,
+                )
             } else {
                 None
             };
@@ -4290,7 +4460,10 @@ fn configured_background_effect_elements_for_window(
 fn window_scene_elements_for_capture(
     renderer: &mut GlesRenderer,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    window_decorations: &std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
     capture_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
     window: &smithay::desktop::Window,
@@ -4298,8 +4471,7 @@ fn window_scene_elements_for_capture(
     let Some(window_location) = space.element_location(window) else {
         return Ok(Vec::new());
     };
-    let physical_location =
-        (window_location - capture_geo.loc).to_physical_precise_round(scale);
+    let physical_location = (window_location - capture_geo.loc).to_physical_precise_round(scale);
     let visual_state = window_decorations
         .get(window)
         .map(|decoration| {
@@ -4421,23 +4593,26 @@ fn capture_live_snapshot_for_window(
     window_location: smithay::utils::Point<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
     z_index: usize,
-    window_decorations: &mut std::collections::HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState>,
-    live_window_snapshots: &mut std::collections::HashMap<String, crate::backend::snapshot::LiveWindowSnapshot>,
+    window_decorations: &mut std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
+    live_window_snapshots: &mut std::collections::HashMap<
+        String,
+        crate::backend::snapshot::LiveWindowSnapshot,
+    >,
 ) -> Result<(), smithay::backend::renderer::gles::GlesError> {
-    let Some((snapshot_id, client_rect)) = window_decorations.get(window).map(|decoration| {
-        (
-            decoration.snapshot.id.clone(),
-            decoration.client_rect,
-        )
-    }) else {
+    let Some((snapshot_id, client_rect)) = window_decorations
+        .get(window)
+        .map(|decoration| (decoration.snapshot.id.clone(), decoration.client_rect))
+    else {
         return Ok(());
     };
     let snapshot_geo = smithay::utils::Rectangle::new(
         smithay::utils::Point::from((client_rect.x, client_rect.y)),
         (client_rect.width, client_rect.height).into(),
     );
-    let physical_location =
-        (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
+    let physical_location = (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
 
     let surface_elements =
         window_render::surface_elements(window, renderer, physical_location, scale, 1.0);
@@ -4489,7 +4664,8 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                if let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual) {
+                if let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual)
+                {
                     elements.extend(transformed);
                 }
             }
@@ -4500,7 +4676,8 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                if let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual) {
+                if let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual)
+                {
                     elements.extend(transformed);
                 }
             }
@@ -4537,7 +4714,11 @@ fn connector_connected(
     crtc: crtc::Handle,
     connector: connector::Info,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+    let output_name = format!(
+        "{}-{}",
+        connector.interface().as_str(),
+        connector.interface_id()
+    );
     if !state.display_config.tty_output_allowed(&output_name) {
         info!(
             ?node,
@@ -4642,7 +4823,14 @@ pub fn tty_output_available_modes(
     for backend in state.tty_backends.values() {
         for surface in backend.surfaces.values() {
             if surface.output.name() == output_name {
-                return Some(surface.available_modes.iter().copied().map(WlMode::from).collect());
+                return Some(
+                    surface
+                        .available_modes
+                        .iter()
+                        .copied()
+                        .map(WlMode::from)
+                        .collect(),
+                );
             }
         }
     }
@@ -4799,7 +4987,11 @@ fn schedule_estimated_vblank_callback(
         .is_err()
     {
         surface.frame_callback_timer_armed = false;
-        warn!(?node, ?crtc, "failed to schedule tty estimated vblank callback");
+        warn!(
+            ?node,
+            ?crtc,
+            "failed to schedule tty estimated vblank callback"
+        );
     }
 }
 

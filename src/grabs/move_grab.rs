@@ -96,15 +96,18 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
                 }
             }
 
-            data.space.map_element(self.window.clone(), new_location, true);
-            data.window_source_damage.push(crate::state::OwnedDamageRect {
-                owner: window_id.clone(),
-                rect: old_source_rect,
-            });
-            data.window_source_damage.push(crate::state::OwnedDamageRect {
-                owner: window_id.clone(),
-                rect: new_source_rect,
-            });
+            data.space
+                .map_element(self.window.clone(), new_location, true);
+            data.window_source_damage
+                .push(crate::state::OwnedDamageRect {
+                    owner: window_id.clone(),
+                    rect: old_source_rect,
+                });
+            data.window_source_damage
+                .push(crate::state::OwnedDamageRect {
+                    owner: window_id.clone(),
+                    rect: new_source_rect,
+                });
             data.snapshot_dirty_window_ids.insert(window_id);
             data.window_scene_generation = data.window_scene_generation.wrapping_add(1);
             data.schedule_redraw();

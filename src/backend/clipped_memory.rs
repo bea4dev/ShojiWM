@@ -1,8 +1,8 @@
 use smithay::{
     backend::renderer::{
         element::{
-            memory::MemoryRenderBufferRenderElement, Element, Id, Kind, RenderElement,
-            UnderlyingStorage,
+            Element, Id, Kind, RenderElement, UnderlyingStorage,
+            memory::MemoryRenderBufferRenderElement,
         },
         gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -175,7 +175,11 @@ impl Element for ClippedMemoryElement {
         self.inner.transform()
     }
 
-    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
         self.inner.damage_since(scale, commit)
     }
 

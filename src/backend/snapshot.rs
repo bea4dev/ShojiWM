@@ -2,11 +2,11 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
+            Bind, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::RenderElement,
             element::texture::TextureRenderElement,
             gles::{GlesError, GlesRenderer, GlesTexture},
-            Bind, Offscreen, Renderer, Texture,
         },
     },
     utils::{Logical, Physical, Point, Rectangle, Scale, Transform},
@@ -47,11 +47,9 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
         return Ok(None);
     }
 
-    let physical = Rectangle::<i32, Logical>::new(
-        Point::from((0, 0)),
-        (rect.width, rect.height).into(),
-    )
-    .to_physical_precise_round(scale);
+    let physical =
+        Rectangle::<i32, Logical>::new(Point::from((0, 0)), (rect.width, rect.height).into())
+            .to_physical_precise_round(scale);
     if physical.size.w <= 0 || physical.size.h <= 0 {
         return Ok(None);
     }
@@ -92,16 +90,20 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     snapshot.z_index = z_index;
     snapshot.has_client_content = has_client_content;
     let mut framebuffer = renderer.bind(&mut snapshot.texture)?;
-    let mut damage_tracker =
-        OutputDamageTracker::new((physical.size.w, physical.size.h), scale.x, Transform::Normal);
-    let _ = damage_tracker.render_output(
-        renderer,
-        &mut framebuffer,
-        0,
-        elements,
-        [0.0, 0.0, 0.0, 0.0],
-    )
-    .map_err(|_| GlesError::FramebufferBindingError)?;
+    let mut damage_tracker = OutputDamageTracker::new(
+        (physical.size.w, physical.size.h),
+        scale.x,
+        Transform::Normal,
+    );
+    let _ = damage_tracker
+        .render_output(
+            renderer,
+            &mut framebuffer,
+            0,
+            elements,
+            [0.0, 0.0, 0.0, 0.0],
+        )
+        .map_err(|_| GlesError::FramebufferBindingError)?;
     drop(framebuffer);
 
     Ok(Some(snapshot))
@@ -114,11 +116,7 @@ pub fn duplicate_snapshot(
     let size = source.texture.size();
     let mut duplicated = LiveWindowSnapshot {
         id: smithay::backend::renderer::element::Id::new(),
-        texture: Offscreen::<GlesTexture>::create_buffer(
-            renderer,
-            Fourcc::Abgr8888,
-            size,
-        )?,
+        texture: Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size)?,
         rect: source.rect,
         z_index: source.z_index,
         has_client_content: source.has_client_content,
@@ -160,7 +158,8 @@ pub fn closing_snapshot_element(
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> Option<TextureRenderElement<GlesTexture>> {
-    let transformed = crate::backend::visual::transformed_root_rect(snapshot.live.rect, snapshot.transform);
+    let transformed =
+        crate::backend::visual::transformed_root_rect(snapshot.live.rect, snapshot.transform);
     let transformed_rect = Rectangle::new(
         Point::from((transformed.x, transformed.y)),
         (transformed.width, transformed.height).into(),
@@ -175,10 +174,13 @@ pub fn closing_snapshot_element(
             .to_f64()
             .to_physical_precise_round(scale);
     let location = location.to_f64();
-    let src = Some(Rectangle::from_size((
-        snapshot.live.texture.size().w as f64,
-        snapshot.live.texture.size().h as f64,
-    ).into()));
+    let src = Some(Rectangle::from_size(
+        (
+            snapshot.live.texture.size().w as f64,
+            snapshot.live.texture.size().h as f64,
+        )
+            .into(),
+    ));
 
     Some(TextureRenderElement::from_static_texture(
         snapshot.live.id.clone(),
@@ -215,10 +217,13 @@ pub fn live_snapshot_element(
             .to_f64()
             .to_physical_precise_round(scale);
     let location = location.to_f64();
-    let src = Some(Rectangle::from_size((
-        snapshot.texture.size().w as f64,
-        snapshot.texture.size().h as f64,
-    ).into()));
+    let src = Some(Rectangle::from_size(
+        (
+            snapshot.texture.size().w as f64,
+            snapshot.texture.size().h as f64,
+        )
+            .into(),
+    ));
 
     Some(TextureRenderElement::from_static_texture(
         snapshot.id.clone(),

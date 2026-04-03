@@ -1,10 +1,12 @@
 use smithay::{
     backend::renderer::{
+        Renderer,
         element::{Element, Id, Kind, RenderElement, UnderlyingStorage},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
-        Renderer,
     },
-    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform, user_data::UserDataMap},
+    utils::{
+        Buffer, Logical, Physical, Point, Rectangle, Scale, Transform, user_data::UserDataMap,
+    },
 };
 
 use crate::ssd::{LogicalRect, WindowTransform};
@@ -76,7 +78,6 @@ pub fn snapped_logical_rect_relative_with_mode(
     }
 }
 
-
 pub fn snapped_precise_logical_rect_relative_with_mode(
     rect: PreciseLogicalRect,
     origin: Point<i32, Logical>,
@@ -117,8 +118,7 @@ pub fn snapped_logical_rect_for_element(
     scale: Scale<f64>,
     mode: RectSnapMode,
 ) -> SnappedLogicalRect {
-    let snapped_global =
-        snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
+    let snapped_global = snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
     SnappedLogicalRect {
         x: snapped_global.x - (element_origin.x - snap_origin.x) as f32,
         y: snapped_global.y - (element_origin.y - snap_origin.y) as f32,
@@ -134,8 +134,7 @@ pub fn snapped_logical_rect_in_element_space(
     scale: Scale<f64>,
     mode: RectSnapMode,
 ) -> SnappedLogicalRect {
-    let snapped_global =
-        snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
+    let snapped_global = snapped_logical_rect_relative_with_mode(rect, snap_origin, scale, mode);
     let scale_x = scale.x.abs().max(0.0001);
     let scale_y = scale.y.abs().max(0.0001);
 
@@ -213,10 +212,8 @@ pub fn snapped_precise_logical_rect_for_element(
 
     let snapped_left_px = ((rect.x - snap_origin.x as f32) * scale_x).round();
     let snapped_top_px = ((rect.y - snap_origin.y as f32) * scale_y).round();
-    let snapped_right_px =
-        (((rect.x + rect.width) - snap_origin.x as f32) * scale_x).round();
-    let snapped_bottom_px =
-        (((rect.y + rect.height) - snap_origin.y as f32) * scale_y).round();
+    let snapped_right_px = (((rect.x + rect.width) - snap_origin.x as f32) * scale_x).round();
+    let snapped_bottom_px = (((rect.y + rect.height) - snap_origin.y as f32) * scale_y).round();
 
     let local_left_px = snapped_left_px - element_left_px;
     let local_top_px = snapped_top_px - element_top_px;
@@ -286,7 +283,11 @@ impl<E: Element> Element for AlphaRenderElement<E> {
         self.element.transform()
     }
 
-    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
         self.element.damage_since(scale, commit)
     }
 
@@ -317,7 +318,8 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for AlphaRenderElement<E
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
-        self.element.draw(frame, src, dst, damage, opaque_regions, cache)
+        self.element
+            .draw(frame, src, dst, damage, opaque_regions, cache)
     }
 
     fn underlying_storage(&self, renderer: &mut R) -> Option<UnderlyingStorage<'_>> {
@@ -465,7 +467,8 @@ pub fn relative_physical_rect_from_root_precise(
 mod tests {
     use super::{
         PreciseLogicalRect, relative_physical_rect_from_root,
-        relative_physical_rect_from_root_snapped_edges, snapped_precise_logical_rect_in_element_space,
+        relative_physical_rect_from_root_snapped_edges,
+        snapped_precise_logical_rect_in_element_space,
     };
     use crate::ssd::LogicalRect;
     use smithay::utils::{Logical, Rectangle, Scale};
@@ -535,21 +538,17 @@ pub fn transformed_rect(
     reference_rect: LogicalRect,
     transform: WindowTransform,
 ) -> LogicalRect {
-    let origin_x =
-        reference_rect.x as f64 + reference_rect.width as f64 * transform.origin.x;
-    let origin_y =
-        reference_rect.y as f64 + reference_rect.height as f64 * transform.origin.y;
+    let origin_x = reference_rect.x as f64 + reference_rect.width as f64 * transform.origin.x;
+    let origin_y = reference_rect.y as f64 + reference_rect.height as f64 * transform.origin.y;
 
     let left = origin_x + (rect.x as f64 - origin_x) * transform.scale_x + transform.translate_x;
     let top = origin_y + (rect.y as f64 - origin_y) * transform.scale_y + transform.translate_y;
     let rect_right = rect.x.saturating_add(rect.width);
     let rect_bottom = rect.y.saturating_add(rect.height);
-    let right = origin_x
-        + (rect_right as f64 - origin_x) * transform.scale_x
-        + transform.translate_x;
-    let bottom = origin_y
-        + (rect_bottom as f64 - origin_y) * transform.scale_y
-        + transform.translate_y;
+    let right =
+        origin_x + (rect_right as f64 - origin_x) * transform.scale_x + transform.translate_x;
+    let bottom =
+        origin_y + (rect_bottom as f64 - origin_y) * transform.scale_y + transform.translate_y;
 
     let x = left.min(right).floor() as i32;
     let y = top.min(bottom).floor() as i32;
@@ -564,19 +563,15 @@ pub fn transformed_precise_rect(
     reference_rect: LogicalRect,
     transform: WindowTransform,
 ) -> PreciseLogicalRect {
-    let origin_x =
-        reference_rect.x as f64 + reference_rect.width as f64 * transform.origin.x;
-    let origin_y =
-        reference_rect.y as f64 + reference_rect.height as f64 * transform.origin.y;
+    let origin_x = reference_rect.x as f64 + reference_rect.width as f64 * transform.origin.x;
+    let origin_y = reference_rect.y as f64 + reference_rect.height as f64 * transform.origin.y;
 
     let left = origin_x + (rect.x as f64 - origin_x) * transform.scale_x + transform.translate_x;
     let top = origin_y + (rect.y as f64 - origin_y) * transform.scale_y + transform.translate_y;
     let rect_right = rect.x as f64 + rect.width as f64;
     let rect_bottom = rect.y as f64 + rect.height as f64;
-    let right =
-        origin_x + (rect_right - origin_x) * transform.scale_x + transform.translate_x;
-    let bottom =
-        origin_y + (rect_bottom - origin_y) * transform.scale_y + transform.translate_y;
+    let right = origin_x + (rect_right - origin_x) * transform.scale_x + transform.translate_x;
+    let bottom = origin_y + (rect_bottom - origin_y) * transform.scale_y + transform.translate_y;
 
     PreciseLogicalRect {
         x: left.min(right) as f32,

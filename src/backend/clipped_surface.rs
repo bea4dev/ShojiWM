@@ -2,8 +2,8 @@ use cgmath::{ElementWise, Matrix3, Vector2};
 use smithay::{
     backend::renderer::{
         element::{
-            surface::WaylandSurfaceRenderElement, Element, Id, Kind, RenderElement,
-            UnderlyingStorage,
+            Element, Id, Kind, RenderElement, UnderlyingStorage,
+            surface::WaylandSurfaceRenderElement,
         },
         gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -11,10 +11,8 @@ use smithay::{
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
+use crate::backend::visual::{SnappedLogicalRect, snapped_precise_logical_rect_relative_with_mode};
 use crate::ssd::ContentClip;
-use crate::backend::visual::{
-    SnappedLogicalRect, snapped_precise_logical_rect_relative_with_mode,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SampleUvCompensation {
@@ -190,10 +188,12 @@ impl ClippedSurfaceElement {
         }
         let physical_left = (snapped_clip_rect.x as f64 * output_scale.x).round() as i32;
         let physical_top = (snapped_clip_rect.y as f64 * output_scale.y).round() as i32;
-        let physical_right =
-            ((snapped_clip_rect.x + snapped_clip_rect.width) as f64 * output_scale.x).round() as i32;
-        let physical_bottom =
-            ((snapped_clip_rect.y + snapped_clip_rect.height) as f64 * output_scale.y).round() as i32;
+        let physical_right = ((snapped_clip_rect.x + snapped_clip_rect.width) as f64
+            * output_scale.x)
+            .round() as i32;
+        let physical_bottom = ((snapped_clip_rect.y + snapped_clip_rect.height) as f64
+            * output_scale.y)
+            .round() as i32;
         let physical_clip: Rectangle<i32, Physical> = Rectangle::new(
             Point::from((physical_left, physical_top)),
             (
@@ -280,8 +280,7 @@ impl ClippedSurfaceElement {
             clip_rect: snapped_clip_rect,
             corner_radius: {
                 let scale_x = clip_scale.x.abs().max(0.0001) as f32;
-                let radius =
-                    ((clip.radius_precise.max(0.0) * scale_x).round() / scale_x).max(0.0);
+                let radius = ((clip.radius_precise.max(0.0) * scale_x).round() / scale_x).max(0.0);
                 [radius, radius, radius, radius]
             },
             rect_bounds_enabled: 1.0,
@@ -339,7 +338,9 @@ impl ClippedSurfaceElement {
                         element_size.x / clip_size.x,
                         element_size.y / clip_size.y,
                     )
-                    * Matrix3::from_translation((element_loc - clip_loc).div_element_wise(element_size))
+                    * Matrix3::from_translation(
+                        (element_loc - clip_loc).div_element_wise(element_size),
+                    )
                     * Matrix3::from_nonuniform_scale(
                         buffer_size.x / src_size.x,
                         buffer_size.y / src_size.y,

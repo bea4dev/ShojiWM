@@ -14,8 +14,8 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             element::{
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
             gles::{GlesError, GlesRenderer},
         },
@@ -25,12 +25,12 @@ use smithay::{
     utils::{Logical, Rectangle, Scale as OutputScale},
 };
 
-use crate::ssd::{LogicalRect, WindowDecorationState, WindowIconSnapshot};
 use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
 use crate::backend::visual::{
     PreciseLogicalRect, relative_physical_rect_from_root_precise,
     relative_physical_rect_from_root_snapped_edges,
 };
+use crate::ssd::{LogicalRect, WindowDecorationState, WindowIconSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
@@ -197,12 +197,9 @@ impl IconRasterizer {
                 self.cache.insert(key, None);
                 return None;
             };
-            let Some(rgba) = decode_icon_and_scale(
-                &bytes,
-                extension.as_deref(),
-                target_width,
-                target_height,
-            ) else {
+            let Some(rgba) =
+                decode_icon_and_scale(&bytes, extension.as_deref(), target_width, target_height)
+            else {
                 self.cache.insert(key, None);
                 return None;
             };
@@ -287,7 +284,9 @@ impl IconRasterizer {
             self.icon_index = Some(index);
         }
 
-        self.icon_index.as_ref().expect("icon index must be initialized")
+        self.icon_index
+            .as_ref()
+            .expect("icon index must be initialized")
     }
 
     fn prune_async_buffers(&mut self) {
@@ -303,13 +302,21 @@ pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
     spec.rect.width.hash(&mut hasher);
     spec.rect.height.hash(&mut hasher);
     spec.rect_precise
-        .map(|rect| ((rect.width * 1024.0).round() as i32, (rect.height * 1024.0).round() as i32))
+        .map(|rect| {
+            (
+                (rect.width * 1024.0).round() as i32,
+                (rect.height * 1024.0).round() as i32,
+            )
+        })
         .hash(&mut hasher);
     spec.raster_scale.hash(&mut hasher);
     spec.app_id.hash(&mut hasher);
     if let Some(icon) = &spec.icon {
         icon.name.hash(&mut hasher);
-        icon.bytes.as_ref().map(|bytes| bytes.len()).hash(&mut hasher);
+        icon.bytes
+            .as_ref()
+            .map(|bytes| bytes.len())
+            .hash(&mut hasher);
         if let Some(bytes) = &icon.bytes {
             bytes.hash(&mut hasher);
         }
@@ -378,8 +385,8 @@ pub fn ordered_icon_elements_for_window(
                 scale,
                 alpha,
             )
-                .transpose()
-                .map(|result| result.map(|element| (icon.order, element)))
+            .transpose()
+            .map(|result| result.map(|element| (icon.order, element)))
         })
         .collect()
 }
@@ -403,8 +410,8 @@ pub fn ordered_icon_elements_for_decoration(
                 scale,
                 alpha,
             )
-                .transpose()
-                .map(|result| result.map(|element| (icon.order, element)))
+            .transpose()
+            .map(|result| result.map(|element| (icon.order, element)))
         })
         .collect()
 }
@@ -447,16 +454,9 @@ fn memory_icon_element(
 
     let physical = icon
         .rect_precise
-        .map(|rect| {
-            relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale)
-        })
+        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale))
         .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(
-                icon.rect,
-                root_rect,
-                output_geo,
-                scale,
-            )
+            relative_physical_rect_from_root_snapped_edges(icon.rect, root_rect, output_geo, scale)
         });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -467,7 +467,17 @@ fn memory_icon_element(
         None,
         Kind::Unspecified,
     )?;
-    if let Some(clip_rect) = icon.clip_rect {
+    let clip_rect = icon.clip_rect.or_else(|| {
+        icon.clip_rect_precise.map(|clip_rect| {
+            LogicalRect::new(
+                clip_rect.x.round() as i32,
+                clip_rect.y.round() as i32,
+                clip_rect.width.round().max(0.0) as i32,
+                clip_rect.height.round().max(0.0) as i32,
+            )
+        })
+    });
+    if let Some(clip_rect) = clip_rect {
         let clipped = crate::backend::clipped_memory::ClippedMemoryElement::new(
             renderer,
             element,
@@ -511,13 +521,13 @@ fn memory_icon_element(
             }),
             icon.clip_radius_precise,
         )?;
-        Ok(Some(crate::backend::text::DecorationTextureElements::Clipped(
-            clipped,
-        )))
+        Ok(Some(
+            crate::backend::text::DecorationTextureElements::Clipped(clipped),
+        ))
     } else {
-        Ok(Some(crate::backend::text::DecorationTextureElements::Memory(
-            element,
-        )))
+        Ok(Some(
+            crate::backend::text::DecorationTextureElements::Memory(element),
+        ))
     }
 }
 
@@ -581,10 +591,7 @@ fn find_icon_path_in_index(
     best.map(|(path, _)| path)
 }
 
-fn build_icon_index(
-    dir: &Path,
-    index: &mut HashMap<String, Vec<PathBuf>>,
-) {
+fn build_icon_index(dir: &Path, index: &mut HashMap<String, Vec<PathBuf>>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -655,7 +662,12 @@ fn icon_roots() -> Vec<PathBuf> {
 
     let data_dirs = std::env::var_os("XDG_DATA_DIRS")
         .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")]);
+        .unwrap_or_else(|| {
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share"),
+            ]
+        });
 
     for dir in data_dirs {
         roots.push(dir.join("icons"));
@@ -751,7 +763,8 @@ fn scale_rgba(
     for y in 0..target_height {
         for x in 0..target_width {
             let source_x = ((x as f32 / target_width as f32) * source_width as f32).floor() as i32;
-            let source_y = ((y as f32 / target_height as f32) * source_height as f32).floor() as i32;
+            let source_y =
+                ((y as f32 / target_height as f32) * source_height as f32).floor() as i32;
             let source_x = source_x.clamp(0, source_width - 1);
             let source_y = source_y.clamp(0, source_height - 1);
 

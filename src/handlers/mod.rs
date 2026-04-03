@@ -54,7 +54,11 @@ impl SeatHandler for ShojiWM {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: smithay::input::pointer::CursorImageStatus) {
+    fn cursor_image(
+        &mut self,
+        _seat: &Seat<Self>,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
         self.cursor_status = image;
         self.schedule_redraw();
     }
@@ -92,49 +96,66 @@ impl FractionalScaleHandler for ShojiWM {
         }
 
         smithay::wayland::compositor::with_states(&surface, |states| {
-            let primary_scanout_output = smithay::desktop::utils::surface_primary_scanout_output(&surface, states)
-                .or_else(|| {
-                    if root != surface {
-                        smithay::wayland::compositor::with_states(&root, |states| {
-                            smithay::desktop::utils::surface_primary_scanout_output(&root, states).or_else(|| {
-                                self.space
-                                    .elements()
-                                    .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
-                                    .cloned()
-                                    .and_then(|window| {
-                                        self.space.outputs_for_element(&window).first().cloned()
-                                    })
-                                    .or_else(|| {
-                                        self.space.outputs().find_map(|output| {
-                                            let map = layer_map_for_output(output);
-                                            let found = map
-                                                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                                                .is_some();
-                                            drop(map);
-                                            found.then(|| output.clone())
+            let primary_scanout_output =
+                smithay::desktop::utils::surface_primary_scanout_output(&surface, states)
+                    .or_else(|| {
+                        if root != surface {
+                            smithay::wayland::compositor::with_states(&root, |states| {
+                                smithay::desktop::utils::surface_primary_scanout_output(
+                                    &root, states,
+                                )
+                                .or_else(|| {
+                                    self.space
+                                        .elements()
+                                        .find(|window| {
+                                            window.toplevel().is_some_and(|toplevel| {
+                                                toplevel.wl_surface() == &root
+                                            })
                                         })
-                                    })
-                            })
-                        })
-                    } else {
-                        self.space
-                            .elements()
-                            .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
-                            .cloned()
-                            .and_then(|window| self.space.outputs_for_element(&window).first().cloned())
-                            .or_else(|| {
-                                self.space.outputs().find_map(|output| {
-                                    let map = layer_map_for_output(output);
-                                    let found = map
-                                        .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                                        .is_some();
-                                    drop(map);
-                                    found.then(|| output.clone())
+                                        .cloned()
+                                        .and_then(|window| {
+                                            self.space.outputs_for_element(&window).first().cloned()
+                                        })
+                                        .or_else(|| {
+                                            self.space.outputs().find_map(|output| {
+                                                let map = layer_map_for_output(output);
+                                                let found = map
+                                                    .layer_for_surface(
+                                                        &root,
+                                                        WindowSurfaceType::TOPLEVEL,
+                                                    )
+                                                    .is_some();
+                                                drop(map);
+                                                found.then(|| output.clone())
+                                            })
+                                        })
                                 })
                             })
-                    }
-                })
-                .or_else(|| self.space.outputs().next().cloned());
+                        } else {
+                            self.space
+                                .elements()
+                                .find(|window| {
+                                    window
+                                        .toplevel()
+                                        .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+                                })
+                                .cloned()
+                                .and_then(|window| {
+                                    self.space.outputs_for_element(&window).first().cloned()
+                                })
+                                .or_else(|| {
+                                    self.space.outputs().find_map(|output| {
+                                        let map = layer_map_for_output(output);
+                                        let found = map
+                                            .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                                            .is_some();
+                                        drop(map);
+                                        found.then(|| output.clone())
+                                    })
+                                })
+                        }
+                    })
+                    .or_else(|| self.space.outputs().next().cloned());
 
             if let Some(output) = primary_scanout_output {
                 with_fractional_scale(states, |fractional_scale| {
@@ -167,7 +188,8 @@ impl InputMethodHandler for ShojiWM {
 
     fn dismiss_popup(&mut self, surface: PopupSurface) {
         if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
-            let _ = smithay::desktop::PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));
+            let _ =
+                smithay::desktop::PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));
         }
     }
 
@@ -175,15 +197,19 @@ impl InputMethodHandler for ShojiWM {
         self.space
             .elements()
             .find_map(|window| {
-                (window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == parent))
-                    .then(|| window.geometry())
+                (window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == parent))
+                .then(|| window.geometry())
             })
             .unwrap_or_default()
     }
 }
 
 impl KdeDecorationHandler for ShojiWM {
-    fn kde_decoration_state(&self) -> &smithay::wayland::shell::kde::decoration::KdeDecorationState {
+    fn kde_decoration_state(
+        &self,
+    ) -> &smithay::wayland::shell::kde::decoration::KdeDecorationState {
         &self.kde_decoration_state
     }
 
@@ -232,7 +258,11 @@ impl ExtBackgroundEffectHandler for ShojiWM {
         Capability::Blur
     }
 
-    fn set_blur_region(&mut self, _wl_surface: WlSurface, _region: smithay::wayland::compositor::RegionAttributes) {
+    fn set_blur_region(
+        &mut self,
+        _wl_surface: WlSurface,
+        _region: smithay::wayland::compositor::RegionAttributes,
+    ) {
         self.schedule_redraw();
     }
 

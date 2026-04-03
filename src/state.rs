@@ -1,16 +1,28 @@
-use std::{collections::{HashMap, HashSet}, ffi::OsString, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    sync::Arc,
+    time::Duration,
+};
 
 use smithay::{
     backend::drm::DrmNode,
     backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
-    input::{Seat, SeatState, pointer::{CursorIcon, CursorImageStatus}},
+    input::{
+        Seat, SeatState,
+        pointer::{CursorIcon, CursorImageStatus},
+    },
     output::{Mode as OutputMode, Output, Scale as OutputScale},
     reexports::{
-        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
+        calloop::channel::{Event as ChannelEvent, channel},
+        calloop::{
+            EventLoop, Interest, LoopSignal, Mode, PostAction,
+            generic::Generic,
+            timer::{TimeoutAction, Timer},
+        },
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic, timer::{TimeoutAction, Timer}},
-        calloop::channel::{channel, Event as ChannelEvent},
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -19,26 +31,27 @@ use smithay::{
     },
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale},
     wayland::{
-        commit_timing::CommitTimingManagerState,
-        compositor::{CompositorClientState, CompositorState, Damage, SurfaceAttributes, with_states},
-        dmabuf::{DmabufGlobal, DmabufState},
         background_effect::BackgroundEffectState,
+        commit_timing::CommitTimingManagerState,
+        compositor::{
+            CompositorClientState, CompositorState, Damage, SurfaceAttributes, with_states,
+        },
         cursor_shape::CursorShapeManagerState,
-        fixes::FixesState,
+        dmabuf::{DmabufGlobal, DmabufState},
         fifo::FifoManagerState,
+        fixes::FixesState,
         fractional_scale::FractionalScaleManagerState,
         input_method::InputMethodManagerState,
         output::OutputManagerState,
         presentation::PresentationState,
         selection::{
-            data_device::DataDeviceState,
-            primary_selection::PrimarySelectionState,
+            data_device::DataDeviceState, primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState,
         },
-        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shell::kde::decoration::KdeDecorationState,
         shell::wlr_layer::Layer as WlrLayer,
         shell::wlr_layer::WlrLayerShellState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
@@ -49,22 +62,28 @@ use smithay::{
 };
 use xcursor::parser::Image;
 
+use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
+use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
+use crate::ssd::{
+    BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
+    DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
+    OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot, WaylandWindowSnapshot,
+    WindowDecorationState, WindowPositionSnapshot,
+};
 use crate::{
-    backend::{async_assets::{AsyncAssetResult, spawn_async_asset_worker}, icon::IconRasterizer, snapshot::{ClosingWindowSnapshot, LiveWindowSnapshot}, text::TextRasterizer, tty::BackendData},
+    backend::{
+        async_assets::{AsyncAssetResult, spawn_async_asset_worker},
+        icon::IconRasterizer,
+        snapshot::{ClosingWindowSnapshot, LiveWindowSnapshot},
+        text::TextRasterizer,
+        tty::BackendData,
+    },
     config::{
         DisplayConfig, RuntimeDisplayConfigUpdate, RuntimeDisplayModePreference,
         RuntimeOutputConfig, RuntimeOutputPositionPreference,
     },
     cursor::Cursor,
     drawing::PointerElement,
-};
-use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
-use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
-use crate::ssd::{
-    BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
-    DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
-    OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot, WaylandWindowSnapshot,
-    WindowDecorationState, WindowPositionSnapshot,
 };
 use tracing::{debug, info, warn};
 
@@ -250,23 +269,25 @@ impl ShojiWM {
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
-        let (decoration_evaluator, configured_background_effect) = if std::path::Path::new("node_modules/.bin/tsx").exists() {
-            let evaluator = NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
-                .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into()));
-            let configured_background_effect = match evaluator.background_effect_config() {
-                Ok(config) => config,
-                Err(error) => {
-                    warn!(?error, "failed to load configured background effect");
-                    None
-                }
+        let (decoration_evaluator, configured_background_effect) =
+            if std::path::Path::new("node_modules/.bin/tsx").exists() {
+                let evaluator =
+                    NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
+                        .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into()));
+                let configured_background_effect = match evaluator.background_effect_config() {
+                    Ok(config) => config,
+                    Err(error) => {
+                        warn!(?error, "failed to load configured background effect");
+                        None
+                    }
+                };
+                (
+                    DecorationRuntimeEvaluator::Node(evaluator),
+                    configured_background_effect,
+                )
+            } else {
+                (DecorationRuntimeEvaluator::Static(Default::default()), None)
             };
-            (
-                DecorationRuntimeEvaluator::Node(evaluator),
-                configured_background_effect,
-            )
-        } else {
-            (DecorationRuntimeEvaluator::Static(Default::default()), None)
-        };
 
         let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
             || std::env::var_os("SHOJI_DAMAGE_BLINK")
@@ -279,40 +300,46 @@ impl ShojiWM {
         let async_asset_job_sender = spawn_async_asset_worker(async_asset_tx);
         event_loop
             .handle()
-            .insert_source(async_asset_rx, |event, _, state| {
-                match event {
-                    ChannelEvent::Msg(result) => {
-                        match result {
-                            AsyncAssetResult::TextReady {
-                                spec_hash,
-                                width,
-                                height,
-                                raster_scale,
-                                pixels,
-                            } => state
-                                .text_rasterizer
-                                .handle_async_ready(spec_hash, width, height, raster_scale, pixels),
-                            AsyncAssetResult::TextMissing { spec_hash } => {
-                                state.text_rasterizer.handle_async_miss(spec_hash)
-                            }
-                            AsyncAssetResult::IconReady {
-                                spec_hash,
-                                width,
-                                height,
-                                raster_scale,
-                                pixels,
-                            } => state
-                                .icon_rasterizer
-                                .handle_async_ready(spec_hash, width, height, raster_scale, pixels),
-                            AsyncAssetResult::IconMissing { spec_hash } => {
-                                state.icon_rasterizer.handle_async_miss(spec_hash)
-                            }
+            .insert_source(async_asset_rx, |event, _, state| match event {
+                ChannelEvent::Msg(result) => {
+                    match result {
+                        AsyncAssetResult::TextReady {
+                            spec_hash,
+                            width,
+                            height,
+                            raster_scale,
+                            pixels,
+                        } => state.text_rasterizer.handle_async_ready(
+                            spec_hash,
+                            width,
+                            height,
+                            raster_scale,
+                            pixels,
+                        ),
+                        AsyncAssetResult::TextMissing { spec_hash } => {
+                            state.text_rasterizer.handle_async_miss(spec_hash)
                         }
-                        state.async_asset_dirty = true;
-                        state.schedule_redraw();
+                        AsyncAssetResult::IconReady {
+                            spec_hash,
+                            width,
+                            height,
+                            raster_scale,
+                            pixels,
+                        } => state.icon_rasterizer.handle_async_ready(
+                            spec_hash,
+                            width,
+                            height,
+                            raster_scale,
+                            pixels,
+                        ),
+                        AsyncAssetResult::IconMissing { spec_hash } => {
+                            state.icon_rasterizer.handle_async_miss(spec_hash)
+                        }
                     }
-                    ChannelEvent::Closed => {}
+                    state.async_asset_dirty = true;
+                    state.schedule_redraw();
                 }
+                ChannelEvent::Closed => {}
             })
             .expect("Failed to init async asset worker.");
 
@@ -463,7 +490,8 @@ impl ShojiWM {
                 };
                 if tick.dirty {
                     state.runtime_poll_dirty = true;
-                    state.runtime_dirty_window_ids
+                    state
+                        .runtime_dirty_window_ids
                         .extend(tick.dirty_window_ids.into_iter());
                     state.schedule_redraw();
                 }
@@ -481,9 +509,7 @@ impl ShojiWM {
                     Some(ms) => ms.clamp(1, 250),
                     None => 250,
                 };
-                TimeoutAction::ToDuration(Duration::from_millis(
-                    next_interval_ms,
-                ))
+                TimeoutAction::ToDuration(Duration::from_millis(next_interval_ms))
             })
             .expect("Failed to init runtime scheduler.");
     }
@@ -510,8 +536,8 @@ impl ShojiWM {
                 self.consume_runtime_display_config(result.display_config);
             }
             Err(error) => {
-            warn!(?error, "failed to warm up decoration runtime");
-            return;
+                warn!(?error, "failed to warm up decoration runtime");
+                return;
             }
         }
 
@@ -560,19 +586,20 @@ impl ShojiWM {
         output: &Output,
         preference: &RuntimeDisplayModePreference,
     ) -> Option<OutputMode> {
-        let modes = tty_output_available_modes(self, &output.name()).unwrap_or_else(|| output.modes());
+        let modes =
+            tty_output_available_modes(self, &output.name()).unwrap_or_else(|| output.modes());
         if modes.is_empty() {
             return output.current_mode();
         }
         match preference {
-            RuntimeDisplayModePreference::Best(value) if value == "best" => modes
-                .into_iter()
-                .max_by_key(|mode| {
+            RuntimeDisplayModePreference::Best(value) if value == "best" => {
+                modes.into_iter().max_by_key(|mode| {
                     (
                         i64::from(mode.size.w) * i64::from(mode.size.h),
                         mode.refresh,
                     )
-                }),
+                })
+            }
             RuntimeDisplayModePreference::Exact {
                 width,
                 height,
@@ -580,7 +607,9 @@ impl ShojiWM {
             } => {
                 let exact = modes
                     .into_iter()
-                    .filter(|mode| mode.size.w == i32::from(*width) && mode.size.h == i32::from(*height))
+                    .filter(|mode| {
+                        mode.size.w == i32::from(*width) && mode.size.h == i32::from(*height)
+                    })
                     .collect::<Vec<_>>();
                 if exact.is_empty() {
                     return None;
@@ -596,10 +625,7 @@ impl ShojiWM {
         }
     }
 
-    pub fn apply_runtime_display_config_update(
-        &mut self,
-        update: RuntimeDisplayConfigUpdate,
-    ) {
+    pub fn apply_runtime_display_config_update(&mut self, update: RuntimeDisplayConfigUpdate) {
         for (output_name, config) in update.outputs {
             match config {
                 Some(config) => {
@@ -713,10 +739,7 @@ impl ShojiWM {
             .sync_display_state(self.snapshot_outputs());
     }
 
-    pub fn consume_runtime_display_config(
-        &mut self,
-        update: Option<RuntimeDisplayConfigUpdate>,
-    ) {
+    pub fn consume_runtime_display_config(&mut self, update: Option<RuntimeDisplayConfigUpdate>) {
         if let Some(update) = update {
             self.apply_runtime_display_config_update(update);
         }
@@ -779,12 +802,11 @@ impl ShojiWM {
 
         let logical_pos = LogicalPoint::new(pos.x.floor() as i32, pos.y.floor() as i32);
         if let Some((window, decoration)) = self.window_under_transformed(logical_pos) {
-            let transformed_client =
-                transformed_rect(
-                    decoration.client_rect,
-                    decoration.layout.root.rect,
-                    decoration.visual_transform,
-                );
+            let transformed_client = transformed_rect(
+                decoration.client_rect,
+                decoration.layout.root.rect,
+                decoration.visual_transform,
+            );
             if !transformed_client.contains(logical_pos) {
                 return None;
             }
@@ -851,14 +873,13 @@ impl ShojiWM {
             let decoration = self.window_decorations.get(window)?;
             let transformed_root =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
-            transformed_root.contains(logical_pos).then_some((window, decoration))
+            transformed_root
+                .contains(logical_pos)
+                .then_some((window, decoration))
         })
     }
 
-    pub fn raw_window_under(
-        &self,
-        logical_pos: LogicalPoint,
-    ) -> Option<(&Window, LogicalRect)> {
+    pub fn raw_window_under(&self, logical_pos: LogicalPoint) -> Option<(&Window, LogicalRect)> {
         self.space.elements().rev().find_map(|window| {
             let location = self.space.element_location(window)?;
             let bbox = window.bbox();
@@ -906,20 +927,33 @@ impl ShojiWM {
         surface: &WlSurface,
     ) -> Vec<LogicalRect> {
         let Some(decoration) = self.window_decorations.get(window) else {
-            return self.logical_damage_rect_for_window(window).into_iter().collect();
+            return self
+                .logical_damage_rect_for_window(window)
+                .into_iter()
+                .collect();
         };
-        let Some(root_surface) = window.toplevel().map(|surface| surface.wl_surface().clone()) else {
-            return self.logical_damage_rect_for_window(window).into_iter().collect();
+        let Some(root_surface) = window
+            .toplevel()
+            .map(|surface| surface.wl_surface().clone())
+        else {
+            return self
+                .logical_damage_rect_for_window(window)
+                .into_iter()
+                .collect();
         };
         if surface != &root_surface {
-            return self.logical_damage_rect_for_window(window).into_iter().collect();
+            return self
+                .logical_damage_rect_for_window(window)
+                .into_iter()
+                .collect();
         }
 
         let damage_rects = with_states(surface, |states| {
             let mut cached = states.cached_state.get::<SurfaceAttributes>();
             let attrs = cached.current();
             let buffer_scale = attrs.buffer_scale.max(1);
-            attrs.damage
+            attrs
+                .damage
                 .iter()
                 .map(|damage| match damage {
                     Damage::Surface(rect) => {
@@ -942,7 +976,10 @@ impl ShojiWM {
         });
 
         if damage_rects.is_empty() {
-            return self.logical_damage_rect_for_window(window).into_iter().collect();
+            return self
+                .logical_damage_rect_for_window(window)
+                .into_iter()
+                .collect();
         }
 
         let mapped = damage_rects
@@ -977,11 +1014,7 @@ impl ShojiWM {
             .unwrap_or(&[])
     }
 
-    pub fn record_damage_blink(
-        &mut self,
-        output: &Output,
-        damage: &[Rectangle<i32, Physical>],
-    ) {
+    pub fn record_damage_blink(&mut self, output: &Output, damage: &[Rectangle<i32, Physical>]) {
         if !self.damage_blink_enabled {
             return;
         }
@@ -1022,14 +1055,20 @@ impl ShojiWM {
             .values()
             .flat_map(|rects| rects.iter().copied())
             .collect::<Vec<_>>();
-        let had_visible = self.damage_blink_visible.values().any(|rects| !rects.is_empty());
+        let had_visible = self
+            .damage_blink_visible
+            .values()
+            .any(|rects| !rects.is_empty());
         self.damage_blink_visible = std::mem::take(&mut self.damage_blink_pending);
         let next_visible = self
             .damage_blink_visible
             .values()
             .flat_map(|rects| rects.iter().copied())
             .collect::<Vec<_>>();
-        let has_visible = self.damage_blink_visible.values().any(|rects| !rects.is_empty());
+        let has_visible = self
+            .damage_blink_visible
+            .values()
+            .any(|rects| !rects.is_empty());
 
         self.pending_decoration_damage.extend(previous_visible);
         self.pending_decoration_damage.extend(next_visible);

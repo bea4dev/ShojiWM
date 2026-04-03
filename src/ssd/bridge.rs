@@ -1,9 +1,9 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode, ButtonNode,
-    Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
-    EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LayoutDirection, LabelNode,
+    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
+    ButtonNode, Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
+    EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LabelNode, LayoutDirection,
     NoiseKind, NoiseStage, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
     WindowAction,
 };
@@ -90,7 +90,11 @@ pub struct WireCompiledEffect {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum WireEffectInvalidationPolicy {
     OnSourceDamageBox {
         anti_artifact_margin: i32,
@@ -103,11 +107,13 @@ pub enum WireEffectInvalidationPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum WireAutomaticEffectInvalidationPolicy {
-    OnSourceDamageBox {
-        anti_artifact_margin: i32,
-    },
+    OnSourceDamageBox { anti_artifact_margin: i32 },
     Always,
 }
 
@@ -254,8 +260,8 @@ pub enum DecorationBridgeError {
 }
 
 pub fn decode_tree_json(input: &str) -> Result<DecorationNode, DecorationBridgeError> {
-    let wire: WireDecorationNode =
-        serde_json::from_str(input).map_err(|err| DecorationBridgeError::InvalidJson(err.to_string()))?;
+    let wire: WireDecorationNode = serde_json::from_str(input)
+        .map_err(|err| DecorationBridgeError::InvalidJson(err.to_string()))?;
     wire.try_into()
 }
 
@@ -291,7 +297,11 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
             "Fragment" => DecorationNodeKind::Box(BoxNode {
                 direction: LayoutDirection::Column,
             }),
-            other => return Err(DecorationBridgeError::UnsupportedNodeKind(other.to_string())),
+            other => {
+                return Err(DecorationBridgeError::UnsupportedNodeKind(
+                    other.to_string(),
+                ));
+            }
         };
 
         let style = DecorationStyle::try_from(value.props.style)?;
@@ -330,7 +340,9 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                     let mut uniforms = std::collections::BTreeMap::new();
                     for (name, value) in stage.uniforms {
                         let value = match value {
-                            WireShaderUniformValue::Float(value) => ShaderUniformValue::Float(value),
+                            WireShaderUniformValue::Float(value) => {
+                                ShaderUniformValue::Float(value)
+                            }
                             WireShaderUniformValue::Vec(value) => match value.as_slice() {
                                 [x, y] => ShaderUniformValue::Vec2([*x, *y]),
                                 [x, y, z] => ShaderUniformValue::Vec3([*x, *y, *z]),
@@ -356,7 +368,11 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                 WireEffectStage::Noise(stage) => {
                     let kind = match stage.noise_kind.as_deref().unwrap_or("salt") {
                         "salt" => NoiseKind::Salt,
-                        other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+                        other => {
+                            return Err(DecorationBridgeError::InvalidShaderType(
+                                other.to_string(),
+                            ));
+                        }
                     };
                     stages.push(EffectStage::Noise(NoiseStage {
                         kind,
@@ -376,7 +392,11 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                         "add" => BlendMode::Add,
                         "screen" => BlendMode::Screen,
                         "multiply" => BlendMode::Multiply,
-                        other => return Err(DecorationBridgeError::InvalidShaderType(other.to_string())),
+                        other => {
+                            return Err(DecorationBridgeError::InvalidShaderType(
+                                other.to_string(),
+                            ));
+                        }
                     };
                     stages.push(EffectStage::Blend {
                         input,
@@ -394,25 +414,26 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
             return Err(DecorationBridgeError::InvalidShaderDescriptor);
         }
 
-        let invalidate = match value
-            .invalidate
-            .unwrap_or(WireEffectInvalidationPolicy::OnSourceDamageBox {
-                anti_artifact_margin: 0,
-            })
-        {
-            WireEffectInvalidationPolicy::OnSourceDamageBox {
-                anti_artifact_margin,
-            } => EffectInvalidationPolicy::OnSourceDamageBox {
-                anti_artifact_margin: anti_artifact_margin.max(0),
-            },
-            WireEffectInvalidationPolicy::Always => EffectInvalidationPolicy::Always,
-            WireEffectInvalidationPolicy::Manual { dirty_when, base } => {
-                EffectInvalidationPolicy::Manual {
-                    dirty_when,
-                    base: base.map(|policy| Box::new(decode_automatic_invalidation_policy(*policy))),
+        let invalidate =
+            match value
+                .invalidate
+                .unwrap_or(WireEffectInvalidationPolicy::OnSourceDamageBox {
+                    anti_artifact_margin: 0,
+                }) {
+                WireEffectInvalidationPolicy::OnSourceDamageBox {
+                    anti_artifact_margin,
+                } => EffectInvalidationPolicy::OnSourceDamageBox {
+                    anti_artifact_margin: anti_artifact_margin.max(0),
+                },
+                WireEffectInvalidationPolicy::Always => EffectInvalidationPolicy::Always,
+                WireEffectInvalidationPolicy::Manual { dirty_when, base } => {
+                    EffectInvalidationPolicy::Manual {
+                        dirty_when,
+                        base: base
+                            .map(|policy| Box::new(decode_automatic_invalidation_policy(*policy))),
+                    }
                 }
-            }
-        };
+            };
 
         Ok(CompiledEffect {
             input,
@@ -494,7 +515,9 @@ impl TryFrom<WireDecorationChild> for DecorationNode {
     fn try_from(value: WireDecorationChild) -> Result<Self, Self::Error> {
         match value {
             WireDecorationChild::Node(node) => node.try_into(),
-            WireDecorationChild::Primitive(_) => Err(DecorationBridgeError::UnsupportedPrimitiveChild),
+            WireDecorationChild::Primitive(_) => {
+                Err(DecorationBridgeError::UnsupportedPrimitiveChild)
+            }
         }
     }
 }
@@ -539,11 +562,26 @@ impl TryFrom<WireStyle> for DecorationStyle {
             background: value.background.map(|s| parse_color(&s)).transpose()?,
             color: value.color.map(|s| parse_color(&s)).transpose()?,
             opacity: value.opacity,
-            border: value.border.map(|border| parse_border(border)).transpose()?,
-            border_top: value.border_top.map(|border| parse_border(border)).transpose()?,
-            border_right: value.border_right.map(|border| parse_border(border)).transpose()?,
-            border_bottom: value.border_bottom.map(|border| parse_border(border)).transpose()?,
-            border_left: value.border_left.map(|border| parse_border(border)).transpose()?,
+            border: value
+                .border
+                .map(|border| parse_border(border))
+                .transpose()?,
+            border_top: value
+                .border_top
+                .map(|border| parse_border(border))
+                .transpose()?,
+            border_right: value
+                .border_right
+                .map(|border| parse_border(border))
+                .transpose()?,
+            border_bottom: value
+                .border_bottom
+                .map(|border| parse_border(border))
+                .transpose()?,
+            border_left: value
+                .border_left
+                .map(|border| parse_border(border))
+                .transpose()?,
             border_fit: value.border_fit.map(parse_border_fit).transpose()?,
             border_radius: value.border_radius,
             visible: value.visible,
@@ -592,14 +630,18 @@ fn parse_justify_content(input: String) -> Result<JustifyContent, DecorationBrid
         "center" => Ok(JustifyContent::Center),
         "end" => Ok(JustifyContent::End),
         "space-between" => Ok(JustifyContent::SpaceBetween),
-        other => Err(DecorationBridgeError::InvalidJustifyContent(other.to_string())),
+        other => Err(DecorationBridgeError::InvalidJustifyContent(
+            other.to_string(),
+        )),
     }
 }
 
 fn parse_dimension(input: Option<WireDimension>) -> Result<Option<i32>, DecorationBridgeError> {
     match input {
         Some(WireDimension::Pixels(value)) => Ok(Some(value)),
-        Some(WireDimension::Keyword(keyword)) => Err(DecorationBridgeError::UnsupportedDimensionKeyword(keyword)),
+        Some(WireDimension::Keyword(keyword)) => {
+            Err(DecorationBridgeError::UnsupportedDimensionKeyword(keyword))
+        }
         None => Ok(None),
     }
 }

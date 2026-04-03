@@ -63,9 +63,11 @@ impl DisplayConfig {
     }
 
     pub fn tty_output_allowed(&self, output_name: &str) -> bool {
-        self.tty_outputs
-            .as_ref()
-            .is_none_or(|outputs| outputs.iter().any(|candidate| tty_output_names_match(candidate, output_name)))
+        self.tty_outputs.as_ref().is_none_or(|outputs| {
+            outputs
+                .iter()
+                .any(|candidate| tty_output_names_match(candidate, output_name))
+        })
     }
 }
 

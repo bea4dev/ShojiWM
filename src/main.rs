@@ -52,8 +52,8 @@ struct CliArgs {
 impl CliArgs {
     fn parse() -> Self {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let env_log_off = std::env::var_os("SHOJI_LOG")
-            .is_some_and(|value| value == "off" || value == "0");
+        let env_log_off =
+            std::env::var_os("SHOJI_LOG").is_some_and(|value| value == "off" || value == "0");
         let env_no_rotate = std::env::var_os("SHOJI_LOG_ROTATE")
             .is_some_and(|value| value == "0" || value == "off");
 

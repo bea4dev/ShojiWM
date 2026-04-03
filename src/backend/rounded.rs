@@ -4,7 +4,7 @@ use smithay::{
         gles::{GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName},
         utils::{CommitCounter, OpaqueRegions},
     },
-    utils::{user_data::UserDataMap, Buffer, Logical, Physical, Rectangle, Scale, Transform},
+    utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform, user_data::UserDataMap},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -259,14 +259,7 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
 
     let local_clip_rect = spec
         .clip
-        .map(|clip| {
-            [
-                clip.rect.x,
-                clip.rect.y,
-                clip.rect.width,
-                clip.rect.height,
-            ]
-        })
+        .map(|clip| [clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height])
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
     let clip_radius = spec.clip.map(|clip| clip.radius.max(0.0)).unwrap_or(0.0);
     let (inner_enabled, local_inner_rect, inner_radius) = match spec.inner_mode {
@@ -286,8 +279,8 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
     };
     let fallback_radius = spec.radius.max(0.0);
     let corner_radii = spec.corner_radii.map(|radius| radius.max(0.0));
-    let uses_custom_corner_radii = corner_radii.iter().any(|radius| *radius > 0.0)
-        || fallback_radius > 0.0;
+    let uses_custom_corner_radii =
+        corner_radii.iter().any(|radius| *radius > 0.0) || fallback_radius > 0.0;
 
     vec![
         Uniform::new("color", spec.color),
@@ -296,7 +289,12 @@ fn uniforms_for_spec(spec: RoundedRectSpec) -> Vec<Uniform<'static>> {
             if uses_custom_corner_radii {
                 corner_radii
             } else {
-                [fallback_radius, fallback_radius, fallback_radius, fallback_radius]
+                [
+                    fallback_radius,
+                    fallback_radius,
+                    fallback_radius,
+                    fallback_radius,
+                ]
             },
         ),
         Uniform::new("outer_rect", spec.shader_outer_rect),

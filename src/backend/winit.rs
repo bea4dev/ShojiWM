@@ -4,35 +4,35 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::solid::SolidColorRenderElement, element::surface::WaylandSurfaceRenderElement,
+            ImportEgl, ImportMemWl,
+            damage::OutputDamageTracker,
+            element::solid::SolidColorRenderElement,
+            element::surface::WaylandSurfaceRenderElement,
             element::texture::TextureRenderElement,
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
-            gles::{GlesRenderer, GlesTexture}, ImportEgl, ImportMemWl,
+            gles::{GlesRenderer, GlesTexture},
         },
         winit::{self, WinitEvent},
     },
+    desktop::{WindowSurface, layer_map_for_output},
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
     reexports::wayland_server::Resource,
     utils::{Logical, Monotonic, Point, Rectangle, Transform},
-    desktop::{WindowSurface, layer_map_for_output},
-    wayland::{
-        background_effect::BackgroundEffectSurfaceCachedState,
-        compositor,
-    },
+    wayland::{background_effect::BackgroundEffectSurfaceCachedState, compositor},
 };
 use tracing::{info, trace, warn};
 
 use crate::{
-    backend::{damage, damage_blink, decoration, snapshot, window as window_render},
+    ShojiWM,
     backend::visual::{
         WindowVisualState, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, root_physical_origin, transformed_root_rect,
         window_visual_state,
     },
+    backend::{damage, damage_blink, decoration, snapshot, window as window_render},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
-    ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
 
@@ -832,7 +832,9 @@ fn transform_window_elements(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     visual: WindowVisualState,
     direct: fn(WaylandSurfaceRenderElement<GlesRenderer>) -> WinitRenderElements,
-    transformed: fn(RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>) -> WinitRenderElements,
+    transformed: fn(
+        RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    ) -> WinitRenderElements,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
         return elements.into_iter().map(direct).collect();
@@ -842,11 +844,7 @@ fn transform_window_elements(
         .into_iter()
         .map(|element| {
             transformed(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -859,25 +857,23 @@ fn transform_clipped_elements(
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(WinitRenderElements::Clipped).collect();
+        return elements
+            .into_iter()
+            .map(WinitRenderElements::Clipped)
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
             WinitRenderElements::TransformedClipped(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
         })
         .collect()
 }
-
 
 fn transform_text_elements(
     elements: Vec<crate::backend::text::DecorationTextureElements>,
@@ -903,11 +899,7 @@ fn transform_text_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedText(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -920,18 +912,17 @@ fn transform_snapshot_elements(
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
-        return elements.into_iter().map(WinitRenderElements::Snapshot).collect();
+        return elements
+            .into_iter()
+            .map(WinitRenderElements::Snapshot)
+            .collect();
     }
 
     elements
         .into_iter()
         .map(|element| {
             WinitRenderElements::TransformedSnapshot(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    element,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -963,11 +954,7 @@ fn transform_decoration_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedDecoration(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -999,11 +986,7 @@ fn transform_backdrop_elements(
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
             WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(
-                    relocated,
-                    visual.origin,
-                    visual.scale,
-                ),
+                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -1023,7 +1006,11 @@ fn backdrop_shader_elements_for_window(
     alpha: f32,
     has_backdrop_source: bool,
     apply_visual_transform: bool,
-) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement, bool)> {
+) -> Vec<(
+    usize,
+    crate::backend::shader_effect::StableBackdropTextureElement,
+    bool,
+)> {
     if !has_backdrop_source {
         let Some(decoration) = state.window_decorations.get(window) else {
             return Vec::new();
@@ -1224,7 +1211,10 @@ fn backdrop_shader_elements_for_window(
                         scale.x as f32,
                         clip_rect,
                         cached.clip_radius,
-                        format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
+                        format!(
+                            "window-backdrop:{}:{}",
+                            decoration.snapshot.id, cached.stable_key
+                        ),
                     )
                     .ok()
                     .map(|element| (cached.order, element, render_as_backdrop));
@@ -1232,7 +1222,8 @@ fn backdrop_shader_elements_for_window(
             }
             let backdrop_texture = if uses_backdrop {
                 let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
-                let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
+                let actual_capture_geo =
+                    capture_geo.intersection(output_geo).unwrap_or(capture_geo);
                 for lower_window in &lower_windows {
                     backdrop_scene.extend(window_scene_elements_for_capture(
                         renderer,
@@ -1248,9 +1239,12 @@ fn backdrop_shader_elements_for_window(
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                        .to_f64()
-                        .to_physical_precise_round(scale),
+                    translation: smithay::utils::Point::from((
+                        -capture_offset.x,
+                        -capture_offset.y,
+                    ))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -1262,7 +1256,12 @@ fn backdrop_shader_elements_for_window(
                     )
                     .into_iter(),
                 );
-                capture_scene_texture_for_effect(renderer, actual_capture_geo, scale, &backdrop_scene)
+                capture_scene_texture_for_effect(
+                    renderer,
+                    actual_capture_geo,
+                    scale,
+                    &backdrop_scene,
+                )
             } else {
                 None
             };
@@ -1391,7 +1390,10 @@ fn backdrop_shader_elements_for_window(
                 scale.x as f32,
                 clip_rect,
                 cached.clip_radius,
-                format!("window-backdrop:{}:{}", decoration.snapshot.id, cached.stable_key),
+                format!(
+                    "window-backdrop:{}:{}",
+                    decoration.snapshot.id, cached.stable_key
+                ),
             )
             .ok()
             .map(|element| (cached.order, element, render_as_backdrop))
@@ -1411,7 +1413,9 @@ fn protocol_background_effect_rects_for_window(
     };
     let wl_surface = surface.wl_surface();
     let blur_region = compositor::with_states(wl_surface, |states| {
-        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        let mut cached = states
+            .cached_state
+            .get::<BackgroundEffectSurfaceCachedState>();
         cached.current().blur_region.clone()
     });
     let Some(region) = blur_region else {
@@ -1420,7 +1424,12 @@ fn protocol_background_effect_rects_for_window(
 
     crate::backend::window::region_rects_within_bounds(
         &region,
-        crate::ssd::LogicalRect::new(0, 0, decoration.client_rect.width, decoration.client_rect.height),
+        crate::ssd::LogicalRect::new(
+            0,
+            0,
+            decoration.client_rect.width,
+            decoration.client_rect.height,
+        ),
     )
     .into_iter()
     .map(|rect| {
@@ -1440,7 +1449,9 @@ fn protocol_background_effect_rects_for_layer(
 ) -> Vec<crate::ssd::LogicalRect> {
     let wl_surface = layer_surface.wl_surface();
     let blur_region = compositor::with_states(wl_surface, |states| {
-        let mut cached = states.cached_state.get::<BackgroundEffectSurfaceCachedState>();
+        let mut cached = states
+            .cached_state
+            .get::<BackgroundEffectSurfaceCachedState>();
         cached.current().blur_region.clone()
     });
     let Some(region) = blur_region else {
@@ -1475,7 +1486,12 @@ fn collect_window_source_damage(
 ) -> Vec<crate::state::OwnedDamageRect> {
     let owners = windows
         .into_iter()
-        .filter_map(|window| state.window_decorations.get(&window).map(|decoration| decoration.snapshot.id.clone()))
+        .filter_map(|window| {
+            state
+                .window_decorations
+                .get(&window)
+                .map(|decoration| decoration.snapshot.id.clone())
+        })
         .collect::<std::collections::HashSet<_>>();
     state
         .window_source_damage
@@ -1506,10 +1522,7 @@ fn collect_layer_source_damage(
         .collect()
 }
 
-fn logical_rects_intersect(
-    lhs: crate::ssd::LogicalRect,
-    rhs: crate::ssd::LogicalRect,
-) -> bool {
+fn logical_rects_intersect(lhs: crate::ssd::LogicalRect, rhs: crate::ssd::LogicalRect) -> bool {
     let left = lhs.x.max(rhs.x);
     let top = lhs.y.max(rhs.y);
     let right = (lhs.x + lhs.width).min(rhs.x + rhs.width);
@@ -1685,42 +1698,42 @@ fn lower_layer_scene_elements(
             capture_geo.loc.y,
             capture_geo.size.w,
             capture_geo.size.h,
-            )
-                .hash(&mut hasher);
-            let signature = hasher.finish();
-            let relevant_source_damage = collect_layer_source_damage(
-                state,
-                lower_layers.iter().skip(index + 1).cloned(),
-                true,
-            );
-            let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
-                &config.effect,
-                Rectangle::new(
-                    smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
-                    (effect_rect.width, effect_rect.height).into(),
-                ),
-                &relevant_source_damage,
-            );
-            let captured_local_rect = Rectangle::new(
+        )
+            .hash(&mut hasher);
+        let signature = hasher.finish();
+        let relevant_source_damage =
+            collect_layer_source_damage(state, lower_layers.iter().skip(index + 1).cloned(), true);
+        let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+            &config.effect,
+            Rectangle::new(
+                smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+                (effect_rect.width, effect_rect.height).into(),
+            ),
+            &relevant_source_damage,
+        );
+        let captured_local_rect = Rectangle::new(
             smithay::utils::Point::from((
                 effect_rect.x - output_geo.loc.x,
                 effect_rect.y - output_geo.loc.y,
             )),
             (effect_rect.width, effect_rect.height).into(),
         );
-            if !matches!(
-                config.effect.invalidate_policy(),
-                crate::ssd::EffectInvalidationPolicy::Always
-            ) && !source_damage_hit
-            {
-                if let Some(existing) = state
-                    .layer_backdrop_cache
+        if !matches!(
+            config.effect.invalidate_policy(),
+            crate::ssd::EffectInvalidationPolicy::Always
+        ) && !source_damage_hit
+        {
+            if let Some(existing) = state
+                .layer_backdrop_cache
                 .get(&stable_key)
                 .filter(|existing| existing.signature == signature)
                 .cloned()
             {
                 for rect in rects {
-                    let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+                    let rect_key = format!(
+                        "{}:{}:{}:{}:{}",
+                        layer_id, rect.x, rect.y, rect.width, rect.height
+                    );
                     let rect_local = Rectangle::new(
                         smithay::utils::Point::from((
                             rect.x - output_geo.loc.x,
@@ -1828,7 +1841,10 @@ fn lower_layer_scene_elements(
             .unwrap_or_default();
         let had_existing = state.layer_backdrop_cache.contains_key(&stable_key);
         for rect in &rects {
-            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+            let rect_key = format!(
+                "{}:{}:{}:{}:{}",
+                layer_id, rect.x, rect.y, rect.width, rect.height
+            );
             let entry = sub_elements.entry(rect_key).or_default();
             if had_existing {
                 entry.commit_counter.increment();
@@ -1861,12 +1877,12 @@ fn lower_layer_scene_elements(
             },
         );
         for rect in rects {
-            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+            let rect_key = format!(
+                "{}:{}:{}:{}:{}",
+                layer_id, rect.x, rect.y, rect.width, rect.height
+            );
             let rect_local = Rectangle::new(
-                smithay::utils::Point::from((
-                    rect.x - output_geo.loc.x,
-                    rect.y - output_geo.loc.y,
-                )),
+                smithay::utils::Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)),
                 (rect.width, rect.height).into(),
             );
             if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
@@ -1916,7 +1932,8 @@ fn configured_background_effect_elements_for_layer(
         .configured_layer_effects
         .get(&layer_id)
         .cloned()
-        .or_else(|| state.configured_background_effect.clone()) else {
+        .or_else(|| state.configured_background_effect.clone())
+    else {
         return Vec::new();
     };
     let rects = protocol_background_effect_rects_for_layer(output, layer_surface);
@@ -1937,10 +1954,7 @@ fn configured_background_effect_elements_for_layer(
         })
         .unwrap_or(0);
     let capture_geo = Rectangle::new(
-        smithay::utils::Point::from((
-            effect_rect.x - blur_padding,
-            effect_rect.y - blur_padding,
-        )),
+        smithay::utils::Point::from((effect_rect.x - blur_padding, effect_rect.y - blur_padding)),
         (
             effect_rect.width + blur_padding * 2,
             effect_rect.height + blur_padding * 2,
@@ -1960,7 +1974,11 @@ fn configured_background_effect_elements_for_layer(
             ));
         }
         if uses_backdrop || uses_xray {
-            entries.extend(collect_layer_source_damage(state, lower_layers.iter().cloned(), true));
+            entries.extend(collect_layer_source_damage(
+                state,
+                lower_layers.iter().cloned(),
+                true,
+            ));
         }
         entries
     };
@@ -2018,7 +2036,8 @@ fn configured_background_effect_elements_for_layer(
     let Some(input_texture) = backdrop_texture
         .clone()
         .or_else(|| xray_texture.clone())
-        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok()) else {
+        .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())
+    else {
         return Vec::new();
     };
     let layer_id = layer_surface.wl_surface().id().protocol_id();
@@ -2082,7 +2101,10 @@ fn configured_background_effect_elements_for_layer(
             return rects
                 .into_iter()
                 .filter_map(|rect| {
-                    let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+                    let rect_key = format!(
+                        "{}:{}:{}:{}:{}",
+                        layer_id, rect.x, rect.y, rect.width, rect.height
+                    );
                     let rect_local = Rectangle::new(
                         smithay::utils::Point::from((
                             rect.x - output_geo.loc.x,
@@ -2145,7 +2167,10 @@ fn configured_background_effect_elements_for_layer(
         .unwrap_or_default();
     let had_existing = state.layer_backdrop_cache.contains_key(&stable_key);
     for rect in &rects {
-        let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+        let rect_key = format!(
+            "{}:{}:{}:{}:{}",
+            layer_id, rect.x, rect.y, rect.width, rect.height
+        );
         let entry = sub_elements.entry(rect_key).or_default();
         if had_existing {
             entry.commit_counter.increment();
@@ -2180,12 +2205,12 @@ fn configured_background_effect_elements_for_layer(
     rects
         .into_iter()
         .filter_map(|rect| {
-            let rect_key = format!("{}:{}:{}:{}:{}", layer_id, rect.x, rect.y, rect.width, rect.height);
+            let rect_key = format!(
+                "{}:{}:{}:{}:{}",
+                layer_id, rect.x, rect.y, rect.width, rect.height
+            );
             let rect_local = Rectangle::new(
-                smithay::utils::Point::from((
-                    rect.x - output_geo.loc.x,
-                    rect.y - output_geo.loc.y,
-                )),
+                smithay::utils::Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)),
                 (rect.width, rect.height).into(),
             );
             crate::backend::shader_effect::backdrop_shader_element(
@@ -2269,7 +2294,10 @@ fn configured_background_effect_elements_for_window(
     window: &smithay::desktop::Window,
     alpha: f32,
     apply_visual_transform: bool,
-) -> Vec<(usize, crate::backend::shader_effect::StableBackdropTextureElement)> {
+) -> Vec<(
+    usize,
+    crate::backend::shader_effect::StableBackdropTextureElement,
+)> {
     let Some(config) = state.configured_background_effect.clone() else {
         return Vec::new();
     };
@@ -2437,9 +2465,12 @@ fn configured_background_effect_elements_for_window(
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((-capture_offset.x, -capture_offset.y))
-                        .to_f64()
-                        .to_physical_precise_round(scale),
+                    translation: smithay::utils::Point::from((
+                        -capture_offset.x,
+                        -capture_offset.y,
+                    ))
+                    .to_f64()
+                    .to_physical_precise_round(scale),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -2451,7 +2482,12 @@ fn configured_background_effect_elements_for_window(
                     )
                     .into_iter(),
                 );
-                capture_scene_texture_for_effect(renderer, actual_capture_geo, scale, &backdrop_scene)
+                capture_scene_texture_for_effect(
+                    renderer,
+                    actual_capture_geo,
+                    scale,
+                    &backdrop_scene,
+                )
             } else {
                 None
             };
@@ -2561,8 +2597,7 @@ fn window_scene_elements_for_capture(
         return Vec::new();
     };
 
-    let physical_location =
-        (window_location - capture_geo.loc).to_physical_precise_round(scale);
+    let physical_location = (window_location - capture_geo.loc).to_physical_precise_round(scale);
     let visual_state = state
         .window_decorations
         .get(window)
@@ -2687,8 +2722,7 @@ fn capture_live_snapshot_for_window(
         smithay::utils::Point::from((client_rect.x, client_rect.y)),
         (client_rect.width, client_rect.height).into(),
     );
-    let physical_location =
-        (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
+    let physical_location = (window_location - snapshot_geo.loc).to_physical_precise_round(scale);
 
     let mut elements: Vec<WinitRenderElements> = Vec::new();
     let surface_elements =
@@ -2777,7 +2811,11 @@ fn closing_snapshot_elements(
                 scale,
                 visual.opacity,
             ) {
-                elements.extend(transform_decoration_elements(background_elements, root_origin, visual));
+                elements.extend(transform_decoration_elements(
+                    background_elements,
+                    root_origin,
+                    visual,
+                ));
             }
 
             if let Some(element) =

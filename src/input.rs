@@ -7,7 +7,7 @@ use smithay::{
         keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, CursorIcon, MotionEvent},
     },
-    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{SERIAL_COUNTER, Serial},
 };
 use std::time::Instant;
@@ -18,7 +18,10 @@ use crate::{
         move_grab::MoveSurfaceGrab,
         resize_grab::{ResizeEdge, ResizeSurfaceGrab},
     },
-    ssd::{DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges, RuntimeWindowAction, WindowAction},
+    ssd::{
+        DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges,
+        RuntimeWindowAction, WindowAction,
+    },
     state::ShojiWM,
 };
 
@@ -100,7 +103,8 @@ impl ShojiWM {
                     return;
                 };
 
-                let pos = event.position_transformed(output_bounds.size) + output_bounds.loc.to_f64();
+                let pos =
+                    event.position_transformed(output_bounds.size) + output_bounds.loc.to_f64();
 
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -151,7 +155,9 @@ impl ShojiWM {
                                     toplevel.send_close();
                                 }
                             }
-                            DecorationHitTestResult::Action(WindowAction::RuntimeHandler(handler_id)) => {
+                            DecorationHitTestResult::Action(WindowAction::RuntimeHandler(
+                                handler_id,
+                            )) => {
                                 pointer.button(
                                     self,
                                     &ButtonEvent {
@@ -163,13 +169,17 @@ impl ShojiWM {
                                 );
 
                                 let window_id = self.snapshot_window(&window).id;
-                                let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+                                let now_ms =
+                                    std::time::Duration::from(self.clock.now()).as_millis() as u64;
                                 self.sync_runtime_display_state();
-                                if let Ok(invocation) = self
-                                    .decoration_evaluator
-                                    .invoke_handler(&window_id, &handler_id, now_ms)
-                                {
-                                    self.consume_runtime_display_config(invocation.display_config.clone());
+                                if let Ok(invocation) = self.decoration_evaluator.invoke_handler(
+                                    &window_id,
+                                    &handler_id,
+                                    now_ms,
+                                ) {
+                                    self.consume_runtime_display_config(
+                                        invocation.display_config.clone(),
+                                    );
                                     self.apply_runtime_handler_invocation(&window, &invocation);
 
                                     if invocation.invoked {
@@ -279,12 +289,10 @@ impl ShojiWM {
                         self.schedule_redraw();
                         return;
                     } else if let Some((window, _loc)) = self
-                        .window_under_transformed(
-                            LogicalPoint::new(
-                                pointer.current_location().x.floor() as i32,
-                                pointer.current_location().y.floor() as i32,
-                            ),
-                        )
+                        .window_under_transformed(LogicalPoint::new(
+                            pointer.current_location().x.floor() as i32,
+                            pointer.current_location().y.floor() as i32,
+                        ))
                         .map(|(w, _)| (w.clone(), ()))
                     {
                         self.focus_window(&window, serial);
@@ -349,14 +357,24 @@ impl ShojiWM {
 
     pub(crate) fn apply_runtime_window_actions(&mut self, actions: Vec<RuntimeWindowAction>) {
         for runtime_action in actions {
-            if matches!(runtime_action.action, crate::ssd::WaylandWindowAction::FinalizeClose) {
-                self.closing_window_snapshots.remove(&runtime_action.window_id);
+            if matches!(
+                runtime_action.action,
+                crate::ssd::WaylandWindowAction::FinalizeClose
+            ) {
+                self.closing_window_snapshots
+                    .remove(&runtime_action.window_id);
                 self.live_window_snapshots.remove(&runtime_action.window_id);
-                self.complete_window_snapshots.remove(&runtime_action.window_id);
-                self.windows_ready_for_decoration.remove(&runtime_action.window_id);
-                self.snapshot_dirty_window_ids.remove(&runtime_action.window_id);
-                let _ = self.decoration_evaluator.window_closed(&runtime_action.window_id);
-                self.runtime_dirty_window_ids.remove(&runtime_action.window_id);
+                self.complete_window_snapshots
+                    .remove(&runtime_action.window_id);
+                self.windows_ready_for_decoration
+                    .remove(&runtime_action.window_id);
+                self.snapshot_dirty_window_ids
+                    .remove(&runtime_action.window_id);
+                let _ = self
+                    .decoration_evaluator
+                    .window_closed(&runtime_action.window_id);
+                self.runtime_dirty_window_ids
+                    .remove(&runtime_action.window_id);
                 self.schedule_redraw();
                 continue;
             }
@@ -395,16 +413,17 @@ impl ShojiWM {
 }
 
 impl ShojiWM {
-    fn update_decoration_cursor_icon(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
-        let next_override = self
-            .decoration_under(pos)
-            .and_then(|(_, hit)| match hit {
-                DecorationHitTestResult::Resize(edges) => Some(resize_edges_to_cursor_icon(edges)),
-                DecorationHitTestResult::Move
-                | DecorationHitTestResult::Action(_)
-                | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
-                DecorationHitTestResult::ClientArea => None,
-            });
+    fn update_decoration_cursor_icon(
+        &mut self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        let next_override = self.decoration_under(pos).and_then(|(_, hit)| match hit {
+            DecorationHitTestResult::Resize(edges) => Some(resize_edges_to_cursor_icon(edges)),
+            DecorationHitTestResult::Move
+            | DecorationHitTestResult::Action(_)
+            | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
+            DecorationHitTestResult::ClientArea => None,
+        });
 
         if self.cursor_override != next_override {
             self.cursor_override = next_override;
@@ -430,10 +449,11 @@ impl ShojiWM {
         }
 
         if let Some(toplevel) = window.toplevel() {
-            self.seat
-                .get_keyboard()
-                .unwrap()
-                .set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+            self.seat.get_keyboard().unwrap().set_focus(
+                self,
+                Some(toplevel.wl_surface().clone()),
+                serial,
+            );
         }
 
         self.schedule_redraw();
@@ -465,7 +485,6 @@ impl ShojiWM {
             "clear_focus finished"
         );
     }
-
 }
 
 fn resize_edges_to_cursor_icon(edges: ResizeEdges) -> CursorIcon {

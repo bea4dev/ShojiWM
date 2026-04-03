@@ -6,25 +6,28 @@ use smithay::{
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
-use crate::state::ShojiWM;
+use crate::backend::rounded::RoundedElementState;
+use crate::backend::visual::RectSnapMode;
+use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
 use crate::backend::{
-    visual::PreciseLogicalRect,
     icon::{CachedDecorationIcon, IconSpec},
     shader_effect::CachedShaderEffect,
     text::{CachedDecorationLabel, LabelSpec},
+    visual::PreciseLogicalRect,
 };
-use crate::backend::visual::RectSnapMode;
-use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
-use crate::backend::rounded::RoundedElementState;
+use crate::state::ShojiWM;
 
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult,
     DecorationEvaluator, DecorationHandlerInvocation, DecorationHitTestResult,
     DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult, LogicalPoint,
     LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandWindowSnapshot,
-    WindowTransform,
-    reapply_tree_preserving_layout,
+    WindowTransform, reapply_tree_preserving_layout,
 };
+
+fn clip_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_CLIP_DEBUG").is_some()
+}
 
 #[derive(Debug, Clone)]
 pub struct WindowDecorationState {
@@ -40,8 +43,10 @@ pub struct WindowDecorationState {
     pub text_buffers: Vec<CachedDecorationLabel>,
     pub icon_buffers: Vec<CachedDecorationIcon>,
     pub rounded_cache: std::collections::HashMap<String, RoundedElementState>,
-    pub shader_cache: std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
-    pub backdrop_cache: std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    pub shader_cache:
+        std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
+    pub backdrop_cache:
+        std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -455,9 +460,9 @@ impl ShojiWM {
             .collect::<std::collections::HashSet<_>>();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();
-        let evaluation = self
-            .decoration_evaluator
-            .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
+        let evaluation =
+            self.decoration_evaluator
+                .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
         self.consume_runtime_display_config(evaluation.display_config.clone());
 
         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
@@ -472,7 +477,8 @@ impl ShojiWM {
         }
         for assignment in evaluation.effects {
             if let Some(effect) = assignment.effect {
-                self.configured_layer_effects.insert(assignment.layer_id, effect);
+                self.configured_layer_effects
+                    .insert(assignment.layer_id, effect);
             }
         }
 
@@ -522,7 +528,8 @@ impl ShojiWM {
                 self.pending_decoration_damage.push(*root_rect);
             }
         }
-        self.window_decorations.retain(|window, _| windows.contains(window));
+        self.window_decorations
+            .retain(|window, _| windows.contains(window));
         self.window_primary_output_names
             .retain(|window, _| windows.contains(window));
 
@@ -562,12 +569,12 @@ impl ShojiWM {
                 || self.runtime_dirty_window_ids.contains(&snapshot.id);
             if !had_cached_decoration || snapshot_changed {
                 let started_at = Instant::now();
-                let previous_root = self
-                    .window_decorations
-                    .get(&window)
-                    .map(|cached| transformed_root_rect(cached.layout.root.rect, cached.visual_transform));
+                let previous_root = self.window_decorations.get(&window).map(|cached| {
+                    transformed_root_rect(cached.layout.root.rect, cached.visual_transform)
+                });
                 let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-                let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms)
+                {
                     Ok(evaluation) => evaluation,
                     Err(error) => {
                         warn!(
@@ -620,17 +627,17 @@ impl ShojiWM {
                     elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
                     "rebuilt window decoration tree"
                 );
-                log_decoration_refresh(
-                    "rebuild",
-                    &snapshot,
-                    client_rect,
-                    &layout,
-                    &buffers,
-                );
+                log_decoration_refresh("rebuild", &snapshot, client_rect, &layout, &buffers);
                 let caches = self
                     .window_decorations
                     .remove(&window)
-                    .map(|cached| (cached.rounded_cache, cached.shader_cache, cached.backdrop_cache))
+                    .map(|cached| {
+                        (
+                            cached.rounded_cache,
+                            cached.shader_cache,
+                            cached.backdrop_cache,
+                        )
+                    })
                     .unwrap_or_default();
                 let (rounded_cache, shader_cache, backdrop_cache) = caches;
                 self.window_decorations.insert(
@@ -661,7 +668,10 @@ impl ShojiWM {
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
                     let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-                    let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
+                    let evaluation = match self
+                        .decoration_evaluator
+                        .evaluate_window(&snapshot, now_ms)
+                    {
                         Ok(evaluation) => evaluation,
                         Err(error) => {
                             warn!(
@@ -753,7 +763,10 @@ impl ShojiWM {
                             }
                         }
                     } else {
-                        match self.decoration_evaluator.evaluate_cached_window(&snapshot.id, now_ms) {
+                        match self
+                            .decoration_evaluator
+                            .evaluate_cached_window(&snapshot.id, now_ms)
+                        {
                             Ok(evaluation) => evaluation,
                             Err(error) => {
                                 warn!(
@@ -773,7 +786,8 @@ impl ShojiWM {
                                             ?error,
                                             "decoration runtime evaluation failed during transform update, falling back to static decoration"
                                         );
-                                        StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
+                                        StaticDecorationEvaluator
+                                            .evaluate_window(&snapshot, now_ms)?
                                     }
                                 }
                             }
@@ -800,13 +814,20 @@ impl ShojiWM {
                             );
                             cached.layout.root.sync_root_bounds(cached.layout_scale);
                             let shared_edges = build_shared_edge_geometry_map(&cached.layout);
-                            cached.content_clip =
-                                content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
+                            cached.content_clip = content_clip_for_layout(
+                                &cached.tree,
+                                &cached.layout,
+                                &shared_edges,
+                            );
                             let order_map = build_render_order_map(&cached.layout);
                             if dirty_node_ids.is_empty() {
                                 cached.buffers = build_cached_buffers(&cached.layout, &order_map);
-                                cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
-                                freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
+                                cached.shader_buffers =
+                                    build_shader_buffers(&cached.layout, &order_map);
+                                freeze_manual_shader_buffers(
+                                    &previous_shader_buffers,
+                                    &mut cached.shader_buffers,
+                                );
                                 cached.text_buffers = build_text_buffers(
                                     &cached.layout,
                                     &order_map,
@@ -822,13 +843,20 @@ impl ShojiWM {
                                 );
                             } else {
                                 let (rebuilt_buffers, rebuilt_shader_buffers) =
-                                    rebuild_partial_buffers(&cached.layout, &order_map, &dirty_node_ids);
+                                    rebuild_partial_buffers(
+                                        &cached.layout,
+                                        &order_map,
+                                        &dirty_node_ids,
+                                    );
                                 let mut merged_shader_buffers = merge_shader_buffers(
                                     &previous_shader_buffers,
                                     rebuilt_shader_buffers,
                                     &dirty_node_ids,
                                 );
-                                freeze_manual_shader_buffers(&previous_shader_buffers, &mut merged_shader_buffers);
+                                freeze_manual_shader_buffers(
+                                    &previous_shader_buffers,
+                                    &mut merged_shader_buffers,
+                                );
                                 cached.buffers = merge_cached_buffers(
                                     &previous_buffers,
                                     rebuilt_buffers,
@@ -866,12 +894,19 @@ impl ShojiWM {
                                 .map_err(super::DecorationEvaluationError::Layout)?;
                             cached.layout_scale = layout_scale;
                             let shared_edges = build_shared_edge_geometry_map(&cached.layout);
-                            cached.content_clip =
-                                content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
+                            cached.content_clip = content_clip_for_layout(
+                                &cached.tree,
+                                &cached.layout,
+                                &shared_edges,
+                            );
                             let order_map = build_render_order_map(&cached.layout);
                             cached.buffers = build_cached_buffers(&cached.layout, &order_map);
-                            cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
-                            freeze_manual_shader_buffers(&previous_shader_buffers, &mut cached.shader_buffers);
+                            cached.shader_buffers =
+                                build_shader_buffers(&cached.layout, &order_map);
+                            freeze_manual_shader_buffers(
+                                &previous_shader_buffers,
+                                &mut cached.shader_buffers,
+                            );
                             cached.text_buffers = build_text_buffers(
                                 &cached.layout,
                                 &order_map,
@@ -898,24 +933,26 @@ impl ShojiWM {
                             next_root,
                         );
                     } else if !dirty_node_ids.is_empty() {
-                        self.pending_decoration_damage.extend(runtime_dirty_node_damage_rects(
-                            &previous_layout,
-                            previous_transform,
-                            &cached.layout,
-                            cached.visual_transform,
-                            &dirty_node_ids,
-                        ));
+                        self.pending_decoration_damage
+                            .extend(runtime_dirty_node_damage_rects(
+                                &previous_layout,
+                                previous_transform,
+                                &cached.layout,
+                                cached.visual_transform,
+                                &dirty_node_ids,
+                            ));
                     } else {
-                        self.pending_decoration_damage.extend(runtime_dirty_damage_rects(
-                            &previous_buffers,
-                            &cached.buffers,
-                            &previous_shader_buffers,
-                            &cached.shader_buffers,
-                            &previous_text_buffers,
-                            &cached.text_buffers,
-                            &previous_icon_buffers,
-                            &cached.icon_buffers,
-                        ));
+                        self.pending_decoration_damage
+                            .extend(runtime_dirty_damage_rects(
+                                &previous_buffers,
+                                &cached.buffers,
+                                &previous_shader_buffers,
+                                &cached.shader_buffers,
+                                &previous_text_buffers,
+                                &cached.text_buffers,
+                                &previous_icon_buffers,
+                                &cached.icon_buffers,
+                            ));
                     }
                     debug!(
                         window_id = cached.snapshot.id,
@@ -994,7 +1031,9 @@ impl ShojiWM {
                 let previous_text_buffers = closing.decoration.text_buffers.clone();
                 let previous_icon_buffers = closing.decoration.icon_buffers.clone();
                 let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
-                let evaluation = self.decoration_evaluator.evaluate_cached_window(&window_id, now_ms)?;
+                let evaluation = self
+                    .decoration_evaluator
+                    .evaluate_cached_window(&window_id, now_ms)?;
                 pending_display_config_updates.push(evaluation.display_config.clone());
                 let next_tree = DecorationTree::new(evaluation.node);
                 let dirty_node_ids = evaluation.dirty_node_ids;
@@ -1002,8 +1041,11 @@ impl ShojiWM {
                 if !tree_changed {
                     closing.decoration.visual_transform = evaluation.transform;
                 } else {
-                    let layout_equivalent =
-                        closing.decoration.tree.root.layout_equivalent(&next_tree.root);
+                    let layout_equivalent = closing
+                        .decoration
+                        .tree
+                        .root
+                        .layout_equivalent(&next_tree.root);
                     closing.decoration.tree = next_tree;
                     if layout_equivalent {
                         reapply_tree_preserving_layout(
@@ -1044,14 +1086,20 @@ impl ShojiWM {
                                 &mut self.icon_rasterizer,
                             );
                         } else {
-                            let (rebuilt_buffers, rebuilt_shader_buffers) =
-                                rebuild_partial_buffers(&closing.decoration.layout, &order_map, &dirty_node_ids);
+                            let (rebuilt_buffers, rebuilt_shader_buffers) = rebuild_partial_buffers(
+                                &closing.decoration.layout,
+                                &order_map,
+                                &dirty_node_ids,
+                            );
                             let mut merged_shader_buffers = merge_shader_buffers(
                                 &previous_shader_buffers,
                                 rebuilt_shader_buffers,
                                 &dirty_node_ids,
                             );
-                            freeze_manual_shader_buffers(&previous_shader_buffers, &mut merged_shader_buffers);
+                            freeze_manual_shader_buffers(
+                                &previous_shader_buffers,
+                                &mut merged_shader_buffers,
+                            );
                             closing.decoration.buffers = merge_cached_buffers(
                                 &previous_buffers,
                                 rebuilt_buffers,
@@ -1092,13 +1140,20 @@ impl ShojiWM {
                             )
                             .map_err(super::DecorationEvaluationError::Layout)?;
                         let shared_edges = build_shared_edge_geometry_map(&layout);
-                        let content_clip =
-                            content_clip_for_layout(&closing.decoration.tree, &layout, &shared_edges);
+                        let content_clip = content_clip_for_layout(
+                            &closing.decoration.tree,
+                            &layout,
+                            &shared_edges,
+                        );
                         let order_map = build_render_order_map(&layout);
                         let buffers = build_cached_buffers(&layout, &order_map);
                         let shader_buffers = build_shader_buffers(&layout, &order_map);
-                        let text_buffers =
-                            build_text_buffers(&layout, &order_map, closing_raster_scale, &mut self.text_rasterizer);
+                        let text_buffers = build_text_buffers(
+                            &layout,
+                            &order_map,
+                            closing_raster_scale,
+                            &mut self.text_rasterizer,
+                        );
                         let icon_buffers = build_icon_buffers(
                             &layout,
                             &order_map,
@@ -1112,7 +1167,8 @@ impl ShojiWM {
                         closing.decoration.shader_buffers = shader_buffers;
                         closing.decoration.text_buffers = text_buffers;
                         closing.decoration.icon_buffers = icon_buffers;
-                        self.suggested_window_offset = suggested_window_offset(&closing.decoration.layout);
+                        self.suggested_window_offset =
+                            suggested_window_offset(&closing.decoration.layout);
                     }
                     closing.decoration.visual_transform = evaluation.transform;
                 }
@@ -1127,24 +1183,26 @@ impl ShojiWM {
                         next_root,
                     );
                 } else if !dirty_node_ids.is_empty() {
-                    self.pending_decoration_damage.extend(runtime_dirty_node_damage_rects(
-                        &previous_layout,
-                        previous_transform,
-                        &closing.decoration.layout,
-                        closing.transform,
-                        &dirty_node_ids,
-                    ));
+                    self.pending_decoration_damage
+                        .extend(runtime_dirty_node_damage_rects(
+                            &previous_layout,
+                            previous_transform,
+                            &closing.decoration.layout,
+                            closing.transform,
+                            &dirty_node_ids,
+                        ));
                 } else {
-                    self.pending_decoration_damage.extend(runtime_dirty_damage_rects(
-                        &previous_buffers,
-                        &closing.decoration.buffers,
-                        &previous_shader_buffers,
-                        &closing.decoration.shader_buffers,
-                        &previous_text_buffers,
-                        &closing.decoration.text_buffers,
-                        &previous_icon_buffers,
-                        &closing.decoration.icon_buffers,
-                    ));
+                    self.pending_decoration_damage
+                        .extend(runtime_dirty_damage_rects(
+                            &previous_buffers,
+                            &closing.decoration.buffers,
+                            &previous_shader_buffers,
+                            &closing.decoration.shader_buffers,
+                            &previous_text_buffers,
+                            &closing.decoration.text_buffers,
+                            &previous_icon_buffers,
+                            &closing.decoration.icon_buffers,
+                        ));
                 }
                 if force_async_asset_refresh {
                     let order_map = build_render_order_map(&closing.decoration.layout);
@@ -1195,13 +1253,12 @@ impl ShojiWM {
                     build_cached_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.shader_buffers =
                     build_shader_buffers(&closing.decoration.layout, &order_map);
-                closing.decoration.text_buffers =
-                    build_text_buffers(
-                        &closing.decoration.layout,
-                        &order_map,
-                        closing_raster_scale,
-                        &mut self.text_rasterizer,
-                    );
+                closing.decoration.text_buffers = build_text_buffers(
+                    &closing.decoration.layout,
+                    &order_map,
+                    closing_raster_scale,
+                    &mut self.text_rasterizer,
+                );
                 closing.decoration.icon_buffers = build_icon_buffers(
                     &closing.decoration.layout,
                     &order_map,
@@ -1280,11 +1337,14 @@ fn window_border_inner_clip_resolved(
         return None;
     }
     node.style.border?;
-    Some(node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
-        rect: node.resolved_content_rect,
-        radius: (node.resolved_border_radius - node.resolved_border_width)
-            .max(crate::ssd::ResolvedLayoutValue::ZERO),
-    }))
+    Some(
+        node.resolved_effective_clip
+            .unwrap_or(crate::ssd::ResolvedDecorationClip {
+                rect: node.resolved_content_rect,
+                radius: (node.resolved_border_radius - node.resolved_border_width)
+                    .max(crate::ssd::ResolvedLayoutValue::ZERO),
+            }),
+    )
 }
 
 fn window_border_inner_hole_rect(
@@ -1346,9 +1406,7 @@ fn window_border_inner_clip_logical(
     })
 }
 
-fn normal_border_inner_rect(
-    node: &super::ComputedDecorationNode,
-) -> Option<LogicalRect> {
+fn normal_border_inner_rect(node: &super::ComputedDecorationNode) -> Option<LogicalRect> {
     node.style.border?;
     let border_width = node.resolved_border_width.round_to_i32().max(0);
     let rect = node.rect.inset(super::Edges::all(border_width));
@@ -1375,35 +1433,48 @@ fn slot_content_clip_for_node(
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
-        node.style.border.map(|border| {
-            (
-                border.width.max(0),
-                node.style.border_radius.unwrap_or(0).max(0),
-            )
-        }).or(nearest_border)
+        node.style
+            .border
+            .map(|border| {
+                (
+                    border.width.max(0),
+                    node.style.border_radius.unwrap_or(0).max(0),
+                )
+            })
+            .or(nearest_border)
     } else {
         nearest_border
     };
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
         let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
-        let inherited_clip = node.resolved_effective_clip.unwrap_or(crate::ssd::ResolvedDecorationClip {
-            rect: node.resolved_rect,
-            radius: (node.resolved_border_radius - node.resolved_border_width)
-                .max(crate::ssd::ResolvedLayoutValue::ZERO),
-        });
+        let inherited_clip =
+            node.resolved_effective_clip
+                .unwrap_or(crate::ssd::ResolvedDecorationClip {
+                    rect: node.resolved_rect,
+                    radius: (node.resolved_border_radius - node.resolved_border_width)
+                        .max(crate::ssd::ResolvedLayoutValue::ZERO),
+                });
         let clip_rect = crate::ssd::ResolvedLogicalRect {
             x: inherited_clip.rect.x.max(node.resolved_rect.x),
             y: inherited_clip.rect.y.max(node.resolved_rect.y),
             width: crate::ssd::ResolvedLayoutValue::from_raw(
-                (inherited_clip.rect.right().min(node.resolved_rect.right()).raw()
+                (inherited_clip
+                    .rect
+                    .right()
+                    .min(node.resolved_rect.right())
+                    .raw()
                     - inherited_clip.rect.x.max(node.resolved_rect.x).raw())
-                    .max(0),
+                .max(0),
             ),
             height: crate::ssd::ResolvedLayoutValue::from_raw(
-                (inherited_clip.rect.bottom().min(node.resolved_rect.bottom()).raw()
+                (inherited_clip
+                    .rect
+                    .bottom()
+                    .min(node.resolved_rect.bottom())
+                    .raw()
                     - inherited_clip.rect.y.max(node.resolved_rect.y).raw())
-                    .max(0),
+                .max(0),
             ),
         };
         let shared_geometry = node
@@ -1417,10 +1488,7 @@ fn slot_content_clip_for_node(
         };
         return Some(ContentClip {
             rect: Rectangle::new(
-                Point::from((
-                    clip.rect.x.round_to_i32(),
-                    clip.rect.y.round_to_i32(),
-                )),
+                Point::from((clip.rect.x.round_to_i32(), clip.rect.y.round_to_i32())),
                 (
                     clip.rect.width.round_to_i32(),
                     clip.rect.height.round_to_i32(),
@@ -1467,10 +1535,8 @@ impl DecorationTree {
 
         let extra_left = slot.x - initial_bounds.x;
         let extra_top = slot.y - initial_bounds.y;
-        let extra_right =
-            (initial_bounds.x + initial_bounds.width) - (slot.x + slot.width);
-        let extra_bottom =
-            (initial_bounds.y + initial_bounds.height) - (slot.y + slot.height);
+        let extra_right = (initial_bounds.x + initial_bounds.width) - (slot.x + slot.width);
+        let extra_bottom = (initial_bounds.y + initial_bounds.height) - (slot.y + slot.height);
 
         let desired = self.layout_with_window_slot_size(
             LogicalRect::new(
@@ -1501,7 +1567,8 @@ impl DecorationTree {
     ) -> Result<ComputedDecorationTree, super::DecorationLayoutError> {
         self.validate()?;
 
-        let mut root = super::layout_node_with_scale(&self.root, bounds, None, window_slot_size, scale)?;
+        let mut root =
+            super::layout_node_with_scale(&self.root, bounds, None, window_slot_size, scale)?;
         root.sync_root_bounds(scale);
         if root.window_slot_rect().is_none() {
             return Err(super::DecorationLayoutError::MissingComputedWindowSlot);
@@ -1554,9 +1621,8 @@ impl super::ComputedDecorationNode {
                 ),
                 radius: clip.radius,
             }),
-            resolved_effective_clip: self
-                .resolved_effective_clip
-                .map(|clip| crate::ssd::ResolvedDecorationClip {
+            resolved_effective_clip: self.resolved_effective_clip.map(|clip| {
+                crate::ssd::ResolvedDecorationClip {
                     rect: crate::ssd::ResolvedLogicalRect {
                         x: clip.rect.x + crate::ssd::ResolvedLayoutValue::from_i32(dx),
                         y: clip.rect.y + crate::ssd::ResolvedLayoutValue::from_i32(dy),
@@ -1564,7 +1630,8 @@ impl super::ComputedDecorationNode {
                         height: clip.rect.height,
                     },
                     radius: clip.radius,
-                }),
+                }
+            }),
             children: self
                 .children
                 .iter()
@@ -1579,8 +1646,7 @@ fn build_cached_buffers(
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedDecorationBuffer> {
     let shared_edges = build_shared_edge_geometry_map(layout);
-    let (buffers, _) =
-        build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
+    let (buffers, _) = build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
     buffers
 }
 
@@ -1589,8 +1655,7 @@ fn build_shader_buffers(
     order_map: &std::collections::HashMap<String, usize>,
 ) -> Vec<CachedShaderEffect> {
     let shared_edges = build_shared_edge_geometry_map(layout);
-    let (_, buffers) =
-        build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
+    let (_, buffers) = build_cached_buffers_and_shaders(layout, order_map, None, &shared_edges);
     buffers
 }
 
@@ -1605,6 +1670,8 @@ fn build_cached_buffers_and_shaders(
     collect_cached_buffers(
         &layout.root,
         "root".to_string(),
+        None,
+        None,
         None,
         None,
         order_map,
@@ -1876,7 +1943,11 @@ fn collect_render_orders(
         *order += 1;
     }
 
-    if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
+    if let Some(background) = node
+        .style
+        .background
+        .map(|color| color.with_opacity(node.style.opacity))
+    {
         if background.a > 0 {
             if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
                 map.insert(format!("{path}:fill-top"), *order);
@@ -1900,6 +1971,8 @@ fn collect_cached_buffers(
     path: String,
     ancestor_clip: Option<super::DecorationClip>,
     ancestor_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
+    ancestor_clip_rect_precise: Option<PreciseLogicalRect>,
+    ancestor_clip_radius_precise: Option<f32>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
@@ -1924,8 +1997,10 @@ fn collect_cached_buffers(
     let node_radius = node.resolved_border_radius.round_to_i32().max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
     let current_clip_radius = ancestor_clip.map(|clip| clip.radius).unwrap_or(0);
-    let current_clip_rect_precise = ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect));
-    let current_clip_radius_precise = ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0));
+    let current_clip_rect_precise = ancestor_clip_rect_precise
+        .or_else(|| ancestor_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect)));
+    let current_clip_radius_precise = ancestor_clip_radius_precise
+        .or_else(|| ancestor_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0)));
     let border_fit = node.style.effective_border_fit(&node.kind);
     let fit_children = matches!(border_fit, super::BorderFit::FitChildren);
     let window_border_inner_clip_resolved = if fit_children {
@@ -1934,16 +2009,18 @@ fn collect_cached_buffers(
         None
     };
     let window_border_inner_clip_precise = if fit_children {
-        window_border_inner_clip_resolved
-            .map(|clip| precise_rect_from_resolved(clip.rect))
+        window_border_inner_clip_resolved.map(|clip| precise_rect_from_resolved(clip.rect))
     } else {
         normal_border_inner_rect_precise(node)
     };
     let window_border_inner_radius_precise = if fit_children {
-        window_border_inner_clip_resolved
-            .map(|clip| clip.radius.to_f32().max(0.0))
+        window_border_inner_clip_resolved.map(|clip| clip.radius.to_f32().max(0.0))
     } else {
-        Some((node.resolved_border_radius - node.resolved_border_width).to_f32().max(0.0))
+        Some(
+            (node.resolved_border_radius - node.resolved_border_width)
+                .to_f32()
+                .max(0.0),
+        )
     };
     let window_border_inner_clip = if fit_children {
         window_border_inner_clip_logical(node)
@@ -1956,17 +2033,50 @@ fn collect_cached_buffers(
         })
     };
     let child_clip = window_border_inner_clip.or(node.effective_clip);
-    let child_resolved_clip = window_border_inner_clip_resolved
-        .or(node.resolved_effective_clip);
-    let window_border_inner_rect = window_border_inner_clip
-        .map(|clip| clip.rect)
-        .or_else(|| {
-            node.style.border.and_then(|_border| {
-                matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
-                    window_border_inner_hole_rect(node, node.resolved_border_width.round_to_i32().max(0))
-                })
+    let child_resolved_clip = window_border_inner_clip_resolved.or(node.resolved_effective_clip);
+    let child_clip_rect_precise = if fit_children {
+        shared_geometry
+            .map(|geometry| geometry.content_rect_precise)
+            .or(window_border_inner_clip_precise)
+            .or_else(|| child_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect)))
+    } else {
+        shared_geometry
+            .and_then(|geometry| geometry.clip_rect_precise)
+            .or_else(|| child_resolved_clip.map(|clip| precise_rect_from_resolved(clip.rect)))
+    };
+    let child_clip_radius_precise = if fit_children {
+        window_border_inner_radius_precise
+            .or_else(|| child_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0)))
+    } else {
+        child_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0))
+    };
+    if clip_debug_enabled() {
+        trace!(
+            stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
+            kind = node_kind_name(&node.kind),
+            current_clip_rect = ?current_clip_rect,
+            current_clip_rect_precise = ?current_clip_rect_precise,
+            current_clip_radius = current_clip_radius,
+            current_clip_radius_precise = ?current_clip_radius_precise,
+            child_clip_rect = ?child_clip.map(|clip| clip.rect),
+            child_clip_rect_precise = ?child_clip_rect_precise,
+            child_clip_radius = child_clip.map(|clip| clip.radius),
+            child_clip_radius_precise = ?child_clip_radius_precise,
+            fit_children,
+            include_node,
+            "clip propagation at cached buffer collection"
+        );
+    }
+    let window_border_inner_rect = window_border_inner_clip.map(|clip| clip.rect).or_else(|| {
+        node.style.border.and_then(|_border| {
+            matches!(node.kind, super::DecorationNodeKind::WindowBorder).then(|| {
+                window_border_inner_hole_rect(
+                    node,
+                    node.resolved_border_width.round_to_i32().max(0),
+                )
             })
-        });
+        })
+    });
 
     match &node.kind {
         super::DecorationNodeKind::Label(_)
@@ -1977,8 +2087,9 @@ fn collect_cached_buffers(
                 if let Some(border) = node.style.border {
                     let color = border.color.with_opacity(node.style.opacity);
                     if color.a > 0 && border.width > 0 {
-                    let current_order =
-                            *order_map.get(&format!("{path}:border")).unwrap_or(&usize::MAX);
+                        let current_order = *order_map
+                            .get(&format!("{path}:border"))
+                            .unwrap_or(&usize::MAX);
                         buffers.push(CachedDecorationBuffer {
                             owner_node_id: node.stable_id.clone(),
                             stable_key: format!("{path}:border"),
@@ -1987,7 +2098,9 @@ fn collect_cached_buffers(
                             rect_precise: Some(
                                 shared_geometry
                                     .map(|geometry| geometry.rect_precise)
-                                    .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
+                                    .unwrap_or_else(|| {
+                                        precise_rect_from_resolved(node.resolved_rect)
+                                    }),
                             ),
                             color,
                             buffer: SolidColorBuffer::new(
@@ -2008,14 +2121,14 @@ fn collect_cached_buffers(
                                 .map(|geometry| geometry.content_rect_precise)
                                 .or(window_border_inner_clip_precise)
                                 .or_else(|| {
-                                (fit_children && !node.children.is_empty()).then(|| {
-                                    precise_rect_from_resolved(
-                                        window_border_inner_clip_resolved
-                                            .map(|clip| clip.rect)
-                                            .unwrap_or(node.resolved_content_rect),
-                                    )
-                                })
-                            }),
+                                    (fit_children && !node.children.is_empty()).then(|| {
+                                        precise_rect_from_resolved(
+                                            window_border_inner_clip_resolved
+                                                .map(|clip| clip.rect)
+                                                .unwrap_or(node.resolved_content_rect),
+                                        )
+                                    })
+                                }),
                             hole_radius: window_border_inner_clip
                                 .map(|clip| clip.radius.max(0))
                                 .unwrap_or_else(|| {
@@ -2041,8 +2154,9 @@ fn collect_cached_buffers(
                 }
 
                 if let super::DecorationNodeKind::ShaderEffect(effect) = &node.kind {
-                    let current_order =
-                        *order_map.get(&format!("{path}:shader")).unwrap_or(&usize::MAX);
+                    let current_order = *order_map
+                        .get(&format!("{path}:shader"))
+                        .unwrap_or(&usize::MAX);
                     shader_buffers.push(CachedShaderEffect {
                         owner_node_id: node.stable_id.clone(),
                         stable_key: format!("{path}:shader"),
@@ -2061,7 +2175,11 @@ fn collect_cached_buffers(
                     });
                 }
 
-                if let Some(background) = node.style.background.map(|color| color.with_opacity(node.style.opacity)) {
+                if let Some(background) = node
+                    .style
+                    .background
+                    .map(|color| color.with_opacity(node.style.opacity))
+                {
                     if background.a > 0 {
                         if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
                             if let Some(inner_rect) = window_border_inner_rect {
@@ -2082,14 +2200,14 @@ fn collect_cached_buffers(
                                     window_border_inner_clip
                                         .map(|clip| clip.radius.max(0))
                                         .unwrap_or_else(|| {
-                                            (node.resolved_border_radius - node.resolved_border_width)
+                                            (node.resolved_border_radius
+                                                - node.resolved_border_width)
                                                 .round_to_i32()
                                                 .max(0)
                                         }),
                                     window_border_inner_clip
                                         .map(|clip| precise_rect_from_logical(clip.rect)),
-                                    window_border_inner_clip
-                                        .map(|clip| clip.radius.max(0) as f32),
+                                    window_border_inner_clip.map(|clip| clip.radius.max(0) as f32),
                                     current_clip_rect_precise,
                                     current_clip_radius_precise,
                                     None,
@@ -2098,7 +2216,9 @@ fn collect_cached_buffers(
                             } else {
                                 push_cached_fill(
                                     buffers,
-                                    *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
+                                    *order_map
+                                        .get(&format!("{path}:fill"))
+                                        .unwrap_or(&usize::MAX),
                                     format!("{path}:fill"),
                                     node.rect,
                                     Some(precise_rect_from_resolved(node.resolved_rect)),
@@ -2120,7 +2240,9 @@ fn collect_cached_buffers(
                         } else {
                             push_cached_fill(
                                 buffers,
-                                *order_map.get(&format!("{path}:fill")).unwrap_or(&usize::MAX),
+                                *order_map
+                                    .get(&format!("{path}:fill"))
+                                    .unwrap_or(&usize::MAX),
                                 format!("{path}:fill"),
                                 node.rect,
                                 Some(precise_rect_from_resolved(node.resolved_rect)),
@@ -2149,6 +2271,8 @@ fn collect_cached_buffers(
                     format!("{path}/child-{index}"),
                     child_clip,
                     child_resolved_clip,
+                    child_clip_rect_precise,
+                    child_clip_radius_precise,
                     order_map,
                     dirty_node_ids,
                     shared_edges,
@@ -2230,7 +2354,9 @@ fn collect_text_buffers(
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
         buffer.stable_key = format!("{path}:label");
-        buffer.order = *order_map.get(&format!("{path}:label")).unwrap_or(&usize::MAX);
+        buffer.order = *order_map
+            .get(&format!("{path}:label"))
+            .unwrap_or(&usize::MAX);
         buffer.rect_precise = Some(
             shared_geometry
                 .map(|geometry| geometry.rect_precise)
@@ -2314,7 +2440,9 @@ fn collect_icon_buffers(
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
         buffer.stable_key = format!("{path}:icon");
-        buffer.order = *order_map.get(&format!("{path}:icon")).unwrap_or(&usize::MAX);
+        buffer.order = *order_map
+            .get(&format!("{path}:icon"))
+            .unwrap_or(&usize::MAX);
         buffer.rect_precise = Some(
             shared_geometry
                 .map(|geometry| geometry.rect_precise)
@@ -2508,10 +2636,7 @@ impl SharedEdgeBuilder {
 
         let id = SharedEdgeId(self.next_id);
         self.next_id += 1;
-        self.edges.push(SharedEdgeSpec {
-            axis,
-            logical_raw,
-        });
+        self.edges.push(SharedEdgeSpec { axis, logical_raw });
         id
     }
 
@@ -2646,11 +2771,10 @@ impl SharedEdgeBuilder {
         context: SharedEdgeBuildContext,
     ) -> SharedEdgeTreeNode {
         let rect = self.rect_from_resolved(node.resolved_rect, context);
-        let content_rect =
-            self.inner_rect_from_resolved(node.resolved_content_rect, context, rect);
-        let clip_rect = node.resolved_effective_clip.map(|clip| {
-            self.inner_rect_from_resolved(clip.rect, context, content_rect)
-        });
+        let content_rect = self.inner_rect_from_resolved(node.resolved_content_rect, context, rect);
+        let clip_rect = node
+            .resolved_effective_clip
+            .map(|clip| self.inner_rect_from_resolved(clip.rect, context, content_rect));
         let refs = SharedEdgeNodeRefs {
             rect,
             content: content_rect,
@@ -2766,15 +2890,10 @@ fn format_shared_edge_rect_values(rect: SharedEdgeRect, tree: &SharedEdgeTree) -
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
     let bottom = tree.edges[rect.bottom.0 as usize].logical_raw as f32
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
-    format!(
-        "left={left:.3}, top={top:.3}, right={right:.3}, bottom={bottom:.3}"
-    )
+    format!("left={left:.3}, top={top:.3}, right={right:.3}, bottom={bottom:.3}")
 }
 
-fn log_gap_shared_edge_tree(
-    snapshot: &WaylandWindowSnapshot,
-    layout: &ComputedDecorationTree,
-) {
+fn log_gap_shared_edge_tree(snapshot: &WaylandWindowSnapshot, layout: &ComputedDecorationTree) {
     let tree = build_shared_edge_tree(layout);
     let slot_node = find_shared_edge_node_by_kind(&tree.root, "window-slot");
 
@@ -2902,15 +3021,16 @@ fn log_gap_layout_node(
     let content_right = content_rect.x + content_rect.width;
     let content_bottom = content_rect.y + content_rect.height;
 
-    let parent_outer_left_delta = parent.map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_rect.x.to_f32());
-    let parent_content_left_delta =
-        parent.map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_content_rect.x.to_f32());
-    let parent_outer_top_delta = parent.map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_rect.y.to_f32());
-    let parent_content_top_delta =
-        parent.map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_content_rect.y.to_f32());
-    let parent_outer_right_delta = parent.map(|parent| {
-        (parent.rect.x + parent.rect.width) - rect_right
-    });
+    let parent_outer_left_delta =
+        parent.map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_rect.x.to_f32());
+    let parent_content_left_delta = parent
+        .map(|parent| node.resolved_rect.x.to_f32() - parent.resolved_content_rect.x.to_f32());
+    let parent_outer_top_delta =
+        parent.map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_rect.y.to_f32());
+    let parent_content_top_delta = parent
+        .map(|parent| node.resolved_rect.y.to_f32() - parent.resolved_content_rect.y.to_f32());
+    let parent_outer_right_delta =
+        parent.map(|parent| (parent.rect.x + parent.rect.width) - rect_right);
     let parent_content_right_delta = parent.map(|parent| {
         let parent_content_rect = parent.resolved_content_rect.round_to_logical_rect();
         (parent_content_rect.x + parent_content_rect.width) - rect_right
@@ -3042,14 +3162,14 @@ fn log_decoration_refresh(
 }
 
 fn format_rect(rect: LogicalRect) -> String {
-    format!("x={}, y={}, w={}, h={}", rect.x, rect.y, rect.width, rect.height)
+    format!(
+        "x={}, y={}, w={}, h={}",
+        rect.x, rect.y, rect.width, rect.height
+    )
 }
 
 fn format_color(color: super::Color) -> String {
-    format!(
-        "rgba({}, {}, {}, {})",
-        color.r, color.g, color.b, color.a
-    )
+    format!("rgba({}, {}, {}, {})", color.r, color.g, color.b, color.a)
 }
 
 fn window_snapshot_requires_rebuild(
@@ -3141,12 +3261,18 @@ fn runtime_dirty_damage_rects(
         &mut damage,
     );
     collect_keyed_rect_damage(
-        previous_shader_buffers
-            .iter()
-            .map(|item| (item.stable_key.clone(), (item.rect, format!("{:?}", item.shader)))),
-        next_shader_buffers
-            .iter()
-            .map(|item| (item.stable_key.clone(), (item.rect, format!("{:?}", item.shader)))),
+        previous_shader_buffers.iter().map(|item| {
+            (
+                item.stable_key.clone(),
+                (item.rect, format!("{:?}", item.shader)),
+            )
+        }),
+        next_shader_buffers.iter().map(|item| {
+            (
+                item.stable_key.clone(),
+                (item.rect, format!("{:?}", item.shader)),
+            )
+        }),
         &mut damage,
     );
     collect_keyed_rect_damage(
@@ -3154,7 +3280,12 @@ fn runtime_dirty_damage_rects(
             (
                 format!(
                     "text:{}:{}:{}:{}:{}:{}",
-                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height, item.text
+                    item.order,
+                    item.rect.x,
+                    item.rect.y,
+                    item.rect.width,
+                    item.rect.height,
+                    item.text
                 ),
                 (item.rect, format!("{:?}", item.color)),
             )
@@ -3163,7 +3294,12 @@ fn runtime_dirty_damage_rects(
             (
                 format!(
                     "text:{}:{}:{}:{}:{}:{}",
-                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height, item.text
+                    item.order,
+                    item.rect.x,
+                    item.rect.y,
+                    item.rect.width,
+                    item.rect.height,
+                    item.text
                 ),
                 (item.rect, format!("{:?}", item.color)),
             )
@@ -3173,13 +3309,19 @@ fn runtime_dirty_damage_rects(
     collect_keyed_rect_damage(
         previous_icon_buffers.iter().map(|item| {
             (
-                format!("icon:{}:{}:{}:{}:{}", item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height),
+                format!(
+                    "icon:{}:{}:{}:{}:{}",
+                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height
+                ),
                 (item.rect, String::new()),
             )
         }),
         next_icon_buffers.iter().map(|item| {
             (
-                format!("icon:{}:{}:{}:{}:{}", item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height),
+                format!(
+                    "icon:{}:{}:{}:{}:{}",
+                    item.order, item.rect.x, item.rect.y, item.rect.width, item.rect.height
+                ),
                 (item.rect, String::new()),
             )
         }),
@@ -3234,7 +3376,10 @@ fn freeze_manual_shader_buffers(
         };
         if matches!(
             next.shader.invalidate_policy(),
-            crate::ssd::EffectInvalidationPolicy::Manual { dirty_when: false, .. }
+            crate::ssd::EffectInvalidationPolicy::Manual {
+                dirty_when: false,
+                ..
+            }
         ) {
             let invalidate = next.shader.invalidate.clone();
             next.shader = previous.shader.clone();
@@ -3247,8 +3392,7 @@ fn collect_keyed_rect_damage<K>(
     previous: impl IntoIterator<Item = (K, (LogicalRect, String))>,
     next: impl IntoIterator<Item = (K, (LogicalRect, String))>,
     damage: &mut Vec<LogicalRect>,
-)
-where
+) where
     K: Eq + std::hash::Hash + Clone,
 {
     let previous_map: std::collections::HashMap<K, (LogicalRect, String)> =
@@ -3390,7 +3534,10 @@ mod tests {
         assert_eq!(edge_tree.root.content_rect.left, window_border.rect.left);
         assert_eq!(edge_tree.root.content_rect.top, window_border.rect.top);
         assert_eq!(edge_tree.root.content_rect.right, window_border.rect.right);
-        assert_eq!(edge_tree.root.content_rect.bottom, window_border.rect.bottom);
+        assert_eq!(
+            edge_tree.root.content_rect.bottom,
+            window_border.rect.bottom
+        );
     }
 
     #[test]

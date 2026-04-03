@@ -3,10 +3,7 @@ use std::time::Duration;
 
 use smithay::input::pointer::CursorIcon;
 use tracing::warn;
-use xcursor::{
-    parser::Image,
-    CursorTheme,
-};
+use xcursor::{CursorTheme, parser::Image};
 
 pub struct Cursor {
     theme: CursorTheme,
@@ -91,9 +88,9 @@ fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
         .min_by_key(|image| (size as i32 - image.size as i32).abs())
         .expect("cursor set must not be empty");
 
-    images
-        .iter()
-        .filter(move |image| image.width == nearest_image.width && image.height == nearest_image.height)
+    images.iter().filter(move |image| {
+        image.width == nearest_image.width && image.height == nearest_image.height
+    })
 }
 
 fn frame(mut millis: u32, size: u32, images: &[Image]) -> Image {
@@ -118,8 +115,13 @@ fn frame(mut millis: u32, size: u32, images: &[Image]) -> Image {
 }
 
 fn load_icon(theme: &CursorTheme, icon: CursorIcon) -> Option<Vec<Image>> {
-    theme.load_icon(icon.name())
-        .or_else(|| icon.alt_names().iter().find_map(|name| theme.load_icon(name)))
+    theme
+        .load_icon(icon.name())
+        .or_else(|| {
+            icon.alt_names()
+                .iter()
+                .find_map(|name| theme.load_icon(name))
+        })
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| xcursor::parser::parse_xcursor(&bytes))
 }

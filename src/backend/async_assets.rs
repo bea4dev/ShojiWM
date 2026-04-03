@@ -1,10 +1,10 @@
-use std::sync::mpsc;
 use smithay::reexports::calloop::channel::Sender as CalloopSender;
+use std::sync::mpsc;
 
 use super::{
-    icon::{IconSpec, IconRasterizer},
-    text::TextRasterizer,
+    icon::{IconRasterizer, IconSpec},
     text::LabelSpec,
+    text::TextRasterizer,
 };
 
 #[derive(Debug, Clone)]
@@ -53,35 +53,33 @@ pub fn spawn_async_asset_worker(
             while let Ok(job) = job_receiver.recv() {
                 match job {
                     AsyncAssetJob::Text { spec_hash, spec } => {
-                        let result = if let Some(rendered) =
-                            text_rasterizer.render_label_pixels(&spec)
-                        {
-                            AsyncAssetResult::TextReady {
-                                spec_hash,
-                                width: rendered.width,
-                                height: rendered.height,
-                                raster_scale: spec.raster_scale.max(1),
-                                pixels: rendered.pixels,
-                            }
-                        } else {
-                            AsyncAssetResult::TextMissing { spec_hash }
-                        };
+                        let result =
+                            if let Some(rendered) = text_rasterizer.render_label_pixels(&spec) {
+                                AsyncAssetResult::TextReady {
+                                    spec_hash,
+                                    width: rendered.width,
+                                    height: rendered.height,
+                                    raster_scale: spec.raster_scale.max(1),
+                                    pixels: rendered.pixels,
+                                }
+                            } else {
+                                AsyncAssetResult::TextMissing { spec_hash }
+                            };
                         let _ = result_sender.send(result);
                     }
                     AsyncAssetJob::Icon { spec_hash, spec } => {
-                        let result = if let Some(rendered) =
-                            icon_rasterizer.render_icon_pixels(&spec)
-                        {
-                            AsyncAssetResult::IconReady {
-                                spec_hash,
-                                width: rendered.width,
-                                height: rendered.height,
-                                raster_scale: spec.raster_scale.max(1),
-                                pixels: rendered.pixels,
-                            }
-                        } else {
-                            AsyncAssetResult::IconMissing { spec_hash }
-                        };
+                        let result =
+                            if let Some(rendered) = icon_rasterizer.render_icon_pixels(&spec) {
+                                AsyncAssetResult::IconReady {
+                                    spec_hash,
+                                    width: rendered.width,
+                                    height: rendered.height,
+                                    raster_scale: spec.raster_scale.max(1),
+                                    pixels: rendered.pixels,
+                                }
+                            } else {
+                                AsyncAssetResult::IconMissing { spec_hash }
+                            };
                         let _ = result_sender.send(result);
                     }
                 }

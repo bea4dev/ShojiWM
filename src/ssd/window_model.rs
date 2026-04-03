@@ -1,19 +1,15 @@
 use serde::Serialize;
 use smithay::{
     desktop::{LayerSurface, Window, layer_map_for_output},
-    reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::Resource,
-    },
+    reexports::{wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::Resource},
     wayland::{
-        compositor::with_states,
-        shell::wlr_layer::Layer as WlrLayer,
+        compositor::with_states, shell::wlr_layer::Layer as WlrLayer,
         shell::xdg::XdgToplevelSurfaceData,
     },
 };
 
-use crate::state::ShojiWM;
 use super::DecorationInteractionSnapshot;
+use crate::state::ShojiWM;
 
 /// Rust-side snapshot that mirrors the TypeScript `WaylandWindow` view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -167,10 +163,7 @@ impl ShojiWM {
                 .lock()
                 .expect("xdg toplevel role mutex poisoned");
 
-            (
-                role.title.clone().unwrap_or_default(),
-                role.app_id.clone(),
-            )
+            (role.title.clone().unwrap_or_default(), role.app_id.clone())
         });
 
         let focused_surface = self
@@ -180,13 +173,14 @@ impl ShojiWM {
         let is_focused = focused_surface
             .as_ref()
             .is_some_and(|focused| focused == &toplevel.wl_surface().clone());
-        let (_pending_activated, is_maximized, is_fullscreen) = toplevel.with_pending_state(|state| {
-            (
-                state.states.contains(xdg_toplevel::State::Activated),
-                state.states.contains(xdg_toplevel::State::Maximized),
-                state.states.contains(xdg_toplevel::State::Fullscreen),
-            )
-        });
+        let (_pending_activated, is_maximized, is_fullscreen) =
+            toplevel.with_pending_state(|state| {
+                (
+                    state.states.contains(xdg_toplevel::State::Activated),
+                    state.states.contains(xdg_toplevel::State::Maximized),
+                    state.states.contains(xdg_toplevel::State::Fullscreen),
+                )
+            });
         let position = self
             .space
             .element_location(window)
@@ -302,8 +296,8 @@ mod tests {
     #[test]
     fn wayland_window_actions_serialize_to_camel_case_strings() {
         let close = serde_json::to_string(&WaylandWindowAction::Close).expect("serialize close");
-        let finalize_close =
-            serde_json::to_string(&WaylandWindowAction::FinalizeClose).expect("serialize finalize close");
+        let finalize_close = serde_json::to_string(&WaylandWindowAction::FinalizeClose)
+            .expect("serialize finalize close");
         let maximize =
             serde_json::to_string(&WaylandWindowAction::Maximize).expect("serialize maximize");
         let minimize =
