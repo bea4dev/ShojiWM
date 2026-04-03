@@ -152,13 +152,13 @@ impl ClippedSurfaceElement {
 
         let local_clip = Rectangle::new(
             Point::from((
-                clip.rect.loc.x - output_origin.x,
-                clip.rect.loc.y - output_origin.y,
+                clip.mask_rect.loc.x - output_origin.x,
+                clip.mask_rect.loc.y - output_origin.y,
             )),
-            clip.rect.size,
+            clip.mask_rect.size,
         );
         let mut snapped_clip_rect = snapped_precise_logical_rect_relative_with_mode(
-            clip.rect_precise,
+            clip.mask_rect_precise,
             output_origin,
             clip_scale,
             clip.snap_mode,
@@ -203,15 +203,6 @@ impl ClippedSurfaceElement {
                 .into(),
         );
         let render_geometry = forced_geometry.unwrap_or(physical_clip);
-        let render_rect_logical = SnappedLogicalRect {
-            x: render_geometry.loc.x as f32 / output_scale_x,
-            y: render_geometry.loc.y as f32 / output_scale_y,
-            width: render_geometry.size.w as f32 / output_scale_x,
-            height: render_geometry.size.h as f32 / output_scale_y,
-        };
-        if forced_geometry.is_some() {
-            snapped_clip_rect = render_rect_logical;
-        }
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
@@ -267,6 +258,10 @@ impl ClippedSurfaceElement {
                         mapped_geometry = ?mapped.geometry(output_scale),
                         element_geometry = ?render_geometry,
                         mapped_src = ?mapped.src(),
+                        slot_rect = ?clip.rect,
+                        slot_rect_precise = ?clip.rect_precise,
+                        mask_rect = ?clip.mask_rect,
+                        mask_rect_precise = ?clip.mask_rect_precise,
                         corner_radius = ?clip.corner_radii_precise,
                         "gap debug clipped surface mapped crop"
                     );
