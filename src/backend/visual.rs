@@ -559,6 +559,26 @@ pub fn relative_physical_rect_from_root_global_edges(
     )
 }
 
+pub fn relative_physical_rect_from_root_global_origin_size(
+    rect: LogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    let scale_x = output_scale.x.abs().max(0.0001);
+    let scale_y = output_scale.y.abs().max(0.0001);
+    let root_left_px = (((root_rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
+    let root_top_px = (((root_rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let left_px = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
+    let top_px = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let width_px = ((rect.width as f64) * scale_x).round().max(0.0) as i32;
+    let height_px = ((rect.height as f64) * scale_y).round().max(0.0) as i32;
+    Rectangle::new(
+        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        (width_px, height_px).into(),
+    )
+}
+
 pub fn relative_physical_rect_from_root_global_edges_precise(
     rect: PreciseLogicalRect,
     root_rect: LogicalRect,

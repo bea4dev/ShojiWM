@@ -2905,13 +2905,12 @@ fn backdrop_shader_elements_for_window(
                         (source_effect_rect.width, source_effect_rect.height).into(),
                     );
                     let local_capture_rect = local_sample_rect;
-                    let geometry =
-                        crate::backend::visual::relative_physical_rect_from_root_global_edges(
-                            display_rect,
-                            root_rect,
-                            output_geo,
-                            scale,
-                        );
+                    let geometry = crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                        display_rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                    );
                     let element =
                         crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                             renderer,
@@ -3140,7 +3139,7 @@ fn backdrop_shader_elements_for_window(
                 (source_effect_rect.width, source_effect_rect.height).into(),
             );
             let local_capture_rect = local_sample_rect;
-            let geometry = crate::backend::visual::relative_physical_rect_from_root_global_edges(
+            let geometry = crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
                 display_rect,
                 root_rect,
                 output_geo,
