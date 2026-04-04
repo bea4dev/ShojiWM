@@ -1349,8 +1349,16 @@ pub fn backdrop_shader_element(
         commit_counter,
         texture,
         display_rect,
-        display_rect
-            .to_physical_precise_round(Scale::from((render_scale as f64, render_scale as f64))),
+        crate::backend::visual::logical_rect_to_physical_rect(
+            crate::ssd::LogicalRect::new(
+                display_rect.loc.x,
+                display_rect.loc.y,
+                display_rect.size.w,
+                display_rect.size.h,
+            ),
+            Point::from((0, 0)),
+            Scale::from((render_scale as f64, render_scale as f64)),
+        ),
         sample_rect,
         captured_rect,
         _shader,

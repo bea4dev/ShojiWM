@@ -260,6 +260,23 @@ pub fn logical_rect_to_physical_buffer_rect(
     )
 }
 
+pub fn logical_rect_to_physical_rect(
+    rect: LogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let left = (((rect.x - origin.x) as f64) * scale_x).round() as i32;
+    let top = (((rect.y - origin.y) as f64) * scale_y).round() as i32;
+    let right = ((((rect.x + rect.width) - origin.x) as f64) * scale_x).round() as i32;
+    let bottom = ((((rect.y + rect.height) - origin.y) as f64) * scale_y).round() as i32;
+    Rectangle::new(
+        Point::from((left, top)),
+        ((right - left).max(0), (bottom - top).max(0)).into(),
+    )
+}
+
 pub fn logical_size_to_physical_buffer_size(
     width: i32,
     height: i32,
