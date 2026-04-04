@@ -698,20 +698,24 @@ fn render_surface(
             ));
             let client_physical_geometry = window_decorations.get(window).and_then(|decoration| {
                 decoration.content_clip.map(|clip| {
-                    let root_origin =
-                        root_physical_origin(decoration.layout.root.rect, output_geo, scale);
-                    let local_geometry = relative_physical_rect_from_root_precise(
-                        clip.rect_precise,
-                        decoration.layout.root.rect,
-                        output_geo,
-                        scale,
+                    let snapped = crate::backend::visual::snapped_logical_rect_relative_with_mode(
+                        crate::ssd::LogicalRect::new(
+                            clip.rect.loc.x,
+                            clip.rect.loc.y,
+                            clip.rect.size.w,
+                            clip.rect.size.h,
+                        ),
+                        output_geo.loc,
+                        snap_scale,
+                        clip.snap_mode,
                     );
+                    let left = (snapped.x as f64 * scale.x).round() as i32;
+                    let top = (snapped.y as f64 * scale.y).round() as i32;
+                    let right = ((snapped.x + snapped.width) as f64 * scale.x).round() as i32;
+                    let bottom = ((snapped.y + snapped.height) as f64 * scale.y).round() as i32;
                     smithay::utils::Rectangle::new(
-                        smithay::utils::Point::from((
-                            root_origin.x + local_geometry.loc.x,
-                            root_origin.y + local_geometry.loc.y,
-                        )),
-                        local_geometry.size,
+                        smithay::utils::Point::from((left, top)),
+                        ((right - left).max(0), (bottom - top).max(0)).into(),
                     )
                 })
             });
