@@ -2749,6 +2749,16 @@ fn backdrop_shader_elements_for_window(
                 decoration.layout.root.rect,
                 decoration.visual_transform,
             );
+            let source_effect_rect_precise = cached
+                .rect_precise
+                .map(|rect| {
+                    crate::backend::visual::transformed_precise_rect(
+                        rect,
+                        decoration.layout.root.rect,
+                        decoration.visual_transform,
+                    )
+                })
+                .unwrap_or_else(|| crate::backend::visual::precise_rect_from_logical(source_effect_rect));
             (
                 source_effect_rect.x,
                 source_effect_rect.y,
@@ -2786,11 +2796,25 @@ fn backdrop_shader_elements_for_window(
                     .into(),
             );
             let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
+            let capture_origin_precise = Point::<f64, Logical>::from((
+                (source_effect_rect_precise.x as f64 - blur_padding as f64)
+                    .max(output_geo.loc.x as f64),
+                (source_effect_rect_precise.y as f64 - blur_padding as f64)
+                    .max(output_geo.loc.y as f64),
+            ));
+            let capture_origin_physical =
+                crate::backend::visual::precise_logical_point_to_physical_point_global_edges(
+                    capture_origin_precise,
+                    output_geo.loc,
+                    scale,
+                );
             (
                 actual_capture_geo.loc.x,
                 actual_capture_geo.loc.y,
                 actual_capture_geo.size.w,
                 actual_capture_geo.size.h,
+                capture_origin_physical.x,
+                capture_origin_physical.y,
             )
                 .hash(&mut hasher);
             if uses_backdrop {
@@ -2905,12 +2929,23 @@ fn backdrop_shader_elements_for_window(
                         (source_effect_rect.width, source_effect_rect.height).into(),
                     );
                     let local_capture_rect = local_sample_rect;
-                    let geometry = crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
-                        display_rect,
-                        root_rect,
-                        output_geo,
-                        scale,
-                    );
+                    let geometry = display_rect_precise
+                        .map(|rect| {
+                            crate::backend::visual::relative_physical_rect_from_root_precise(
+                                rect,
+                                root_rect,
+                                output_geo,
+                                scale,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                                display_rect,
+                                root_rect,
+                                output_geo,
+                                scale,
+                            )
+                        });
                     let element =
                         crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                             renderer,
@@ -2958,6 +2993,7 @@ fn backdrop_shader_elements_for_window(
                         space,
                         window_decorations,
                         actual_capture_geo,
+                        capture_origin_physical,
                         scale,
                         lower_window,
                     ) {
@@ -2966,16 +3002,10 @@ fn backdrop_shader_elements_for_window(
                 }
                 let (_, lower_layer_elements) =
                     window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-                let capture_offset = actual_capture_geo.loc - output_geo.loc;
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((
-                        -capture_offset.x,
-                        -capture_offset.y,
-                    ))
-                    .to_f64()
-                    .to_physical_precise_round(scale),
+                    translation: Point::from((-capture_origin_physical.x, -capture_origin_physical.y)),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -3003,6 +3033,7 @@ fn backdrop_shader_elements_for_window(
                         renderer,
                         output,
                         actual_capture_geo,
+                        capture_origin_physical,
                         scale,
                         lower_layer,
                     ) {
@@ -3139,12 +3170,23 @@ fn backdrop_shader_elements_for_window(
                 (source_effect_rect.width, source_effect_rect.height).into(),
             );
             let local_capture_rect = local_sample_rect;
-            let geometry = crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
-                display_rect,
-                root_rect,
-                output_geo,
-                scale,
-            );
+            let geometry = display_rect_precise
+                .map(|rect| {
+                    crate::backend::visual::relative_physical_rect_from_root_precise(
+                        rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                        display_rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                    )
+                });
             let element = crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                 renderer,
                 window_decorations
@@ -3399,15 +3441,17 @@ fn layer_surface_scene_elements_for_capture(
     renderer: &mut GlesRenderer,
     output: &Output,
     capture_geo: smithay::utils::Rectangle<i32, Logical>,
+    capture_origin_physical: Point<i32, smithay::utils::Physical>,
     scale: smithay::utils::Scale<f64>,
     layer_surface: &smithay::desktop::LayerSurface,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let capture_visual = WindowVisualState {
         origin: smithay::utils::Point::from((0, 0)),
         scale: smithay::utils::Scale::from((1.0, 1.0)),
-        translation: crate::backend::visual::logical_point_to_physical_point_global_edges(
+        translation: crate::backend::visual::logical_point_to_relative_physical_point_from_output(
             output.current_location(),
-            capture_geo.loc,
+            capture_geo,
+            capture_origin_physical,
             scale,
         ),
         opacity: 1.0,
@@ -3479,6 +3523,12 @@ fn configured_background_effect_elements_for_layer(
             .into(),
     );
     let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
+    let capture_origin_physical =
+        crate::backend::visual::logical_point_to_physical_point_global_edges(
+            actual_capture_geo.loc,
+            output_geo.loc,
+            scale,
+        );
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
     let uses_backdrop = effect_config.effect.uses_backdrop_input();
     let uses_xray = effect_config.effect.uses_xray_backdrop_input();
@@ -3507,6 +3557,7 @@ fn configured_background_effect_elements_for_layer(
                 space,
                 window_decorations,
                 actual_capture_geo,
+                capture_origin_physical,
                 scale,
                 lower_window,
             ) {
@@ -3518,6 +3569,7 @@ fn configured_background_effect_elements_for_layer(
                 renderer,
                 output,
                 actual_capture_geo,
+                capture_origin_physical,
                 scale,
                 lower_layer,
             ) {
@@ -3535,6 +3587,7 @@ fn configured_background_effect_elements_for_layer(
                 renderer,
                 output,
                 actual_capture_geo,
+                capture_origin_physical,
                 scale,
                 lower_layer,
             ) {
@@ -3846,6 +3899,12 @@ fn lower_layer_scene_elements(
                 &relevant_source_damage,
             );
             let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
+            let capture_origin_physical =
+                crate::backend::visual::logical_point_to_physical_point_global_edges(
+                    actual_capture_geo.loc,
+                    output_geo.loc,
+                    scale,
+                );
             let captured_local_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
                     effect_rect.x - output_geo.loc.x,
@@ -3910,6 +3969,7 @@ fn lower_layer_scene_elements(
                     renderer,
                     output,
                     actual_capture_geo,
+                    capture_origin_physical,
                     scale,
                     lower_layer,
                 ) {
@@ -4246,6 +4306,12 @@ fn configured_background_effect_elements_for_window(
                 },
             );
             let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
+            let capture_origin_physical =
+                crate::backend::visual::logical_point_to_physical_point_global_edges(
+                    actual_capture_geo.loc,
+                    output_geo.loc,
+                    scale,
+                );
 
             if !matches!(
                 effect_config.effect.invalidate_policy(),
@@ -4293,6 +4359,7 @@ fn configured_background_effect_elements_for_window(
                         space,
                         window_decorations,
                         actual_capture_geo,
+                        capture_origin_physical,
                         scale,
                         lower_window,
                     ) {
@@ -4301,16 +4368,10 @@ fn configured_background_effect_elements_for_window(
                 }
                 let (_, lower_layer_elements) =
                     window_render::layer_elements_for_output(renderer, output, scale, 1.0);
-                let capture_offset = actual_capture_geo.loc - output_geo.loc;
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: smithay::utils::Point::from((
-                        -capture_offset.x,
-                        -capture_offset.y,
-                    ))
-                    .to_f64()
-                    .to_physical_precise_round(scale),
+                    translation: Point::from((-capture_origin_physical.x, -capture_origin_physical.y)),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -4338,6 +4399,7 @@ fn configured_background_effect_elements_for_window(
                         renderer,
                         output,
                         actual_capture_geo,
+                        capture_origin_physical,
                         scale,
                         lower_layer,
                     ) {
@@ -4465,17 +4527,20 @@ fn window_scene_elements_for_capture(
         crate::ssd::WindowDecorationState,
     >,
     capture_geo: smithay::utils::Rectangle<i32, Logical>,
+    capture_origin_physical: Point<i32, smithay::utils::Physical>,
     scale: smithay::utils::Scale<f64>,
     window: &smithay::desktop::Window,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let Some(window_location) = space.element_location(window) else {
         return Ok(Vec::new());
     };
-    let physical_location = crate::backend::visual::logical_point_to_physical_point_global_edges(
-        window_location,
-        capture_geo.loc,
-        scale,
-    );
+    let physical_location =
+        crate::backend::visual::logical_point_to_relative_physical_point_from_output(
+            window_location,
+            capture_geo,
+            capture_origin_physical,
+            scale,
+        );
     let visual_state = window_decorations
         .get(window)
         .map(|decoration| {
@@ -4486,12 +4551,12 @@ fn window_scene_elements_for_capture(
                 rect.y as f64 + rect.height as f64 * transform.origin.y,
             ));
             WindowVisualState {
-                origin:
-                    crate::backend::visual::precise_logical_point_to_physical_point_global_edges(
-                        logical_origin,
-                        capture_geo.loc,
-                        scale,
-                    ),
+                origin: crate::backend::visual::precise_logical_point_to_relative_physical_point_from_output(
+                    logical_origin,
+                    capture_geo,
+                    capture_origin_physical,
+                    scale,
+                ),
                 scale: smithay::utils::Scale::from((
                     transform.scale_x.max(0.0),
                     transform.scale_y.max(0.0),
@@ -4514,9 +4579,10 @@ fn window_scene_elements_for_capture(
     let mut elements = Vec::new();
 
     if let Some(decoration) = window_decorations.get(window) {
-        let root_origin = crate::backend::visual::logical_point_to_physical_point_global_edges(
+        let root_origin = crate::backend::visual::logical_point_to_relative_physical_point_from_output(
             Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
-            capture_geo.loc,
+            capture_geo,
+            capture_origin_physical,
             scale,
         );
         let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();

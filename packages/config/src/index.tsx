@@ -18,6 +18,7 @@ import {
     seconds,
     cubicBezier,
     useState,
+    shaderInput,
 } from "shoji_wm";
 import type { DecorationRenderable, Direction, MaybeSignal } from "shoji_wm/types";
 

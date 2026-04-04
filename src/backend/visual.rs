@@ -305,6 +305,32 @@ pub fn precise_logical_point_to_physical_point_global_edges(
     Point::from((point_x - origin_x, point_y - origin_y))
 }
 
+pub fn logical_point_to_relative_physical_point_from_output(
+    point: Point<i32, Logical>,
+    output_geo: Rectangle<i32, Logical>,
+    capture_origin_physical: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let global = logical_point_to_physical_point_global_edges(point, output_geo.loc, scale);
+    Point::from((
+        global.x - capture_origin_physical.x,
+        global.y - capture_origin_physical.y,
+    ))
+}
+
+pub fn precise_logical_point_to_relative_physical_point_from_output(
+    point: Point<f64, Logical>,
+    output_geo: Rectangle<i32, Logical>,
+    capture_origin_physical: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let global = precise_logical_point_to_physical_point_global_edges(point, output_geo.loc, scale);
+    Point::from((
+        global.x - capture_origin_physical.x,
+        global.y - capture_origin_physical.y,
+    ))
+}
+
 pub fn logical_size_to_physical_buffer_size(
     width: i32,
     height: i32,
