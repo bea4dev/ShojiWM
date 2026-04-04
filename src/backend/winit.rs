@@ -1054,6 +1054,19 @@ fn backdrop_shader_elements_for_window(
             } else {
                 cached.rect
             };
+            let display_rect_precise = cached.clip_rect_precise.and_then(|_| {
+                cached.rect_precise.map(|rect| {
+                    if apply_visual_transform {
+                        crate::backend::visual::transformed_precise_rect(
+                            rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        )
+                    } else {
+                        rect
+                    }
+                })
+            });
             let source_effect_rect = crate::backend::visual::transformed_rect(
                 cached.rect,
                 decoration.layout.root.rect,
@@ -1164,24 +1177,44 @@ fn backdrop_shader_elements_for_window(
                         )),
                         (display_rect.width, display_rect.height).into(),
                     );
-                    let clip_rect = cached.clip_rect.map(|clip_rect| {
-                        let transformed_clip = if apply_visual_transform {
-                            crate::backend::visual::transformed_rect(
-                                clip_rect,
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            )
-                        } else {
-                            clip_rect
-                        };
-                        crate::backend::visual::snapped_logical_rect_in_element_space(
-                            transformed_clip,
-                            display_rect,
-                            output_geo.loc,
-                            scale,
-                            crate::backend::visual::RectSnapMode::OriginAndSize,
-                        )
-                    });
+                    let clip_rect = cached
+                        .clip_rect
+                        .map(|clip_rect| {
+                            let transformed_clip = if apply_visual_transform {
+                                crate::backend::visual::transformed_rect(
+                                    clip_rect,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                )
+                            } else {
+                                clip_rect
+                            };
+                            crate::backend::visual::SnappedLogicalRect {
+                                x: (transformed_clip.x - display_rect.x) as f32,
+                                y: (transformed_clip.y - display_rect.y) as f32,
+                                width: transformed_clip.width.max(0) as f32,
+                                height: transformed_clip.height.max(0) as f32,
+                            }
+                        })
+                        .or_else(|| {
+                            display_rect_precise
+                                .zip(cached.clip_rect_precise.map(|clip| {
+                                    if apply_visual_transform {
+                                        crate::backend::visual::transformed_precise_rect(
+                                            clip,
+                                            decoration.layout.root.rect,
+                                            decoration.visual_transform,
+                                        )
+                                    } else {
+                                        clip
+                                    }
+                                }))
+                                .map(|(rect, clip)| {
+                                    crate::backend::visual::precise_logical_rect_in_element_space(
+                                        clip, rect,
+                                    )
+                                })
+                        });
                     let local_sample_rect = Rectangle::new(
                         smithay::utils::Point::from((
                             source_effect_rect.x - output_geo.loc.x,
@@ -1284,19 +1317,27 @@ fn backdrop_shader_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
+            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                source_effect_rect,
+                actual_capture_geo.loc,
+                scale,
+            );
+            let output_size = crate::backend::visual::logical_size_to_physical_buffer_size(
+                source_effect_rect.width,
+                source_effect_rect.height,
+                scale,
+            );
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
                 input_texture,
                 xray_texture,
-                (actual_capture_geo.size.w, actual_capture_geo.size.h),
-                Some(Rectangle::new(
-                    Point::from((
-                        source_effect_rect.x - actual_capture_geo.loc.x,
-                        source_effect_rect.y - actual_capture_geo.loc.y,
-                    )),
-                    (source_effect_rect.width, source_effect_rect.height).into(),
-                )),
-                Some((source_effect_rect.width, source_effect_rect.height)),
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    actual_capture_geo.size.w,
+                    actual_capture_geo.size.h,
+                    scale,
+                ),
+                Some(sample_region),
+                Some(output_size),
                 &cached.shader,
             )
             .ok();
@@ -1333,24 +1374,44 @@ fn backdrop_shader_elements_for_window(
                 )),
                 (display_rect.width, display_rect.height).into(),
             );
-            let clip_rect = cached.clip_rect.map(|clip_rect| {
-                let transformed_clip = if apply_visual_transform {
-                    crate::backend::visual::transformed_rect(
-                        clip_rect,
-                        decoration.layout.root.rect,
-                        decoration.visual_transform,
-                    )
-                } else {
-                    clip_rect
-                };
-                crate::backend::visual::snapped_logical_rect_in_element_space(
-                    transformed_clip,
-                    display_rect,
-                    output_geo.loc,
-                    scale,
-                    crate::backend::visual::RectSnapMode::OriginAndSize,
-                )
-            });
+            let clip_rect = cached
+                .clip_rect
+                .map(|clip_rect| {
+                    let transformed_clip = if apply_visual_transform {
+                        crate::backend::visual::transformed_rect(
+                            clip_rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        )
+                    } else {
+                        clip_rect
+                    };
+                    crate::backend::visual::SnappedLogicalRect {
+                        x: (transformed_clip.x - display_rect.x) as f32,
+                        y: (transformed_clip.y - display_rect.y) as f32,
+                        width: transformed_clip.width.max(0) as f32,
+                        height: transformed_clip.height.max(0) as f32,
+                    }
+                })
+                .or_else(|| {
+                    display_rect_precise
+                        .zip(cached.clip_rect_precise.map(|clip| {
+                            if apply_visual_transform {
+                                crate::backend::visual::transformed_precise_rect(
+                                    clip,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                )
+                            } else {
+                                clip
+                            }
+                        }))
+                        .map(|(rect, clip)| {
+                            crate::backend::visual::precise_logical_rect_in_element_space(
+                                clip, rect,
+                            )
+                        })
+                });
             let local_sample_rect = Rectangle::new(
                 smithay::utils::Point::from((
                     source_effect_rect.x - output_geo.loc.x,
@@ -1819,15 +1880,21 @@ fn lower_layer_scene_elements(
                 .or_else(|| xray_texture.clone())
                 .unwrap_or(snapshot.texture),
             xray_texture,
-            (capture_geo.size.w, capture_geo.size.h),
-            Some(Rectangle::new(
-                Point::from((
-                    effect_rect.x - capture_geo.loc.x,
-                    effect_rect.y - capture_geo.loc.y,
-                )),
-                (effect_rect.width, effect_rect.height).into(),
+            crate::backend::visual::logical_size_to_physical_buffer_size(
+                capture_geo.size.w,
+                capture_geo.size.h,
+                scale,
+            ),
+            Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                effect_rect,
+                capture_geo.loc,
+                scale,
             )),
-            Some((effect_rect.width, effect_rect.height)),
+            Some(crate::backend::visual::logical_size_to_physical_buffer_size(
+                effect_rect.width,
+                effect_rect.height,
+                scale,
+            )),
             &config.effect,
         )
         .ok();
@@ -2145,15 +2212,21 @@ fn configured_background_effect_elements_for_layer(
         renderer,
         input_texture,
         xray_texture,
-        (actual_capture_geo.size.w, actual_capture_geo.size.h),
-        Some(Rectangle::new(
-            Point::from((
-                effect_rect.x - actual_capture_geo.loc.x,
-                effect_rect.y - actual_capture_geo.loc.y,
-            )),
-            (effect_rect.width, effect_rect.height).into(),
+        crate::backend::visual::logical_size_to_physical_buffer_size(
+            actual_capture_geo.size.w,
+            actual_capture_geo.size.h,
+            scale,
+        ),
+        Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+            effect_rect,
+            actual_capture_geo.loc,
+            scale,
         )),
-        Some((effect_rect.width, effect_rect.height)),
+        Some(crate::backend::visual::logical_size_to_physical_buffer_size(
+            effect_rect.width,
+            effect_rect.height,
+            scale,
+        )),
         &config.effect,
     )
     .ok();
@@ -2510,19 +2583,27 @@ fn configured_background_effect_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
+            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                effect_rect,
+                actual_capture_geo.loc,
+                scale,
+            );
+            let output_size = crate::backend::visual::logical_size_to_physical_buffer_size(
+                effect_rect.width,
+                effect_rect.height,
+                scale,
+            );
             let texture = crate::backend::shader_effect::apply_effect_pipeline(
                 renderer,
                 input_texture,
                 xray_texture,
-                (actual_capture_geo.size.w, actual_capture_geo.size.h),
-                Some(Rectangle::new(
-                    Point::from((
-                        effect_rect.x - actual_capture_geo.loc.x,
-                        effect_rect.y - actual_capture_geo.loc.y,
-                    )),
-                    (effect_rect.width, effect_rect.height).into(),
-                )),
-                Some((effect_rect.width, effect_rect.height)),
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    actual_capture_geo.size.w,
+                    actual_capture_geo.size.h,
+                    scale,
+                ),
+                Some(sample_region),
+                Some(output_size),
                 &config.effect,
             )
             .ok()?;

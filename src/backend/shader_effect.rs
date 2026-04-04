@@ -1240,7 +1240,7 @@ void main() {{
     color.rgb *= color.a;
 
     if (clip_enabled > 0.5) {{
-        vec2 coords = local_uv * rect_size;
+        vec2 coords = v_coords * rect_size;
         vec2 clip_coords = coords - clip_rect.xy;
         color *= rounded_rect_alpha(clip_coords, clip_rect.zw, clip_radius);
     }}
@@ -1379,21 +1379,50 @@ pub fn backdrop_shader_element_with_geometry(
     debug_label: String,
 ) -> Result<StableBackdropTextureElement, ShaderEffectError> {
     let program = compile_display_texture_program(renderer)?;
+    let scale = render_scale.max(0.0001) as f64;
+    let sample_left_px = ((sample_rect.loc.x - captured_rect.loc.x) as f64 * scale).round() as i32;
+    let sample_top_px = ((sample_rect.loc.y - captured_rect.loc.y) as f64 * scale).round() as i32;
+    let sample_right_px = ((sample_rect.loc.x + sample_rect.size.w - captured_rect.loc.x) as f64
+        * scale)
+        .round() as i32;
+    let sample_bottom_px = ((sample_rect.loc.y + sample_rect.size.h - captured_rect.loc.y) as f64
+        * scale)
+        .round() as i32;
+    let captured_width_px = (captured_rect.size.w as f64 * scale).round().max(1.0) as i32;
+    let captured_height_px = (captured_rect.size.h as f64 * scale).round().max(1.0) as i32;
+    let sample_width_px = (sample_right_px - sample_left_px).max(0);
+    let sample_height_px = (sample_bottom_px - sample_top_px).max(0);
     let src = Rectangle::new(
-        smithay::utils::Point::from((
-            (sample_rect.loc.x - captured_rect.loc.x) as f64,
-            (sample_rect.loc.y - captured_rect.loc.y) as f64,
-        )),
-        (sample_rect.size.w as f64, sample_rect.size.h as f64).into(),
+        smithay::utils::Point::from((sample_left_px as f64, sample_top_px as f64)),
+        (sample_width_px as f64, sample_height_px as f64).into(),
     );
     let uv_offset = [
-        (sample_rect.loc.x - captured_rect.loc.x) as f32 / captured_rect.size.w.max(1) as f32,
-        (sample_rect.loc.y - captured_rect.loc.y) as f32 / captured_rect.size.h.max(1) as f32,
+        sample_left_px as f32 / captured_width_px.max(1) as f32,
+        sample_top_px as f32 / captured_height_px.max(1) as f32,
     ];
     let uv_scale = [
-        sample_rect.size.w as f32 / captured_rect.size.w.max(1) as f32,
-        sample_rect.size.h as f32 / captured_rect.size.h.max(1) as f32,
+        sample_width_px as f32 / captured_width_px.max(1) as f32,
+        sample_height_px as f32 / captured_height_px.max(1) as f32,
     ];
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            debug_label = %debug_label,
+            texture_size = ?texture.size(),
+            display_rect = ?display_rect,
+            geometry = ?geometry,
+            sample_rect = ?sample_rect,
+            captured_rect = ?captured_rect,
+            sample_px = ?(sample_left_px, sample_top_px, sample_width_px, sample_height_px),
+            captured_px = ?(captured_width_px, captured_height_px),
+            src = ?src,
+            uv_offset = ?uv_offset,
+            uv_scale = ?uv_scale,
+            render_scale,
+            clip_rect = ?clip_rect,
+            clip_radius,
+            "gap debug backdrop texture element params"
+        );
+    }
     Ok(StableBackdropTextureElement {
         texture,
         program,
@@ -2008,8 +2037,7 @@ fn crop_texture_region(
         Kind::Unspecified,
     );
     let mut framebuffer = renderer.bind(&mut target)?;
-    let mut damage_tracker =
-        OutputDamageTracker::new((region.size.w, region.size.h), 1.0, Transform::Normal);
+    let mut damage_tracker = OutputDamageTracker::new(output_size, 1.0, Transform::Normal);
     let _ = damage_tracker
         .render_output(
             renderer,

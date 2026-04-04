@@ -2872,33 +2872,31 @@ fn backdrop_shader_elements_for_window(
                             } else {
                                 clip_rect
                             };
-                            crate::backend::visual::snapped_logical_rect_in_element_space(
-                                clip,
-                                display_rect,
-                                output_geo.loc,
-                                scale,
-                                crate::backend::visual::RectSnapMode::OriginAndSize,
-                            )
+                            crate::backend::visual::SnappedLogicalRect {
+                                x: (clip.x - display_rect.x) as f32,
+                                y: (clip.y - display_rect.y) as f32,
+                                width: clip.width.max(0) as f32,
+                                height: clip.height.max(0) as f32,
+                            }
                         })
                         .or_else(|| {
-                            display_rect_precise.zip(cached.clip_rect_precise.map(|clip| {
-                            if apply_visual_transform {
-                                crate::backend::visual::transformed_precise_rect(
-                                    clip,
-                                    decoration.layout.root.rect,
-                                    decoration.visual_transform,
-                                )
-                            } else {
-                                clip
-                            }
-                        })).map(|(rect, clip)| {
-                            crate::backend::visual::snapped_precise_logical_rect_for_element(
-                                clip,
-                                rect,
-                                output_geo.loc,
-                                scale,
-                            )
-                        })
+                            display_rect_precise
+                                .zip(cached.clip_rect_precise.map(|clip| {
+                                    if apply_visual_transform {
+                                        crate::backend::visual::transformed_precise_rect(
+                                            clip,
+                                            decoration.layout.root.rect,
+                                            decoration.visual_transform,
+                                        )
+                                    } else {
+                                        clip
+                                    }
+                                }))
+                                .map(|(rect, clip)| {
+                                    crate::backend::visual::precise_logical_rect_in_element_space(
+                                        clip, rect,
+                                    )
+                                })
                         });
                     let local_sample_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
@@ -3029,14 +3027,16 @@ fn backdrop_shader_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
-            let sample_region = Rectangle::new(
-                Point::from((
-                    source_effect_rect.x - actual_capture_geo.loc.x,
-                    source_effect_rect.y - actual_capture_geo.loc.y,
-                )),
-                (source_effect_rect.width, source_effect_rect.height).into(),
+            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                source_effect_rect,
+                actual_capture_geo.loc,
+                scale,
             );
-            let output_size = (source_effect_rect.width, source_effect_rect.height);
+            let output_size = crate::backend::visual::logical_size_to_physical_buffer_size(
+                source_effect_rect.width,
+                source_effect_rect.height,
+                scale,
+            );
             if std::env::var_os("SHOJI_GAP_SHADER_READBACK_DEBUG").is_some() {
                 crate::backend::shader_effect::log_gap_texture_region_readback(
                     renderer,
@@ -3053,7 +3053,11 @@ fn backdrop_shader_elements_for_window(
                 renderer,
                 input_texture,
                 xray_texture,
-                (actual_capture_geo.size.w, actual_capture_geo.size.h),
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    actual_capture_geo.size.w,
+                    actual_capture_geo.size.h,
+                    scale,
+                ),
                 Some(sample_region),
                 Some(output_size),
                 &cached.shader,
@@ -3111,13 +3115,12 @@ fn backdrop_shader_elements_for_window(
                     } else {
                         clip_rect
                     };
-                    crate::backend::visual::snapped_logical_rect_in_element_space(
-                        clip,
-                        display_rect,
-                        output_geo.loc,
-                        scale,
-                        crate::backend::visual::RectSnapMode::OriginAndSize,
-                    )
+                    crate::backend::visual::SnappedLogicalRect {
+                        x: (clip.x - display_rect.x) as f32,
+                        y: (clip.y - display_rect.y) as f32,
+                        width: clip.width.max(0) as f32,
+                        height: clip.height.max(0) as f32,
+                    }
                 })
                 .or_else(|| {
                     display_rect_precise
@@ -3133,11 +3136,8 @@ fn backdrop_shader_elements_for_window(
                             }
                         }))
                         .map(|(rect, clip)| {
-                            crate::backend::visual::snapped_precise_logical_rect_for_element(
-                                clip,
-                                rect,
-                                output_geo.loc,
-                                scale,
+                            crate::backend::visual::precise_logical_rect_in_element_space(
+                                clip, rect,
                             )
                         })
                 });
@@ -3574,15 +3574,21 @@ fn configured_background_effect_elements_for_layer(
         renderer,
         input_texture,
         xray_texture,
-        (actual_capture_geo.size.w, actual_capture_geo.size.h),
-        Some(Rectangle::new(
-            Point::from((
-                effect_rect.x - actual_capture_geo.loc.x,
-                effect_rect.y - actual_capture_geo.loc.y,
-            )),
-            (effect_rect.width, effect_rect.height).into(),
+        crate::backend::visual::logical_size_to_physical_buffer_size(
+            actual_capture_geo.size.w,
+            actual_capture_geo.size.h,
+            scale,
+        ),
+        Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+            effect_rect,
+            actual_capture_geo.loc,
+            scale,
         )),
-        Some((effect_rect.width, effect_rect.height)),
+        Some(crate::backend::visual::logical_size_to_physical_buffer_size(
+            effect_rect.width,
+            effect_rect.height,
+            scale,
+        )),
         &effect_config.effect,
     )?;
     let _captured_local_rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
@@ -3963,15 +3969,21 @@ fn lower_layer_scene_elements(
                     .or_else(|| xray_texture.clone())
                     .ok_or("missing backdrop snapshot")?,
                 xray_texture,
-                (actual_capture_geo.size.w, actual_capture_geo.size.h),
-                Some(Rectangle::new(
-                    Point::from((
-                        effect_rect.x - actual_capture_geo.loc.x,
-                        effect_rect.y - actual_capture_geo.loc.y,
-                    )),
-                    (effect_rect.width, effect_rect.height).into(),
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    actual_capture_geo.size.w,
+                    actual_capture_geo.size.h,
+                    scale,
+                ),
+                Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                    effect_rect,
+                    actual_capture_geo.loc,
+                    scale,
                 )),
-                Some((effect_rect.width, effect_rect.height)),
+                Some(crate::backend::visual::logical_size_to_physical_buffer_size(
+                    effect_rect.width,
+                    effect_rect.height,
+                    scale,
+                )),
                 &effect_config.effect,
             )?;
             let mut sub_elements = layer_backdrop_cache
@@ -4358,14 +4370,16 @@ fn configured_background_effect_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
-            let sample_region = Rectangle::new(
-                Point::from((
-                    effect_rect.x - actual_capture_geo.loc.x,
-                    effect_rect.y - actual_capture_geo.loc.y,
-                )),
-                (effect_rect.width, effect_rect.height).into(),
+            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                effect_rect,
+                actual_capture_geo.loc,
+                scale,
             );
-            let output_size = (effect_rect.width, effect_rect.height);
+            let output_size = crate::backend::visual::logical_size_to_physical_buffer_size(
+                effect_rect.width,
+                effect_rect.height,
+                scale,
+            );
             if std::env::var_os("SHOJI_GAP_SHADER_READBACK_DEBUG").is_some() {
                 crate::backend::shader_effect::log_gap_texture_region_readback(
                     renderer,
@@ -4382,7 +4396,11 @@ fn configured_background_effect_elements_for_window(
                 renderer,
                 input_texture,
                 xray_texture,
-                (actual_capture_geo.size.w, actual_capture_geo.size.h),
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    actual_capture_geo.size.w,
+                    actual_capture_geo.size.h,
+                    scale,
+                ),
                 Some(sample_region),
                 Some(output_size),
                 &effect_config.effect,
