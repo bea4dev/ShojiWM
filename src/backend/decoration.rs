@@ -13,11 +13,10 @@ use crate::{
     backend::shader_effect::{ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement},
     backend::text,
     backend::visual::{
-        RectSnapMode, relative_physical_rect_from_root, relative_physical_rect_from_root_precise,
-        relative_physical_rect_from_root_snapped_edges, snapped_logical_radius,
-        snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
-        snapped_logical_rect_in_element_space, snapped_precise_logical_rect_for_element,
-        snapped_precise_logical_rect_in_element_space,
+        RectSnapMode, precise_logical_rect_in_element_space, relative_physical_rect_from_root,
+        relative_physical_rect_from_root_precise, relative_physical_rect_from_root_snapped_edges,
+        snapped_logical_radius, snapped_logical_rect_for_element,
+        snapped_logical_rect_from_relative_physical, snapped_precise_logical_rect_in_element_space,
     },
     ssd::{LogicalRect, WindowDecorationState},
 };
@@ -785,6 +784,33 @@ pub fn ordered_text_elements_for_decoration(
     )
 }
 
+fn local_clip_from_precise_rects(
+    clip_rect: crate::backend::visual::PreciseLogicalRect,
+    element_rect: crate::backend::visual::PreciseLogicalRect,
+    radius: f32,
+) -> RoundedClip {
+    RoundedClip {
+        rect: precise_logical_rect_in_element_space(clip_rect, element_rect),
+        radius: radius.max(0.0),
+    }
+}
+
+fn local_clip_from_logical_rects(
+    clip_rect: LogicalRect,
+    element_rect: LogicalRect,
+    radius: f32,
+) -> RoundedClip {
+    RoundedClip {
+        rect: crate::backend::visual::SnappedLogicalRect {
+            x: (clip_rect.x - element_rect.x) as f32,
+            y: (clip_rect.y - element_rect.y) as f32,
+            width: clip_rect.width.max(0) as f32,
+            height: clip_rect.height.max(0) as f32,
+        },
+        radius: radius.max(0.0),
+    }
+}
+
 fn rounded_rect_element(
     renderer: &mut GlesRenderer,
     decoration: &mut crate::ssd::WindowDecorationState,
@@ -1035,19 +1061,17 @@ fn rounded_rect_element(
         cached
             .clip_rect_precise
             .map(|clip_rect| {
+                let local_clip = local_clip_from_precise_rects(
+                    clip_rect,
+                    outer_rect_precise,
+                    snapped_radius_f32(
+                        cached
+                            .clip_radius_precise
+                            .unwrap_or(cached.clip_radius as f32),
+                    ),
+                );
                 align_shared_clip_edges_to_outer(
-                    RoundedClip {
-                        rect: snapped_precise_logical_rect_in_element_space(
-                            clip_rect,
-                            outer_rect_precise,
-                            scale,
-                        ),
-                        radius: snapped_radius_f32(
-                            cached
-                                .clip_radius_precise
-                                .unwrap_or(cached.clip_radius as f32),
-                        ),
-                    },
+                    local_clip,
                     Some(clip_rect),
                     None,
                     outer_rect_precise,
@@ -1057,20 +1081,13 @@ fn rounded_rect_element(
             })
             .or_else(|| {
                 cached.clip_rect.map(|clip_rect| {
+                    let local_clip = local_clip_from_logical_rects(
+                        clip_rect,
+                        cached.rect,
+                        snapped_logical_radius(cached.clip_radius, scale),
+                    );
                     align_shared_clip_edges_to_outer(
-                        RoundedClip {
-                            rect: snapped_logical_rect_from_relative_physical(
-                                relative_physical_rect_from_root(
-                                    clip_rect,
-                                    cached.rect,
-                                    output_geo,
-                                    scale,
-                                    Some(clip_rect),
-                                ),
-                                scale,
-                            ),
-                            radius: snapped_logical_radius(cached.clip_radius, scale),
-                        },
+                        local_clip,
                         None,
                         Some(clip_rect),
                         outer_rect_precise,
@@ -1705,24 +1722,11 @@ fn shader_effect_element(
         } else {
             cached
                 .clip_rect
-                .map(|clip_rect| {
-                    snapped_logical_rect_in_element_space(
-                        clip_rect,
-                        cached.rect,
-                        window_snap_origin,
-                        scale,
-                        RectSnapMode::OriginAndSize,
-                    )
-                })
+                .map(|clip_rect| local_clip_from_logical_rects(clip_rect, cached.rect, 0.0).rect)
                 .or_else(|| {
                     cached.rect_precise.zip(cached.clip_rect_precise).map(
                         |(rect_precise, clip_rect)| {
-                            snapped_precise_logical_rect_for_element(
-                                clip_rect,
-                                rect_precise,
-                                window_snap_origin,
-                                scale,
-                            )
+                            precise_logical_rect_in_element_space(clip_rect, rect_precise)
                         },
                     )
                 })
