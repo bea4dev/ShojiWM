@@ -1129,12 +1129,23 @@ fn backdrop_shader_elements_for_window(
                 (source_effect_rect_precise.y as f64 - blur_padding as f64)
                     .max(output_geo.loc.y as f64),
             ));
-            let capture_origin_physical =
-                crate::backend::visual::precise_logical_point_to_physical_point_global_edges(
-                    capture_origin_precise,
-                    output_geo.loc,
-                    scale,
-                );
+            let capture_origin_local = crate::backend::visual::relative_physical_rect_from_root_precise(
+                crate::backend::visual::PreciseLogicalRect {
+                    x: capture_origin_precise.x as f32,
+                    y: capture_origin_precise.y as f32,
+                    width: 0.0,
+                    height: 0.0,
+                },
+                root_rect,
+                output_geo,
+                scale,
+            );
+            let root_origin_physical =
+                crate::backend::visual::root_physical_origin(root_rect, output_geo, scale);
+            let capture_origin_physical = Point::from((
+                root_origin_physical.x + capture_origin_local.loc.x,
+                root_origin_physical.y + capture_origin_local.loc.y,
+            ));
             (
                 actual_capture_geo.loc.x,
                 actual_capture_geo.loc.y,
