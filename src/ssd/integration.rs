@@ -1675,6 +1675,9 @@ fn build_cached_buffers_and_shaders(
         None,
         None,
         None,
+        None,
+        None,
+        None,
         order_map,
         dirty_node_ids,
         shared_edges,
@@ -1974,6 +1977,9 @@ fn collect_cached_buffers(
     ancestor_resolved_clip: Option<crate::ssd::ResolvedDecorationClip>,
     ancestor_clip_rect_precise: Option<PreciseLogicalRect>,
     ancestor_clip_radius_precise: Option<f32>,
+    nearest_rounded_clip: Option<super::DecorationClip>,
+    nearest_rounded_clip_rect_precise: Option<PreciseLogicalRect>,
+    nearest_rounded_clip_radius_precise: Option<f32>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
@@ -2051,6 +2057,42 @@ fn collect_cached_buffers(
     } else {
         child_resolved_clip.map(|clip| clip.radius.to_f32().max(0.0))
     };
+    let effective_clip_rect = if current_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        current_clip_rect
+    } else {
+        nearest_rounded_clip.map(|clip| clip.rect)
+    };
+    let effective_clip_radius = if current_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        current_clip_radius
+    } else {
+        nearest_rounded_clip.map(|clip| clip.radius).unwrap_or(0)
+    };
+    let effective_clip_rect_precise = if current_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        current_clip_rect_precise
+    } else {
+        nearest_rounded_clip_rect_precise
+    };
+    let effective_clip_radius_precise = if current_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        current_clip_radius_precise
+    } else {
+        nearest_rounded_clip_radius_precise
+    };
+    let next_nearest_rounded_clip = if child_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        child_clip
+    } else {
+        nearest_rounded_clip
+    };
+    let next_nearest_rounded_clip_rect_precise = if child_clip_radius_precise.unwrap_or(0.0) > 0.0 {
+        child_clip_rect_precise
+    } else {
+        nearest_rounded_clip_rect_precise
+    };
+    let next_nearest_rounded_clip_radius_precise = if child_clip_radius_precise.unwrap_or(0.0) > 0.0
+    {
+        child_clip_radius_precise
+    } else {
+        nearest_rounded_clip_radius_precise
+    };
     if clip_debug_enabled() {
         trace!(
             stable_id = node.stable_id.as_deref().unwrap_or("<none>"),
@@ -2063,6 +2105,10 @@ fn collect_cached_buffers(
             child_clip_rect_precise = ?child_clip_rect_precise,
             child_clip_radius = child_clip.map(|clip| clip.radius),
             child_clip_radius_precise = ?child_clip_radius_precise,
+            effective_clip_rect = ?effective_clip_rect,
+            effective_clip_rect_precise = ?effective_clip_rect_precise,
+            effective_clip_radius = effective_clip_radius,
+            effective_clip_radius_precise = ?effective_clip_radius_precise,
             fit_children,
             include_node,
             "clip propagation at cached buffer collection"
@@ -2145,10 +2191,10 @@ fn collect_cached_buffers(
                                 })
                             }),
                             shared_inner_hole: !node.children.is_empty() && fit_children,
-                            clip_rect: current_clip_rect,
-                            clip_radius: current_clip_radius,
-                            clip_rect_precise: current_clip_rect_precise,
-                            clip_radius_precise: current_clip_radius_precise,
+                            clip_rect: effective_clip_rect,
+                            clip_radius: effective_clip_radius,
+                            clip_rect_precise: effective_clip_rect_precise,
+                            clip_radius_precise: effective_clip_radius_precise,
                             source_kind: node_kind_name(&node.kind),
                         });
                     }
@@ -2169,10 +2215,10 @@ fn collect_cached_buffers(
                                 .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
                         ),
                         shader: effect.shader.clone(),
-                        clip_rect: current_clip_rect,
-                        clip_radius: current_clip_radius,
-                        clip_rect_precise: current_clip_rect_precise,
-                        clip_radius_precise: current_clip_radius_precise,
+                        clip_rect: effective_clip_rect,
+                        clip_radius: effective_clip_radius,
+                        clip_rect_precise: effective_clip_rect_precise,
+                        clip_radius_precise: effective_clip_radius_precise,
                     });
                 }
 
@@ -2209,8 +2255,8 @@ fn collect_cached_buffers(
                                     window_border_inner_clip
                                         .map(|clip| precise_rect_from_logical(clip.rect)),
                                     window_border_inner_clip.map(|clip| clip.radius.max(0) as f32),
-                                    current_clip_rect_precise,
-                                    current_clip_radius_precise,
+                                    effective_clip_rect_precise,
+                                    effective_clip_radius_precise,
                                     None,
                                     0,
                                 );
@@ -2232,8 +2278,8 @@ fn collect_cached_buffers(
                                     0,
                                     None,
                                     None,
-                                    current_clip_rect_precise,
-                                    current_clip_radius_precise,
+                                    effective_clip_rect_precise,
+                                    effective_clip_radius_precise,
                                     None,
                                     0,
                                 );
@@ -2256,10 +2302,10 @@ fn collect_cached_buffers(
                                 0,
                                 None,
                                 None,
-                                current_clip_rect_precise,
-                                current_clip_radius_precise,
-                                current_clip_rect,
-                                current_clip_radius,
+                                effective_clip_rect_precise,
+                                effective_clip_radius_precise,
+                                effective_clip_rect,
+                                effective_clip_radius,
                             );
                         }
                     }
@@ -2274,6 +2320,9 @@ fn collect_cached_buffers(
                     child_resolved_clip,
                     child_clip_rect_precise,
                     child_clip_radius_precise,
+                    next_nearest_rounded_clip,
+                    next_nearest_rounded_clip_rect_precise,
+                    next_nearest_rounded_clip_radius_precise,
                     order_map,
                     dirty_node_ids,
                     shared_edges,

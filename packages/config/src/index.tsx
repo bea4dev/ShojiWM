@@ -141,6 +141,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
             >
                 <Box direction="row" style={{ border: { px: 2, color: "#FFFFFF" }, padding: 5 }}>
                     <Box direction="column">
+                    <Box style={{ height: 5, background: "#FFFFFF" }}/>
                         <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
                             <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
                             <Label
@@ -206,6 +207,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                             />
                         </ShaderEffect>
                         <ClientWindow />
+                        <Box style={{ height: 5, background: "#FFFFFF" }}/>
                     </Box>
                 </Box>
             </WindowBorder>
