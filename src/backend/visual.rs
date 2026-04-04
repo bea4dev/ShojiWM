@@ -277,6 +277,34 @@ pub fn logical_rect_to_physical_rect(
     )
 }
 
+pub fn logical_point_to_physical_point_global_edges(
+    point: Point<i32, Logical>,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let point_x = ((point.x as f64) * scale_x).round() as i32;
+    let point_y = ((point.y as f64) * scale_y).round() as i32;
+    let origin_x = ((origin.x as f64) * scale_x).round() as i32;
+    let origin_y = ((origin.y as f64) * scale_y).round() as i32;
+    Point::from((point_x - origin_x, point_y - origin_y))
+}
+
+pub fn precise_logical_point_to_physical_point_global_edges(
+    point: Point<f64, Logical>,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let point_x = (point.x * scale_x).round() as i32;
+    let point_y = (point.y * scale_y).round() as i32;
+    let origin_x = ((origin.x as f64) * scale_x).round() as i32;
+    let origin_y = ((origin.y as f64) * scale_y).round() as i32;
+    Point::from((point_x - origin_x, point_y - origin_y))
+}
+
 pub fn logical_size_to_physical_buffer_size(
     width: i32,
     height: i32,
@@ -506,6 +534,49 @@ pub fn relative_physical_rect_from_root_precise(
     let bottom_px = ((((rect.y + rect.height) - root_y) * scale_y).round()) as i32;
     Rectangle::new(
         Point::from((left_px, top_px)),
+        ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
+    )
+}
+
+pub fn relative_physical_rect_from_root_global_edges(
+    rect: LogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    let scale_x = output_scale.x.abs().max(0.0001);
+    let scale_y = output_scale.y.abs().max(0.0001);
+    let root_left_px = (((root_rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
+    let root_top_px = (((root_rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let left_px = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
+    let top_px = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let right_px = ((((rect.x + rect.width) - output_geo.loc.x) as f64) * scale_x).round() as i32;
+    let bottom_px =
+        ((((rect.y + rect.height) - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    Rectangle::new(
+        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
+    )
+}
+
+pub fn relative_physical_rect_from_root_global_edges_precise(
+    rect: PreciseLogicalRect,
+    root_rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Rectangle<i32, Physical> {
+    let scale_x = output_scale.x.abs().max(0.0001) as f32;
+    let scale_y = output_scale.y.abs().max(0.0001) as f32;
+    let output_x = output_geo.loc.x as f32;
+    let output_y = output_geo.loc.y as f32;
+    let root_left_px = (((root_rect.x as f32 - output_x) * scale_x).round()) as i32;
+    let root_top_px = (((root_rect.y as f32 - output_y) * scale_y).round()) as i32;
+    let left_px = (((rect.x - output_x) * scale_x).round()) as i32;
+    let top_px = (((rect.y - output_y) * scale_y).round()) as i32;
+    let right_px = ((((rect.x + rect.width) - output_x) * scale_x).round()) as i32;
+    let bottom_px = ((((rect.y + rect.height) - output_y) * scale_y).round()) as i32;
+    Rectangle::new(
+        Point::from((left_px - root_left_px, top_px - root_top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
     )
 }
