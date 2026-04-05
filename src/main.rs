@@ -1,10 +1,12 @@
 use crate::{backend::ShojiWMBackend, state::ShojiWM};
 use std::{
+    backtrace::Backtrace,
     fs::{self, OpenOptions},
+    panic,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 pub mod backend;
@@ -21,6 +23,7 @@ pub mod state;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
     init_logging(&args)?;
+    install_panic_hook();
     apply_runtime_overrides(&args);
 
     let backend = if args.tty {
@@ -33,6 +36,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     backend.run()?;
 
     Ok(())
+}
+
+fn install_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        let location = panic_info
+            .location()
+            .map(|location| format!("{}:{}:{}", location.file(), location.line(), location.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = panic_payload_message(panic_info);
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let backtrace = Backtrace::force_capture();
+
+        error!(
+            thread = thread_name,
+            location = %location,
+            payload = %payload,
+            backtrace = %backtrace,
+            "panic"
+        );
+        eprintln!(
+            "panic: thread={thread_name} location={location} payload={payload}\n{backtrace}"
+        );
+
+        default_hook(panic_info);
+    }));
+}
+
+fn panic_payload_message(panic_info: &panic::PanicHookInfo<'_>) -> String {
+    let payload = panic_info.payload();
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 fn apply_runtime_overrides(args: &CliArgs) {

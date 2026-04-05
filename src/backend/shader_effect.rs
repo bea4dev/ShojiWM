@@ -1744,12 +1744,14 @@ fn source_damage_intersects_policy(
         EffectInvalidationPolicy::OnSourceDamageBox { .. } => {
             let sample_rect = invalidation_sample_rect_for_policy(policy, visible_rect);
             source_damage.iter().any(|damage| {
+                let sample_right = sample_rect.loc.x.saturating_add(sample_rect.size.w);
+                let sample_bottom = sample_rect.loc.y.saturating_add(sample_rect.size.h);
+                let damage_right = damage.rect.x.saturating_add(damage.rect.width);
+                let damage_bottom = damage.rect.y.saturating_add(damage.rect.height);
                 let left = sample_rect.loc.x.max(damage.rect.x);
                 let top = sample_rect.loc.y.max(damage.rect.y);
-                let right =
-                    (sample_rect.loc.x + sample_rect.size.w).min(damage.rect.x + damage.rect.width);
-                let bottom = (sample_rect.loc.y + sample_rect.size.h)
-                    .min(damage.rect.y + damage.rect.height);
+                let right = sample_right.min(damage_right);
+                let bottom = sample_bottom.min(damage_bottom);
                 right > left && bottom > top
             })
         }
