@@ -1364,6 +1364,7 @@ pub fn backdrop_shader_element(
         _shader,
         alpha,
         render_scale,
+        [0.0, 0.0],
         clip_rect,
         clip_radius,
         debug_label,
@@ -1382,6 +1383,7 @@ pub fn backdrop_shader_element_with_geometry(
     _shader: &CompiledEffect,
     alpha: f32,
     render_scale: f32,
+    sample_uv_phase: [f32; 2],
     clip_rect: Option<SnappedLogicalRect>,
     clip_radius: i32,
     debug_label: String,
@@ -1405,8 +1407,8 @@ pub fn backdrop_shader_element_with_geometry(
         (sample_width_px as f64, sample_height_px as f64).into(),
     );
     let uv_offset = [
-        sample_left_px as f32 / captured_width_px.max(1) as f32,
-        sample_top_px as f32 / captured_height_px.max(1) as f32,
+        (sample_left_px as f32 + sample_uv_phase[0]) / captured_width_px.max(1) as f32,
+        (sample_top_px as f32 + sample_uv_phase[1]) / captured_height_px.max(1) as f32,
     ];
     let uv_scale = [
         sample_width_px as f32 / captured_width_px.max(1) as f32,
@@ -1425,6 +1427,7 @@ pub fn backdrop_shader_element_with_geometry(
             src = ?src,
             uv_offset = ?uv_offset,
             uv_scale = ?uv_scale,
+            sample_uv_phase = ?sample_uv_phase,
             render_scale,
             clip_rect = ?clip_rect,
             clip_radius,
@@ -1455,7 +1458,7 @@ pub fn apply_effect_pipeline(
     texture: GlesTexture,
     xray_texture: Option<GlesTexture>,
     size: (i32, i32),
-    sample_region: Option<Rectangle<i32, Buffer>>,
+    sample_region: Option<Rectangle<f64, Buffer>>,
     output_size: Option<(i32, i32)>,
     effect: &CompiledEffect,
 ) -> Result<GlesTexture, ShaderEffectError> {
@@ -1471,7 +1474,7 @@ pub fn apply_effect_pipeline(
 pub fn log_gap_texture_region_readback(
     renderer: &mut GlesRenderer,
     texture: &GlesTexture,
-    src_region: Option<Rectangle<i32, Buffer>>,
+    src_region: Option<Rectangle<f64, Buffer>>,
     output_size: (i32, i32),
     subject: &str,
     label: &str,
@@ -1497,8 +1500,8 @@ pub fn log_gap_texture_region_readback(
         Some(1.0),
         src_region.map(|region| {
             Rectangle::new(
-                Point::from((region.loc.x as f64, region.loc.y as f64)),
-                (region.size.w as f64, region.size.h as f64).into(),
+                Point::from((region.loc.x, region.loc.y)),
+                (region.size.w, region.size.h).into(),
             )
         }),
         Some(output_size.into()),
@@ -1763,7 +1766,7 @@ fn run_effect_pipeline(
     renderer: &mut GlesRenderer,
     effect: &CompiledEffect,
     ctx: &mut EffectExecutionContext,
-    sample_region: Option<Rectangle<i32, Buffer>>,
+    sample_region: Option<Rectangle<f64, Buffer>>,
     output_size: Option<(i32, i32)>,
 ) -> Result<GlesTexture, ShaderEffectError> {
     let mut current = resolve_effect_input(renderer, &effect.input, ctx)?;
@@ -1780,7 +1783,10 @@ fn run_effect_pipeline(
             }
             EffectStage::Shader(shader) => {
                 if let Some(region) = pending_sample_region.take() {
-                    let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+                    let target_size = output_size.unwrap_or((
+                        region.size.w.round() as i32,
+                        region.size.h.round() as i32,
+                    ));
                     current =
                         crop_texture_region(renderer, current, current_size, region, target_size)?;
                     current_size = target_size;
@@ -1793,7 +1799,10 @@ fn run_effect_pipeline(
             }
             EffectStage::Blend { input, mode, alpha } => {
                 if let Some(region) = pending_sample_region.take() {
-                    let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+                    let target_size = output_size.unwrap_or((
+                        region.size.w.round() as i32,
+                        region.size.h.round() as i32,
+                    ));
                     current =
                         crop_texture_region(renderer, current, current_size, region, target_size)?;
                     current_size = target_size;
@@ -1811,7 +1820,10 @@ fn run_effect_pipeline(
 
     if effect.is_backdrop() {
         if let Some(region) = pending_sample_region.take() {
-            let target_size = output_size.unwrap_or((region.size.w, region.size.h));
+            let target_size = output_size.unwrap_or((
+                region.size.w.round() as i32,
+                region.size.h.round() as i32,
+            ));
             current = crop_texture_region(renderer, current, current_size, region, target_size)?;
             current_size = target_size;
         }
@@ -2023,7 +2035,7 @@ fn crop_texture_region(
     renderer: &mut GlesRenderer,
     texture: GlesTexture,
     _size: (i32, i32),
-    region: Rectangle<i32, Buffer>,
+    region: Rectangle<f64, Buffer>,
     output_size: (i32, i32),
 ) -> Result<GlesTexture, ShaderEffectError> {
     let mut target =
@@ -2037,8 +2049,8 @@ fn crop_texture_region(
         Transform::Normal,
         Some(1.0),
         Some(Rectangle::new(
-            Point::from((region.loc.x as f64, region.loc.y as f64)),
-            (region.size.w as f64, region.size.h as f64).into(),
+            Point::from((region.loc.x, region.loc.y)),
+            (region.size.w, region.size.h).into(),
         )),
         Some(output_size.into()),
         None,

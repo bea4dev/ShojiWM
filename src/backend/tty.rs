@@ -112,6 +112,29 @@ fn previous_client_frame_state(key: &str, current: ClientFrameState) -> Option<C
     guard.insert(key.to_string(), current)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BackdropSampleFrameState {
+    sample_screen_rect: Option<(f64, f64, f64, f64)>,
+}
+
+fn backdrop_sample_state_map() -> &'static Mutex<HashMap<String, BackdropSampleFrameState>> {
+    static STATE: OnceLock<Mutex<HashMap<String, BackdropSampleFrameState>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn previous_backdrop_sample_state(
+    key: &str,
+    current: BackdropSampleFrameState,
+) -> Option<BackdropSampleFrameState> {
+    let mut guard = backdrop_sample_state_map().lock().ok()?;
+    guard.insert(key.to_string(), current)
+}
+
+fn latest_backdrop_sample_rect(key: &str) -> Option<(f64, f64, f64, f64)> {
+    let guard = backdrop_sample_state_map().lock().ok()?;
+    guard.get(key).and_then(|state| state.sample_screen_rect)
+}
+
 struct SurfaceData {
     output: Output,
     drm_output: GbmDrmOutput,
@@ -1149,6 +1172,35 @@ fn render_surface(
                         first_ui = ?first_ui,
                         first_snapshot_item = ?first_snapshot_item,
                         "transform snapshot tty branch composition"
+                    );
+                }
+                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                    let first_backdrop = ordered_backdrop_elements.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
+                    let first_fill = debug_background_geometries
+                        .iter()
+                        .filter(|(_, stable_key, source_kind, geometry)| {
+                            *source_kind == "fill"
+                                && stable_key.ends_with(":fill")
+                                && geometry.size.w > 200
+                        })
+                        .min_by_key(|(order, _, _, _)| *order)
+                        .map(|(_, _, _, geometry)| *geometry);
+                    let backdrop_fill_delta = first_backdrop.zip(first_fill).map(|(backdrop, fill)| {
+                        (
+                            backdrop.loc.x - fill.loc.x,
+                            backdrop.loc.y - fill.loc.y,
+                            backdrop.size.w - fill.size.w,
+                            backdrop.size.h - fill.size.h,
+                        )
+                    });
+                    tracing::info!(
+                        window_id = %window_id,
+                        first_backdrop = ?first_backdrop,
+                        first_fill = ?first_fill,
+                        backdrop_fill_delta = ?backdrop_fill_delta,
+                        "gap debug tty backdrop/fill compare"
                     );
                 }
             }
@@ -2367,11 +2419,53 @@ fn transform_backdrop_elements(
         return Ok(elements
             .into_iter()
             .map(|element| {
-                TtyRenderElements::RelocatedBackdrop(RelocateRenderElement::from_element(
-                    element,
-                    root_origin,
-                    Relocate::Relative,
-                ))
+                let debug_label = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                    Some(element.debug_label().to_string())
+                } else {
+                    None
+                };
+                let pre_transform_geometry = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                    Some(smithay::backend::renderer::element::Element::geometry(
+                        &element,
+                        Scale::from((1.0, 1.0)),
+                    ))
+                } else {
+                    None
+                };
+                let relocated = TtyRenderElements::RelocatedBackdrop(
+                    RelocateRenderElement::from_element(element, root_origin, Relocate::Relative),
+                );
+                if let (Some(debug_label), Some(pre_transform_geometry)) =
+                    (debug_label, pre_transform_geometry)
+                {
+                    let post_transform_geometry =
+                        smithay::backend::renderer::element::Element::geometry(
+                            &relocated,
+                            Scale::from((1.0, 1.0)),
+                        );
+                    let sample_screen_rect = latest_backdrop_sample_rect(&debug_label);
+                    let backdrop_vs_sample_screen = sample_screen_rect.map(|sample| {
+                        (
+                            post_transform_geometry.loc.x as f64 - sample.0,
+                            post_transform_geometry.loc.y as f64 - sample.1,
+                            post_transform_geometry.size.w as f64 - sample.2,
+                            post_transform_geometry.size.h as f64 - sample.3,
+                        )
+                    });
+                    tracing::info!(
+                        backdrop = %debug_label,
+                        root_origin = ?root_origin,
+                        visual_origin = ?visual.origin,
+                        visual_scale = ?visual.scale,
+                        visual_translation = ?visual.translation,
+                        pre_transform_geometry = ?pre_transform_geometry,
+                        post_transform_geometry = ?post_transform_geometry,
+                        sample_screen_rect = ?sample_screen_rect,
+                        backdrop_vs_sample_screen = ?backdrop_vs_sample_screen,
+                        "gap debug tty transformed backdrop geometry"
+                    );
+                }
+                relocated
             })
             .collect());
     }
@@ -2379,15 +2473,84 @@ fn transform_backdrop_elements(
     Ok(elements
         .into_iter()
         .map(|element| {
+            let debug_label = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                Some(element.debug_label().to_string())
+            } else {
+                None
+            };
+            let pre_transform_geometry = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                Some(smithay::backend::renderer::element::Element::geometry(
+                    &element,
+                    Scale::from((1.0, 1.0)),
+                ))
+            } else {
+                None
+            };
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
-            TtyRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
+            let transformed = TtyRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
-            ))
+            ));
+            if let (Some(debug_label), Some(pre_transform_geometry)) =
+                (debug_label, pre_transform_geometry)
+            {
+                let post_transform_geometry = smithay::backend::renderer::element::Element::geometry(
+                    &transformed,
+                    Scale::from((1.0, 1.0)),
+                );
+                let sample_screen_rect = latest_backdrop_sample_rect(&debug_label);
+                let backdrop_vs_sample_screen = sample_screen_rect.map(|sample| {
+                    (
+                        post_transform_geometry.loc.x as f64 - sample.0,
+                        post_transform_geometry.loc.y as f64 - sample.1,
+                        post_transform_geometry.size.w as f64 - sample.2,
+                        post_transform_geometry.size.h as f64 - sample.3,
+                    )
+                });
+                tracing::info!(
+                    backdrop = %debug_label,
+                    root_origin = ?root_origin,
+                    visual_origin = ?visual.origin,
+                    visual_scale = ?visual.scale,
+                    visual_translation = ?visual.translation,
+                    pre_transform_geometry = ?pre_transform_geometry,
+                    post_transform_geometry = ?post_transform_geometry,
+                    sample_screen_rect = ?sample_screen_rect,
+                    backdrop_vs_sample_screen = ?backdrop_vs_sample_screen,
+                    "gap debug tty transformed backdrop geometry"
+                );
+            }
+            transformed
         })
         .collect())
+}
+
+fn debug_scene_geometry_snapshot(
+    elements: &[TtyRenderElements],
+    scale: Scale<f64>,
+) -> (
+    Option<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
+    Vec<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
+) {
+    let geometries = elements
+        .iter()
+        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
+        .collect::<Vec<_>>();
+
+    let union = geometries.iter().copied().reduce(|current, rect| {
+        let left = current.loc.x.min(rect.loc.x);
+        let top = current.loc.y.min(rect.loc.y);
+        let right = (current.loc.x + current.size.w).max(rect.loc.x + rect.size.w);
+        let bottom = (current.loc.y + current.size.h).max(rect.loc.y + rect.size.h);
+        smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((left, top)),
+            ((right - left).max(0), (bottom - top).max(0)).into(),
+        )
+    });
+
+    (union, geometries.into_iter().take(8).collect())
 }
 
 fn log_gap_readback_probe(
@@ -2796,29 +2959,12 @@ fn backdrop_shader_elements_for_window(
                     .into(),
             );
             let actual_capture_geo = capture_geo.intersection(output_geo).unwrap_or(capture_geo);
-            let capture_origin_precise = Point::<f64, Logical>::from((
-                (source_effect_rect_precise.x as f64 - blur_padding as f64)
-                    .max(output_geo.loc.x as f64),
-                (source_effect_rect_precise.y as f64 - blur_padding as f64)
-                    .max(output_geo.loc.y as f64),
-            ));
-            let capture_origin_local = crate::backend::visual::relative_physical_rect_from_root_precise(
-                crate::backend::visual::PreciseLogicalRect {
-                    x: capture_origin_precise.x as f32,
-                    y: capture_origin_precise.y as f32,
-                    width: 0.0,
-                    height: 0.0,
-                },
-                root_rect,
-                output_geo,
-                scale,
-            );
-            let root_origin_physical =
-                crate::backend::visual::root_physical_origin(root_rect, output_geo, scale);
-            let capture_origin_physical = Point::from((
-                root_origin_physical.x + capture_origin_local.loc.x,
-                root_origin_physical.y + capture_origin_local.loc.y,
-            ));
+            let capture_origin_physical =
+                crate::backend::visual::logical_point_to_physical_point_global_edges(
+                    actual_capture_geo.loc,
+                    output_geo.loc,
+                    scale,
+                );
             (
                 actual_capture_geo.loc.x,
                 actual_capture_geo.loc.y,
@@ -2940,6 +3086,12 @@ fn backdrop_shader_elements_for_window(
                         (source_effect_rect.width, source_effect_rect.height).into(),
                     );
                     let local_capture_rect = local_sample_rect;
+                    let sample_region =
+                        crate::backend::visual::precise_logical_rect_to_physical_buffer_rect(
+                            source_effect_rect_precise,
+                            actual_capture_geo.loc,
+                            scale,
+                        );
                     let geometry = display_rect_precise
                         .map(|rect| {
                             crate::backend::visual::relative_physical_rect_from_root_precise(
@@ -2970,6 +3122,7 @@ fn backdrop_shader_elements_for_window(
                             &cached.shader,
                             alpha,
                             scale.x as f32,
+                            [0.0, 0.0],
                             clip_rect,
                             cached.clip_radius,
                             format!(
@@ -2981,6 +3134,31 @@ fn backdrop_shader_elements_for_window(
                     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                         let geometry =
                             smithay::backend::renderer::element::Element::geometry(&element, scale);
+                        let sample_region_screen = (
+                            capture_origin_physical.x as f64 + sample_region.loc.x,
+                            capture_origin_physical.y as f64 + sample_region.loc.y,
+                            sample_region.size.w,
+                            sample_region.size.h,
+                        );
+                        let backdrop_sample_key =
+                            format!("{}:{}:{}", output.name(), decoration.snapshot.id, cached.stable_key);
+                        let previous_backdrop_sample =
+                            previous_backdrop_sample_state(
+                                &backdrop_sample_key,
+                                BackdropSampleFrameState {
+                                    sample_screen_rect: Some(sample_region_screen),
+                                },
+                            );
+                        let sample_screen_delta = previous_backdrop_sample
+                            .and_then(|state| state.sample_screen_rect)
+                            .map(|previous| {
+                                (
+                                    sample_region_screen.0 - previous.0,
+                                    sample_region_screen.1 - previous.1,
+                                    sample_region_screen.2 - previous.2,
+                                    sample_region_screen.3 - previous.3,
+                                )
+                            });
                         tracing::info!(
                             stable_key = %cached.stable_key,
                             rect = ?cached.rect,
@@ -2988,6 +3166,9 @@ fn backdrop_shader_elements_for_window(
                             local_rect = ?local_rect,
                             local_sample_rect = ?local_sample_rect,
                             local_capture_rect = ?local_capture_rect,
+                            sample_region = ?sample_region,
+                            sample_region_screen = ?sample_region_screen,
+                            sample_screen_delta = ?sample_screen_delta,
                             clip_rect = ?cached.clip_rect,
                             geometry = ?geometry,
                             "gap debug window backdrop element"
@@ -2996,8 +3177,8 @@ fn backdrop_shader_elements_for_window(
                     return Some((cached.order, element, render_as_backdrop));
                 }
             }
+            let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
             let backdrop_texture = if uses_backdrop {
-                let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
                 for lower_window in &lower_windows {
                     if let Ok(mut elements) = window_scene_elements_for_capture(
                         renderer,
@@ -3037,8 +3218,8 @@ fn backdrop_shader_elements_for_window(
             } else {
                 None
             };
+            let mut xray_scene: Vec<TtyRenderElements> = Vec::new();
             let xray_texture = if uses_xray {
-                let mut xray_scene: Vec<TtyRenderElements> = Vec::new();
                 for lower_layer in &lower_layers {
                     if let Ok(mut layer_elements) = layer_surface_scene_elements_for_capture(
                         renderer,
@@ -3059,15 +3240,82 @@ fn backdrop_shader_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
-            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
-                source_effect_rect,
-                actual_capture_geo.loc,
-                scale,
+            let geometry = display_rect_precise
+                .map(|rect| {
+                    crate::backend::visual::relative_physical_rect_from_root_precise(
+                        rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                        display_rect,
+                        root_rect,
+                        output_geo,
+                        scale,
+                    )
+                });
+            let root_origin_physical =
+                crate::backend::visual::root_physical_origin(root_rect, output_geo, scale);
+            let final_backdrop_screen_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    root_origin_physical.x + geometry.loc.x,
+                    root_origin_physical.y + geometry.loc.y,
+                )),
+                geometry.size,
             );
-            let output_size = crate::backend::visual::logical_size_to_physical_buffer_size(
-                source_effect_rect.width,
-                source_effect_rect.height,
-                scale,
+            let sample_region = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    (final_backdrop_screen_rect.loc.x - capture_origin_physical.x) as f64,
+                    (final_backdrop_screen_rect.loc.y - capture_origin_physical.y) as f64,
+                )),
+                (
+                    final_backdrop_screen_rect.size.w as f64,
+                    final_backdrop_screen_rect.size.h as f64,
+                )
+                    .into(),
+            );
+            if std::env::var_os("SHOJI_GAP_SHADER_READBACK_DEBUG").is_some() {
+                crate::backend::shader_effect::log_gap_texture_region_readback(
+                    renderer,
+                    &input_texture,
+                    None,
+                    crate::backend::visual::logical_size_to_physical_buffer_size(
+                        actual_capture_geo.size.w,
+                        actual_capture_geo.size.h,
+                        scale,
+                    ),
+                    "shader-effect-capture-full",
+                    &cached.stable_key,
+                    &output.name(),
+                    &cached.stable_key,
+                );
+            }
+            if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                let (backdrop_union, backdrop_first) =
+                    debug_scene_geometry_snapshot(&backdrop_scene, scale);
+                let (xray_union, xray_first) = debug_scene_geometry_snapshot(&xray_scene, scale);
+                tracing::info!(
+                    window_id = %decoration.snapshot.id,
+                    stable_key = %cached.stable_key,
+                    source_effect_rect = ?source_effect_rect,
+                    source_effect_rect_precise = ?source_effect_rect_precise,
+                    actual_capture_geo = ?actual_capture_geo,
+                    capture_origin_physical = ?capture_origin_physical,
+                    final_backdrop_screen_rect = ?final_backdrop_screen_rect,
+                    sample_region = ?sample_region,
+                    backdrop_union = ?backdrop_union,
+                    backdrop_first = ?backdrop_first,
+                    xray_union = ?xray_union,
+                    xray_first = ?xray_first,
+                    "gap debug tty backdrop capture scene"
+                );
+            }
+            let output_size = (
+                final_backdrop_screen_rect.size.w,
+                final_backdrop_screen_rect.size.h,
             );
             if std::env::var_os("SHOJI_GAP_SHADER_READBACK_DEBUG").is_some() {
                 crate::backend::shader_effect::log_gap_texture_region_readback(
@@ -3181,23 +3429,6 @@ fn backdrop_shader_elements_for_window(
                 (source_effect_rect.width, source_effect_rect.height).into(),
             );
             let local_capture_rect = local_sample_rect;
-            let geometry = display_rect_precise
-                .map(|rect| {
-                    crate::backend::visual::relative_physical_rect_from_root_precise(
-                        rect,
-                        root_rect,
-                        output_geo,
-                        scale,
-                    )
-                })
-                .unwrap_or_else(|| {
-                    crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
-                        display_rect,
-                        root_rect,
-                        output_geo,
-                        scale,
-                    )
-                });
             let element = crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                 renderer,
                 window_decorations
@@ -3218,6 +3449,7 @@ fn backdrop_shader_elements_for_window(
                 &cached.shader,
                 alpha,
                 scale.x as f32,
+                [0.0, 0.0],
                 clip_rect,
                 cached.clip_radius,
                 format!(
@@ -3229,6 +3461,30 @@ fn backdrop_shader_elements_for_window(
             if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                 let geometry =
                     smithay::backend::renderer::element::Element::geometry(&element, scale);
+                let sample_region_screen = (
+                    capture_origin_physical.x as f64 + sample_region.loc.x,
+                    capture_origin_physical.y as f64 + sample_region.loc.y,
+                    sample_region.size.w,
+                    sample_region.size.h,
+                );
+                let backdrop_sample_key =
+                    format!("{}:{}:{}", output.name(), decoration.snapshot.id, cached.stable_key);
+                let previous_backdrop_sample = previous_backdrop_sample_state(
+                    &backdrop_sample_key,
+                    BackdropSampleFrameState {
+                        sample_screen_rect: Some(sample_region_screen),
+                    },
+                );
+                let sample_screen_delta = previous_backdrop_sample
+                    .and_then(|state| state.sample_screen_rect)
+                    .map(|previous| {
+                        (
+                            sample_region_screen.0 - previous.0,
+                            sample_region_screen.1 - previous.1,
+                            sample_region_screen.2 - previous.2,
+                            sample_region_screen.3 - previous.3,
+                        )
+                    });
                 tracing::info!(
                     stable_key = %cached.stable_key,
                     rect = ?cached.rect,
@@ -3236,6 +3492,9 @@ fn backdrop_shader_elements_for_window(
                     local_rect = ?local_rect,
                     local_sample_rect = ?local_sample_rect,
                     local_capture_rect = ?local_capture_rect,
+                    sample_region = ?sample_region,
+                    sample_region_screen = ?sample_region_screen,
+                    sample_screen_delta = ?sample_screen_delta,
                     clip_rect = ?cached.clip_rect,
                     geometry = ?geometry,
                     "gap debug window backdrop element"
@@ -3625,7 +3884,7 @@ fn configured_background_effect_elements_for_layer(
             actual_capture_geo.size.h,
             scale,
         ),
-        Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+        Some(crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
             effect_rect,
             actual_capture_geo.loc,
             scale,
@@ -4027,7 +4286,7 @@ fn lower_layer_scene_elements(
                     actual_capture_geo.size.h,
                     scale,
                 ),
-                Some(crate::backend::visual::logical_rect_to_physical_buffer_rect(
+                Some(crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
                     effect_rect,
                     actual_capture_geo.loc,
                     scale,
@@ -4425,7 +4684,7 @@ fn configured_background_effect_elements_for_window(
                 .clone()
                 .or_else(|| xray_texture.clone())
                 .or_else(|| crate::backend::shader_effect::solid_white_texture(renderer).ok())?;
-            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect(
+            let sample_region = crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
                 effect_rect,
                 actual_capture_geo.loc,
                 scale,

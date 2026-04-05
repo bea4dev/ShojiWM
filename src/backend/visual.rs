@@ -260,6 +260,46 @@ pub fn logical_rect_to_physical_buffer_rect(
     )
 }
 
+pub fn logical_rect_to_physical_buffer_rect_f64(
+    rect: LogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Rectangle<f64, Buffer> {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let left = ((rect.x - origin.x) as f64) * scale_x;
+    let top = ((rect.y - origin.y) as f64) * scale_y;
+    let right = (((rect.x + rect.width) - origin.x) as f64) * scale_x;
+    let bottom = (((rect.y + rect.height) - origin.y) as f64) * scale_y;
+    Rectangle::new(
+        Point::from((left, top)),
+        ((right - left).max(0.0), (bottom - top).max(0.0)).into(),
+    )
+}
+
+pub fn precise_logical_rect_to_physical_buffer_rect(
+    rect: PreciseLogicalRect,
+    origin: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Rectangle<f64, Buffer> {
+    let scale_x = scale.x.abs().max(0.0001) as f32;
+    let scale_y = scale.y.abs().max(0.0001) as f32;
+    let origin_x = origin.x as f32;
+    let origin_y = origin.y as f32;
+    let left = (rect.x - origin_x) * scale_x;
+    let top = (rect.y - origin_y) * scale_y;
+    let right = (rect.x + rect.width - origin_x) * scale_x;
+    let bottom = (rect.y + rect.height - origin_y) * scale_y;
+    Rectangle::new(
+        Point::from((left as f64, top as f64)),
+        (
+            (right - left).max(0.0) as f64,
+            (bottom - top).max(0.0) as f64,
+        )
+            .into(),
+    )
+}
+
 pub fn logical_rect_to_physical_rect(
     rect: LogicalRect,
     origin: Point<i32, Logical>,
