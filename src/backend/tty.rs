@@ -3184,6 +3184,7 @@ fn backdrop_shader_elements_for_window(
                         renderer,
                         space,
                         window_decorations,
+                        output_geo.loc,
                         actual_capture_geo,
                         capture_origin_physical,
                         scale,
@@ -3710,7 +3711,7 @@ fn hash_layer_scene_contributors(
 fn layer_surface_scene_elements_for_capture(
     renderer: &mut GlesRenderer,
     output: &Output,
-    capture_geo: smithay::utils::Rectangle<i32, Logical>,
+    _capture_geo: smithay::utils::Rectangle<i32, Logical>,
     capture_origin_physical: Point<i32, smithay::utils::Physical>,
     scale: smithay::utils::Scale<f64>,
     layer_surface: &smithay::desktop::LayerSurface,
@@ -3718,9 +3719,9 @@ fn layer_surface_scene_elements_for_capture(
     let capture_visual = WindowVisualState {
         origin: smithay::utils::Point::from((0, 0)),
         scale: smithay::utils::Scale::from((1.0, 1.0)),
-        translation: crate::backend::visual::logical_point_to_relative_physical_point_from_output(
+        translation: crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
             output.current_location(),
-            capture_geo,
+            output.current_location(),
             capture_origin_physical,
             scale,
         ),
@@ -3826,6 +3827,7 @@ fn configured_background_effect_elements_for_layer(
                 renderer,
                 space,
                 window_decorations,
+                output_geo.loc,
                 actual_capture_geo,
                 capture_origin_physical,
                 scale,
@@ -4628,6 +4630,7 @@ fn configured_background_effect_elements_for_window(
                         renderer,
                         space,
                         window_decorations,
+                        output_geo.loc,
                         actual_capture_geo,
                         capture_origin_physical,
                         scale,
@@ -4796,6 +4799,7 @@ fn window_scene_elements_for_capture(
         smithay::desktop::Window,
         crate::ssd::WindowDecorationState,
     >,
+    output_origin: Point<i32, Logical>,
     capture_geo: smithay::utils::Rectangle<i32, Logical>,
     capture_origin_physical: Point<i32, smithay::utils::Physical>,
     scale: smithay::utils::Scale<f64>,
@@ -4805,9 +4809,9 @@ fn window_scene_elements_for_capture(
         return Ok(Vec::new());
     };
     let physical_location =
-        crate::backend::visual::logical_point_to_relative_physical_point_from_output(
+        crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
             window_location,
-            capture_geo,
+            output_origin,
             capture_origin_physical,
             scale,
         );
@@ -4821,9 +4825,9 @@ fn window_scene_elements_for_capture(
                 rect.y as f64 + rect.height as f64 * transform.origin.y,
             ));
             WindowVisualState {
-                origin: crate::backend::visual::precise_logical_point_to_relative_physical_point_from_output(
+                origin: crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
                     logical_origin,
-                    capture_geo,
+                    output_origin,
                     capture_origin_physical,
                     scale,
                 ),
@@ -4849,9 +4853,9 @@ fn window_scene_elements_for_capture(
     let mut elements = Vec::new();
 
     if let Some(decoration) = window_decorations.get(window) {
-        let root_origin = crate::backend::visual::logical_point_to_relative_physical_point_from_output(
+        let root_origin = crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
             Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
-            capture_geo,
+            output_origin,
             capture_origin_physical,
             scale,
         );

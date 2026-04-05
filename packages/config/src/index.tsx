@@ -126,8 +126,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         input: backdropSource(),
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
-            dualKawaseBlur({ radius: 0, passes: 0 }),
-            /*
+            dualKawaseBlur({ radius: 4, passes: 2 }),
             shaderStage(loadShader("./liquid-glass.frag"), {
                 uniforms: {
                     inset_px: 0.0,
@@ -139,7 +138,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                     white_tint: 0.0,
                     edge_highlight: 0.0,
                 },
-            }),*/
+            }),
         ],
     });
 

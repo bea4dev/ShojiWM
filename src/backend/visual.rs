@@ -351,7 +351,21 @@ pub fn logical_point_to_relative_physical_point_from_output(
     capture_origin_physical: Point<i32, Physical>,
     scale: Scale<f64>,
 ) -> Point<i32, Physical> {
-    let global = logical_point_to_physical_point_global_edges(point, output_geo.loc, scale);
+    logical_point_to_relative_physical_point_from_origin(
+        point,
+        output_geo.loc,
+        capture_origin_physical,
+        scale,
+    )
+}
+
+pub fn logical_point_to_relative_physical_point_from_origin(
+    point: Point<i32, Logical>,
+    output_origin: Point<i32, Logical>,
+    capture_origin_physical: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let global = logical_point_to_physical_point_global_edges(point, output_origin, scale);
     Point::from((
         global.x - capture_origin_physical.x,
         global.y - capture_origin_physical.y,
@@ -364,7 +378,21 @@ pub fn precise_logical_point_to_relative_physical_point_from_output(
     capture_origin_physical: Point<i32, Physical>,
     scale: Scale<f64>,
 ) -> Point<i32, Physical> {
-    let global = precise_logical_point_to_physical_point_global_edges(point, output_geo.loc, scale);
+    precise_logical_point_to_relative_physical_point_from_origin(
+        point,
+        output_geo.loc,
+        capture_origin_physical,
+        scale,
+    )
+}
+
+pub fn precise_logical_point_to_relative_physical_point_from_origin(
+    point: Point<f64, Logical>,
+    output_origin: Point<i32, Logical>,
+    capture_origin_physical: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    let global = precise_logical_point_to_physical_point_global_edges(point, output_origin, scale);
     Point::from((
         global.x - capture_origin_physical.x,
         global.y - capture_origin_physical.y,
