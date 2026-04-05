@@ -3,6 +3,11 @@ use crate::{
     handlers::{layer_shell, xdg_shell},
     state::{ClientState, ShojiWM},
 };
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_shm,
@@ -20,6 +25,16 @@ use smithay::{
     },
 };
 use tracing::{debug, trace};
+
+fn previous_transform_snapshot_source_damage_time(
+    window_id: &str,
+    now: Duration,
+) -> Option<Duration> {
+    static TIMES: OnceLock<Mutex<HashMap<String, Duration>>> = OnceLock::new();
+    let map = TIMES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    guard.insert(window_id.to_string(), now)
+}
 
 impl CompositorHandler for ShojiWM {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -59,6 +74,22 @@ impl CompositorHandler for ShojiWM {
             window.on_commit();
             let snapshot = self.snapshot_window(&window);
             let commit_time = std::time::Duration::from(self.clock.now());
+            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                let previous_commit_time =
+                    previous_transform_snapshot_source_damage_time(&snapshot.id, commit_time);
+                let delta_ms = previous_commit_time
+                    .and_then(|previous| commit_time.checked_sub(previous))
+                    .map(|delta| delta.as_secs_f64() * 1000.0);
+                tracing::info!(
+                    window_id = %snapshot.id,
+                    commit_time = ?commit_time,
+                    previous_commit_time = ?previous_commit_time,
+                    delta_ms = ?delta_ms,
+                    source_damage = ?source_damage,
+                    source_damage_count = source_damage.len(),
+                    "transform snapshot compositor source damage"
+                );
+            }
             self.window_commit_times.insert(window.clone(), commit_time);
             self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
             self.window_source_damage

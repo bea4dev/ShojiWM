@@ -126,7 +126,7 @@ impl ShojiWM {
         time: Duration,
         frame_callback_sequence: Option<u32>,
     ) {
-        let throttle = Some(Duration::from_secs(1));
+        let throttle = None;
 
         let should_send =
             |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,

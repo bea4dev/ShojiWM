@@ -457,6 +457,7 @@ fn capture_scene_texture_for_effect(
 fn queue_tty_redraws(state: &mut ShojiWM) {
     for backend in state.tty_backends.values_mut() {
         for surface in backend.surfaces.values_mut() {
+            let previous_state = surface.redraw_state;
             match &mut surface.redraw_state {
                 TtyRedrawState::Idle => {
                     surface.redraw_state = TtyRedrawState::Queued;
@@ -468,6 +469,18 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
                 TtyRedrawState::WaitingForEstimatedVBlank { queued, .. } => {
                     *queued = true;
                 }
+            }
+            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some()
+                && previous_state != surface.redraw_state
+            {
+                tracing::info!(
+                    output = %surface.output.name(),
+                    previous_state = ?previous_state,
+                    next_state = ?surface.redraw_state,
+                    frame_pending = surface.frame_pending,
+                    skipped_while_pending_count = surface.skipped_while_pending_count,
+                    "transform snapshot tty queue redraw transition"
+                );
             }
         }
     }
@@ -506,6 +519,15 @@ fn render_surface(
             if surface.frame_pending {
                 surface.skipped_while_pending_count =
                     surface.skipped_while_pending_count.saturating_add(1);
+            }
+            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                tracing::info!(
+                    output = %output.name(),
+                    redraw_state = ?redraw_state,
+                    frame_pending = surface.frame_pending,
+                    skipped_while_pending_count = surface.skipped_while_pending_count,
+                    "transform snapshot tty skipped render_surface"
+                );
             }
         }
         return Ok(RenderSurfaceOutcome::Skipped);
@@ -547,6 +569,7 @@ fn render_surface(
         ));
     }
     let captured_blink_damage = {
+        let window_source_damage_snapshot = state.window_source_damage.clone();
         let ShojiWM {
             space,
             tty_backends,
@@ -564,6 +587,7 @@ fn render_surface(
             complete_window_snapshots,
             closing_window_snapshots,
             snapshot_dirty_window_ids,
+            transform_snapshot_window_ids,
             ..
         } = state;
 
@@ -577,6 +601,8 @@ fn render_surface(
         surface.last_frame_callback_at = Some(frame_time);
 
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
+        let mut frame_had_transform_snapshot_damage = false;
+        let mut frame_transform_snapshot_window_count = 0usize;
         let cursor_started_at = Instant::now();
 
         let pointer_pos = seat.get_pointer().unwrap().current_location();
@@ -758,7 +784,39 @@ fn render_surface(
             if !has_backdrop_source {
                 continue;
             }
-            let use_full_window_snapshot = false;
+            let use_full_window_snapshot = !is_identity_visual(visual_state);
+            let used_transform_snapshot_last_frame =
+                transform_snapshot_window_ids.contains(&window_id);
+            if use_full_window_snapshot {
+                frame_transform_snapshot_window_count =
+                    frame_transform_snapshot_window_count.saturating_add(1);
+            }
+            let snapshot_id = window_decorations
+                .get(window)
+                .map(|decoration| decoration.snapshot.id.clone());
+            let window_has_snapshot_damage = snapshot_id.as_ref().is_some_and(|snapshot_id| {
+                snapshot_dirty_window_ids.contains(snapshot_id)
+                    || window_source_damage_snapshot
+                        .iter()
+                        .any(|damage| damage.owner == *snapshot_id)
+            });
+            if ((use_full_window_snapshot != used_transform_snapshot_last_frame)
+                || (use_full_window_snapshot && window_has_snapshot_damage))
+                && let Some(decoration) = window_decorations.get(window)
+            {
+                if use_full_window_snapshot && window_has_snapshot_damage {
+                    frame_had_transform_snapshot_damage = true;
+                }
+                extra_damage.push(transformed_root_rect(
+                    decoration.layout.root.rect,
+                    decoration.visual_transform,
+                ));
+            }
+            if use_full_window_snapshot {
+                transform_snapshot_window_ids.insert(window_id.clone());
+            } else {
+                transform_snapshot_window_ids.remove(&window_id);
+            }
             let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             let mut snapshot_ui_items: Vec<(usize, TtyRenderElements)> = Vec::new();
@@ -1259,8 +1317,35 @@ fn render_surface(
                 let full_rect = window_decorations
                     .get(window)
                     .map(|decoration| decoration.layout.root.rect);
+                let snapshot_scene_signature =
+                    crate::backend::snapshot::render_element_scene_signature(&snapshot_scene, scale);
                 full_rect
                     .and_then(|full_rect| {
+                        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                            let existing_signature = complete_window_snapshots
+                                .get(&window_id)
+                                .map(|snapshot| snapshot.scene_signature);
+                            tracing::info!(
+                                window_id = %window_id,
+                                full_rect = ?full_rect,
+                                use_full_window_snapshot,
+                                window_has_snapshot_damage,
+                                snapshot_scene_signature,
+                                existing_signature = ?existing_signature,
+                                "transform snapshot tty complete snapshot decision"
+                            );
+                        }
+                        if !window_has_snapshot_damage {
+                            if let Some(existing) = complete_window_snapshots
+                                .get(&window_id)
+                                .cloned()
+                                .filter(|snapshot| {
+                                    snapshot.scene_signature == snapshot_scene_signature
+                                })
+                            {
+                                return Some(existing);
+                            }
+                        }
                         let existing_complete = complete_window_snapshots.remove(&window_id);
                         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                             let first_snapshot_geometry = snapshot_scene.first().map(|element| {
@@ -1286,7 +1371,8 @@ fn render_surface(
                         )
                         .ok()
                         .flatten()
-                        .map(|snapshot| {
+                        .map(|mut snapshot| {
+                            snapshot.scene_signature = snapshot_scene_signature;
                             complete_window_snapshots.insert(window_id.clone(), snapshot.clone());
                             snapshot
                         })
@@ -2096,13 +2182,32 @@ fn render_surface(
             let should_refresh_snapshot = window_decorations
                 .get(window)
                 .map(|decoration| {
-                    snapshot_dirty_window_ids.contains(&decoration.snapshot.id)
+                    window_has_snapshot_damage
                         || live_window_snapshots
                             .get(&decoration.snapshot.id)
                             .map(|snapshot| snapshot.rect != decoration.client_rect)
                             .unwrap_or(true)
                 })
                 .unwrap_or(false);
+            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                let live_rect = window_decorations
+                    .get(window)
+                    .and_then(|decoration| {
+                        live_window_snapshots
+                            .get(&decoration.snapshot.id)
+                            .map(|snapshot| snapshot.rect)
+                    });
+                let client_rect = window_decorations.get(window).map(|decoration| decoration.client_rect);
+                tracing::info!(
+                    window_id = %window_id,
+                    use_full_window_snapshot,
+                    window_has_snapshot_damage,
+                    should_refresh_snapshot,
+                    live_rect = ?live_rect,
+                    client_rect = ?client_rect,
+                    "transform snapshot tty refresh decision"
+                );
+            }
             if should_refresh_snapshot {
                 let snapshot_capture_started_at = Instant::now();
                 if capture_live_snapshot_for_window(
@@ -2214,6 +2319,18 @@ fn render_surface(
             CLEAR_COLOR,
             TTY_FRAME_FLAGS,
         )?;
+        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some()
+            && (frame_transform_snapshot_window_count > 0 || frame_had_transform_snapshot_damage)
+        {
+            tracing::info!(
+                output = %output.name(),
+                frame_transform_snapshot_window_count,
+                frame_had_transform_snapshot_damage,
+                extra_damage_count = extra_damage.len(),
+                result_is_empty = result.is_empty,
+                "transform snapshot tty render result"
+            );
+        }
         let render_elapsed = render_started_at.elapsed();
         let total_cpu_elapsed = frame_started_at.elapsed();
         surface.estimated_render_duration =
@@ -5343,8 +5460,26 @@ fn schedule_estimated_vblank_callback(
             };
             let callback_time = frame_time.saturating_add(delay);
             if should_redraw {
+                if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                    tracing::info!(
+                        output = %output.name(),
+                        queued = true,
+                        generation,
+                        callback_time = ?callback_time,
+                        "transform snapshot tty estimated vblank fired"
+                    );
+                }
                 state.schedule_redraw();
             } else {
+                if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                    tracing::info!(
+                        output = %output.name(),
+                        queued = false,
+                        generation,
+                        callback_time = ?callback_time,
+                        "transform snapshot tty estimated vblank fired"
+                    );
+                }
                 state.send_frame_callbacks_for_output(&output, callback_time, Some(sequence));
                 state.signal_post_repaint_barriers(&output);
             }

@@ -1,16 +1,20 @@
+use std::hash::{Hash, Hasher};
 use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
             Bind, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
+            element::Element,
             element::RenderElement,
             element::texture::TextureRenderElement,
             gles::{GlesError, GlesRenderer, GlesTexture},
+            utils::DamageBag,
         },
     },
-    utils::{Logical, Physical, Point, Rectangle, Scale, Transform},
+    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
+use std::sync::{Arc, Mutex};
 
 use crate::{
     backend::visual::window_visual_state,
@@ -24,6 +28,8 @@ pub struct LiveWindowSnapshot {
     pub rect: LogicalRect,
     pub z_index: usize,
     pub has_client_content: bool,
+    pub scene_signature: u64,
+    pub damage: Arc<Mutex<DamageBag<i32, Buffer>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,13 +61,28 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     }
 
     let mut snapshot = if let Some(existing) = existing {
-        if existing.texture.size().w == physical.size.w
-            && existing.texture.size().h == physical.size.h
+        let LiveWindowSnapshot {
+            id,
+            texture,
+            scene_signature,
+            damage,
+            ..
+        } = existing;
+        if texture.size().w == physical.size.w
+            && texture.size().h == physical.size.h
         {
-            existing
+            LiveWindowSnapshot {
+                id,
+                texture,
+                rect,
+                z_index,
+                has_client_content,
+                scene_signature,
+                damage,
+            }
         } else {
             LiveWindowSnapshot {
-                id: existing.id,
+                id,
                 texture: Offscreen::<GlesTexture>::create_buffer(
                     renderer,
                     Fourcc::Abgr8888,
@@ -70,6 +91,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 rect,
                 z_index,
                 has_client_content,
+                scene_signature,
+                damage: Arc::new(Mutex::new(DamageBag::new(4))),
             }
         }
     } else {
@@ -83,6 +106,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             rect,
             z_index,
             has_client_content,
+            scene_signature: 0,
+            damage: Arc::new(Mutex::new(DamageBag::new(4))),
         }
     };
 
@@ -95,7 +120,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
         scale.x,
         Transform::Normal,
     );
-    let _ = damage_tracker
+    let render_output_result = damage_tracker
         .render_output(
             renderer,
             &mut framebuffer,
@@ -105,6 +130,10 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
         )
         .map_err(|_| GlesError::FramebufferBindingError)?;
     drop(framebuffer);
+    if render_output_result.damage.is_some() {
+        let mut damage = snapshot.damage.lock().unwrap();
+        damage.add([Rectangle::from_size(snapshot.texture.size())]);
+    }
 
     Ok(Some(snapshot))
 }
@@ -120,6 +149,8 @@ pub fn duplicate_snapshot(
         rect: source.rect,
         z_index: source.z_index,
         has_client_content: source.has_client_content,
+        scene_signature: source.scene_signature,
+        damage: Arc::new(Mutex::new(DamageBag::new(4))),
     };
 
     let element = TextureRenderElement::from_static_texture(
@@ -148,8 +179,27 @@ pub fn duplicate_snapshot(
         )
         .map_err(|_| GlesError::FramebufferBindingError)?;
     drop(framebuffer);
+    {
+        let mut damage = duplicated.damage.lock().unwrap();
+        damage.add([Rectangle::from_size(duplicated.texture.size())]);
+    }
 
     Ok(duplicated)
+}
+
+pub fn render_element_scene_signature<E: Element>(
+    elements: &[E],
+    scale: Scale<f64>,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    elements.len().hash(&mut hasher);
+    for element in elements {
+        format!("{:?}", element.id()).hash(&mut hasher);
+        format!("{:?}", element.current_commit()).hash(&mut hasher);
+        format!("{:?}", element.geometry(scale)).hash(&mut hasher);
+        format!("{:?}", element.src()).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 pub fn closing_snapshot_element(
@@ -181,8 +231,9 @@ pub fn closing_snapshot_element(
         )
             .into(),
     ));
+    let damage_snapshot = snapshot.live.damage.lock().unwrap().snapshot();
 
-    Some(TextureRenderElement::from_static_texture(
+    Some(TextureRenderElement::from_texture_with_damage(
         snapshot.live.id.clone(),
         renderer.context_id(),
         location,
@@ -193,6 +244,7 @@ pub fn closing_snapshot_element(
         src,
         Some((snapshot.live.rect.width, snapshot.live.rect.height).into()),
         None,
+        damage_snapshot,
         smithay::backend::renderer::element::Kind::Unspecified,
     ))
 }
@@ -224,8 +276,9 @@ pub fn live_snapshot_element(
         )
             .into(),
     ));
+    let damage_snapshot = snapshot.damage.lock().unwrap().snapshot();
 
-    Some(TextureRenderElement::from_static_texture(
+    Some(TextureRenderElement::from_texture_with_damage(
         snapshot.id.clone(),
         renderer.context_id(),
         location,
@@ -236,6 +289,7 @@ pub fn live_snapshot_element(
         src,
         Some((snapshot.rect.width, snapshot.rect.height).into()),
         None,
+        damage_snapshot,
         smithay::backend::renderer::element::Kind::Unspecified,
     ))
 }

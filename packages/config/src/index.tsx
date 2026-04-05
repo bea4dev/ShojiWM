@@ -87,12 +87,11 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
         return;
     }
 
-    /*
     window.animation.start(focusAnimation, {
         duration: seconds(0.5),
         to: focused ? 1 : 0.9,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
-    });*/
+    });
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
