@@ -19,6 +19,8 @@ import {
     cubicBezier,
     useState,
     shaderInput,
+    shaderStage,
+    loadShader,
 } from "shoji_wm";
 import type { DecorationRenderable, Direction, MaybeSignal } from "shoji_wm/types";
 
@@ -56,7 +58,7 @@ const focusAnimation = animationVariable("window.focus");
 
 WINDOW_MANAGER.effect.background_effect = compileEffect({
     input: backdropSource(),
-    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 12 },
+    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
     pipeline: [
         dualKawaseBlur({ radius: 4, passes: 2 }),
     ]
@@ -114,7 +116,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
 
     const titlebarStyle: SSDStyle = {
         height: 30,
-        paddingX: 0,
+        paddingX: 8,
         gap: 8,
         alignItems: "center",
         background: titlebarBackground,
@@ -124,7 +126,20 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         input: backdropSource(),
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
-            dualKawaseBlur({ radius: 0, passes: 0 })
+            dualKawaseBlur({ radius: 0, passes: 0 }),
+            /*
+            shaderStage(loadShader("./liquid-glass.frag"), {
+                uniforms: {
+                    inset_px: 0.0,
+                    border_radius_px: 10.0,
+                    edge_width_px: 10.0,
+                    edge_softness_px: 0.0,
+                    max_warp_px: 20.0,
+                    interior_warp_px: 0.0,
+                    white_tint: 0.0,
+                    edge_highlight: 0.0,
+                },
+            }),*/
         ],
     });
 

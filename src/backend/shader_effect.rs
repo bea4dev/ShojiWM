@@ -1769,9 +1769,32 @@ fn run_effect_pipeline(
     sample_region: Option<Rectangle<f64, Buffer>>,
     output_size: Option<(i32, i32)>,
 ) -> Result<GlesTexture, ShaderEffectError> {
-    let mut current = resolve_effect_input(renderer, &effect.input, ctx)?;
-    let mut current_size = ctx.size;
-    let mut pending_sample_region = sample_region;
+    let requested_output_size = requested_effect_output_size(sample_region, output_size);
+    let input_uses_requested_size = effect_input_renders_directly_to_requested_size(&effect.input);
+    let initial_input_size = if input_uses_requested_size {
+        requested_output_size.unwrap_or(ctx.size)
+    } else {
+        ctx.size
+    };
+    let mut current = resolve_effect_input(renderer, &effect.input, ctx, initial_input_size)?;
+    let mut current_size = initial_input_size;
+    let mut pending_sample_region = if input_uses_requested_size {
+        None
+    } else {
+        sample_region
+    };
+
+    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+        tracing::info!(
+            effect_input = ?effect.input,
+            ctx_size = ?ctx.size,
+            requested_output_size = ?requested_output_size,
+            initial_input_size = ?initial_input_size,
+            input_uses_requested_size,
+            pending_sample_region = ?pending_sample_region,
+            "gap debug shader effect pipeline sizing"
+        );
+    }
 
     for stage in &effect.pipeline {
         current = match stage {
@@ -1807,7 +1830,7 @@ fn run_effect_pipeline(
                         crop_texture_region(renderer, current, current_size, region, target_size)?;
                     current_size = target_size;
                 }
-                let other = resolve_effect_input(renderer, input, ctx)?;
+                let other = resolve_effect_input(renderer, input, ctx, current_size)?;
                 apply_blend_stage(renderer, current, other, current_size, *mode, *alpha)?
             }
             EffectStage::Unit(effect) => {
@@ -1847,6 +1870,7 @@ fn resolve_effect_input(
     renderer: &mut GlesRenderer,
     input: &EffectInput,
     ctx: &mut EffectExecutionContext,
+    requested_size: (i32, i32),
 ) -> Result<GlesTexture, ShaderEffectError> {
     match input {
         EffectInput::Backdrop => Ok(ctx.backdrop.clone()),
@@ -1854,14 +1878,27 @@ fn resolve_effect_input(
             .xray_backdrop
             .clone()
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
-        EffectInput::Shader(stage) => apply_shader_input_stage(renderer, ctx.size, stage),
+        EffectInput::Shader(stage) => apply_shader_input_stage(renderer, requested_size, stage),
         EffectInput::Named(name) => ctx
             .named
             .get(name)
             .cloned()
             .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
-        EffectInput::Image(path) => load_image_texture(renderer, path, ctx.size),
+        EffectInput::Image(path) => load_image_texture(renderer, path, requested_size),
     }
+}
+
+fn requested_effect_output_size(
+    sample_region: Option<Rectangle<f64, Buffer>>,
+    output_size: Option<(i32, i32)>,
+) -> Option<(i32, i32)> {
+    output_size.or_else(|| {
+        sample_region.map(|region| (region.size.w.round() as i32, region.size.h.round() as i32))
+    })
+}
+
+fn effect_input_renders_directly_to_requested_size(input: &EffectInput) -> bool {
+    matches!(input, EffectInput::Shader(_) | EffectInput::Image(_))
 }
 
 fn apply_texture_shader_stage(
