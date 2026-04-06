@@ -3229,33 +3229,50 @@ fn backdrop_shader_elements_for_window(
                 );
             }
             let signature = hasher.finish();
+            let source_damage_entries = {
+                let mut entries = Vec::new();
+                if uses_backdrop {
+                    entries.extend(collect_window_source_damage(
+                        window_decorations,
+                        lower_windows.iter().cloned(),
+                        window_source_damage,
+                    ));
+                }
+                if uses_backdrop || uses_xray {
+                    entries.extend(collect_layer_source_damage(
+                        lower_layers.iter().cloned(),
+                        lower_layer_source_damage,
+                    ));
+                }
+                entries
+            };
+            if std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG").is_some() && (uses_backdrop || uses_xray) && !source_damage_entries.is_empty() {
+                tracing::info!(
+                    stable_key = %cached.stable_key,
+                    source_effect_rect = ?source_effect_rect,
+                    uses_backdrop,
+                    uses_xray,
+                    source_damage_count = source_damage_entries.len(),
+                    owners = ?source_damage_entries.iter().map(|e| &e.owner).collect::<Vec<_>>(),
+                    rects = ?source_damage_entries.iter().map(|e| &e.rect).collect::<Vec<_>>(),
+                    "window-backdrop on-source-damage-box check [tty]"
+                );
+            }
             let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
                 &cached.shader,
                 smithay::utils::Rectangle::new(
                     smithay::utils::Point::from((source_effect_rect.x, source_effect_rect.y)),
                     (source_effect_rect.width, source_effect_rect.height).into(),
                 ),
-                &{
-                    let mut entries = Vec::new();
-                    if uses_backdrop {
-                        entries.extend(
-                            relevant_source_damage
-                                .iter()
-                                .filter(|entry| entry.owner.starts_with("window:"))
-                                .cloned(),
-                        );
-                    }
-                    if uses_backdrop || uses_xray {
-                        entries.extend(
-                            relevant_source_damage
-                                .iter()
-                                .filter(|entry| entry.owner.starts_with("layer:"))
-                                .cloned(),
-                        );
-                    }
-                    entries
-                },
+                &source_damage_entries,
             );
+            if std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG").is_some() && (uses_backdrop || uses_xray) && !source_damage_entries.is_empty() {
+                tracing::info!(
+                    stable_key = %cached.stable_key,
+                    source_damage_hit,
+                    "window-backdrop on-source-damage-box result [tty]"
+                );
+            }
             let existing_cache = window_decorations
                 .get(window)
                 .and_then(|d| d.backdrop_cache.get(&cache_key))

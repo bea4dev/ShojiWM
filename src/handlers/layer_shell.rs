@@ -101,10 +101,24 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     }
 
     if let Some(layer) = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL) {
-        let layer_rect = map
-            .layer_geometry(&layer)
+        let layer_geo = map.layer_geometry(&layer);
+        let output_loc = state.space.output_geometry(&output).map(|geo| geo.loc).unwrap_or_default();
+        let layer_rect = layer_geo
             .map(|geo| crate::ssd::LogicalRect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h));
         let owner = format!("{}", layer_surface_id(&root));
+        if std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG").is_some() {
+            if let Some(geo) = layer_geo {
+                debug!(
+                    owner = %owner,
+                    layer_geo_loc = ?geo.loc,
+                    layer_geo_size = ?geo.size,
+                    output_loc = ?output_loc,
+                    global_loc_x = output_loc.x + geo.loc.x,
+                    global_loc_y = output_loc.y + geo.loc.y,
+                    "layer source damage stored (output-local coords, NOT global)"
+                );
+            }
+        }
         match layer.layer() {
             Layer::Background | Layer::Bottom => {
                 state.lower_layer_scene_generation =
