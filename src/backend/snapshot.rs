@@ -92,7 +92,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 z_index,
                 has_client_content,
                 scene_signature,
-                damage: Arc::new(Mutex::new(DamageBag::new(4))),
+                damage, // preserve existing DamageBag so commit counter advances past stored value
             }
         }
     } else {
@@ -132,7 +132,23 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     drop(framebuffer);
     if render_output_result.damage.is_some() {
         let mut damage = snapshot.damage.lock().unwrap();
+        let before = damage.current_commit();
         damage.add([Rectangle::from_size(snapshot.texture.size())]);
+        let after = damage.current_commit();
+        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+            tracing::info!(
+                commit_before = ?before,
+                commit_after = ?after,
+                texture_size = ?snapshot.texture.size(),
+                "transform snapshot capture damage added"
+            );
+        }
+    } else if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+        let commit = snapshot.damage.lock().unwrap().current_commit();
+        tracing::info!(
+            commit = ?commit,
+            "transform snapshot capture skipped (no render damage)"
+        );
     }
 
     Ok(Some(snapshot))

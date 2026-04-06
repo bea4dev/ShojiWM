@@ -552,6 +552,15 @@ fn render_surface(
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
     let output_geo = state.space.output_geometry(&output).unwrap();
     let mut extra_damage = state.pending_decoration_damage.clone();
+    if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some()
+        && !extra_damage.is_empty()
+    {
+        tracing::info!(
+            output = %output.name(),
+            pending_decoration_damage_count = extra_damage.len(),
+            "transform snapshot tty pending decoration damage at render start"
+        );
+    }
     if state.force_full_damage {
         extra_damage.push(crate::ssd::LogicalRect::new(
             output_geo.loc.x,
@@ -603,6 +612,7 @@ fn render_surface(
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
         let mut frame_had_transform_snapshot_damage = false;
         let mut frame_transform_snapshot_window_count = 0usize;
+        let mut frame_snapshot_damage_window_count = 0usize;
         let cursor_started_at = Instant::now();
 
         let pointer_pos = seat.get_pointer().unwrap().current_location();
@@ -800,6 +810,10 @@ fn render_surface(
                         .iter()
                         .any(|damage| damage.owner == *snapshot_id)
             });
+            if use_full_window_snapshot && window_has_snapshot_damage {
+                frame_snapshot_damage_window_count =
+                    frame_snapshot_damage_window_count.saturating_add(1);
+            }
             if ((use_full_window_snapshot != used_transform_snapshot_last_frame)
                 || (use_full_window_snapshot && window_has_snapshot_damage))
                 && let Some(decoration) = window_decorations.get(window)
@@ -1343,6 +1357,14 @@ fn render_surface(
                                     snapshot.scene_signature == snapshot_scene_signature
                                 })
                             {
+                                if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                                    let commit = existing.damage.lock().unwrap().current_commit();
+                                    tracing::info!(
+                                        window_id = %window_id,
+                                        commit = ?commit,
+                                        "transform snapshot tty complete snapshot cache hit"
+                                    );
+                                }
                                 return Some(existing);
                             }
                         }
@@ -1353,11 +1375,15 @@ fn render_surface(
                                     element, scale,
                                 )
                             });
+                            let prev_commit = existing_complete.as_ref()
+                                .map(|s| s.damage.lock().unwrap().current_commit());
                             tracing::info!(
                                 window_id = %window_id,
                                 full_rect = ?full_rect,
                                 snapshot_scene_count = snapshot_scene.len(),
                                 first_snapshot_geometry = ?first_snapshot_geometry,
+                                prev_commit = ?prev_commit,
+                                window_has_snapshot_damage,
                                 "transform snapshot tty assembled current-frame scene"
                             );
                         }
@@ -1372,12 +1398,28 @@ fn render_surface(
                         .ok()
                         .flatten()
                         .map(|mut snapshot| {
+                            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                                let commit = snapshot.damage.lock().unwrap().current_commit();
+                                tracing::info!(
+                                    window_id = %window_id,
+                                    commit = ?commit,
+                                    "transform snapshot tty complete snapshot rebuilt"
+                                );
+                            }
                             snapshot.scene_signature = snapshot_scene_signature;
                             complete_window_snapshots.insert(window_id.clone(), snapshot.clone());
                             snapshot
                         })
                     })
                     .and_then(|snapshot| {
+                        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                            let commit = snapshot.damage.lock().unwrap().current_commit();
+                            tracing::info!(
+                                window_id = %window_id,
+                                commit = ?commit,
+                                "transform snapshot tty creating live element from snapshot"
+                            );
+                        }
                         snapshot::live_snapshot_element(
                             &backend.renderer,
                             &snapshot,
@@ -2325,6 +2367,7 @@ fn render_surface(
             tracing::info!(
                 output = %output.name(),
                 frame_transform_snapshot_window_count,
+                frame_snapshot_damage_window_count,
                 frame_had_transform_snapshot_damage,
                 extra_damage_count = extra_damage.len(),
                 result_is_empty = result.is_empty,
@@ -2347,6 +2390,62 @@ fn render_surface(
                 &cursor_status_for_log,
                 &result.states,
             );
+            // Windows rendered via full-window snapshot have their wl_surfaces composited
+            // into an offscreen texture rather than the DRM framebuffer. Those surfaces are
+            // therefore absent from result.states, so update_primary_scanout_output above
+            // clears their SurfacePrimaryScanoutOutput to None. That in turn makes
+            // send_frame_callbacks_for_output skip them entirely, causing the client (e.g.
+            // Chrome at visual scale=0.9) to fall back to a ~0.6 fps background rate.
+            //
+            // Fix: for every window currently rendered via snapshot, synthesise a
+            // RenderElementStates that marks all its wl_surfaces as "presented on this
+            // output" and call update_surface_primary_scanout_output again so that their
+            // primary-scanout assignment is restored before frame callbacks are sent.
+            if !state.transform_snapshot_window_ids.is_empty() {
+                use smithay::backend::renderer::element::{
+                    Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
+                    default_primary_scanout_output_compare,
+                };
+                use smithay::desktop::utils::update_surface_primary_scanout_output;
+
+                let snapshot_windows: Vec<_> = state
+                    .space
+                    .elements_for_output(&output)
+                    .filter(|w| {
+                        state
+                            .window_decorations
+                            .get(*w)
+                            .map(|d| state.transform_snapshot_window_ids.contains(&d.snapshot.id))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+                for window in snapshot_windows {
+                    let mut synthetic_states = RenderElementStates::default();
+                    window.with_surfaces(|surface, _| {
+                        synthetic_states.states.insert(
+                            Id::from_wayland_resource(surface),
+                            RenderElementState {
+                                visible_area: 1,
+                                presentation_state: RenderElementPresentationState::Rendering {
+                                    reason: None,
+                                },
+                                needs_capture: false,
+                            },
+                        );
+                    });
+                    window.with_surfaces(|surface, states| {
+                        update_surface_primary_scanout_output(
+                            surface,
+                            &output,
+                            states,
+                            None,
+                            &synthetic_states,
+                            default_primary_scanout_output_compare,
+                        );
+                    });
+                }
+            }
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, &result.states);
             surface
