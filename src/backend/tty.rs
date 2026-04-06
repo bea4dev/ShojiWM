@@ -435,9 +435,15 @@ fn capture_scene_texture_for_effect(
     if scene.is_empty() {
         return None;
     }
+    let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+        (0, 0),
+        1.0,
+        Transform::Normal,
+    );
     crate::backend::snapshot::capture_snapshot(
         renderer,
         None,
+        &mut tracker,
         crate::ssd::LogicalRect::new(
             capture_geo.loc.x,
             capture_geo.loc.y,
@@ -594,6 +600,7 @@ fn render_surface(
             windows_ready_for_decoration,
             live_window_snapshots,
             complete_window_snapshots,
+            complete_window_snapshot_trackers,
             closing_window_snapshots,
             snapshot_dirty_window_ids,
             transform_snapshot_window_ids,
@@ -830,6 +837,7 @@ fn render_surface(
                 transform_snapshot_window_ids.insert(window_id.clone());
             } else {
                 transform_snapshot_window_ids.remove(&window_id);
+                complete_window_snapshot_trackers.remove(&window_id);
             }
             let mut ordered_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
             let mut ordered_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
@@ -1387,14 +1395,26 @@ fn render_surface(
                                 "transform snapshot tty assembled current-frame scene"
                             );
                         }
-                        capture_snapshot_from_output_elements(
-                            &mut backend.renderer,
-                            output_geo,
-                            full_rect,
-                            scale,
-                            existing_complete,
-                            &snapshot_scene,
-                        )
+                        {
+                            let tracker = complete_window_snapshot_trackers
+                                .entry(window_id.clone())
+                                .or_insert_with(|| {
+                                    smithay::backend::renderer::damage::OutputDamageTracker::new(
+                                        (0, 0),
+                                        1.0,
+                                        Transform::Normal,
+                                    )
+                                });
+                            capture_snapshot_from_output_elements(
+                                &mut backend.renderer,
+                                output_geo,
+                                full_rect,
+                                scale,
+                                existing_complete,
+                                tracker,
+                                &snapshot_scene,
+                            )
+                        }
                         .ok()
                         .flatten()
                         .map(|mut snapshot| {
@@ -2993,6 +3013,7 @@ fn capture_snapshot_from_output_elements(
     rect: crate::ssd::LogicalRect,
     scale: smithay::utils::Scale<f64>,
     existing: Option<crate::backend::snapshot::LiveWindowSnapshot>,
+    tracker: &mut smithay::backend::renderer::damage::OutputDamageTracker,
     elements: &[TtyRenderElements],
 ) -> Result<
     Option<crate::backend::snapshot::LiveWindowSnapshot>,
@@ -3012,7 +3033,7 @@ fn capture_snapshot_from_output_elements(
             )
         })
         .collect::<Vec<_>>();
-    snapshot::capture_snapshot(renderer, existing, rect, 0, true, scale, &relocated)
+    snapshot::capture_snapshot(renderer, existing, tracker, rect, 0, true, scale, &relocated)
 }
 
 fn backdrop_shader_elements_for_window(
@@ -4467,9 +4488,15 @@ fn lower_layer_scene_elements(
             if backdrop_scene.is_empty() {
                 continue;
             }
+            let mut backdrop_tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                (0, 0),
+                1.0,
+                Transform::Normal,
+            );
             let snapshot = crate::backend::snapshot::capture_snapshot(
                 renderer,
                 None,
+                &mut backdrop_tracker,
                 crate::ssd::LogicalRect::new(
                     actual_capture_geo.loc.x,
                     actual_capture_geo.loc.y,
@@ -5205,9 +5232,12 @@ fn capture_live_snapshot_for_window(
         .collect::<Vec<_>>();
 
     let existing = live_window_snapshots.remove(&snapshot_id);
+    let mut live_tracker =
+        smithay::backend::renderer::damage::OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
     if let Some(snapshot) = snapshot::capture_snapshot(
         renderer,
         existing,
+        &mut live_tracker,
         client_rect,
         z_index,
         has_client_content,

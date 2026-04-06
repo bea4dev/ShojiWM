@@ -12,6 +12,7 @@ use smithay::{
             utils::DamageBag,
         },
     },
+    output::OutputModeSource,
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,7 @@ pub struct ClosingWindowSnapshot {
 pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     existing: Option<LiveWindowSnapshot>,
+    tracker: &mut OutputDamageTracker,
     rect: LogicalRect,
     z_index: usize,
     has_client_content: bool,
@@ -114,33 +116,72 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     snapshot.rect = rect;
     snapshot.z_index = z_index;
     snapshot.has_client_content = has_client_content;
+
+    // Check if the tracker's physical size still matches; if not, recreate it (age=0 full
+    // redraw). If the size matches, use age=1 so only the actually changed regions are
+    // re-rendered into the offscreen texture and added to the DamageBag.
+    let age = match tracker.mode() {
+        OutputModeSource::Static { size, scale: tracker_scale, .. }
+            if *size == physical.size && *tracker_scale == Scale::from(scale.x) =>
+        {
+            1
+        }
+        _ => {
+            *tracker =
+                OutputDamageTracker::new(physical.size, scale.x, Transform::Normal);
+            0
+        }
+    };
+
     let mut framebuffer = renderer.bind(&mut snapshot.texture)?;
-    let mut damage_tracker = OutputDamageTracker::new(
-        (physical.size.w, physical.size.h),
-        scale.x,
-        Transform::Normal,
-    );
-    let render_output_result = damage_tracker
+    let render_output_result = tracker
         .render_output(
             renderer,
             &mut framebuffer,
-            0,
+            age,
             elements,
             [0.0, 0.0, 0.0, 0.0],
         )
         .map_err(|_| GlesError::FramebufferBindingError)?;
+
+    // Eagerly collect the damage rects so the borrow of `tracker` ends here, before
+    // framebuffer is dropped.
+    let buffer_damage: Option<Vec<Rectangle<i32, Buffer>>> =
+        render_output_result.damage.map(|rects| {
+            rects
+                .iter()
+                .map(|r| {
+                    Rectangle::<i32, Buffer>::new(
+                        Point::from((r.loc.x, r.loc.y)),
+                        (r.size.w, r.size.h).into(),
+                    )
+                })
+                .collect()
+        });
+
     drop(framebuffer);
-    if render_output_result.damage.is_some() {
-        let mut damage = snapshot.damage.lock().unwrap();
-        let before = damage.current_commit();
-        damage.add([Rectangle::from_size(snapshot.texture.size())]);
-        let after = damage.current_commit();
-        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+
+    if let Some(rects) = buffer_damage {
+        if !rects.is_empty() {
+            let mut damage = snapshot.damage.lock().unwrap();
+            let before = damage.current_commit();
+            damage.add(rects.iter().copied());
+            let after = damage.current_commit();
+            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+                tracing::info!(
+                    commit_before = ?before,
+                    commit_after = ?after,
+                    damage_rect_count = rects.len(),
+                    age,
+                    "transform snapshot capture damage added"
+                );
+            }
+        } else if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+            let commit = snapshot.damage.lock().unwrap().current_commit();
             tracing::info!(
-                commit_before = ?before,
-                commit_after = ?after,
-                texture_size = ?snapshot.texture.size(),
-                "transform snapshot capture damage added"
+                commit = ?commit,
+                age,
+                "transform snapshot capture: empty damage rects (no visual change)"
             );
         }
     } else if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {

@@ -49,9 +49,15 @@ fn capture_scene_texture_for_effect(
     if scene.is_empty() {
         return None;
     }
+    let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+        (0, 0),
+        1.0,
+        smithay::utils::Transform::Normal,
+    );
     snapshot::capture_snapshot(
         renderer,
         None,
+        &mut tracker,
         crate::ssd::LogicalRect::new(
             capture_geo.loc.x,
             capture_geo.loc.y,
@@ -93,7 +99,12 @@ fn capture_snapshot_from_output_elements(
             )
         })
         .collect::<Vec<_>>();
-    snapshot::capture_snapshot(renderer, existing, rect, 0, true, scale, &relocated)
+    let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+        (0, 0),
+        1.0,
+        smithay::utils::Transform::Normal,
+    );
+    snapshot::capture_snapshot(renderer, existing, &mut tracker, rect, 0, true, scale, &relocated)
 }
 
 pub fn init_winit(
@@ -2148,9 +2159,15 @@ fn lower_layer_scene_elements(
         if backdrop_scene.is_empty() {
             continue;
         }
+        let mut backdrop_tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+            (0, 0),
+            1.0,
+            smithay::utils::Transform::Normal,
+        );
         let snapshot = snapshot::capture_snapshot(
             renderer,
             None,
+            &mut backdrop_tracker,
             crate::ssd::LogicalRect::new(
                 capture_geo.loc.x,
                 capture_geo.loc.y,
@@ -3160,9 +3177,15 @@ fn capture_live_snapshot_for_window(
     );
 
     let existing = state.live_window_snapshots.remove(&decoration.snapshot.id);
+    let mut live_tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+        (0, 0),
+        1.0,
+        smithay::utils::Transform::Normal,
+    );
     if let Some(snapshot) = snapshot::capture_snapshot(
         renderer,
         existing,
+        &mut live_tracker,
         client_rect,
         z_index,
         has_client_content,
