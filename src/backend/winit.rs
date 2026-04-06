@@ -206,6 +206,10 @@ pub fn init_winit(
                             scale,
                             &windows_top_to_bottom,
                         ));
+                        scene_elements.extend(
+                            closing_snapshot_elements(renderer, state, &output, scale)
+                                .into_iter(),
+                        );
                         for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
                             let Some(window_location) = state.space.element_location(window) else {
                                 continue;
@@ -797,8 +801,6 @@ pub fn init_winit(
                                     .and_then(|mut elements| elements.pop());
                                 if let Some(element) = snapshot_element {
                                     scene_elements.push(element);
-                                } else {
-                                    scene_elements.extend(snapshot_scene.into_iter());
                                 }
                             } else {
                                 scene_elements.extend(popup_elements.into_iter());
@@ -852,10 +854,6 @@ pub fn init_winit(
                             }
 
                         }
-                        scene_elements.extend(
-                            closing_snapshot_elements(renderer, state, &output, scale)
-                                .into_iter(),
-                        );
                         scene_elements.extend(lower_layer_scene_elements(
                             renderer,
                             state,
@@ -3233,6 +3231,9 @@ fn closing_snapshot_elements(
                 root_physical_origin(snapshot.decoration.layout.root.rect, output_geo, scale);
 
             let mut elements = Vec::new();
+            // Render compositor-drawn decorations through the normal pipeline. The snapshot
+            // texture contains only the client area (live_window_snapshot), so decorations
+            // are always rendered separately here — same as the live loop.
             if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
                 renderer,
                 &snapshot.decoration,
@@ -3265,9 +3266,9 @@ fn closing_snapshot_elements(
                     visual,
                 ));
             }
-
+            // Render the frozen client-area snapshot as the window content.
             if let Some(element) =
-                snapshot::closing_snapshot_element(renderer, snapshot, output_geo, scale)
+                snapshot::live_snapshot_element(renderer, &snapshot.live, output_geo, scale, visual.opacity)
             {
                 elements.extend(transform_snapshot_elements(vec![element], visual));
             }

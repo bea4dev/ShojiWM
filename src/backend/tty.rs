@@ -719,12 +719,28 @@ fn render_surface(
             &mut state.layer_backdrop_cache,
         )?);
         let _upper_layers_elapsed_ms = upper_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        let closing_snapshots_started_at = Instant::now();
+        scene_elements.extend(
+            closing_snapshot_elements(&mut backend.renderer, &closing_snapshots, output_geo, scale)
+                .into_iter(),
+        );
+        let _closing_snapshots_elapsed_ms =
+            closing_snapshots_started_at.elapsed().as_secs_f64() * 1000.0;
         let mut _window_loop_elapsed_ms = 0.0f64;
         let mut max_window_elapsed_ms = 0.0f64;
         let mut _max_window_id: Option<String> = None;
         let mut _snapshot_capture_elapsed_ms = 0.0f64;
         let mut snapshot_capture_count = 0usize;
 
+        let close_debug = std::env::var_os("SHOJI_CLOSE_DEBUG").is_some();
+        if close_debug && !closing_window_snapshots.is_empty() {
+            tracing::info!(
+                output = %output.name(),
+                closing_count = closing_window_snapshots.len(),
+                closing_ids = ?closing_window_snapshots.keys().collect::<Vec<_>>(),
+                "close debug: closing snapshots active"
+            );
+        }
         for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
             let window_started_at = Instant::now();
             let Some(window_location) = space.element_location(window) else {
@@ -737,6 +753,13 @@ fn render_surface(
                 continue;
             };
             if closing_window_snapshots.contains_key(&window_id) {
+                if close_debug {
+                    tracing::info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        "close debug: live loop skipping window (in closing_window_snapshots)"
+                    );
+                }
                 continue;
             }
             let preliminary_physical_location =
@@ -792,7 +815,22 @@ fn render_surface(
             )
             .len();
             if direct_surface_count == 0 {
+                if close_debug {
+                    tracing::info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        "close debug: live loop skipping window (direct_surface_count==0)"
+                    );
+                }
                 continue;
+            }
+            if close_debug {
+                tracing::info!(
+                    output = %output.name(),
+                    window_id = %window_id,
+                    direct_surface_count,
+                    "close debug: live loop rendering window"
+                );
             }
             let has_backdrop_source = direct_surface_count > 0
                 || live_window_snapshots.contains_key(&window_id)
@@ -2217,20 +2255,21 @@ fn render_surface(
                 }
                 transformed
             };
-            let popup_elements = transform_window_elements(
-                window_render::popup_elements(
-                    window,
-                    &mut backend.renderer,
-                    physical_location,
-                    scale,
-                    visual_state.opacity,
-                ),
-                visual_state,
-                TtyRenderElements::Window,
-                TtyRenderElements::TransformedWindow,
-            );
-
-            scene_elements.extend(popup_elements.into_iter());
+            if !use_full_window_snapshot {
+                let popup_elements = transform_window_elements(
+                    window_render::popup_elements(
+                        window,
+                        &mut backend.renderer,
+                        physical_location,
+                        scale,
+                        visual_state.opacity,
+                    ),
+                    visual_state,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                );
+                scene_elements.extend(popup_elements.into_iter());
+            }
             scene_elements.extend(client_elements.into_iter());
             scene_elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
             scene_elements.extend(
@@ -2302,13 +2341,6 @@ fn render_surface(
                 _max_window_id = Some(window_id);
             }
         }
-        let closing_snapshots_started_at = Instant::now();
-        scene_elements.extend(
-            closing_snapshot_elements(&mut backend.renderer, &closing_snapshots, output_geo, scale)
-                .into_iter(),
-        );
-        let _closing_snapshots_elapsed_ms =
-            closing_snapshots_started_at.elapsed().as_secs_f64() * 1000.0;
         let lower_layers_started_at = Instant::now();
         scene_elements.extend(lower_layer_scene_elements(
             &mut backend.renderer,
@@ -2424,7 +2456,6 @@ fn render_surface(
             if !state.transform_snapshot_window_ids.is_empty() {
                 use smithay::backend::renderer::element::{
                     Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
-                    default_primary_scanout_output_compare,
                 };
                 use smithay::desktop::utils::update_surface_primary_scanout_output;
 
@@ -2445,8 +2476,12 @@ fn render_surface(
                     window.with_surfaces(|surface, _| {
                         synthetic_states.states.insert(
                             Id::from_wayland_resource(surface),
+                            // Use usize::MAX so that area_primary_scanout_compare (used below)
+                            // always assigns this output as primary, regardless of the stored
+                            // area from the previous output. The goal here is to force the
+                            // primary back to the current output for snapshot-rendered windows.
                             RenderElementState {
-                                visible_area: 1,
+                                visible_area: usize::MAX,
                                 presentation_state: RenderElementPresentationState::Rendering {
                                     reason: None,
                                 },
@@ -2461,7 +2496,7 @@ fn render_surface(
                             states,
                             None,
                             &synthetic_states,
-                            default_primary_scanout_output_compare,
+                            crate::presentation::area_primary_scanout_compare,
                         );
                     });
                 }
@@ -5273,9 +5308,21 @@ fn closing_snapshot_elements(
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: smithay::utils::Scale<f64>,
 ) -> Vec<TtyRenderElements> {
+    let close_debug = std::env::var_os("SHOJI_CLOSE_DEBUG").is_some();
     closing_snapshots
         .iter()
         .flat_map(|snapshot| {
+            if close_debug {
+                tracing::info!(
+                    window_id = %snapshot.window_id,
+                    live_rect = ?snapshot.live.rect,
+                    root_rect = ?snapshot.decoration.layout.root.rect,
+                    transform_scale_x = snapshot.transform.scale_x,
+                    transform_scale_y = snapshot.transform.scale_y,
+                    transform_opacity = snapshot.transform.opacity,
+                    "close debug: rendering closing snapshot element"
+                );
+            }
             let visual = window_visual_state(
                 snapshot.decoration.layout.root.rect,
                 snapshot.transform,
@@ -5286,6 +5333,9 @@ fn closing_snapshot_elements(
                 root_physical_origin(snapshot.decoration.layout.root.rect, output_geo, scale);
 
             let mut elements = Vec::new();
+            // Render compositor-drawn decorations through the normal pipeline. The snapshot
+            // texture contains only the client area (live_window_snapshot), so decorations
+            // are always rendered separately here — same as the live loop.
             if let Ok(icon_elements) = crate::backend::icon::icon_elements_for_decoration(
                 renderer,
                 &snapshot.decoration,
@@ -5324,9 +5374,9 @@ fn closing_snapshot_elements(
                     elements.extend(transformed);
                 }
             }
-
+            // Render the frozen client-area snapshot as the window content.
             if let Some(element) =
-                snapshot::closing_snapshot_element(renderer, snapshot, output_geo, scale)
+                snapshot::live_snapshot_element(renderer, &snapshot.live, output_geo, scale, visual.opacity)
             {
                 if let Ok(transformed) = transform_snapshot_elements(vec![element], visual) {
                     elements.extend(transformed);

@@ -298,10 +298,12 @@ impl ShojiWM {
             return Ok(true);
         }
 
-        let live_snapshot = self
-            .complete_window_snapshots
-            .remove(window_id)
-            .or_else(|| self.live_window_snapshots.remove(window_id));
+        // Always use the live (client-area) snapshot for the closing animation.
+        // The complete_window_snapshot bakes decorations into the texture, so using it here
+        // would cause decorations to appear twice (once in the texture, once from separate
+        // decoration elements). Clean it up but don't use it.
+        self.complete_window_snapshots.remove(window_id);
+        let live_snapshot = self.live_window_snapshots.remove(window_id);
         let Some(live_snapshot) = live_snapshot else {
             return Ok(false);
         };

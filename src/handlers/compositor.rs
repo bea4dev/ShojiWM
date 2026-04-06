@@ -10,21 +10,35 @@ use std::{
 };
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_shm,
+    delegate_shm,
     reexports::wayland_server::{
-        Client, Resource,
-        protocol::{wl_buffer, wl_surface::WlSurface},
+        Client, DataInit, Dispatch, DisplayHandle, Resource,
+        backend::ClientId,
+        delegate_dispatch, delegate_global_dispatch,
+        protocol::{
+            wl_buffer,
+            wl_callback::WlCallback,
+            wl_compositor::WlCompositor,
+            wl_region::{self, WlRegion},
+            wl_subcompositor::WlSubcompositor,
+            wl_subsurface::WlSubsurface,
+            wl_surface::WlSurface,
+        },
     },
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
+            CompositorClientState, CompositorHandler, CompositorState, RegionUserData,
+            SubsurfaceUserData, SurfaceUserData, get_parent, is_sync_subsurface,
         },
         shm::{ShmHandler, ShmState},
     },
 };
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
+
+fn commit_rate_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_COMMIT_RATE_DEBUG").is_some()
+}
 
 fn previous_transform_snapshot_source_damage_time(
     window_id: &str,
@@ -90,6 +104,20 @@ impl CompositorHandler for ShojiWM {
                     "transform snapshot compositor source damage"
                 );
             }
+            if commit_rate_debug_enabled() {
+                let delta_ms = self
+                    .window_commit_times
+                    .get(&window)
+                    .and_then(|prev| commit_time.checked_sub(*prev))
+                    .map(|d| d.as_secs_f64() * 1000.0);
+                info!(
+                    window_id = %snapshot.id,
+                    title = ?snapshot.title,
+                    app_id = ?snapshot.app_id,
+                    delta_ms = ?delta_ms,
+                    "commit rate debug"
+                );
+            }
             self.window_commit_times.insert(window.clone(), commit_time);
             self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
             self.window_source_damage
@@ -126,5 +154,66 @@ impl ShmHandler for ShojiWM {
     }
 }
 
-delegate_compositor!(ShojiWM);
+// delegate_compositor!(ShojiWM) is intentionally expanded by hand here instead of using the
+// macro directly. The reason is that we need to intercept wl_region requests before they reach
+// Smithay's handler: Smithay's Size::new contains a debug_assert that panics when width or height
+// is negative, but Firefox (and potentially other clients) sends wl_region rectangles with
+// negative dimensions (e.g. height = -1) in certain situations such as moving a window to a
+// different monitor. By handling WlRegion ourselves and filtering out invalid rectangles before
+// forwarding to CompositorState, we avoid the panic without touching the Smithay source.
+//
+// If delegate_compositor! gains new delegations in a future Smithay update, the individual
+// delegate_dispatch!/delegate_global_dispatch! lines below must be updated to match.
+delegate_global_dispatch!(ShojiWM: [WlCompositor: ()] => CompositorState);
+delegate_global_dispatch!(ShojiWM: [WlSubcompositor: ()] => CompositorState);
+delegate_dispatch!(ShojiWM: [WlCompositor: ()] => CompositorState);
+delegate_dispatch!(ShojiWM: [WlSurface: SurfaceUserData] => CompositorState);
+delegate_dispatch!(ShojiWM: [WlCallback: ()] => CompositorState);
+delegate_dispatch!(ShojiWM: [WlSubcompositor: ()] => CompositorState);
+delegate_dispatch!(ShojiWM: [WlSubsurface: SubsurfaceUserData] => CompositorState);
+impl Dispatch<WlRegion, RegionUserData> for ShojiWM {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &WlRegion,
+        request: wl_region::Request,
+        data: &RegionUserData,
+        dhandle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let skip = match &request {
+            wl_region::Request::Add { width, height, .. }
+            | wl_region::Request::Subtract { width, height, .. } => {
+                if *width < 0 || *height < 0 {
+                    tracing::debug!(
+                        width,
+                        height,
+                        "ignoring wl_region rect with negative dimensions"
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if !skip {
+            <CompositorState as Dispatch<WlRegion, RegionUserData, Self>>::request(
+                state, client, resource, request, data, dhandle, data_init,
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &WlRegion,
+        data: &RegionUserData,
+    ) {
+        <CompositorState as Dispatch<WlRegion, RegionUserData, Self>>::destroyed(
+            state, client, resource, data,
+        );
+    }
+}
+
 delegate_shm!(ShojiWM);

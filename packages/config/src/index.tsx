@@ -65,9 +65,9 @@ WINDOW_MANAGER.effect.background_effect = compileEffect({
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {
-    window.setCloseAnimationDuration(seconds(0.5));
+    window.setCloseAnimationDuration(seconds(2.0));
     window.animation.start(openAnimation, {
-        duration: seconds(0.5),
+        duration: seconds(2.0),
         to: 1,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
@@ -76,7 +76,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
 
 WINDOW_MANAGER.event.onStartClose((window) => {
     window.animation.start(openAnimation, {
-        duration: seconds(0.5),
+        duration: seconds(2.0),
         to: 0,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
