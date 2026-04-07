@@ -516,7 +516,7 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
 
 fn render_surface(
     state: &mut ShojiWM,
-    loop_handle: &LoopHandle<'_, ShojiWM>,
+    _loop_handle: &LoopHandle<'_, ShojiWM>,
     node: DrmNode,
     crtc: crtc::Handle,
 ) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
@@ -2628,7 +2628,7 @@ fn render_surface(
                 surface.frame_callback_timer_generation.wrapping_add(1);
             surface.frame_callback_sequence = surface.frame_callback_sequence.wrapping_add(1);
             surface.redraw_state = TtyRedrawState::WaitingForVBlank {
-                redraw_needed: true,
+                redraw_needed: false,
             };
             let frame_callback_sequence = surface.frame_callback_sequence;
             let _ = surface;
@@ -2648,13 +2648,14 @@ fn render_surface(
                 );
             }
             trace!(output = %output.name(), "tty frame had no damage");
-            let generation = surface.frame_callback_timer_generation.wrapping_add(1);
-            surface.frame_callback_timer_generation = generation;
-            surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
-                queued: false,
-                generation,
-            };
-            schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
+            // Go to Idle directly (like niri). Scheduling an estimated vblank timer here
+            // caused spurious frame callbacks: any global schedule_redraw() (e.g. from a
+            // Kitty cursor blink on eDP-1) triggered a no-damage render for every output,
+            // which armed the timer, which fired and sent Smithay's 1fps throttle callback
+            // to Firefox's root surface (primary=None) on DP-2. Firefox responded with a
+            // commit, starting a callback→commit burst loop at ~1Hz. In niri, a no-damage
+            // render also transitions directly to Idle with no timer and no callbacks.
+            surface.redraw_state = TtyRedrawState::Idle;
         }
 
         captured_blink_damage
@@ -5757,8 +5758,12 @@ fn schedule_estimated_vblank_callback(
                         generation: current_generation,
                     } if surface.frame_callback_timer_armed && current_generation == generation => {
                         surface.frame_callback_timer_armed = false;
-                        surface.frame_callback_sequence =
-                            surface.frame_callback_sequence.wrapping_add(1);
+                        // Do NOT increment sequence here. The sequence is only incremented on
+                        // actual damage renders (see render_surface). By reusing the same
+                        // sequence, the dedup in send_frame_callbacks_for_output prevents
+                        // sending a spurious callback to primary surfaces that already received
+                        // one for this sequence (e.g. Firefox), while non-primary surfaces still
+                        // get their 1fps callbacks via Smithay's throttle mechanism.
                         let sequence = surface.frame_callback_sequence;
                         if queued {
                             surface.redraw_state = TtyRedrawState::Queued;
