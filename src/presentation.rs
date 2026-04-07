@@ -57,6 +57,10 @@ fn frame_callback_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG").is_some()
 }
 
+fn frame_throttle_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some()
+}
+
 fn scale_notify_debug_enabled() -> bool {
     std::env::var_os("SHOJI_SCALE_NOTIFY_DEBUG").is_some()
 }
@@ -89,8 +93,22 @@ pub fn update_primary_scanout_output(
     // This turned out to matter for Chrome on the TTY backend: without updating the primary
     // scanout output before collecting presentation feedback, Chrome would often behave as if the
     // output cadence was only ~60 Hz even when the monitor was actually running at 66 Hz.
+    let throttle_debug = frame_throttle_debug_enabled();
     space.elements().for_each(|window| {
         window.with_surfaces(|surface, states| {
+            if throttle_debug {
+                use smithay::backend::renderer::element::Id;
+                let element_id = Id::from_wayland_resource(surface);
+                let was_presented = render_element_states.element_was_presented(element_id);
+                let current_primary = surface_primary_scanout_output(surface, states);
+                info!(
+                    surface = ?surface.id(),
+                    output = %output.name(),
+                    was_presented,
+                    current_primary = ?current_primary.as_ref().map(|o| o.name()),
+                    "update_primary_scanout_output: surface check",
+                );
+            }
             update_surface_primary_scanout_output(
                 surface,
                 output,
@@ -178,15 +196,35 @@ impl ShojiWM {
         time: Duration,
         frame_callback_sequence: Option<u32>,
     ) {
-        let throttle = None;
+        // Throttle frame callbacks for surfaces that are not on their primary scanout output.
+        // This limits idle clients (e.g. Firefox, whose root surface has no buffer and thus
+        // no render element) to ~1 callback/second, matching anvil's behaviour.
+        let throttle = Some(Duration::from_secs(1));
         let debug = frame_callback_debug_enabled();
+        let throttle_debug = frame_throttle_debug_enabled();
         let callback_count = std::cell::Cell::new(0usize);
 
         let should_send =
             |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
              states: &smithay::wayland::compositor::SurfaceData| {
                 let current_primary_output = surface_primary_scanout_output(surface, states);
+                if throttle_debug {
+                    info!(
+                        surface = ?surface.id(),
+                        primary = ?current_primary_output.as_ref().map(|o| o.name()),
+                        target_output = %output.name(),
+                        "send_frame: surface primary check",
+                    );
+                }
                 if current_primary_output.as_ref() != Some(output) {
+                    // primary is None or different output — Smithay throttle will decide
+                    if throttle_debug {
+                        info!(
+                            surface = ?surface.id(),
+                            primary = ?current_primary_output.as_ref().map(|o| o.name()),
+                            "send_frame: no primary → throttle path (should_send=None)",
+                        );
+                    }
                     return None;
                 }
 

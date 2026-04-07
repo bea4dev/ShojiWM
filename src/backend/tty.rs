@@ -112,6 +112,28 @@ fn previous_client_frame_state(key: &str, current: ClientFrameState) -> Option<C
     guard.insert(key.to_string(), current)
 }
 
+/// Stores the visual transform for a snapshot window from the previous render frame and returns
+/// the previous value. Used to detect whether the transform is actively changing (animation
+/// in progress) vs. stable (stationary snapshot window that should be throttled).
+///
+/// The key is `snapshot_id + ":" + output_name` so that each output independently tracks
+/// the previous transform.  Without the output suffix, a multi-output setup would have the
+/// second output to render always see "unchanged" because the first output already stored the
+/// current-frame value into the shared slot.
+fn previous_snapshot_visual_transform(
+    snapshot_id: &str,
+    output_name: &str,
+    current: crate::ssd::WindowTransform,
+) -> Option<crate::ssd::WindowTransform> {
+    static STATE: OnceLock<
+        Mutex<HashMap<String, crate::ssd::WindowTransform>>,
+    > = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = state.lock().ok()?;
+    let key = format!("{snapshot_id}:{output_name}");
+    guard.insert(key, current)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct BackdropSampleFrameState {
     sample_screen_rect: Option<(f64, f64, f64, f64)>,
@@ -731,6 +753,12 @@ fn render_surface(
         let mut _max_window_id: Option<String> = None;
         let mut _snapshot_capture_elapsed_ms = 0.0f64;
         let mut snapshot_capture_count = 0usize;
+        // Windows in snapshot mode (non-identity visual_transform) whose transform changed
+        // since the previous frame — these are actively animating and need full-rate callbacks.
+        // Windows whose transform is unchanged are stationary in snapshot mode and can be
+        // throttled (see snapshot fix below).
+        let mut snapshot_transform_changed_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         let close_debug = std::env::var_os("SHOJI_CLOSE_DEBUG").is_some();
         if close_debug && !closing_window_snapshots.is_empty() {
@@ -870,6 +898,28 @@ fn render_surface(
                     decoration.layout.root.rect,
                     decoration.visual_transform,
                 ));
+            }
+            // Track whether this window's visual_transform changed since the previous frame.
+            // If it changed the window is actively animating; if not, it is stationary in
+            // snapshot mode.  The snapshot fix below only restores primary_scanout_output for
+            // animating windows so that stationary snapshot windows remain throttled.
+            if use_full_window_snapshot {
+                if let Some(sid) = snapshot_id.as_deref() {
+                    if let Some(decoration) = window_decorations.get(window) {
+                        let prev =
+                            previous_snapshot_visual_transform(
+                                sid,
+                                output.name().as_str(),
+                                decoration.visual_transform,
+                            );
+                        let changed = prev
+                            .map(|p| p != decoration.visual_transform)
+                            .unwrap_or(true); // first frame → assume changed
+                        if changed {
+                            snapshot_transform_changed_ids.insert(sid.to_string());
+                        }
+                    }
+                }
             }
             if use_full_window_snapshot {
                 transform_snapshot_window_ids.insert(window_id.clone());
@@ -2430,18 +2480,31 @@ fn render_surface(
         let total_cpu_elapsed = frame_started_at.elapsed();
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
+        // Update primary-scanout metadata unconditionally — even for no-damage frames.
+        //
+        // Firefox's root wl_surface commits without a buffer (pure frame-callback registration).
+        // Surfaces without a buffer produce no render elements and are therefore absent from
+        // result.states. Calling update_primary_scanout_output here clears those surfaces'
+        // primary_scanout_output. Combined with throttle = Some(1s) in send_frame_callbacks,
+        // this limits Firefox frame callbacks to ~1/second when idle, dropping its CPU from
+        // ~8% to ~0.1%. (Anvil does the same: its update_primary_scanout_output call is
+        // unconditional, outside the `if rendered` branch.)
+        update_primary_scanout_output(
+            &state.space,
+            &output,
+            &cursor_status_for_log,
+            &result.states,
+        );
         if !result.is_empty {
+            if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
+                tracing::info!(
+                    output = %output.name(),
+                    states_count = result.states.states.len(),
+                    states_ids = ?result.states.states.keys().map(|id| format!("{:?}", id)).collect::<Vec<_>>(),
+                    "tty DAMAGE frame",
+                );
+            }
             trace!(output = %output.name(), "queueing tty frame");
-            // Update primary-scanout metadata before collecting presentation feedback.
-            //
-            // Chrome on the TTY backend would otherwise frequently stick to ~60 fps on a 66 Hz
-            // output. Keeping this metadata current made Chrome observe the real output cadence.
-            update_primary_scanout_output(
-                &state.space,
-                &output,
-                &cursor_status_for_log,
-                &result.states,
-            );
             // Windows rendered via full-window snapshot have their wl_surfaces composited
             // into an offscreen texture rather than the DRM framebuffer. Those surfaces are
             // therefore absent from result.states, so update_primary_scanout_output above
@@ -2459,6 +2522,14 @@ fn render_surface(
                 };
                 use smithay::desktop::utils::update_surface_primary_scanout_output;
 
+                if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
+                    tracing::info!(
+                        output = %output.name(),
+                        snapshot_ids_count = state.transform_snapshot_window_ids.len(),
+                        "snapshot fix: transform_snapshot_window_ids non-empty",
+                    );
+                }
+
                 let snapshot_windows: Vec<_> = state
                     .space
                     .elements_for_output(&output)
@@ -2471,7 +2542,49 @@ fn render_surface(
                     })
                     .cloned()
                     .collect();
+
+                if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
+                    for window in &snapshot_windows {
+                        let app_id = window
+                            .toplevel()
+                            .and_then(|t| {
+                                smithay::wayland::compositor::with_states(
+                                    t.wl_surface(),
+                                    |states| {
+                                        states
+                                            .data_map
+                                            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                                            .map(|d| d.lock().ok()?.app_id.clone())
+                                    },
+                                )
+                            })
+                            .flatten();
+                        tracing::info!(
+                            output = %output.name(),
+                            app_id = ?app_id,
+                            "snapshot fix: window in snapshot_windows — synthetic primary will be SET",
+                        );
+                    }
+                }
+
                 for window in snapshot_windows {
+                    // Only restore primary for windows whose visual_transform changed this
+                    // frame (i.e. they are actively animating). Stationary windows in
+                    // snapshot mode keep primary=None so the 1-second throttle engages.
+                    let is_animating = state
+                        .window_decorations
+                        .get(&window)
+                        .map(|d| snapshot_transform_changed_ids.contains(&d.snapshot.id))
+                        .unwrap_or(false);
+                    if !is_animating {
+                        if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
+                            tracing::info!(
+                                output = %output.name(),
+                                "snapshot fix: transform unchanged — skipping primary restore (throttle applies)",
+                            );
+                        }
+                        continue;
+                    }
                     let mut synthetic_states = RenderElementStates::default();
                     window.with_surfaces(|surface, _| {
                         synthetic_states.states.insert(
@@ -2527,6 +2640,13 @@ fn render_surface(
                 Some(frame_callback_sequence),
             );
         } else {
+            if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
+                tracing::info!(
+                    output = %output.name(),
+                    states_count = result.states.states.len(),
+                    "tty no-damage frame: update_primary_scanout_output already called unconditionally",
+                );
+            }
             trace!(output = %output.name(), "tty frame had no damage");
             let generation = surface.frame_callback_timer_generation.wrapping_add(1);
             surface.frame_callback_timer_generation = generation;
