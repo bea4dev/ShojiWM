@@ -61,6 +61,10 @@ fn scale_notify_debug_enabled() -> bool {
     std::env::var_os("SHOJI_SCALE_NOTIFY_DEBUG").is_some()
 }
 
+fn fifo_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FIFO_DEBUG").is_some()
+}
+
 /// Returns the previous preferred scale for a surface (by protocol id), for change detection.
 fn previous_preferred_scale(protocol_id: u32, scale: f64) -> Option<f64> {
     static SCALES: OnceLock<Mutex<HashMap<u32, f64>>> = OnceLock::new();
@@ -231,11 +235,23 @@ impl ShojiWM {
         #[allow(clippy::mutable_key_type)]
         let mut clients: HashMap<ClientId, Client> = HashMap::new();
 
+        let debug_fifo = fifo_debug_enabled();
         self.space.elements().for_each(|window| {
             if !self.space.outputs_for_element(window).contains(output) {
                 return;
             }
 
+            let app_id = window
+                .toplevel()
+                .and_then(|t| {
+                    smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+                        states
+                            .data_map
+                            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                            .map(|d| d.lock().ok()?.app_id.clone())
+                    })
+                })
+                .flatten();
             window.with_surfaces(|surface, states| {
                 if let Some(mut commit_timer_state) = states
                     .data_map
@@ -243,6 +259,14 @@ impl ShojiWM {
                     .map(|commit_timer| commit_timer.lock().unwrap())
                     && commit_timer_state.signal_until(frame_target)
                 {
+                    if debug_fifo {
+                        info!(
+                            surface = ?surface.id(),
+                            app_id = ?app_id,
+                            output = %output.name(),
+                            "commit timer barrier signaled for window surface"
+                        );
+                    }
                     let client = surface.client().unwrap();
                     clients.insert(client.id(), client);
                 }
@@ -277,8 +301,20 @@ impl ShojiWM {
         let mut clients: HashMap<ClientId, Client> = HashMap::new();
 
         let debug_scale = scale_notify_debug_enabled();
+        let debug_fifo = fifo_debug_enabled();
         self.space.elements().for_each(|window| {
             if self.space.outputs_for_element(window).contains(output) {
+                let app_id = window
+                    .toplevel()
+                    .and_then(|t| {
+                        smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+                            states
+                                .data_map
+                                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                                .map(|d| d.lock().ok()?.app_id.clone())
+                        })
+                    })
+                    .flatten();
                 window.with_surfaces(|surface, states| {
                     let primary_scanout_output = surface_primary_scanout_output(surface, states);
                     if let Some(output) = primary_scanout_output.as_ref() {
@@ -307,9 +343,24 @@ impl ShojiWM {
                         .barrier
                         .take();
                     if let Some(fifo_barrier) = fifo_barrier {
+                        if debug_fifo {
+                            info!(
+                                surface = ?surface.id(),
+                                app_id = ?app_id,
+                                output = %output.name(),
+                                "fifo barrier signaled for window surface"
+                            );
+                        }
                         fifo_barrier.signal();
                         let client = surface.client().unwrap();
                         clients.insert(client.id(), client);
+                    } else if debug_fifo {
+                        info!(
+                            surface = ?surface.id(),
+                            app_id = ?app_id,
+                            output = %output.name(),
+                            "no fifo barrier for window surface"
+                        );
                     }
                 });
             }
