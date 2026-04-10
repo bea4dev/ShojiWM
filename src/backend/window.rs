@@ -1,3 +1,9 @@
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
+
 use smithay::{
     backend::renderer::{
         ImportAll, Renderer,
@@ -23,6 +29,34 @@ use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
 fn popup_debug_enabled() -> bool {
     std::env::var_os("SHOJI_POPUP_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn clip_selection_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_CLIP_SELECTION_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn clip_selection_debug_allowed(root_key: &str, app_id: Option<&str>) -> bool {
+    if !clip_selection_debug_enabled() {
+        return false;
+    }
+    if !matches!(app_id, Some("firefox") | Some("google-chrome")) {
+        return false;
+    }
+
+    static LAST_LOGGED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let state = LAST_LOGGED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut state) = state.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    let should_log = state
+        .get(root_key)
+        .is_none_or(|last| now.saturating_duration_since(*last) >= Duration::from_millis(250));
+    if should_log {
+        state.insert(root_key.to_string(), now);
+    }
+    should_log
 }
 
 fn subtract_logical_rect(
@@ -237,10 +271,12 @@ where
 {
     match window.underlying_surface() {
         WindowSurface::Wayland(surface) => {
+            let render_origin =
+                location - window.geometry().loc.to_physical_precise_round(scale);
             let elements = render_elements_from_surface_tree(
                 renderer,
                 surface.wl_surface(),
-                location,
+                render_origin,
                 scale,
                 alpha,
                 Kind::Unspecified,
@@ -270,6 +306,7 @@ where
                     title = %title,
                     app_id = ?app_id,
                     base_location = ?location,
+                    render_origin = ?render_origin,
                     element_count = elements.len(),
                     first_geometries = ?geometries,
                     first_srcs = ?srcs,
@@ -458,6 +495,7 @@ pub fn clipped_surface_elements(
         return Ok(Vec::new());
     }
 
+    let mut debug_app_id: Option<String> = None;
     let debug_label = match window.underlying_surface() {
         WindowSurface::Wayland(surface) => {
             let (title, app_id) = with_states(surface.wl_surface(), |states| {
@@ -468,6 +506,7 @@ pub fn clipped_surface_elements(
                     .map(|role| (role.title.clone().unwrap_or_default(), role.app_id.clone()))
                     .unwrap_or_default()
             });
+            debug_app_id = app_id.clone();
 
             Some(format!(
                 "root_surface={:?} title={} app_id={:?}",
@@ -480,10 +519,55 @@ pub fn clipped_surface_elements(
     };
 
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
+    let element_geometries = elements
+        .iter()
+        .map(|element| Element::geometry(element, output_scale))
+        .collect::<Vec<_>>();
+    let selected_indices = geometry
+        .map(|forced_geometry| {
+            let best_score = element_geometries
+                .iter()
+                .map(|element_geometry| {
+                    i64::from((element_geometry.size.w - forced_geometry.size.w).abs())
+                        + i64::from((element_geometry.size.h - forced_geometry.size.h).abs())
+                })
+                .min()
+                .unwrap_or(0);
+            element_geometries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, element_geometry)| {
+                    let score =
+                        i64::from((element_geometry.size.w - forced_geometry.size.w).abs())
+                            + i64::from((element_geometry.size.h - forced_geometry.size.h).abs());
+                    (score == best_score).then_some(index)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let (Some(debug_label), true) = (
+        debug_label.as_deref(),
+        clip_selection_debug_allowed(
+            debug_label.as_deref().unwrap_or_default(),
+            debug_app_id.as_deref(),
+        ),
+    ) {
+        info!(
+            debug_label,
+            forced_geometry = ?geometry,
+            element_count = element_geometries.len(),
+            chosen_indices = ?selected_indices,
+            element_geometries = ?element_geometries,
+            "clip selection summary",
+        );
+    }
     match clip {
         Some(clip) => elements
             .into_iter()
-            .map(|element| {
+            .enumerate()
+            .map(|(index, element)| {
+                let geometry_override =
+                    geometry.filter(|_| selected_indices.contains(&index));
                 ClippedSurfaceElement::new(
                     renderer,
                     element,
@@ -491,7 +575,7 @@ pub fn clipped_surface_elements(
                     clip_scale,
                     output_origin,
                     clip,
-                    geometry,
+                    geometry_override,
                     debug_label.clone(),
                 )
             })

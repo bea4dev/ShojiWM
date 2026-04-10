@@ -160,6 +160,7 @@ impl ClippedSurfaceElement {
             .expect("clipped surface shader should be cached");
 
         let element_geometry = inner.geometry(output_scale);
+        let render_geometry = forced_geometry.unwrap_or(element_geometry);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
         let element_rect_precise = PreciseLogicalRect {
@@ -219,13 +220,6 @@ impl ClippedSurfaceElement {
             )
                 .into(),
         );
-        // Only keep the caller-provided geometry override for the root client surface.
-        // Subsurfaces/popups inside the same surface tree need their own geometry;
-        // forcing every child to the full client rect makes Chrome's suggestion surface
-        // look like a window-sized quad and shifts it far away from its intended location.
-        let render_geometry = forced_geometry
-            .filter(|geometry| *geometry == element_geometry)
-            .unwrap_or(element_geometry);
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
