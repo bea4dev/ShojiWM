@@ -61,6 +61,18 @@ impl CompositorHandler for ShojiWM {
 
     fn commit(&mut self, surface: &WlSurface) {
         trace!(surface = ?surface.id(), "wl_surface commit received");
+        // A committed surface can be observed from two different paths:
+        //
+        // 1. directly while dispatching Wayland client requests from the display fd
+        // 2. indirectly when Smithay replays a previously blocked commit after
+        //    `blocker_cleared()` (for example from commit-timing / FIFO barriers)
+        //
+        // The TTY backend needs `space.refresh()/popups.cleanup()` before the next render after
+        // either case. If we only request maintenance from the display-fd dispatch path, commits
+        // coming from blocker replay can schedule a redraw without scheduling the pre-render
+        // maintenance pass, which manifests as "the client updated, but the new contents do not
+        // become visible until some unrelated input event causes another refresh".
+        self.request_tty_maintenance("surface-commit");
         self.scene_generation = self.scene_generation.wrapping_add(1);
         let mut pending_source_damage: Option<(
             smithay::desktop::Window,
