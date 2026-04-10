@@ -9,6 +9,7 @@ use smithay::{
             element::solid::SolidColorRenderElement,
             element::surface::WaylandSurfaceRenderElement,
             element::texture::TextureRenderElement,
+            element::Element,
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             gles::{GlesRenderer, GlesTexture},
         },
@@ -37,6 +38,11 @@ use smithay::wayland::presentation::Refresh;
 
 fn manual_invalidate_debug_enabled() -> bool {
     std::env::var_os("SHOJI_MANUAL_INVALIDATE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn clipped_transform_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_CLIPPED_TRANSFORM_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
@@ -501,6 +507,8 @@ pub fn init_winit(
                             let client_elements = if let Some(content_clip) = content_clip {
                                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                                     if let Some(decoration) = state.window_decorations.get(window) {
+                                        let snapshot_title = decoration.snapshot.title.clone();
+                                        let snapshot_app_id = decoration.snapshot.app_id.clone();
                                         let snap_scale = smithay::utils::Scale::from((
                                             scale.x * visual_state.scale.x.max(0.0),
                                             scale.y * visual_state.scale.y.max(0.0),
@@ -547,6 +555,8 @@ pub fn init_winit(
                                         tracing::info!(
                                             output = %output.name(),
                                             window_id = %window_id,
+                                            title = %snapshot_title,
+                                            app_id = ?snapshot_app_id,
                                             window_location = ?window_location,
                                             output_scale = scale.x,
                                             window_scale_x = visual_state.scale.x,
@@ -594,6 +604,9 @@ pub fn init_winit(
                                         .window_decorations
                                         .get(window)
                                         .map(|decoration| decoration.client_rect);
+                                    let snapshot = state.window_decorations.get(window).map(|decoration| {
+                                        (decoration.snapshot.title.clone(), decoration.snapshot.app_id.clone())
+                                    });
                                     let edge_delta = if let (Some(_decoration), Some(first_geometry)) =
                                         (state.window_decorations.get(window), first_geometry)
                                     {
@@ -627,6 +640,8 @@ pub fn init_winit(
                                     tracing::info!(
                                         output = %output.name(),
                                         window_id = %window_id,
+                                        title = %snapshot.as_ref().map(|(title, _)| title.as_str()).unwrap_or(""),
+                                        app_id = ?snapshot.as_ref().and_then(|(_, app_id)| app_id.clone()),
                                         window_geometry = ?window_geometry,
                                         decoration_client_rect = ?decoration_client_rect,
                                         window_bbox = ?window.bbox(),
@@ -1041,6 +1056,19 @@ fn transform_clipped_elements(
     visual: WindowVisualState,
 ) -> Vec<WinitRenderElements> {
     if is_identity_visual(visual) {
+        if clipped_transform_debug_enabled() {
+            for element in &elements {
+                info!(
+                    debug_label = element.debug_label(),
+                    visual_origin = ?visual.origin,
+                    visual_scale = ?visual.scale,
+                    visual_translation = ?visual.translation,
+                    pre_transform_geometry = ?element.geometry(smithay::utils::Scale::from((1.0, 1.0))),
+                    post_transform_geometry = ?element.geometry(smithay::utils::Scale::from((1.0, 1.0))),
+                    "gap debug winit transformed clipped geometry"
+                );
+            }
+        }
         return elements
             .into_iter()
             .map(WinitRenderElements::Clipped)
@@ -1050,11 +1078,25 @@ fn transform_clipped_elements(
     elements
         .into_iter()
         .map(|element| {
-            WinitRenderElements::TransformedClipped(RelocateRenderElement::from_element(
+            let debug_label = element.debug_label().map(|label| label.to_owned());
+            let pre_transform_geometry = element.geometry(smithay::utils::Scale::from((1.0, 1.0)));
+            let transformed = RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
-            ))
+            );
+            if clipped_transform_debug_enabled() {
+                info!(
+                    debug_label = debug_label.as_deref(),
+                    visual_origin = ?visual.origin,
+                    visual_scale = ?visual.scale,
+                    visual_translation = ?visual.translation,
+                    pre_transform_geometry = ?pre_transform_geometry,
+                    post_transform_geometry = ?transformed.geometry(smithay::utils::Scale::from((1.0, 1.0))),
+                    "gap debug winit transformed clipped geometry"
+                );
+            }
+            WinitRenderElements::TransformedClipped(transformed)
         })
         .collect()
 }
@@ -3007,7 +3049,6 @@ fn window_scene_elements_for_capture(
     let Some(window_location) = state.space.element_location(window) else {
         return Vec::new();
     };
-
     let physical_location =
         crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
             window_location,

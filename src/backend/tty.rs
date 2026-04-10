@@ -20,7 +20,7 @@ use smithay::{
             Bind, ExportMem, ImportDma, ImportEgl, ImportMemWl, Offscreen,
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements,
+                AsRenderElements, Element,
                 memory::MemoryRenderBuffer,
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
@@ -77,6 +77,11 @@ const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
 fn frame_liveness_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn clipped_transform_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_CLIPPED_TRANSFORM_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
@@ -2746,6 +2751,19 @@ fn transform_clipped_elements(
     visual: WindowVisualState,
 ) -> Vec<TtyRenderElements> {
     if is_identity_visual(visual) {
+        if clipped_transform_debug_enabled() {
+            for element in &elements {
+                info!(
+                    debug_label = element.debug_label(),
+                    visual_origin = ?visual.origin,
+                    visual_scale = ?visual.scale,
+                    visual_translation = ?visual.translation,
+                    pre_transform_geometry = ?element.geometry(Scale::from((1.0, 1.0))),
+                    post_transform_geometry = ?element.geometry(Scale::from((1.0, 1.0))),
+                    "gap debug tty transformed clipped geometry"
+                );
+            }
+        }
         return elements
             .into_iter()
             .map(TtyRenderElements::Clipped)
@@ -2755,11 +2773,25 @@ fn transform_clipped_elements(
     elements
         .into_iter()
         .map(|element| {
-            TtyRenderElements::TransformedClipped(RelocateRenderElement::from_element(
+            let debug_label = element.debug_label().map(|label| label.to_owned());
+            let pre_transform_geometry = element.geometry(Scale::from((1.0, 1.0)));
+            let transformed = RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(element, visual.origin, visual.scale),
                 visual.translation,
                 Relocate::Relative,
-            ))
+            );
+            if clipped_transform_debug_enabled() {
+                info!(
+                    debug_label = debug_label.as_deref(),
+                    visual_origin = ?visual.origin,
+                    visual_scale = ?visual.scale,
+                    visual_translation = ?visual.translation,
+                    pre_transform_geometry = ?pre_transform_geometry,
+                    post_transform_geometry = ?transformed.geometry(Scale::from((1.0, 1.0))),
+                    "gap debug tty transformed clipped geometry"
+                );
+            }
+            TtyRenderElements::TransformedClipped(transformed)
         })
         .collect()
 }

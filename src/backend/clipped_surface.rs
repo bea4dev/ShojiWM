@@ -1,4 +1,4 @@
-use cgmath::{ElementWise, Matrix3, Vector2};
+use cgmath::{ElementWise, Matrix3, Vector2, Vector3};
 use smithay::{
     backend::renderer::{
         element::{
@@ -11,7 +11,9 @@ use smithay::{
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
-use crate::backend::visual::{SnappedLogicalRect, precise_logical_rect_in_element_space};
+use crate::backend::visual::{
+    PreciseLogicalRect, SnappedLogicalRect, precise_logical_rect_in_element_space,
+};
 use crate::ssd::ContentClip;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,6 +64,7 @@ pub struct ClippedSurfaceElement {
     inner: ClippedSurfaceInner,
     geometry: Rectangle<i32, Physical>,
     program: GlesTexProgram,
+    debug_label: Option<String>,
     clip_rect: SnappedLogicalRect,
     corner_radius: [f32; 4],
     rect_bounds_enabled: f32,
@@ -77,6 +80,11 @@ pub struct ClippedSurfaceElement {
 #[derive(Debug)]
 struct ClippedSurfaceProgram(GlesTexProgram);
 
+fn clipped_uniforms_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_CLIPPED_UNIFORMS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 impl ClippedSurfaceElement {
     pub fn new(
         renderer: &mut GlesRenderer,
@@ -86,6 +94,7 @@ impl ClippedSurfaceElement {
         output_origin: Point<i32, Logical>,
         clip: ContentClip,
         forced_geometry: Option<Rectangle<i32, Physical>>,
+        debug_label: Option<String>,
     ) -> Result<Self, GlesError> {
         if renderer
             .egl_context()
@@ -150,24 +159,30 @@ impl ClippedSurfaceElement {
             .get::<ClippedSurfaceProgram>()
             .expect("clipped surface shader should be cached");
 
-        let local_clip = Rectangle::new(
-            Point::from((
-                clip.mask_rect.loc.x - clip.rect.loc.x,
-                clip.mask_rect.loc.y - clip.rect.loc.y,
-            )),
-            clip.mask_rect.size,
-        );
-        let mut snapped_clip_rect =
-            precise_logical_rect_in_element_space(clip.mask_rect_precise, clip.rect_precise);
         let element_geometry = inner.geometry(output_scale);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
-        let element_rect_logical = SnappedLogicalRect {
+        let element_rect_precise = PreciseLogicalRect {
             x: element_geometry.loc.x as f32 / output_scale_x,
             y: element_geometry.loc.y as f32 / output_scale_y,
             width: element_geometry.size.w as f32 / output_scale_x,
             height: element_geometry.size.h as f32 / output_scale_y,
         };
+        let element_rect_logical = SnappedLogicalRect {
+            x: element_rect_precise.x,
+            y: element_rect_precise.y,
+            width: element_rect_precise.width,
+            height: element_rect_precise.height,
+        };
+        let local_clip = Rectangle::new(
+            Point::from((
+                (clip.mask_rect_precise.x - element_rect_precise.x).round() as i32,
+                (clip.mask_rect_precise.y - element_rect_precise.y).round() as i32,
+            )),
+            clip.mask_rect.size,
+        );
+        let mut snapped_clip_rect =
+            precise_logical_rect_in_element_space(clip.mask_rect_precise, element_rect_precise);
         let clip_size_delta_px = (
             ((snapped_clip_rect.width - element_rect_logical.width) * output_scale_x).abs(),
             ((snapped_clip_rect.height - element_rect_logical.height) * output_scale_y).abs(),
@@ -182,18 +197,18 @@ impl ClippedSurfaceElement {
             snapped_clip_rect.width = element_rect_logical.width;
             snapped_clip_rect.height = element_rect_logical.height;
         }
-        let physical_left = (((clip.mask_rect_precise.x - clip.rect_precise.x) as f64)
+        let physical_left = (((clip.mask_rect_precise.x - element_rect_precise.x) as f64)
             * output_scale.x)
             .round() as i32;
-        let physical_top = (((clip.mask_rect_precise.y - clip.rect_precise.y) as f64)
+        let physical_top = (((clip.mask_rect_precise.y - element_rect_precise.y) as f64)
             * output_scale.y)
             .round() as i32;
         let physical_right = ((((clip.mask_rect_precise.x + clip.mask_rect_precise.width)
-            - clip.rect_precise.x) as f64)
+            - element_rect_precise.x) as f64)
             * output_scale.x)
             .round() as i32;
         let physical_bottom = ((((clip.mask_rect_precise.y + clip.mask_rect_precise.height)
-            - clip.rect_precise.y) as f64)
+            - element_rect_precise.y) as f64)
             * output_scale.y)
             .round() as i32;
         let physical_clip: Rectangle<i32, Physical> = Rectangle::new(
@@ -204,7 +219,13 @@ impl ClippedSurfaceElement {
             )
                 .into(),
         );
-        let render_geometry = forced_geometry.unwrap_or(physical_clip);
+        // Only keep the caller-provided geometry override for the root client surface.
+        // Subsurfaces/popups inside the same surface tree need their own geometry;
+        // forcing every child to the full client rect makes Chrome's suggestion surface
+        // look like a window-sized quad and shifts it far away from its intended location.
+        let render_geometry = forced_geometry
+            .filter(|geometry| *geometry == element_geometry)
+            .unwrap_or(element_geometry);
         let buffer_size = inner.buffer_size();
         let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
         let view = inner.view();
@@ -277,6 +298,7 @@ impl ClippedSurfaceElement {
             inner,
             geometry: render_geometry,
             program: program.0.clone(),
+            debug_label,
             clip_rect: snapped_clip_rect,
             corner_radius: {
                 let scale_x = clip_scale.x.abs().max(0.0001) as f32;
@@ -296,6 +318,10 @@ impl ClippedSurfaceElement {
                 0.0
             },
         })
+    }
+
+    pub fn debug_label(&self) -> Option<&str> {
+        self.debug_label.as_deref()
     }
 
     fn uniforms(&self) -> Vec<Uniform<'static>> {
@@ -357,6 +383,49 @@ impl ClippedSurfaceElement {
                 )
             }
         };
+
+        if clipped_uniforms_debug_enabled() {
+            let map_uv = |u: f32, v: f32| {
+                let mapped = Matrix3::from_cols(
+                    Vector3::new(
+                        input_to_clip_array[0],
+                        input_to_clip_array[1],
+                        input_to_clip_array[2],
+                    ),
+                    Vector3::new(
+                        input_to_clip_array[3],
+                        input_to_clip_array[4],
+                        input_to_clip_array[5],
+                    ),
+                    Vector3::new(
+                        input_to_clip_array[6],
+                        input_to_clip_array[7],
+                        input_to_clip_array[8],
+                    ),
+                ) * Vector3::new(u, v, 1.0);
+
+                [mapped.x * clip_size.x, mapped.y * clip_size.y]
+            };
+
+            tracing::info!(
+                debug_label = self.debug_label(),
+                geometry = ?self.geometry,
+                clip_rect = ?self.clip_rect,
+                clip_size = ?[clip_size.x, clip_size.y],
+                corner_radius = ?corner_radius,
+                input_to_clip = ?input_to_clip_array,
+                sample_uv_tl = ?self.sample_uv_tl,
+                sample_uv_br = ?self.sample_uv_br,
+                adjusted_sample_uv_br = ?self.adjusted_sample_uv_br,
+                sample_buffer_size = ?self.sample_buffer_size,
+                sample_uv_compensation_enabled = self.sample_uv_compensation_enabled,
+                clip_coords_at_uv_00 = ?map_uv(0.0, 0.0),
+                clip_coords_at_uv_10 = ?map_uv(1.0, 0.0),
+                clip_coords_at_uv_01 = ?map_uv(0.0, 1.0),
+                clip_coords_at_uv_11 = ?map_uv(1.0, 1.0),
+                "clipped surface uniforms"
+            );
+        }
 
         vec![
             Uniform::new("clip_scale", self.clip_scale),

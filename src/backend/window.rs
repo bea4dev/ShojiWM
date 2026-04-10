@@ -8,14 +8,22 @@ use smithay::{
         gles::GlesRenderer,
     },
     desktop::{LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output},
+    reexports::wayland_server::Resource,
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
-        compositor::{RectangleKind, RegionAttributes},
+        compositor::{RectangleKind, RegionAttributes, with_states},
+        shell::xdg::XdgToplevelSurfaceData,
         shell::wlr_layer::Layer as WlrLayer,
     },
 };
+use tracing::info;
 
 use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
+
+fn popup_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_POPUP_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
 
 fn subtract_logical_rect(
     base: crate::ssd::LogicalRect,
@@ -228,14 +236,49 @@ where
     R::TextureId: Clone + 'static,
 {
     match window.underlying_surface() {
-        WindowSurface::Wayland(surface) => render_elements_from_surface_tree(
-            renderer,
-            surface.wl_surface(),
-            location,
-            scale,
-            alpha,
-            Kind::Unspecified,
-        ),
+        WindowSurface::Wayland(surface) => {
+            let elements = render_elements_from_surface_tree(
+                renderer,
+                surface.wl_surface(),
+                location,
+                scale,
+                alpha,
+                Kind::Unspecified,
+            );
+
+            if popup_debug_enabled() {
+                let (title, app_id) = with_states(surface.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .and_then(|role| role.lock().ok())
+                        .map(|role| (role.title.clone().unwrap_or_default(), role.app_id.clone()))
+                        .unwrap_or_default()
+                });
+                let geometries = elements
+                    .iter()
+                    .take(8)
+                    .map(|element| Element::geometry(element, scale))
+                    .collect::<Vec<_>>();
+                let srcs = elements
+                    .iter()
+                    .take(8)
+                    .map(|element| Element::src(element))
+                    .collect::<Vec<_>>();
+                info!(
+                    root_surface = ?surface.wl_surface().id(),
+                    title = %title,
+                    app_id = ?app_id,
+                    base_location = ?location,
+                    element_count = elements.len(),
+                    first_geometries = ?geometries,
+                    first_srcs = ?srcs,
+                    "surface tree placement",
+                );
+            }
+
+            elements
+        }
         WindowSurface::X11(surface) => {
             AsRenderElements::<R>::render_elements(surface, renderer, location, scale, alpha)
         }
@@ -325,17 +368,74 @@ where
             let surface = surface.wl_surface();
             PopupManager::popups_for_surface(surface)
                 .flat_map(|(popup, popup_offset)| {
-                    let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
-                        .to_physical_precise_round(scale);
-
-                    render_elements_from_surface_tree(
+                    let popup_geometry_loc = popup.geometry().loc;
+                    let popup_offset_logical =
+                        window.geometry().loc + popup_offset - popup_geometry_loc;
+                    let popup_offset_without_window_geometry =
+                        popup_offset - popup_geometry_loc;
+                    let render_origin =
+                        location - window.geometry().loc.to_physical_precise_round(scale);
+                    let offset = popup_offset_logical.to_physical_precise_round(scale);
+                    let offset_without_window_geometry: Point<i32, Physical> =
+                        popup_offset_without_window_geometry.to_physical_precise_round(scale);
+                    let elements = render_elements_from_surface_tree(
                         renderer,
                         popup.wl_surface(),
-                        location + offset,
+                        render_origin + offset,
                         scale,
                         alpha,
                         Kind::Unspecified,
-                    )
+                    );
+
+                    if popup_debug_enabled() {
+                        let (title, app_id) = match window.underlying_surface() {
+                            WindowSurface::Wayland(root) => with_states(root.wl_surface(), |states| {
+                                states
+                                    .data_map
+                                    .get::<XdgToplevelSurfaceData>()
+                                    .and_then(|role| role.lock().ok())
+                                    .map(|role| {
+                                        (
+                                            role.title.clone().unwrap_or_default(),
+                                            role.app_id.clone(),
+                                        )
+                                    })
+                                    .unwrap_or_default()
+                            }),
+                            WindowSurface::X11(_) => (String::new(), None),
+                        };
+                        let first_geometry = elements
+                            .first()
+                            .map(|element| Element::geometry(element, scale));
+                        info!(
+                            root_surface = ?surface.id(),
+                            popup_surface = ?popup.wl_surface().id(),
+                            title = %title,
+                            app_id = ?app_id,
+                            window_geometry_loc = ?window.geometry().loc,
+                            popup_offset = ?popup_offset,
+                            popup_geometry_loc = ?popup_geometry_loc,
+                            popup_offset_logical = ?popup_offset_logical,
+                            popup_offset_without_window_geometry = ?popup_offset_without_window_geometry,
+                            base_location = ?location,
+                            render_origin = ?render_origin,
+                            computed_offset = ?offset,
+                            computed_offset_without_window_geometry = ?offset_without_window_geometry,
+                            final_location = ?Point::<i32, Physical>::from((
+                                render_origin.x + offset.x,
+                                render_origin.y + offset.y,
+                            )),
+                            final_location_without_window_geometry = ?Point::<i32, Physical>::from((
+                                render_origin.x + offset_without_window_geometry.x,
+                                render_origin.y + offset_without_window_geometry.y,
+                            )),
+                            first_geometry = ?first_geometry,
+                            element_count = elements.len(),
+                            "popup render placement",
+                        );
+                    }
+
+                    elements
                 })
                 .collect()
         }
@@ -358,6 +458,27 @@ pub fn clipped_surface_elements(
         return Ok(Vec::new());
     }
 
+    let debug_label = match window.underlying_surface() {
+        WindowSurface::Wayland(surface) => {
+            let (title, app_id) = with_states(surface.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|role| role.lock().ok())
+                    .map(|role| (role.title.clone().unwrap_or_default(), role.app_id.clone()))
+                    .unwrap_or_default()
+            });
+
+            Some(format!(
+                "root_surface={:?} title={} app_id={:?}",
+                surface.wl_surface().id(),
+                title,
+                app_id
+            ))
+        }
+        WindowSurface::X11(_) => None,
+    };
+
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
     match clip {
         Some(clip) => elements
@@ -371,6 +492,7 @@ pub fn clipped_surface_elements(
                     output_origin,
                     clip,
                     geometry,
+                    debug_label.clone(),
                 )
             })
             .collect(),

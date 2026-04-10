@@ -29,9 +29,11 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, RegionUserData,
-            SubsurfaceUserData, SurfaceUserData, get_parent, is_sync_subsurface,
+            SubsurfaceUserData, SurfaceAttributes, SurfaceUserData, get_parent, is_sync_subsurface,
+            with_states,
         },
         shm::{ShmHandler, ShmState},
+        shell::xdg::SurfaceCachedState,
     },
 };
 use tracing::{debug, info, trace};
@@ -42,6 +44,11 @@ fn commit_rate_debug_enabled() -> bool {
 
 fn frame_liveness_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn browser_geometry_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_BROWSER_GEOMETRY_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
@@ -104,6 +111,42 @@ impl CompositorHandler for ShojiWM {
             self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
             window.on_commit();
             let snapshot = self.snapshot_window(&window);
+            if browser_geometry_debug_enabled()
+                && matches!(
+                    snapshot.app_id.as_deref(),
+                    Some("google-chrome") | Some("firefox")
+                )
+            {
+                let (surface_geometry, attrs) = with_states(surface, |states| {
+                    let geometry = states.cached_state.get::<SurfaceCachedState>().current().geometry;
+                    let mut attrs_cache = states.cached_state.get::<SurfaceAttributes>();
+                    let attrs = attrs_cache.current();
+                    (
+                        geometry,
+                        (
+                            attrs.buffer_delta,
+                            attrs.buffer_scale,
+                            attrs.damage.len(),
+                            attrs.opaque_region.is_some(),
+                            attrs.input_region.is_some(),
+                        ),
+                    )
+                });
+                info!(
+                    window_id = %snapshot.id,
+                    title = %snapshot.title,
+                    app_id = ?snapshot.app_id,
+                    surface_id = ?surface.id(),
+                    surface_geometry = ?surface_geometry,
+                    buffer_delta = ?attrs.0,
+                    buffer_scale = attrs.1,
+                    damage_count = attrs.2,
+                    has_opaque_region = attrs.3,
+                    has_input_region = attrs.4,
+                    source_damage_count = source_damage.len(),
+                    "browser geometry: root surface commit",
+                );
+            }
             if frame_liveness_debug_enabled() {
                 info!(
                     window_id = %snapshot.id,
