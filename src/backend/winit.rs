@@ -1383,21 +1383,15 @@ fn backdrop_shader_elements_for_window(
                         display_rect,
                     ))
                 });
-            let source_effect_rect = crate::backend::visual::transformed_rect(
-                cached.rect,
-                decoration.layout.root.rect,
-                decoration.visual_transform,
-            );
-            let source_effect_rect_precise = cached
-                .rect_precise
-                .map(|rect| {
-                    crate::backend::visual::transformed_precise_rect(
-                        rect,
-                        decoration.layout.root.rect,
-                        decoration.visual_transform,
-                    )
-                })
-                .unwrap_or_else(|| crate::backend::visual::precise_rect_from_logical(source_effect_rect));
+            // Snapshot mode renders the whole window into a raw, untransformed offscreen texture
+            // and applies the visual transform exactly once to that final texture. If the shader
+            // effect capture/sample rect is still derived from the transformed display rect here,
+            // backdrop-based effects are sampled from a second, stale coordinate space and drift
+            // slightly during scale animations even though the final snapshot is otherwise correct.
+            let source_effect_rect = display_rect;
+            let _source_effect_rect_precise = display_rect_precise.unwrap_or_else(|| {
+                crate::backend::visual::precise_rect_from_logical(source_effect_rect)
+            });
             (
                 source_effect_rect.x,
                 source_effect_rect.y,

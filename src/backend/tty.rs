@@ -3410,21 +3410,15 @@ fn backdrop_shader_elements_for_window(
                         display_rect,
                     ))
                 });
-            let source_effect_rect = crate::backend::visual::transformed_rect(
-                cached.rect,
-                decoration.layout.root.rect,
-                decoration.visual_transform,
-            );
-            let source_effect_rect_precise = cached
-                .rect_precise
-                .map(|rect| {
-                    crate::backend::visual::transformed_precise_rect(
-                        rect,
-                        decoration.layout.root.rect,
-                        decoration.visual_transform,
-                    )
-                })
-                .unwrap_or_else(|| crate::backend::visual::precise_rect_from_logical(source_effect_rect));
+            // Keep the effect sampling space aligned with the geometry space used for the element
+            // itself. In snapshot mode `display_rect` is intentionally left raw so the complete
+            // window can be captured once and transformed once; continuing to sample backdrop
+            // input from a separately transformed rect here reintroduces the old per-element
+            // transform path and causes subtle wobble/tearing on shader-backed nodes.
+            let source_effect_rect = display_rect;
+            let source_effect_rect_precise = display_rect_precise.unwrap_or_else(|| {
+                crate::backend::visual::precise_rect_from_logical(source_effect_rect)
+            });
             (
                 source_effect_rect.x,
                 source_effect_rect.y,
