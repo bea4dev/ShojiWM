@@ -311,6 +311,10 @@ impl ShojiWM {
         self.sync_runtime_display_state();
         let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
         self.consume_runtime_display_config(invocation.display_config.clone());
+        self.consume_runtime_process_config(invocation.process_config.clone());
+        if !invocation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(invocation.process_actions.clone());
+        }
         if !invocation.invoked {
             self.live_window_snapshots
                 .insert(window_id.to_string(), live_snapshot);
@@ -472,6 +476,10 @@ impl ShojiWM {
             self.decoration_evaluator
                 .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
         self.consume_runtime_display_config(evaluation.display_config.clone());
+        self.consume_runtime_process_config(evaluation.process_config.clone());
+        if !evaluation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(evaluation.process_actions.clone());
+        }
 
         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
         if evaluation.next_poll_in_ms == Some(0) {
@@ -503,6 +511,8 @@ impl ShojiWM {
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
         let mut pending_display_config_updates = Vec::new();
+        let mut pending_process_config_updates = Vec::new();
+        let mut pending_process_actions = Vec::new();
         self.sync_runtime_display_state();
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         let window_count = windows.len();
@@ -596,6 +606,8 @@ impl ShojiWM {
                     }
                 };
                 pending_display_config_updates.push(evaluation.display_config.clone());
+                pending_process_config_updates.push(evaluation.process_config.clone());
+                pending_process_actions.extend(evaluation.process_actions.clone());
                 let tree = DecorationTree::new(evaluation.node);
                 let layout = tree
                     .layout_for_client_with_scale(client_rect, layout_scale)
@@ -693,6 +705,8 @@ impl ShojiWM {
                         }
                     };
                     pending_display_config_updates.push(evaluation.display_config.clone());
+                    pending_process_config_updates.push(evaluation.process_config.clone());
+                    pending_process_actions.extend(evaluation.process_actions.clone());
                     cached.tree = DecorationTree::new(evaluation.node);
                     cached.layout = cached
                         .tree
@@ -802,6 +816,8 @@ impl ShojiWM {
                         }
                     };
                     pending_display_config_updates.push(evaluation.display_config.clone());
+                    pending_process_config_updates.push(evaluation.process_config.clone());
+                    pending_process_actions.extend(evaluation.process_actions.clone());
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
                     let dirty_node_ids = evaluation.dirty_node_ids;
@@ -1043,6 +1059,8 @@ impl ShojiWM {
                     .decoration_evaluator
                     .evaluate_cached_window(&window_id, now_ms)?;
                 pending_display_config_updates.push(evaluation.display_config.clone());
+                pending_process_config_updates.push(evaluation.process_config.clone());
+                pending_process_actions.extend(evaluation.process_actions.clone());
                 let next_tree = DecorationTree::new(evaluation.node);
                 let dirty_node_ids = evaluation.dirty_node_ids;
                 let tree_changed = next_tree != closing.decoration.tree;
@@ -1279,6 +1297,12 @@ impl ShojiWM {
 
         for update in pending_display_config_updates {
             self.consume_runtime_display_config(update);
+        }
+        for update in pending_process_config_updates {
+            self.consume_runtime_process_config(update);
+        }
+        if !pending_process_actions.is_empty() {
+            self.apply_runtime_process_actions(pending_process_actions);
         }
 
         trace!(

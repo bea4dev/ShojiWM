@@ -180,6 +180,14 @@ impl ShojiWM {
                                     self.consume_runtime_display_config(
                                         invocation.display_config.clone(),
                                     );
+                                    self.consume_runtime_process_config(
+                                        invocation.process_config.clone(),
+                                    );
+                                    if !invocation.process_actions.is_empty() {
+                                        self.apply_runtime_process_actions(
+                                            invocation.process_actions.clone(),
+                                        );
+                                    }
                                     self.apply_runtime_handler_invocation(&window, &invocation);
 
                                     if invocation.invoked {

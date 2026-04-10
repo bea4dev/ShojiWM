@@ -64,6 +64,11 @@ use xcursor::parser::Image;
 
 use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
+use crate::runtime_process::{
+    ManagedRuntimeService, RuntimeProcessAction, RuntimeProcessConfigUpdate, RuntimeProcessEntry,
+    RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
+    kill_runtime_service, should_restart_service, spawn_runtime_process,
+};
 use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
     DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
@@ -156,6 +161,12 @@ pub struct ShojiWM {
     pub runtime_scheduler_enabled: bool,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
+    pub runtime_process_config_generation: u64,
+    pub runtime_process_supervision_enabled: bool,
+    pub runtime_process_entries: BTreeMap<String, RuntimeProcessEntry>,
+    pub runtime_process_once_runs: HashMap<String, u64>,
+    pub runtime_process_suppressed_services: HashMap<String, u64>,
+    pub runtime_managed_services: BTreeMap<String, ManagedRuntimeService>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -410,6 +421,12 @@ impl ShojiWM {
             runtime_scheduler_enabled: false,
             runtime_animation_outputs: Default::default(),
             runtime_output_configs: Default::default(),
+            runtime_process_config_generation: 0,
+            runtime_process_supervision_enabled: false,
+            runtime_process_entries: Default::default(),
+            runtime_process_once_runs: Default::default(),
+            runtime_process_suppressed_services: Default::default(),
+            runtime_managed_services: Default::default(),
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect,
@@ -501,7 +518,8 @@ impl ShojiWM {
         loop_handle
             .insert_source(Timer::immediate(), |_, _, state| {
                 state.record_event_source_wake("runtime-scheduler-timer");
-                if !state.runtime_scheduler_enabled {
+                state.refresh_runtime_processes();
+                if !state.runtime_scheduler_enabled && !state.runtime_process_supervision_enabled {
                     return TimeoutAction::ToDuration(Duration::from_millis(250));
                 }
 
@@ -525,6 +543,10 @@ impl ShojiWM {
                 }
 
                 state.consume_runtime_display_config(tick.display_config);
+                state.consume_runtime_process_config(tick.process_config);
+                if !tick.process_actions.is_empty() {
+                    state.apply_runtime_process_actions(tick.process_actions);
+                }
 
                 if !tick.actions.is_empty() {
                     state.request_tty_maintenance("runtime-scheduler-actions");
@@ -536,6 +558,7 @@ impl ShojiWM {
                 let next_interval_ms = match tick.next_poll_in_ms {
                     Some(0) => state.runtime_frame_sync_interval_ms(),
                     Some(ms) => ms.clamp(1, 250),
+                    None if state.runtime_process_supervision_enabled => 250,
                     None => 250,
                 };
                 TimeoutAction::ToDuration(Duration::from_millis(next_interval_ms))
@@ -563,6 +586,10 @@ impl ShojiWM {
         match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
             Ok(result) => {
                 self.consume_runtime_display_config(result.display_config);
+                self.consume_runtime_process_config(result.process_config);
+                if !result.process_actions.is_empty() {
+                    self.apply_runtime_process_actions(result.process_actions);
+                }
             }
             Err(error) => {
                 warn!(?error, "failed to warm up decoration runtime");
@@ -772,6 +799,225 @@ impl ShojiWM {
         if let Some(update) = update {
             self.apply_runtime_display_config_update(update);
         }
+    }
+
+    pub fn apply_runtime_process_config_update(&mut self, update: RuntimeProcessConfigUpdate) {
+        self.runtime_process_config_generation =
+            self.runtime_process_config_generation.saturating_add(1);
+        self.runtime_process_entries = update
+            .entries
+            .into_iter()
+            .map(|entry| (entry.id().to_string(), entry))
+            .collect();
+        self.reconcile_runtime_processes();
+    }
+
+    pub fn consume_runtime_process_config(&mut self, update: Option<RuntimeProcessConfigUpdate>) {
+        if let Some(update) = update {
+            self.apply_runtime_process_config_update(update);
+        }
+    }
+
+    pub fn apply_runtime_process_actions(&mut self, actions: Vec<RuntimeProcessAction>) {
+        for action in actions {
+            if !action.launch.is_valid() {
+                warn!(?action, "ignoring invalid runtime process action");
+                continue;
+            }
+            if let Err(error) =
+                spawn_runtime_process(&action.launch, action.cwd.as_deref(), &action.env)
+            {
+                warn!(?error, ?action, "failed to spawn runtime process action");
+            }
+        }
+    }
+
+    pub fn refresh_runtime_processes(&mut self) {
+        let service_ids = self
+            .runtime_managed_services
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for service_id in service_ids {
+            let status = {
+                let Some(service) = self.runtime_managed_services.get_mut(&service_id) else {
+                    continue;
+                };
+                match service.child.try_wait() {
+                    Ok(status) => status,
+                    Err(error) => {
+                        warn!(?error, service_id, "failed to query runtime service status");
+                        None
+                    }
+                }
+            };
+            let Some(status) = status else {
+                continue;
+            };
+            let Some(service) = self.runtime_managed_services.remove(&service_id) else {
+                continue;
+            };
+            let restart_policy = match &service.spec {
+                RuntimeProcessEntry::Service { restart, .. } => *restart,
+                RuntimeProcessEntry::Once { .. } => RuntimeProcessRestartPolicy::Never,
+            };
+            if should_restart_service(restart_policy, status) {
+                self.runtime_process_suppressed_services.remove(&service_id);
+                info!(
+                    service_id,
+                    exit_status = status.code(),
+                    "runtime service exited and will be restarted"
+                );
+            } else {
+                self.runtime_process_suppressed_services
+                    .insert(service_id.clone(), self.runtime_process_config_generation);
+                info!(
+                    service_id,
+                    exit_status = status.code(),
+                    "runtime service exited and will stay stopped"
+                );
+            }
+        }
+
+        self.reconcile_runtime_processes();
+    }
+
+    fn reconcile_runtime_processes(&mut self) {
+        let generation = self.runtime_process_config_generation;
+        let desired_service_ids = self
+            .runtime_process_entries
+            .values()
+            .filter_map(|entry| match entry {
+                RuntimeProcessEntry::Service { id, .. } => Some(id.clone()),
+                RuntimeProcessEntry::Once { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+
+        let active_service_ids = self
+            .runtime_managed_services
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for service_id in active_service_ids {
+            let desired = self.runtime_process_entries.get(&service_id);
+            let mut should_remove = false;
+            let mut should_restart = false;
+
+            match desired {
+                Some(RuntimeProcessEntry::Service { reload, .. }) => {
+                    if let Some(active) = self.runtime_managed_services.get(&service_id) {
+                        if active.spec != *desired.expect("matched Some above") {
+                            should_restart = true;
+                        } else if *reload == RuntimeProcessReloadPolicy::AlwaysRestart
+                            && active.last_started_generation != generation
+                        {
+                            should_restart = true;
+                        }
+                    }
+                }
+                _ => should_remove = true,
+            }
+
+            if should_remove || should_restart {
+                if let Some(mut service) = self.runtime_managed_services.remove(&service_id) {
+                    if let Err(error) = kill_runtime_service(&mut service) {
+                        warn!(?error, service_id, "failed to stop runtime service");
+                    }
+                }
+                self.runtime_process_suppressed_services.remove(&service_id);
+            }
+        }
+
+        let desired_entries = self
+            .runtime_process_entries
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in desired_entries {
+            match entry {
+                RuntimeProcessEntry::Once {
+                    id,
+                    launch,
+                    cwd,
+                    env,
+                    run_policy,
+                } => {
+                    if !launch.is_valid() {
+                        warn!(process_id = %id, "ignoring invalid runtime once process");
+                        continue;
+                    }
+
+                    let should_run = match (run_policy, self.runtime_process_once_runs.get(&id)) {
+                        (RuntimeProcessRunPolicy::OncePerSession, Some(_)) => false,
+                        (RuntimeProcessRunPolicy::OncePerSession, None) => true,
+                        (RuntimeProcessRunPolicy::OncePerConfigVersion, Some(last_run_generation)) => {
+                            *last_run_generation != generation
+                        }
+                        (RuntimeProcessRunPolicy::OncePerConfigVersion, None) => true,
+                    };
+
+                    if !should_run {
+                        continue;
+                    }
+
+                    match spawn_runtime_process(&launch, cwd.as_deref(), &env) {
+                        Ok(_child) => {
+                            self.runtime_process_once_runs.insert(id.clone(), generation);
+                            info!(process_id = %id, run_policy = ?run_policy, "started runtime once process");
+                        }
+                        Err(error) => {
+                            warn!(?error, process_id = %id, "failed to start runtime once process");
+                        }
+                    }
+                }
+                RuntimeProcessEntry::Service { ref id, .. } => {
+                    let service_id = id.clone();
+                    let RuntimeProcessEntry::Service {
+                        launch,
+                        cwd,
+                        env,
+                        ..
+                    } = &entry
+                    else {
+                        unreachable!("matched service entry above");
+                    };
+                    if !launch.is_valid() {
+                        warn!(process_id = %service_id, "ignoring invalid runtime service");
+                        continue;
+                    }
+                    if self
+                        .runtime_process_suppressed_services
+                        .get(&service_id)
+                        .is_some_and(|last_generation| *last_generation == generation)
+                    {
+                        continue;
+                    }
+                    if self.runtime_managed_services.contains_key(service_id.as_str()) {
+                        continue;
+                    }
+
+                    match spawn_runtime_process(launch, cwd.as_deref(), env) {
+                        Ok(child) => {
+                            self.runtime_process_suppressed_services.remove(&service_id);
+                            self.runtime_managed_services.insert(
+                                service_id.clone(),
+                                ManagedRuntimeService {
+                                    spec: entry,
+                                    child,
+                                    last_started_generation: generation,
+                                },
+                            );
+                            info!(process_id = %service_id, "started runtime managed service");
+                        }
+                        Err(error) => {
+                            warn!(?error, process_id = %service_id, "failed to start runtime managed service");
+                        }
+                    }
+                }
+            }
+        }
+
+        self.runtime_process_supervision_enabled = !desired_service_ids.is_empty();
     }
 
     pub fn output_layout_bounds(&self) -> Option<Rectangle<i32, Logical>> {

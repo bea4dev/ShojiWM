@@ -42,6 +42,10 @@ import type {
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
+  ProcessController,
+  ProcessEnv,
+  ProcessLaunchSpec,
+  ProcessSpawnSpec,
   SaveStageHandle,
   ShaderUniformMap,
   ShaderUniformValue,
@@ -69,9 +73,22 @@ import type {
   WaylandLayer,
   WaylandLayerKind,
   WaylandLayerSnapshot,
+  StartupOnceSpec,
+  StartupProcessRunPolicy,
+  StartupServiceSpec,
+  ManagedProcessRestartPolicy,
+  ManagedProcessReloadPolicy,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
 import { OUTPUT_CONTROLLER } from "./output";
+import {
+  PROCESS_CONTROLLER,
+  beginProcessConfigRegistration,
+  commitProcessConfigRegistration,
+  drainPendingProcessActions,
+  installProcessResolverBridge,
+  takePendingProcessConfig,
+} from "./process";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
 import { computed, read, isSignal } from "./signals";
@@ -137,6 +154,14 @@ export {
   takePendingDisplayConfig,
   updateOutputState,
 } from "./output";
+export {
+  PROCESS_CONTROLLER,
+  beginProcessConfigRegistration,
+  commitProcessConfigRegistration,
+  drainPendingProcessActions,
+  installProcessResolverBridge,
+  takePendingProcessConfig,
+} from "./process";
 export {
   createComponentStateStore,
   createComputed,
@@ -239,6 +264,10 @@ export type {
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
+  ProcessController,
+  ProcessEnv,
+  ProcessLaunchSpec,
+  ProcessSpawnSpec,
   SaveStageHandle,
   ShaderUniformMap,
   ShaderUniformValue,
@@ -266,6 +295,11 @@ export type {
   WaylandLayer,
   WaylandLayerKind,
   WaylandLayerSnapshot,
+  StartupOnceSpec,
+  StartupProcessRunPolicy,
+  StartupServiceSpec,
+  ManagedProcessRestartPolicy,
+  ManagedProcessReloadPolicy,
 } from "./types";
 export { DecorationSerializationError, serializeDecorationTree } from "./serialize";
 
@@ -295,6 +329,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
     background_effect: null,
   },
   output: OUTPUT_CONTROLLER,
+  process: PROCESS_CONTROLLER,
 };
 
 export function windowAction(

@@ -6,6 +6,9 @@ import { format } from "node:util";
 
 import {
   advanceAnimationFrame,
+  beginProcessConfigRegistration,
+  commitProcessConfigRegistration,
+  drainPendingProcessActions,
   hasActiveAnimations,
   type CompiledEffectHandle,
   createReactiveLayer,
@@ -16,9 +19,11 @@ import {
   dropWindowDependencies,
   enterLayerDependencyScope,
   isSignal,
+  installProcessResolverBridge,
   installShaderResolverBridge,
   installRuntimeHooks,
   takePendingDisplayConfig,
+  takePendingProcessConfig,
   leaveLayerDependencyScope,
   read,
   takeDirtyLayerNodeIds,
@@ -121,6 +126,8 @@ interface EvaluateSuccess {
   dirtyNodeIds?: string[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface SchedulerTickSuccess {
@@ -134,6 +141,8 @@ interface SchedulerTickSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface WindowClosedSuccess {
@@ -141,6 +150,8 @@ interface WindowClosedSuccess {
   ok: true;
   kind: "windowClosed";
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface RuntimeWindowAction {
@@ -160,6 +171,8 @@ interface InvokeHandlerSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface StartCloseSuccess {
@@ -174,6 +187,8 @@ interface StartCloseSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface GetEffectConfigSuccess {
@@ -182,6 +197,8 @@ interface GetEffectConfigSuccess {
   kind: "getEffectConfig";
   backgroundEffect?: CompiledEffectHandle | null;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface EvaluateLayerEffectsSuccess {
@@ -191,6 +208,8 @@ interface EvaluateLayerEffectsSuccess {
   effects: RuntimeLayerEffectAssignment[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
 }
 
 interface RuntimeFailure {
@@ -205,11 +224,44 @@ interface RuntimeLayerEffectAssignment {
   effect: CompiledEffectHandle | null;
 }
 
+interface RuntimeProcessConfigEntry {
+  id: string;
+  kind: "once" | "service";
+  cwd?: string;
+  env?: Record<string, string>;
+  command?: string[];
+  shell?: string;
+  runPolicy?: "once-per-session" | "once-per-config-version";
+  restart?: "never" | "on-failure" | "on-exit";
+  reload?: "keep-if-unchanged" | "always-restart";
+}
+
+interface RuntimeProcessSpawnAction {
+  cwd?: string;
+  env?: Record<string, string>;
+  command?: string[];
+  shell?: string;
+}
+
 function pendingDisplayConfigPayload():
   | { outputs: DisplayConfigDraft }
   | undefined {
   const outputs = takePendingDisplayConfig();
   return outputs ? { outputs } : undefined;
+}
+
+function pendingProcessConfigPayload():
+  | { entries: RuntimeProcessConfigEntry[] }
+  | undefined {
+  const entries = takePendingProcessConfig() as RuntimeProcessConfigEntry[] | undefined;
+  return entries ? { entries } : undefined;
+}
+
+function pendingProcessActionsPayload():
+  | RuntimeProcessSpawnAction[]
+  | undefined {
+  const actions = drainPendingProcessActions() as RuntimeProcessSpawnAction[];
+  return actions.length > 0 ? actions : undefined;
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
@@ -294,7 +346,11 @@ async function main() {
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
   installShaderResolverBridge(resolve(configPath));
-  const loaded = await import(moduleUrl);
+  installProcessResolverBridge(resolve(configPath));
+  beginProcessConfigRegistration();
+  const loaded = await import(moduleUrl).finally(() => {
+    commitProcessConfigRegistration();
+  });
   const decoration = resolveDecoration(loaded);
   const events = resolveEvents(loaded);
   const effectConfig = resolveEffectConfig(loaded);
@@ -328,6 +384,8 @@ async function main() {
         currentSchedulerTimeMs = request.nowMs;
         advanceAnimationFrame(request.nowMs);
         const serialized = evaluateSnapshot(decoration, events, request.snapshot);
+        const processConfig = pendingProcessConfigPayload();
+        const processActions = pendingProcessActionsPayload();
         writeResponse(socket, {
           requestId: request.requestId,
           ok: true,
@@ -338,10 +396,14 @@ async function main() {
           dirtyNodeIds: takeDirtyWindowNodeIds(request.snapshot.id),
           nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
           displayConfig: pendingDisplayConfigPayload(),
+          processConfig,
+          processActions,
         });
       } else {
         if (request.kind === "schedulerTick") {
           const tick = processSchedulerTick(request.nowMs);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
@@ -353,29 +415,41 @@ async function main() {
             actions: tick.actions,
             nextPollInMs: tick.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         } else if (request.kind === "windowClosed") {
           closeWindow(events, request.windowId);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
             kind: "windowClosed",
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         } else if (request.kind === "startClose") {
           currentSchedulerTimeMs = request.nowMs;
           const result = startClose(events, request.windowId);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
             kind: "startClose",
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         } else if (request.kind === "evaluateCached") {
           currentSchedulerTimeMs = request.nowMs;
           advanceAnimationFrame(request.nowMs);
           const result = evaluateCached(request.windowId);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
@@ -385,6 +459,8 @@ async function main() {
             dirtyNodeIds: result.dirtyNodeIds,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         } else if (request.kind === "getEffectConfig") {
           writeResponse(socket, {
@@ -398,6 +474,8 @@ async function main() {
           currentSchedulerTimeMs = request.nowMs;
           advanceAnimationFrame(request.nowMs);
           const result = evaluateLayerEffects(events, request.outputName, request.layers);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
@@ -405,16 +483,22 @@ async function main() {
             effects: result.effects,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         } else {
           currentSchedulerTimeMs = request.nowMs;
           const result = invokeHandler(request.windowId, request.handlerId);
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
           writeResponse(socket, {
             requestId: request.requestId,
             ok: true,
             kind: "invokeHandler",
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
+            processConfig,
+            processActions,
           });
         }
       }

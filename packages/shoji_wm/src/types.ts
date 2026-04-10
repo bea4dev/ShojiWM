@@ -317,6 +317,55 @@ export interface OutputController {
   applyDisplayConfig(mutator: (display: DisplayConfigDraft) => void): void;
 }
 
+export type ProcessEnv = Record<string, string>;
+
+export interface ProcessCommandSpec {
+  command: string[];
+}
+
+export interface ProcessShellSpec {
+  shell: string;
+}
+
+export type ProcessLaunchSpec = ProcessCommandSpec | ProcessShellSpec;
+
+export interface ProcessBaseSpec {
+  cwd?: string;
+  env?: ProcessEnv;
+}
+
+export type StartupProcessRunPolicy =
+  | "once-per-session"
+  | "once-per-config-version";
+
+export type ManagedProcessRestartPolicy =
+  | "never"
+  | "on-failure"
+  | "on-exit";
+
+export type ManagedProcessReloadPolicy =
+  | "keep-if-unchanged"
+  | "always-restart";
+
+export type StartupOnceSpec = ProcessBaseSpec &
+  ProcessLaunchSpec & {
+    runPolicy?: StartupProcessRunPolicy;
+  };
+
+export type StartupServiceSpec = ProcessBaseSpec &
+  ProcessLaunchSpec & {
+    restart?: ManagedProcessRestartPolicy;
+    reload?: ManagedProcessReloadPolicy;
+  };
+
+export type ProcessSpawnSpec = ProcessBaseSpec & ProcessLaunchSpec;
+
+export interface ProcessController {
+  once(id: string, spec: StartupOnceSpec): void;
+  service(id: string, spec: StartupServiceSpec): void;
+  spawn(spec: ProcessSpawnSpec): void;
+}
+
 export interface BorderValue {
   px: MaybeSignal<number>;
   color: MaybeSignal<string>;
@@ -426,6 +475,7 @@ export interface WindowManagerDefinition {
   event: import("./events").WindowManagerEventController;
   effect: WindowManagerEffectConfig;
   output: OutputController;
+  process: ProcessController;
   display?: DisplayConfig;
 }
 

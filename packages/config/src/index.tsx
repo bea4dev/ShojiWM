@@ -35,6 +35,11 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     }
 });*/
 
+WINDOW_MANAGER.process.once("fcitx5", {
+    command: ["fcitx5", "-d"],
+    runPolicy: "once-per-session",
+});
+
 WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {
         resolution: "best",

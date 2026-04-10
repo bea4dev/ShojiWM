@@ -16,7 +16,10 @@ use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
     DecorationTree, WindowTransform, WireCompiledEffect, decode_tree_json,
 };
-use crate::config::RuntimeDisplayConfigUpdate;
+use crate::{
+    config::RuntimeDisplayConfigUpdate,
+    runtime_process::{RuntimeProcessAction, RuntimeProcessConfigUpdate},
+};
 
 /// Dynamic decoration evaluation boundary.
 ///
@@ -85,6 +88,8 @@ pub struct DecorationEvaluationResult {
     pub dirty_node_ids: Vec<String>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,6 +101,8 @@ pub struct DecorationSchedulerTick {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -108,6 +115,8 @@ pub struct DecorationHandlerInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -115,6 +124,8 @@ pub struct LayerEffectEvaluationResult {
     pub effects: Vec<RuntimeLayerEffectAssignment>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +230,8 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
             dirty_node_ids: Vec::new(),
             next_poll_in_ms: None,
             display_config: None,
+            process_config: None,
+            process_actions: Vec::new(),
         })
     }
 }
@@ -382,6 +395,10 @@ struct RuntimeEvaluateResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -403,6 +420,10 @@ struct RuntimeSchedulerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -414,6 +435,10 @@ struct RuntimeClosedResponse {
     ok: bool,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    _process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    _process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -435,6 +460,10 @@ struct RuntimeInvokeHandlerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -456,6 +485,10 @@ struct RuntimeStartCloseResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -467,6 +500,10 @@ struct RuntimeFailureResponse {
     error: String,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    _process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    _process_actions: Option<Vec<RuntimeProcessAction>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -479,6 +516,10 @@ struct RuntimeEffectConfigResponse {
     background_effect: Option<WireCompiledEffect>,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    _process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    _process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -500,6 +541,10 @@ struct RuntimeLayerEffectsResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
     error: Option<String>,
 }
 
@@ -793,6 +838,14 @@ impl Clone for NodeDecorationEvaluator {
 
 impl NodeDecorationRuntime {
     fn write_request(&mut self, request: &str) -> Result<(), DecorationEvaluationError> {
+        // Some clients (Chrome/X) include U+2028/U+2029 in titles. Those code points are valid
+        // Rust strings and can survive serde_json serialization as literal characters, but the
+        // Node runtime parses line-delimited JSON with JSON.parse and can reject them as
+        // unterminated string content depending on the engine/path. Escape them explicitly so the
+        // runtime transport stays robust regardless of client-provided metadata.
+        let request = request
+            .replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029");
         match &mut self.connection {
             RuntimeConnection::Stdio { stdin, .. } => {
                 writeln!(stdin, "{request}")?;
@@ -985,6 +1038,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -1081,6 +1136,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -1174,6 +1231,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -1359,6 +1418,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -1470,6 +1531,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -1569,6 +1632,8 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 }
