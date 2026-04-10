@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     sync::Arc,
     time::Duration,
@@ -163,6 +163,10 @@ pub struct ShojiWM {
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
     pub force_full_damage: bool,
     pub debug_previous_scene_signatures: HashMap<String, Vec<String>>,
+    pub tty_maintenance_pending: bool,
+    pub tty_maintenance_reasons: BTreeSet<&'static str>,
+    pub event_source_wake_counts: BTreeMap<&'static str, u64>,
+    pub wayland_display_dispatched_request_count: u64,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -413,6 +417,10 @@ impl ShojiWM {
             layer_backdrop_cache: HashMap::new(),
             force_full_damage,
             debug_previous_scene_signatures: HashMap::new(),
+            tty_maintenance_pending: true,
+            tty_maintenance_reasons: BTreeSet::new(),
+            event_source_wake_counts: BTreeMap::new(),
+            wayland_display_dispatched_request_count: 0,
 
             is_running: true,
             needs_redraw: true,
@@ -446,6 +454,7 @@ impl ShojiWM {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
+                state.record_event_source_wake("wayland-listener");
                 info!("accepted new wayland client connection");
                 // Inside the callback, you should insert the client into the display.
                 //
@@ -454,6 +463,7 @@ impl ShojiWM {
                     .display_handle
                     .insert_client(client_stream, Arc::new(ClientState::default()))
                     .unwrap();
+                state.request_tty_maintenance("wayland-listener");
             })
             .expect("Failed to init the wayland event source.");
 
@@ -462,9 +472,12 @@ impl ShojiWM {
             .insert_source(
                 Generic::new(display, Interest::READ, Mode::Level),
                 |_, display, state| {
+                    state.record_event_source_wake("wayland-display");
                     // Safety: we don't drop the display
-                    unsafe {
-                        display.get_mut().dispatch_clients(state).unwrap();
+                    let dispatched = unsafe { display.get_mut().dispatch_clients(state).unwrap() };
+                    if dispatched > 0 {
+                        state.record_wayland_display_dispatched_requests(dispatched);
+                        state.request_tty_maintenance("wayland-display-requests");
                     }
                     Ok(PostAction::Continue)
                 },
@@ -478,6 +491,7 @@ impl ShojiWM {
         let loop_handle = event_loop.handle();
         loop_handle
             .insert_source(Timer::immediate(), |_, _, state| {
+                state.record_event_source_wake("runtime-scheduler-timer");
                 if !state.runtime_scheduler_enabled {
                     return TimeoutAction::ToDuration(Duration::from_millis(250));
                 }
@@ -497,12 +511,14 @@ impl ShojiWM {
                     state
                         .runtime_dirty_window_ids
                         .extend(tick.dirty_window_ids.into_iter());
+                    state.request_tty_maintenance("runtime-scheduler-dirty");
                     state.schedule_redraw();
                 }
 
                 state.consume_runtime_display_config(tick.display_config);
 
                 if !tick.actions.is_empty() {
+                    state.request_tty_maintenance("runtime-scheduler-actions");
                     state.apply_runtime_window_actions(tick.actions);
                     state.schedule_redraw();
                 }
@@ -901,6 +917,43 @@ impl ShojiWM {
         info!("shutdown requested");
         self.is_running = false;
         self.loop_signal.stop();
+    }
+
+    pub fn request_tty_maintenance(&mut self, reason: &'static str) {
+        self.tty_maintenance_pending = true;
+        self.tty_maintenance_reasons.insert(reason);
+    }
+
+    pub fn take_tty_maintenance_pending(&mut self) -> bool {
+        std::mem::take(&mut self.tty_maintenance_pending)
+    }
+
+    pub fn take_tty_maintenance_reasons(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.tty_maintenance_reasons)
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn record_event_source_wake(&mut self, source: &'static str) {
+        *self.event_source_wake_counts.entry(source).or_default() += 1;
+    }
+
+    pub fn take_event_source_wake_counts(&mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.event_source_wake_counts)
+            .into_iter()
+            .map(|(source, count)| (source.to_string(), count))
+            .collect()
+    }
+
+    pub fn record_wayland_display_dispatched_requests(&mut self, count: usize) {
+        self.wayland_display_dispatched_request_count = self
+            .wayland_display_dispatched_request_count
+            .saturating_add(count as u64);
+    }
+
+    pub fn take_wayland_display_dispatched_request_count(&mut self) -> u64 {
+        std::mem::take(&mut self.wayland_display_dispatched_request_count)
     }
 
     pub fn schedule_redraw(&mut self) {

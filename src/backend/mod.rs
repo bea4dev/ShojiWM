@@ -18,7 +18,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smithay::{
@@ -52,6 +52,11 @@ impl ShojiWMBackend {
             ShojiWMBackend::TTY => run_tty_udev(),
         }
     }
+}
+
+fn tty_maintenance_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_TTY_MAINTENANCE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
@@ -90,6 +95,8 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     event_loop
         .handle()
         .insert_source(libinput_backend, |event, _, state| {
+            state.record_event_source_wake("libinput");
+            state.request_tty_maintenance("libinput");
             state.process_input_event(event);
         })?;
 
@@ -189,27 +196,68 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_client();
 
+    let mut last_idle_maintenance_at = Instant::now();
+    let maintenance_debug = tty_maintenance_debug_enabled();
     while state.is_running {
-        if event_loop
-            .dispatch(Some(Duration::from_millis(16)), &mut state)
-            .is_err()
-        {
+        let dispatch_timeout = if state.needs_redraw {
+            Some(Duration::ZERO)
+        } else {
+            Some(Duration::from_millis(16))
+        };
+        if event_loop.dispatch(dispatch_timeout, &mut state).is_err() {
             break;
         }
 
+        let event_source_wakes = state.take_event_source_wake_counts();
+        let maintenance_pending = state.take_tty_maintenance_pending();
+        let maintenance_reasons = state.take_tty_maintenance_reasons();
+        let dispatched_wayland_requests = state.take_wayland_display_dispatched_request_count();
+        let allow_idle_maintenance =
+            last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
+
+        let should_run_maintenance = maintenance_pending || allow_idle_maintenance;
+        if maintenance_debug
+            && (should_run_maintenance
+                || state.needs_redraw
+                || !event_source_wakes.is_empty()
+                || dispatched_wayland_requests > 0)
+        {
+            info!(
+                needs_redraw = state.needs_redraw,
+                maintenance_pending,
+                maintenance_reasons = ?maintenance_reasons,
+                allow_idle_maintenance,
+                dispatched_wayland_requests,
+                event_source_wakes = ?event_source_wakes,
+                "tty maintenance decision",
+            );
+        }
+
+        let mut ran_pre_render_maintenance = false;
+        if should_run_maintenance {
+            ran_pre_render_maintenance = true;
+            let window_count_before_refresh = state.space.elements().count();
+            state.space.refresh();
+            let window_count_after_refresh = state.space.elements().count();
+            if window_count_after_refresh != window_count_before_refresh {
+                state.schedule_redraw();
+            }
+            state.popups.cleanup();
+        }
+
+        let mut rendered_this_iteration = false;
         if state.needs_redraw {
             trace!("tty loop observed pending redraw");
+            rendered_this_iteration = true;
         }
         render_if_needed(&mut state, &event_loop.handle())?;
 
-        let window_count_before_refresh = state.space.elements().count();
-        state.space.refresh();
-        let window_count_after_refresh = state.space.elements().count();
-        if window_count_after_refresh != window_count_before_refresh {
-            state.schedule_redraw();
+        if rendered_this_iteration || ran_pre_render_maintenance {
+            let _ = state.display_handle.flush_clients();
         }
-        state.popups.cleanup();
-        let _ = state.display_handle.flush_clients();
+        if ran_pre_render_maintenance && !rendered_this_iteration && !state.needs_redraw {
+            last_idle_maintenance_at = Instant::now();
+        }
     }
 
     info!("tty backend loop exited");
