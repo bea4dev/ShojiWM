@@ -473,6 +473,15 @@ impl ShojiWM {
                 Generic::new(display, Interest::READ, Mode::Level),
                 |_, display, state| {
                     state.record_event_source_wake("wayland-display");
+                    // Important: a readable display fd is not, by itself, proof that the TTY
+                    // backend should run full maintenance. Firefox in particular can keep this
+                    // source waking frequently under level-triggered semantics, and blindly
+                    // coupling that wake to `space.refresh()/popups.cleanup()/flush_clients()`
+                    // caused a self-amplifying CPU-heavy loop.
+                    //
+                    // We only request maintenance when `dispatch_clients()` actually consumes one
+                    // or more requests. The TTY main loop then decides when to perform the
+                    // pre-render refresh/cleanup work.
                     // Safety: we don't drop the display
                     let dispatched = unsafe { display.get_mut().dispatch_clients(state).unwrap() };
                     if dispatched > 0 {
@@ -920,6 +929,9 @@ impl ShojiWM {
     }
 
     pub fn request_tty_maintenance(&mut self, reason: &'static str) {
+        // The TTY backend no longer infers maintenance directly from event-loop wakeups.
+        // Instead, subsystems request it explicitly when they know that a later
+        // `space.refresh()/popups.cleanup()/flush_clients()` pass is semantically needed.
         self.tty_maintenance_pending = true;
         self.tty_maintenance_reasons.insert(reason);
     }

@@ -215,6 +215,25 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         let allow_idle_maintenance =
             last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
 
+        // Ordering matters here.
+        //
+        // The Firefox high-CPU regression came from treating generic `wayland-display` wakeups as
+        // a reason to run full TTY maintenance every loop iteration. A naive fix that merely
+        // suppressed maintenance then caused another bug: the first commit after an animation or
+        // other state transition would not become visible until some unrelated event (for example
+        // pointer motion) triggered another redraw.
+        //
+        // The stable arrangement is:
+        //
+        // 1. dispatch Wayland/input/runtime events
+        // 2. if maintenance is explicitly pending, run `space.refresh()/popups.cleanup()`
+        //    *before* rendering
+        // 3. render if a redraw is needed
+        // 4. flush clients only if maintenance or rendering actually ran
+        //
+        // This preserves the pre-render refresh that newly dispatched commits depend on, while
+        // avoiding the old self-amplifying "display wake => maintenance => flush => more display
+        // wake" loop that Firefox could trigger.
         let should_run_maintenance = maintenance_pending || allow_idle_maintenance;
         if maintenance_debug
             && (should_run_maintenance
