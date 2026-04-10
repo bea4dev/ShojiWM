@@ -57,6 +57,11 @@ fn frame_callback_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_CALLBACK_DEBUG").is_some()
 }
 
+fn frame_liveness_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn frame_throttle_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some()
 }
@@ -190,6 +195,65 @@ pub fn take_presentation_feedback(
 }
 
 impl ShojiWM {
+    pub fn send_primary_frame_callbacks_for_output(
+        &mut self,
+        output: &Output,
+        time: Duration,
+        frame_callback_sequence: Option<u32>,
+    ) {
+        let throttle = Some(Duration::from_secs(1));
+        let debug = frame_callback_debug_enabled() || frame_liveness_debug_enabled();
+        let callback_count = std::cell::Cell::new(0usize);
+
+        let should_send =
+            |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+             states: &smithay::wayland::compositor::SurfaceData| {
+                let current_primary_output = surface_primary_scanout_output(surface, states);
+                if current_primary_output.as_ref() != Some(output) {
+                    return None;
+                }
+
+                if let Some(sequence) = frame_callback_sequence {
+                    let frame_throttling_state = states
+                        .data_map
+                        .get_or_insert(SurfaceFrameThrottlingState::default);
+                    let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
+                    if let Some((last_output, last_sequence)) = &*last_sent_at
+                        && last_output == output
+                        && *last_sequence == sequence
+                    {
+                        return None;
+                    }
+                    *last_sent_at = Some((output.clone(), sequence));
+                }
+
+                if debug {
+                    callback_count.set(callback_count.get() + 1);
+                }
+                Some(output.clone())
+            };
+
+        self.space.elements().for_each(|window| {
+            if self.space.outputs_for_element(window).contains(output) {
+                window.send_frame(output, time, throttle, &should_send);
+            }
+        });
+
+        let map = layer_map_for_output(output);
+        for layer_surface in map.layers() {
+            layer_surface.send_frame(output, time, throttle, &should_send);
+        }
+
+        if debug {
+            info!(
+                output = %output.name(),
+                surface_count = callback_count.get(),
+                sequence = ?frame_callback_sequence,
+                "primary-only frame callbacks sent"
+            );
+        }
+    }
+
     pub fn send_frame_callbacks_for_output(
         &mut self,
         output: &Output,

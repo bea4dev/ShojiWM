@@ -40,6 +40,11 @@ fn commit_rate_debug_enabled() -> bool {
     std::env::var_os("SHOJI_COMMIT_RATE_DEBUG").is_some()
 }
 
+fn frame_liveness_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn previous_transform_snapshot_source_damage_time(
     window_id: &str,
     now: Duration,
@@ -99,6 +104,15 @@ impl CompositorHandler for ShojiWM {
             self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
             window.on_commit();
             let snapshot = self.snapshot_window(&window);
+            if frame_liveness_debug_enabled() {
+                info!(
+                    window_id = %snapshot.id,
+                    title = %snapshot.title,
+                    app_id = ?snapshot.app_id,
+                    source_damage_count = source_damage.len(),
+                    "frame liveness: window commit observed",
+                );
+            }
             let commit_time = std::time::Duration::from(self.clock.now());
             if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                 let previous_commit_time =

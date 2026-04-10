@@ -75,6 +75,11 @@ use smithay::wayland::presentation::Refresh;
 const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::DEFAULT;
 
+fn frame_liveness_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 type GbmDrmOutput = DrmOutput<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
@@ -516,7 +521,7 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
 
 fn render_surface(
     state: &mut ShojiWM,
-    _loop_handle: &LoopHandle<'_, ShojiWM>,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
     node: DrmNode,
     crtc: crtc::Handle,
 ) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
@@ -883,6 +888,25 @@ fn render_surface(
                         .iter()
                         .any(|damage| damage.owner == *snapshot_id)
             });
+            if frame_liveness_debug_enabled() {
+                let snapshot = window_decorations.get(window).map(|decoration| &decoration.snapshot);
+                tracing::info!(
+                    output = %output.name(),
+                    window_id = %window_id,
+                    title = ?snapshot.map(|snapshot| snapshot.title.as_str()),
+                    app_id = ?snapshot.and_then(|snapshot| snapshot.app_id.as_deref()),
+                    direct_surface_count,
+                    use_full_window_snapshot,
+                    used_transform_snapshot_last_frame,
+                    window_has_snapshot_damage,
+                    translation_x = visual_state.translation.x,
+                    translation_y = visual_state.translation.y,
+                    scale_x = visual_state.scale.x,
+                    scale_y = visual_state.scale.y,
+                    opacity = visual_state.opacity,
+                    "tty frame liveness: window snapshot decision",
+                );
+            }
             if use_full_window_snapshot && window_has_snapshot_damage {
                 frame_snapshot_damage_window_count =
                     frame_snapshot_damage_window_count.saturating_add(1);
@@ -2496,6 +2520,14 @@ fn render_surface(
             &result.states,
         );
         if !result.is_empty {
+            if frame_liveness_debug_enabled() {
+                tracing::info!(
+                    output = %output.name(),
+                    result_is_empty = false,
+                    frame_callback_sequence = surface.frame_callback_sequence,
+                    "tty frame liveness: damage frame rendered",
+                );
+            }
             if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
                 tracing::info!(
                     output = %output.name(),
@@ -2640,6 +2672,14 @@ fn render_surface(
                 Some(frame_callback_sequence),
             );
         } else {
+            if frame_liveness_debug_enabled() {
+                tracing::info!(
+                    output = %output.name(),
+                    result_is_empty = true,
+                    frame_callback_sequence = surface.frame_callback_sequence,
+                    "tty frame liveness: no-damage frame rendered",
+                );
+            }
             if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
                 tracing::info!(
                     output = %output.name(),
@@ -2648,14 +2688,23 @@ fn render_surface(
                 );
             }
             trace!(output = %output.name(), "tty frame had no damage");
-            // Go to Idle directly (like niri). Scheduling an estimated vblank timer here
-            // caused spurious frame callbacks: any global schedule_redraw() (e.g. from a
-            // Kitty cursor blink on eDP-1) triggered a no-damage render for every output,
-            // which armed the timer, which fired and sent Smithay's 1fps throttle callback
-            // to Firefox's root surface (primary=None) on DP-2. Firefox responded with a
-            // commit, starting a callback→commit burst loop at ~1Hz. In niri, a no-damage
-            // render also transitions directly to Idle with no timer and no callbacks.
-            surface.redraw_state = TtyRedrawState::Idle;
+            // A completely idle no-damage frame still advances the logical refresh cycle.
+            // If we drop straight to Idle here, visible clients such as Kitty can end up waiting
+            // forever for the next frame callback after an animation finishes, and their next
+            // input-driven repaint only appears once some unrelated event (for example pointer
+            // motion) forces another redraw.
+            //
+            // We therefore keep a lightweight estimated-vblank timer, but unlike the earlier
+            // version we only send callbacks to surfaces whose primary scanout output is this
+            // output. That preserves the "next callback after no-damage" behaviour that visible
+            // clients need without reintroducing the Firefox `primary=None` callback burst.
+            let generation = surface.frame_callback_timer_generation.wrapping_add(1);
+            surface.frame_callback_timer_generation = generation;
+            surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
+                queued: false,
+                generation,
+            };
+            schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
         }
 
         captured_blink_damage
@@ -5361,11 +5410,24 @@ fn window_scene_elements_for_capture(
 }
 
 fn is_identity_visual(visual: WindowVisualState) -> bool {
+    // Do not use machine epsilon here. The TS animation system intentionally snaps finished
+    // timelines to their target value, but the Rust side only sees the serialized transform after
+    // several conversions (signal -> JSON -> serde -> logical/physical transform state). In
+    // practice we can end up with values such as opacity=0.999883 even though the animation is
+    // visually finished.
+    //
+    // Treating that as "non-identity" keeps the window in transform-snapshot mode forever. Once
+    // the animation stops changing, the snapshot throttling path no longer restores
+    // primary_scanout_output, frame callbacks stop, and clients like Kitty stop producing commits
+    // until some unrelated input event wakes them up again.
+    //
+    // A small tolerance fixes the classification without affecting visually meaningful transforms.
+    const VISUAL_IDENTITY_EPSILON: f64 = 1e-3;
     visual.translation.x == 0
         && visual.translation.y == 0
-        && (visual.scale.x - 1.0).abs() < f64::EPSILON
-        && (visual.scale.y - 1.0).abs() < f64::EPSILON
-        && (visual.opacity - 1.0).abs() < f32::EPSILON
+        && (visual.scale.x - 1.0).abs() < VISUAL_IDENTITY_EPSILON
+        && (visual.scale.y - 1.0).abs() < VISUAL_IDENTITY_EPSILON
+        && f64::from((visual.opacity - 1.0).abs()) < VISUAL_IDENTITY_EPSILON
 }
 
 fn capture_live_snapshot_for_window(
@@ -5758,12 +5820,8 @@ fn schedule_estimated_vblank_callback(
                         generation: current_generation,
                     } if surface.frame_callback_timer_armed && current_generation == generation => {
                         surface.frame_callback_timer_armed = false;
-                        // Do NOT increment sequence here. The sequence is only incremented on
-                        // actual damage renders (see render_surface). By reusing the same
-                        // sequence, the dedup in send_frame_callbacks_for_output prevents
-                        // sending a spurious callback to primary surfaces that already received
-                        // one for this sequence (e.g. Firefox), while non-primary surfaces still
-                        // get their 1fps callbacks via Smithay's throttle mechanism.
+                        surface.frame_callback_sequence =
+                            surface.frame_callback_sequence.wrapping_add(1);
                         let sequence = surface.frame_callback_sequence;
                         if queued {
                             surface.redraw_state = TtyRedrawState::Queued;
@@ -5790,6 +5848,16 @@ fn schedule_estimated_vblank_callback(
                         "transform snapshot tty estimated vblank fired"
                     );
                 }
+                if frame_liveness_debug_enabled() {
+                    tracing::info!(
+                        output = %output.name(),
+                        queued = true,
+                        generation,
+                        sequence,
+                        callback_time = ?callback_time,
+                        "tty frame liveness: estimated vblank queued redraw",
+                    );
+                }
                 state.schedule_redraw();
             } else {
                 if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
@@ -5801,8 +5869,21 @@ fn schedule_estimated_vblank_callback(
                         "transform snapshot tty estimated vblank fired"
                     );
                 }
-                state.send_frame_callbacks_for_output(&output, callback_time, Some(sequence));
-                state.signal_post_repaint_barriers(&output);
+                if frame_liveness_debug_enabled() {
+                    tracing::info!(
+                        output = %output.name(),
+                        queued = false,
+                        generation,
+                        sequence,
+                        callback_time = ?callback_time,
+                        "tty frame liveness: estimated vblank sending primary-only callbacks",
+                    );
+                }
+                state.send_primary_frame_callbacks_for_output(
+                    &output,
+                    callback_time,
+                    Some(sequence),
+                );
             }
             TimeoutAction::Drop
         })

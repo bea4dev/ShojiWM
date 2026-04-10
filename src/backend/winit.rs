@@ -3278,9 +3278,13 @@ fn closing_snapshot_elements(
 }
 
 fn is_identity_visual(visual: WindowVisualState) -> bool {
+    // Keep the identity test consistent with the TTY backend. Exact float equality is too strict
+    // for animation end states once the values have gone through runtime serialization and
+    // renderer-space conversion.
+    const VISUAL_IDENTITY_EPSILON: f64 = 1e-3;
     visual.translation.x == 0
         && visual.translation.y == 0
-        && (visual.scale.x - 1.0).abs() < f64::EPSILON
-        && (visual.scale.y - 1.0).abs() < f64::EPSILON
-        && (visual.opacity - 1.0).abs() < f32::EPSILON
+        && (visual.scale.x - 1.0).abs() < VISUAL_IDENTITY_EPSILON
+        && (visual.scale.y - 1.0).abs() < VISUAL_IDENTITY_EPSILON
+        && f64::from((visual.opacity - 1.0).abs()) < VISUAL_IDENTITY_EPSILON
 }
