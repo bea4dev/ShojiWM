@@ -2600,23 +2600,23 @@ fn render_surface(
                 }
 
                 for window in snapshot_windows {
-                    // Only restore primary for windows whose visual_transform changed this
-                    // frame (i.e. they are actively animating). Stationary windows in
-                    // snapshot mode keep primary=None so the 1-second throttle engages.
-                    let is_animating = state
-                        .window_decorations
-                        .get(&window)
-                        .map(|d| snapshot_transform_changed_ids.contains(&d.snapshot.id))
-                        .unwrap_or(false);
-                    if !is_animating {
-                        if std::env::var_os("SHOJI_FRAME_THROTTLE_DEBUG").is_some() {
-                            tracing::info!(
-                                output = %output.name(),
-                                "snapshot fix: transform unchanged — skipping primary restore (throttle applies)",
-                            );
-                        }
-                        continue;
-                    }
+                    // Restore primary scanout output for every window currently rendered through a
+                    // full-window snapshot.
+                    //
+                    // This is required not only for actively animating windows, but also for
+                    // stationary windows with a persistent non-identity transform such as
+                    // `scale=0.9`. Those windows are still visibly present on this output, and if
+                    // we keep their primary scanout as `None` they fall into Smithay's 1-second
+                    // frame-callback throttle path. In practice that causes client-side hover and
+                    // other high-frequency updates to look extremely choppy, with little or no
+                    // damage reaching the output until some unrelated event (for example moving
+                    // the window) produces a larger redraw.
+                    //
+                    // Firefox's previous high-CPU issue was not caused by "stationary snapshot
+                    // windows receiving primary scanout". It came from generic non-presented
+                    // surfaces (notably root surfaces with no render elements) repeatedly waking
+                    // the compositor. Restoring primary here is therefore the correct behaviour
+                    // for visible snapshot-backed windows.
                     let mut synthetic_states = RenderElementStates::default();
                     window.with_surfaces(|surface, _| {
                         synthetic_states.states.insert(

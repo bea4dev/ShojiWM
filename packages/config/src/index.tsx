@@ -71,7 +71,7 @@ WINDOW_MANAGER.event.onOpen((window) => {
         to: 1,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
     });
-    window.animation.set(focusAnimation, window.isFocused() ? 1 : 1.0);
+    window.animation.set(focusAnimation, window.isFocused() ? 1 : 0.9);
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
@@ -83,15 +83,11 @@ WINDOW_MANAGER.event.onStartClose((window) => {
 });
 
 WINDOW_MANAGER.event.onFocus((window, focused) => {
-    if (window.animation.running(openAnimation)) {
-        return;
-    }
-/*
     window.animation.start(focusAnimation, {
         duration: seconds(0.5),
         to: focused ? 1 : 0.9,
         easing: cubicBezier(0.1, 0.93, 0.1, 0.93)
-    });*/
+    });
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
