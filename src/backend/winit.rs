@@ -598,7 +598,14 @@ pub fn init_winit(
                                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                                     let first_geometry = clipped
                                         .first()
-                                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                                        .and_then(|element| match element {
+                                            window_render::WindowClipElement::Clipped(element) => Some(
+                                                smithay::backend::renderer::element::Element::geometry(element, scale),
+                                            ),
+                                            window_render::WindowClipElement::Raw(element) => Some(
+                                                smithay::backend::renderer::element::Element::geometry(element, scale),
+                                            ),
+                                        });
                                     let window_geometry = window.geometry();
                                     let decoration_client_rect = state
                                         .window_decorations
@@ -688,7 +695,22 @@ pub fn init_winit(
                                         WinitRenderElements::TransformedWindow,
                                     )
                                 } else {
-                                    transform_clipped_elements(clipped, composition_visual)
+                                    clipped
+                                        .into_iter()
+                                        .flat_map(|element| match element {
+                                            window_render::WindowClipElement::Clipped(element) => {
+                                                transform_clipped_elements(vec![element], composition_visual)
+                                            }
+                                            window_render::WindowClipElement::Raw(element) => {
+                                                transform_window_elements(
+                                                    vec![element],
+                                                    composition_visual,
+                                                    WinitRenderElements::Window,
+                                                    WinitRenderElements::TransformedWindow,
+                                                )
+                                            }
+                                        })
+                                        .collect()
                                 }
                             } else {
                                 let surfaces = window_render::surface_elements(

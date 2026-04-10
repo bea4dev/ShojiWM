@@ -1432,7 +1432,14 @@ fn render_surface(
                         Some(content_clip),
                     )
                     .unwrap_or_default();
-                    snapshot_scene.extend(clipped.into_iter().map(TtyRenderElements::Clipped));
+                    snapshot_scene.extend(clipped.into_iter().map(|element| match element {
+                        window_render::WindowClipElement::Clipped(element) => {
+                            TtyRenderElements::Clipped(element)
+                        }
+                        window_render::WindowClipElement::Raw(element) => {
+                            TtyRenderElements::Window(element)
+                        }
+                    }));
                 } else {
                     snapshot_scene.extend(
                         window_render::surface_elements(
@@ -1871,7 +1878,14 @@ fn render_surface(
                 let bypass_clip = std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some();
                 if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                     let first_geometry = clipped.first().map(|element| {
-                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                        match element {
+                            window_render::WindowClipElement::Clipped(element) => {
+                                smithay::backend::renderer::element::Element::geometry(element, scale)
+                            }
+                            window_render::WindowClipElement::Raw(element) => {
+                                smithay::backend::renderer::element::Element::geometry(element, scale)
+                            }
+                        }
                     });
                     let window_geometry = window.geometry();
                     let decoration_client_rect = window_decorations
@@ -2189,7 +2203,7 @@ fn render_surface(
                         );
                     }
                 }
-                let transformed = if bypass_clip {
+                let transformed: Vec<TtyRenderElements> = if bypass_clip {
                     window_render::debug_surface_elements(
                         window,
                         &mut backend.renderer,
@@ -2265,7 +2279,22 @@ fn render_surface(
                             .collect()
                     }
                 } else {
-                    transform_clipped_elements(clipped, visual_state)
+                    clipped
+                        .into_iter()
+                        .flat_map(|element| match element {
+                            window_render::WindowClipElement::Clipped(element) => {
+                                transform_clipped_elements(vec![element], visual_state)
+                            }
+                            window_render::WindowClipElement::Raw(element) => {
+                                transform_window_elements(
+                                    vec![element],
+                                    visual_state,
+                                    TtyRenderElements::Window,
+                                    TtyRenderElements::TransformedWindow,
+                                )
+                            }
+                        })
+                        .collect()
                 };
                 if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
                     if let Some(first_geometry) = transformed.first().map(|element| {

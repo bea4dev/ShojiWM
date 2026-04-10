@@ -26,6 +26,11 @@ use tracing::info;
 
 use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
 
+pub enum WindowClipElement {
+    Clipped(ClippedSurfaceElement),
+    Raw(WaylandSurfaceRenderElement<GlesRenderer>),
+}
+
 fn popup_debug_enabled() -> bool {
     std::env::var_os("SHOJI_POPUP_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -490,7 +495,7 @@ pub fn clipped_surface_elements(
     clip_scale: Scale<f64>,
     alpha: f32,
     clip: Option<ContentClip>,
-) -> Result<Vec<ClippedSurfaceElement>, smithay::backend::renderer::gles::GlesError> {
+) -> Result<Vec<WindowClipElement>, smithay::backend::renderer::gles::GlesError> {
     if std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {
         return Ok(Vec::new());
     }
@@ -568,18 +573,26 @@ pub fn clipped_surface_elements(
             .map(|(index, element)| {
                 let geometry_override =
                     geometry.filter(|_| selected_indices.contains(&index));
-                ClippedSurfaceElement::new(
-                    renderer,
-                    element,
-                    output_scale,
-                    clip_scale,
-                    output_origin,
-                    clip,
-                    geometry_override,
-                    debug_label.clone(),
-                )
+                if geometry_override.is_some() {
+                    ClippedSurfaceElement::new(
+                        renderer,
+                        element,
+                        output_scale,
+                        clip_scale,
+                        output_origin,
+                        clip,
+                        geometry_override,
+                        debug_label.clone(),
+                    )
+                    .map(WindowClipElement::Clipped)
+                } else {
+                    Ok(WindowClipElement::Raw(element))
+                }
             })
             .collect(),
-        None => Ok(Vec::new()),
+        None => Ok(elements
+            .into_iter()
+            .map(WindowClipElement::Raw)
+            .collect()),
     }
 }
