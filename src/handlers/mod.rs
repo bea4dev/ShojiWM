@@ -13,15 +13,23 @@ use smithay::desktop::{PopupKind, WindowSurfaceType, layer_map_for_output};
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
     Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
 };
+use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::{self, ZwpVirtualKeyboardV1},
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, backend::ClientId, delegate_dispatch,
+    delegate_global_dispatch,
+};
 use smithay::utils::{Logical, Rectangle};
 use smithay::utils::Serial;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::background_effect::{Capability, ExtBackgroundEffectHandler};
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, ImportNotifier};
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
-use smithay::wayland::input_method::{InputMethodHandler, PopupSurface};
+use smithay::wayland::input_method::{InputMethodHandler, InputMethodSeat, PopupSurface};
 use smithay::wayland::shell::kde::decoration::KdeDecorationHandler;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
@@ -32,13 +40,16 @@ use smithay::wayland::selection::primary_selection::{
 use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
+use smithay::wayland::text_input::TextInputSeat;
+use smithay::wayland::virtual_keyboard::{
+    VirtualKeyboardManagerGlobalData, VirtualKeyboardManagerState, VirtualKeyboardUserData,
+};
 use smithay::{
     delegate_commit_timing, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_fifo, delegate_fixes, delegate_fractional_scale,
     delegate_input_method_manager, delegate_kde_decoration, delegate_layer_shell, delegate_output,
     delegate_presentation, delegate_primary_selection, delegate_seat, delegate_single_pixel_buffer,
-    delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_decoration,
+    delegate_text_input_manager, delegate_viewporter, delegate_xdg_decoration,
 };
 use smithay::delegate_background_effect;
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
@@ -84,9 +95,57 @@ delegate_single_pixel_buffer!(ShojiWM);
 delegate_fixes!(ShojiWM);
 delegate_text_input_manager!(ShojiWM);
 delegate_input_method_manager!(ShojiWM);
-delegate_virtual_keyboard_manager!(ShojiWM);
 delegate_kde_decoration!(ShojiWM);
 delegate_background_effect!(ShojiWM);
+delegate_global_dispatch!(ShojiWM: [ZwpVirtualKeyboardManagerV1: VirtualKeyboardManagerGlobalData] => VirtualKeyboardManagerState);
+delegate_dispatch!(ShojiWM: [ZwpVirtualKeyboardManagerV1: ()] => VirtualKeyboardManagerState);
+
+impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<ShojiWM>, ShojiWM> for ShojiWM {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        virtual_keyboard: &ZwpVirtualKeyboardV1,
+        request: zwp_virtual_keyboard_v1::Request,
+        data: &VirtualKeyboardUserData<Self>,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let should_flush_forwarded_virtual_keyboard = matches!(
+            &request,
+            zwp_virtual_keyboard_v1::Request::Key { .. }
+                | zwp_virtual_keyboard_v1::Request::Modifiers { .. }
+        );
+
+        <VirtualKeyboardManagerState as Dispatch<
+            ZwpVirtualKeyboardV1,
+            VirtualKeyboardUserData<ShojiWM>,
+            ShojiWM,
+        >>::request(state, client, virtual_keyboard, request, data, dh, data_init);
+
+        if should_flush_forwarded_virtual_keyboard && state.seat.input_method().keyboard_grabbed() {
+            let mut active_text_input = false;
+            state.seat.text_input().with_active_text_input(|_, _| {
+                active_text_input = true;
+            });
+            if active_text_input {
+                let _ = state.display_handle.flush_clients();
+            }
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        virtual_keyboard: &ZwpVirtualKeyboardV1,
+        data: &VirtualKeyboardUserData<Self>,
+    ) {
+        <VirtualKeyboardManagerState as Dispatch<
+            ZwpVirtualKeyboardV1,
+            VirtualKeyboardUserData<ShojiWM>,
+            ShojiWM,
+        >>::destroyed(state, client, virtual_keyboard, data);
+    }
+}
 
 impl FractionalScaleHandler for ShojiWM {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
