@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Socket, createConnection } from "node:net";
-import { createInterface } from "node:readline";
 import { format } from "node:util";
 
 import {
@@ -322,8 +321,8 @@ function installRuntimeConsoleBridge() {
 async function main() {
   const configPath = process.argv[2];
   const socketPath = process.argv[3];
-  if (!configPath || !socketPath) {
-    throw new Error("usage: tsx tools/decoration-runtime.ts <config-path> <socket-path>");
+  if (!configPath) {
+    throw new Error("usage: tsx tools/decoration-runtime.ts <config-path> [socket-path]");
   }
   installRuntimeConsoleBridge();
 
@@ -355,27 +354,21 @@ async function main() {
   const events = resolveEvents(loaded);
   const effectConfig = resolveEffectConfig(loaded);
 
-  const socket = await connectSocket(socketPath);
-  const rl = createInterface({
-    input: socket,
-    crlfDelay: Infinity,
-  });
+  const socket = socketPath ? await connectSocket(socketPath) : null;
+  const input = socket ?? process.stdin;
+  const output = socket ?? process.stdout;
 
-  for await (const line of rl) {
-    if (!line.trim()) {
-      continue;
-    }
-
+  for await (const payload of readFramedMessages(input)) {
     let request: RuntimeRequest;
     try {
-      request = JSON.parse(line) as RuntimeRequest;
+      request = JSON.parse(payload.toString("utf8")) as RuntimeRequest;
     } catch (error) {
-        writeResponse(socket, {
-          requestId: -1,
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-      });
-      continue;
+        await writeResponse(output, {
+            requestId: -1,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
     }
 
     try {
@@ -386,7 +379,7 @@ async function main() {
         const serialized = evaluateSnapshot(decoration, events, request.snapshot);
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
-        writeResponse(socket, {
+        await writeResponse(output, {
           requestId: request.requestId,
           ok: true,
           kind: "evaluate",
@@ -404,7 +397,7 @@ async function main() {
           const tick = processSchedulerTick(request.nowMs);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "schedulerTick",
@@ -422,7 +415,7 @@ async function main() {
           closeWindow(events, request.windowId);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "windowClosed",
@@ -435,7 +428,7 @@ async function main() {
           const result = startClose(events, request.windowId);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "startClose",
@@ -450,7 +443,7 @@ async function main() {
           const result = evaluateCached(request.windowId);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "evaluateCached",
@@ -463,7 +456,7 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "getEffectConfig") {
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "getEffectConfig",
@@ -476,7 +469,7 @@ async function main() {
           const result = evaluateLayerEffects(events, request.outputName, request.layers);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "evaluateLayerEffects",
@@ -491,7 +484,7 @@ async function main() {
           const result = invokeHandler(request.windowId, request.handlerId);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          writeResponse(socket, {
+          await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
             kind: "invokeHandler",
@@ -503,7 +496,7 @@ async function main() {
         }
       }
     } catch (error) {
-      writeResponse(socket, {
+      await writeResponse(output, {
         requestId: request.requestId,
         ok: false,
         error: error instanceof Error ? error.stack ?? error.message : String(error),
@@ -1032,7 +1025,7 @@ async function connectSocket(socketPath: string): Promise<Socket> {
 }
 
 function writeResponse(
-  socket: Socket,
+  output: NodeJS.WritableStream,
   response:
     | EvaluateSuccess
     | SchedulerTickSuccess
@@ -1042,8 +1035,59 @@ function writeResponse(
     | GetEffectConfigSuccess
     | EvaluateLayerEffectsSuccess
     | RuntimeFailure,
-) {
-  socket.write(`${JSON.stringify(response)}\n`);
+) : Promise<void> {
+  const payload = Buffer.from(JSON.stringify(response), "utf8");
+  if (payload.length > 0xffff_ffff) {
+    throw new Error("runtime response too large");
+  }
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32LE(payload.length, 0);
+
+  return new Promise((resolveWrite, rejectWrite) => {
+    const onError = (error: Error) => {
+      cleanup();
+      rejectWrite(error);
+    };
+    const cleanup = () => {
+      output.off("error", onError);
+    };
+
+    output.on("error", onError);
+    output.write(header);
+    output.write(payload, (error) => {
+      cleanup();
+      if (error) {
+        rejectWrite(error);
+      } else {
+        resolveWrite();
+      }
+    });
+  });
+}
+
+async function* readFramedMessages(
+  input: NodeJS.ReadableStream,
+): AsyncGenerator<Buffer> {
+  let buffered = Buffer.alloc(0);
+
+  for await (const chunk of input) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    buffered = Buffer.concat([buffered, bytes]);
+
+    while (buffered.length >= 4) {
+      const frameLength = buffered.readUInt32LE(0);
+      if (buffered.length < 4 + frameLength) {
+        break;
+      }
+
+      yield buffered.subarray(4, 4 + frameLength);
+      buffered = buffered.subarray(4 + frameLength);
+    }
+  }
+
+  if (buffered.length !== 0) {
+    throw new Error("incomplete framed runtime message at EOF");
+  }
 }
 
 main().catch((error) => {

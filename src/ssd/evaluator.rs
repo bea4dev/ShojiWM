@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -493,20 +493,6 @@ struct RuntimeStartCloseResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RuntimeFailureResponse {
-    #[serde(rename = "requestId")]
-    request_id: i64,
-    ok: bool,
-    error: String,
-    #[serde(rename = "displayConfig")]
-    _display_config: Option<RuntimeDisplayConfigUpdate>,
-    #[serde(rename = "processConfig")]
-    _process_config: Option<RuntimeProcessConfigUpdate>,
-    #[serde(rename = "processActions")]
-    _process_actions: Option<Vec<RuntimeProcessAction>>,
-}
-
-#[derive(serde::Deserialize)]
 struct RuntimeEffectConfigResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
@@ -760,12 +746,9 @@ impl NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeEffectConfigResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -778,17 +761,6 @@ impl NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeEffectConfigResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -838,25 +810,41 @@ impl Clone for NodeDecorationEvaluator {
 
 impl NodeDecorationRuntime {
     fn write_request(&mut self, request: &str) -> Result<(), DecorationEvaluationError> {
-        // Some clients (Chrome/X) include U+2028/U+2029 in titles. Those code points are valid
-        // Rust strings and can survive serde_json serialization as literal characters, but the
-        // Node runtime parses line-delimited JSON with JSON.parse and can reject them as
-        // unterminated string content depending on the engine/path. Escape them explicitly so the
-        // runtime transport stays robust regardless of client-provided metadata.
-        let request = request
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029");
+        let bytes = request.as_bytes();
+        let len = u32::try_from(bytes.len()).map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime request too large".into())
+        })?;
         match &mut self.connection {
             RuntimeConnection::Stdio { stdin, .. } => {
-                writeln!(stdin, "{request}")?;
+                stdin.write_all(&len.to_le_bytes())?;
+                stdin.write_all(bytes)?;
                 stdin.flush()?;
             }
             RuntimeConnection::Uds { writer, .. } => {
-                writeln!(writer, "{request}")?;
+                writer.write_all(&len.to_le_bytes())?;
+                writer.write_all(bytes)?;
                 writer.flush()?;
             }
         }
         Ok(())
+    }
+
+    fn read_response<T: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<Option<T>, DecorationEvaluationError> {
+        let payload = match &mut self.connection {
+            RuntimeConnection::Stdio { stdout, .. } => read_framed_message(stdout)?,
+            RuntimeConnection::Uds { reader, .. } => read_framed_message(reader)?,
+        };
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&payload).map(Some).map_err(|error| {
+            DecorationEvaluationError::InvalidResponse(format!(
+                "{error}; payload={}",
+                String::from_utf8_lossy(&payload)
+            ))
+        })
     }
 }
 
@@ -938,6 +926,28 @@ fn spawn_stderr_drain(child: &mut Child) -> Arc<Mutex<String>> {
     stderr_log
 }
 
+fn read_framed_message<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+    let mut header = [0u8; 4];
+    match reader.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error),
+    }
+
+    let payload_len = u32::from_le_bytes(header) as usize;
+    const MAX_RUNTIME_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+    if payload_len > MAX_RUNTIME_MESSAGE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("runtime message too large: {payload_len} bytes"),
+        ));
+    }
+
+    let mut payload = vec![0u8; payload_len];
+    reader.read_exact(&mut payload)?;
+    Ok(Some(payload))
+}
+
 #[derive(serde::Deserialize)]
 struct RuntimeConsoleLog {
     level: String,
@@ -971,12 +981,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeEvaluateResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -989,17 +996,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeEvaluateResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1069,12 +1065,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeEvaluateResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1087,17 +1080,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeEvaluateResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1170,12 +1152,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeSchedulerResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1188,17 +1167,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeSchedulerResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1262,12 +1230,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeClosedResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1280,17 +1245,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeClosedResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1351,12 +1305,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeInvokeHandlerResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1369,14 +1320,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let response: RuntimeInvokeHandlerResponse = match serde_json::from_str(line.trim()) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(err.to_string()));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1454,12 +1397,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeStartCloseResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1472,24 +1412,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeStartCloseResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                if let Ok(failure) = serde_json::from_str::<RuntimeFailureResponse>(trimmed) {
-                    *runtime_guard = None;
-                    return Err(DecorationEvaluationError::RuntimeProtocol(format!(
-                        "runtime returned failure for startClose (requestId={} ok={}): {}",
-                        failure.request_id, failure.ok, failure.error
-                    )));
-                }
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
@@ -1564,12 +1486,9 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let mut line = String::new();
-        let bytes = match &mut runtime.connection {
-            RuntimeConnection::Stdio { stdout, .. } => stdout.read_line(&mut line)?,
-            RuntimeConnection::Uds { reader, .. } => reader.read_line(&mut line)?,
-        };
-        if bytes == 0 {
+        let response: RuntimeLayerEffectsResponse = if let Some(response) = runtime.read_response()? {
+            response
+        } else {
             let status = runtime
                 .child
                 .try_wait()?
@@ -1582,17 +1501,6 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .unwrap_or_default();
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        }
-
-        let trimmed = line.trim();
-        let response: RuntimeLayerEffectsResponse = match serde_json::from_str(trimmed) {
-            Ok(response) => response,
-            Err(err) => {
-                *runtime_guard = None;
-                return Err(DecorationEvaluationError::InvalidResponse(format!(
-                    "{err}; payload={trimmed}"
-                )));
-            }
         };
         if response.request_id != request_id {
             *runtime_guard = None;
