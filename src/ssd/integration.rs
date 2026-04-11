@@ -423,11 +423,14 @@ impl ShojiWM {
     }
 
     fn primary_output_name_for_window(&self, window: &Window) -> Option<String> {
-        let center = if let Some(decoration) = self.window_decorations.get(window) {
-            let root =
-                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
-            Point::from((root.x + root.width / 2, root.y + root.height / 2))
-        } else if let Some(client_rect) = self.window_client_rect(window) {
+        // Always use space.element_location (via window_client_rect) as the source of truth for
+        // the window's current position. decoration.layout.root.rect lags behind because it is
+        // only updated inside refresh_window_decorations_for_output — which itself calls this
+        // function to decide whether to process the window at all. Using the stale decoration
+        // rect here creates a chicken-and-egg deadlock: a window that moves from eDP-1 to DP-4
+        // keeps reporting "eDP-1" as its primary output, so the DP-4 refresh pass skips it, and
+        // its decoration coordinates never get updated.
+        let center = if let Some(client_rect) = self.window_client_rect(window) {
             Point::from((
                 client_rect.x + client_rect.width / 2,
                 client_rect.y + client_rect.height / 2,

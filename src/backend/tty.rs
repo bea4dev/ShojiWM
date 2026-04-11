@@ -80,6 +80,11 @@ fn frame_liveness_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn output_render_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_OUTPUT_RENDER_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn clipped_transform_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIPPED_TRANSFORM_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -860,6 +865,16 @@ fn render_surface(
                         "close debug: live loop skipping window (direct_surface_count==0)"
                     );
                 }
+                if output_render_debug_enabled() {
+                    let title = window_decorations.get(window).map(|d| d.snapshot.title.as_str());
+                    tracing::info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        title = ?title,
+                        physical_location = ?physical_location,
+                        "output_render_debug: SKIPPED (direct_surface_count==0)"
+                    );
+                }
                 continue;
             }
             if close_debug {
@@ -1482,19 +1497,27 @@ fn render_surface(
                             );
                         }
                         if !window_has_snapshot_damage {
-                            if let Some(existing) = complete_window_snapshots
+                            if let Some(mut existing) = complete_window_snapshots
                                 .get(&window_id)
                                 .cloned()
                                 .filter(|snapshot| {
                                     snapshot.scene_signature == snapshot_scene_signature
                                 })
                             {
+                                // The texture content is still valid (same scene), but the
+                                // window may have moved to a different output since the snapshot
+                                // was captured. Update the rect so that live_snapshot_element
+                                // can compute the correct position relative to the new output_geo
+                                // and passes the intersection check.
+                                existing.rect = full_rect;
+                                complete_window_snapshots.insert(window_id.clone(), existing.clone());
                                 if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                                     let commit = existing.damage.lock().unwrap().current_commit();
                                     tracing::info!(
                                         window_id = %window_id,
                                         commit = ?commit,
-                                        "transform snapshot tty complete snapshot cache hit"
+                                        rect = ?full_rect,
+                                        "transform snapshot tty complete snapshot cache hit (rect updated)"
                                     );
                                 }
                                 return Some(existing);
@@ -2377,6 +2400,28 @@ fn render_surface(
                     TtyRenderElements::TransformedWindow,
                 );
                 scene_elements.extend(popup_elements.into_iter());
+            }
+            if output_render_debug_enabled() {
+                let title = window_decorations.get(window).map(|d| d.snapshot.title.as_str());
+                let root_rect = window_decorations.get(window).map(|d| d.layout.root.rect);
+                let content_clip_rect = window_decorations.get(window).and_then(|d| d.content_clip).map(|c| c.rect);
+                tracing::info!(
+                    output = %output.name(),
+                    window_id = %window_id,
+                    title = ?title,
+                    use_full_window_snapshot,
+                    direct_surface_count,
+                    client_elements_count = client_elements.len(),
+                    physical_location = ?physical_location,
+                    output_geo = ?output_geo,
+                    root_rect = ?root_rect,
+                    content_clip_rect = ?content_clip_rect,
+                    scale_x = scale.x,
+                    scale_y = scale.y,
+                    visual_scale_x = visual_state.scale.x,
+                    visual_scale_y = visual_state.scale.y,
+                    "output_render_debug: window rendered"
+                );
             }
             scene_elements.extend(client_elements.into_iter());
             scene_elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));

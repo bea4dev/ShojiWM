@@ -163,15 +163,24 @@ impl ClippedSurfaceElement {
         let render_geometry = forced_geometry.unwrap_or(element_geometry);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
+        // element_geometry.loc is in output-local physical coordinates.
+        // clip.mask_rect_precise is in global logical coordinates (derived from the decoration
+        // layout which uses space.element_location as origin).
+        // To subtract them correctly we must work in the same coordinate space.
+        // Adding output_origin converts the output-local logical position to global logical,
+        // so that (clip.x - element_rect_precise.x) gives the element-relative clip offset
+        // on any output, not just on the primary output whose origin is (0, 0).
         let element_rect_precise = PreciseLogicalRect {
-            x: element_geometry.loc.x as f32 / output_scale_x,
-            y: element_geometry.loc.y as f32 / output_scale_y,
+            x: element_geometry.loc.x as f32 / output_scale_x + output_origin.x as f32,
+            y: element_geometry.loc.y as f32 / output_scale_y + output_origin.y as f32,
             width: element_geometry.size.w as f32 / output_scale_x,
             height: element_geometry.size.h as f32 / output_scale_y,
         };
+        // element_rect_logical uses only width/height (size, not position), so it is not
+        // affected by the global/output-local distinction.
         let element_rect_logical = SnappedLogicalRect {
-            x: element_rect_precise.x,
-            y: element_rect_precise.y,
+            x: 0.0,
+            y: 0.0,
             width: element_rect_precise.width,
             height: element_rect_precise.height,
         };
@@ -193,8 +202,8 @@ impl ClippedSurfaceElement {
         // equivalent collapses the client width back to the surface geometry
         // and reintroduces the visible right-edge gap against decoration boxes.
         if clip_size_delta_px.0 <= 0.01 && clip_size_delta_px.1 <= 0.01 {
-            snapped_clip_rect.x = element_rect_logical.x;
-            snapped_clip_rect.y = element_rect_logical.y;
+            snapped_clip_rect.x = element_rect_logical.x;  // = 0.0: clip starts at element origin
+            snapped_clip_rect.y = element_rect_logical.y;  // = 0.0
             snapped_clip_rect.width = element_rect_logical.width;
             snapped_clip_rect.height = element_rect_logical.height;
         }
