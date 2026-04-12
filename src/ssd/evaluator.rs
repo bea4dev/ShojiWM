@@ -18,6 +18,7 @@ use super::{
 };
 use crate::{
     config::RuntimeDisplayConfigUpdate,
+    runtime_key_binding::RuntimeKeyBindingConfigUpdate,
     runtime_process::{RuntimeProcessAction, RuntimeProcessConfigUpdate},
 };
 
@@ -71,6 +72,14 @@ pub trait DecorationEvaluator {
         Ok(DecorationHandlerInvocation::default())
     }
 
+    fn invoke_key_binding(
+        &self,
+        _binding_id: &str,
+        _now_ms: u64,
+    ) -> Result<DecorationKeyBindingInvocation, DecorationEvaluationError> {
+        Ok(DecorationKeyBindingInvocation::default())
+    }
+
     fn evaluate_layer_effects(
         &self,
         _output_name: &str,
@@ -88,6 +97,7 @@ pub struct DecorationEvaluationResult {
     pub dirty_node_ids: Vec<String>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub process_config: Option<RuntimeProcessConfigUpdate>,
     pub process_actions: Vec<RuntimeProcessAction>,
 }
@@ -101,6 +111,7 @@ pub struct DecorationSchedulerTick {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub process_config: Option<RuntimeProcessConfigUpdate>,
     pub process_actions: Vec<RuntimeProcessAction>,
 }
@@ -115,6 +126,22 @@ pub struct DecorationHandlerInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecorationKeyBindingInvocation {
+    pub invoked: bool,
+    pub dirty: bool,
+    pub dirty_window_ids: Vec<String>,
+    pub dirty_window_node_ids: std::collections::HashMap<String, Vec<String>>,
+    pub dirty_layer_node_ids: std::collections::HashMap<String, Vec<String>>,
+    pub actions: Vec<RuntimeWindowAction>,
+    pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub process_config: Option<RuntimeProcessConfigUpdate>,
     pub process_actions: Vec<RuntimeProcessAction>,
 }
@@ -124,6 +151,7 @@ pub struct LayerEffectEvaluationResult {
     pub effects: Vec<RuntimeLayerEffectAssignment>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub process_config: Option<RuntimeProcessConfigUpdate>,
     pub process_actions: Vec<RuntimeProcessAction>,
 }
@@ -230,6 +258,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
             dirty_node_ids: Vec::new(),
             next_poll_in_ms: None,
             display_config: None,
+            key_binding_config: None,
             process_config: None,
             process_actions: Vec::new(),
         })
@@ -342,6 +371,16 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "displayState")]
         display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
+    InvokeKeyBinding {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "bindingId")]
+        binding_id: &'a str,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+    },
     StartClose {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -395,6 +434,8 @@ struct RuntimeEvaluateResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -420,6 +461,8 @@ struct RuntimeSchedulerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -435,6 +478,8 @@ struct RuntimeClosedResponse {
     ok: bool,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    _key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     _process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -460,6 +505,8 @@ struct RuntimeInvokeHandlerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -485,6 +532,8 @@ struct RuntimeStartCloseResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -502,6 +551,8 @@ struct RuntimeEffectConfigResponse {
     background_effect: Option<WireCompiledEffect>,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    _key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     _process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -527,6 +578,36 @@ struct RuntimeLayerEffectsResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeInvokeKeyBindingResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    ok: bool,
+    invoked: Option<bool>,
+    dirty: Option<bool>,
+    #[serde(rename = "dirtyWindowIds")]
+    dirty_window_ids: Option<Vec<String>>,
+    #[serde(rename = "dirtyWindowNodeIds")]
+    dirty_window_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(rename = "dirtyLayerNodeIds")]
+    dirty_layer_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
+    actions: Option<Vec<RuntimeWindowAction>>,
+    #[serde(rename = "nextPollInMs")]
+    next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "processConfig")]
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
@@ -1034,6 +1115,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })
@@ -1118,6 +1200,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })
@@ -1199,6 +1282,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })
@@ -1361,6 +1445,93 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
+        })
+    }
+
+    fn invoke_key_binding(
+        &self,
+        binding_id: &str,
+        now_ms: u64,
+    ) -> Result<DecorationKeyBindingInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+
+        let Some(_) = runtime_guard.as_ref() else {
+            return Ok(DecorationKeyBindingInvocation::default());
+        };
+
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        let request = serde_json::to_string(&RuntimeRequest::InvokeKeyBinding {
+            request_id,
+            binding_id,
+            now_ms,
+            display_state: &display_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeInvokeKeyBindingResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if response.kind != "invokeKeyBinding" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for invokeKeyBinding: {}",
+                response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+
+        Ok(DecorationKeyBindingInvocation {
+            invoked: response.invoked.unwrap_or(false),
+            dirty: response.dirty.unwrap_or(false),
+            dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+            dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+            dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+            actions: response.actions.unwrap_or_default(),
+            next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })
@@ -1453,6 +1624,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })
@@ -1540,6 +1712,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
         })

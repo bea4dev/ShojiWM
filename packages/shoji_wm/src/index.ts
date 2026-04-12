@@ -78,8 +78,18 @@ import type {
   StartupServiceSpec,
   ManagedProcessRestartPolicy,
   ManagedProcessReloadPolicy,
+  KeyBindingController,
+  KeyBindingOptions,
+  KeyBindingEventPhase,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
+import {
+  KEY_BINDING_CONTROLLER,
+  beginKeyBindingRegistration,
+  commitKeyBindingRegistration,
+  invokeKeyBinding,
+  takePendingKeyBindingConfig,
+} from "./key";
 import { OUTPUT_CONTROLLER } from "./output";
 import {
   PROCESS_CONTROLLER,
@@ -154,6 +164,13 @@ export {
   takePendingDisplayConfig,
   updateOutputState,
 } from "./output";
+export {
+  KEY_BINDING_CONTROLLER,
+  beginKeyBindingRegistration,
+  commitKeyBindingRegistration,
+  invokeKeyBinding,
+  takePendingKeyBindingConfig,
+} from "./key";
 export {
   PROCESS_CONTROLLER,
   beginProcessConfigRegistration,
@@ -300,6 +317,9 @@ export type {
   StartupServiceSpec,
   ManagedProcessRestartPolicy,
   ManagedProcessReloadPolicy,
+  KeyBindingController,
+  KeyBindingOptions,
+  KeyBindingEventPhase,
 } from "./types";
 export { DecorationSerializationError, serializeDecorationTree } from "./serialize";
 
@@ -330,6 +350,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   },
   output: OUTPUT_CONTROLLER,
   process: PROCESS_CONTROLLER,
+  key: KEY_BINDING_CONTROLLER,
 };
 
 export function windowAction(

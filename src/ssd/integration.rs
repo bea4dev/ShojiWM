@@ -161,6 +161,17 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn invoke_key_binding(
+        &self,
+        binding_id: &str,
+        now_ms: u64,
+    ) -> Result<super::DecorationKeyBindingInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationKeyBindingInvocation::default()),
+            Self::Node(evaluator) => evaluator.invoke_key_binding(binding_id, now_ms),
+        }
+    }
+
     fn start_close(
         &self,
         window_id: &str,
@@ -311,6 +322,7 @@ impl ShojiWM {
         self.sync_runtime_display_state();
         let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
         self.consume_runtime_display_config(invocation.display_config.clone());
+        self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
         self.consume_runtime_process_config(invocation.process_config.clone());
         if !invocation.process_actions.is_empty() {
             self.apply_runtime_process_actions(invocation.process_actions.clone());
@@ -479,6 +491,7 @@ impl ShojiWM {
             self.decoration_evaluator
                 .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
         self.consume_runtime_display_config(evaluation.display_config.clone());
+        self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
         self.consume_runtime_process_config(evaluation.process_config.clone());
         if !evaluation.process_actions.is_empty() {
             self.apply_runtime_process_actions(evaluation.process_actions.clone());
@@ -514,6 +527,7 @@ impl ShojiWM {
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
         let mut pending_display_config_updates = Vec::new();
+        let mut pending_key_binding_config_updates = Vec::new();
         let mut pending_process_config_updates = Vec::new();
         let mut pending_process_actions = Vec::new();
         self.sync_runtime_display_state();
@@ -609,6 +623,7 @@ impl ShojiWM {
                     }
                 };
                 pending_display_config_updates.push(evaluation.display_config.clone());
+                pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                 pending_process_config_updates.push(evaluation.process_config.clone());
                 pending_process_actions.extend(evaluation.process_actions.clone());
                 let tree = DecorationTree::new(evaluation.node);
@@ -708,6 +723,7 @@ impl ShojiWM {
                         }
                     };
                     pending_display_config_updates.push(evaluation.display_config.clone());
+                    pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     cached.tree = DecorationTree::new(evaluation.node);
@@ -819,6 +835,7 @@ impl ShojiWM {
                         }
                     };
                     pending_display_config_updates.push(evaluation.display_config.clone());
+                    pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     let next_tree = DecorationTree::new(evaluation.node);
@@ -1300,6 +1317,9 @@ impl ShojiWM {
 
         for update in pending_display_config_updates {
             self.consume_runtime_display_config(update);
+        }
+        for update in pending_key_binding_config_updates {
+            self.consume_runtime_key_binding_config(update);
         }
         for update in pending_process_config_updates {
             self.consume_runtime_process_config(update);

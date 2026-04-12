@@ -366,6 +366,21 @@ export interface ProcessController {
   spawn(spec: ProcessSpawnSpec): void;
 }
 
+export type KeyBindingEventPhase = "press" | "release";
+
+export interface KeyBindingOptions {
+  on?: KeyBindingEventPhase;
+}
+
+export interface KeyBindingController {
+  bind(
+    id: string,
+    shortcut: string,
+    handler: () => void,
+    options?: KeyBindingOptions,
+  ): void;
+}
+
 export interface BorderValue {
   px: MaybeSignal<number>;
   color: MaybeSignal<string>;
@@ -476,6 +491,7 @@ export interface WindowManagerDefinition {
   effect: WindowManagerEffectConfig;
   output: OutputController;
   process: ProcessController;
+  key: KeyBindingController;
   display?: DisplayConfig;
 }
 

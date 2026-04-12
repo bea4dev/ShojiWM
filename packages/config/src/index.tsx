@@ -39,6 +39,22 @@ WINDOW_MANAGER.process.once("fcitx5", {
     command: ["fcitx5", "-d"],
     runPolicy: "once-per-session",
 });
+WINDOW_MANAGER.process.once("shell", {
+    command: ["qs", "-c", "noctalia-shell"],
+    runPolicy: "once-per-session",
+});
+
+
+WINDOW_MANAGER.key.bind("terminal", "Super+T", () => {
+    WINDOW_MANAGER.process.spawn({ command: ["kitty"] });
+});
+WINDOW_MANAGER.key.bind("launcher", "Super+A", () => {
+    WINDOW_MANAGER.process.spawn({ command: ["qs", "-c", "noctalia-shell", "ipc", "call", "launcher", "toggle"] });
+});
+WINDOW_MANAGER.key.bind("clipboard", "Super+V", () => {
+    WINDOW_MANAGER.process.spawn({ command: ["qs", "-c", "noctalia-shell", "ipc", "call", "launcher", "clipboard"] });
+});
+
 
 WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {

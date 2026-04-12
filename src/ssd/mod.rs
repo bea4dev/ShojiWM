@@ -25,9 +25,9 @@ pub use bridge::{
 };
 pub use evaluator::{
     DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
-    DecorationHandlerInvocation, DecorationSchedulerTick, LayerEffectEvaluationResult,
-    NodeDecorationEvaluator, RuntimeLayerEffectAssignment, RuntimeWindowAction,
-    StaticDecorationEvaluator, evaluate_dynamic_decoration,
+    DecorationHandlerInvocation, DecorationKeyBindingInvocation, DecorationSchedulerTick,
+    LayerEffectEvaluationResult, NodeDecorationEvaluator, RuntimeLayerEffectAssignment,
+    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,

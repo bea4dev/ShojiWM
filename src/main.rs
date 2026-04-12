@@ -17,6 +17,7 @@ pub mod grabs;
 pub mod handlers;
 pub mod input;
 pub mod presentation;
+pub mod runtime_key_binding;
 pub mod runtime_process;
 pub mod ssd;
 pub mod state;

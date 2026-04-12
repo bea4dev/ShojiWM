@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
@@ -28,6 +28,7 @@ use crate::{
 enum KeyboardAction {
     Forward,
     Quit,
+    RuntimeKeyBinding(String),
 }
 
 impl ShojiWM {
@@ -36,6 +37,13 @@ impl ShojiWM {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
+                let key_phase = match event.state() {
+                    KeyState::Pressed => crate::runtime_key_binding::RuntimeKeyBindingPhase::Press,
+                    KeyState::Released => {
+                        crate::runtime_key_binding::RuntimeKeyBindingPhase::Release
+                    }
+                };
+                let runtime_key_bindings = self.runtime_key_bindings.clone();
 
                 let action = self
                     .seat
@@ -48,6 +56,16 @@ impl ShojiWM {
                         serial,
                         time,
                         |_, modifiers, handle| {
+                            if let Some(binding_id) = runtime_key_bindings
+                                .iter()
+                                .find(|binding| binding.matches(key_phase, modifiers, &handle))
+                                .map(|binding| binding.id.clone())
+                            {
+                                return FilterResult::Intercept(
+                                    KeyboardAction::RuntimeKeyBinding(binding_id),
+                                );
+                            }
+
                             let keysym = handle.modified_sym();
 
                             if modifiers.logo && keysym.raw() == keysyms::KEY_q {
@@ -61,6 +79,50 @@ impl ShojiWM {
 
                 match action {
                     KeyboardAction::Quit => self.shutdown(),
+                    KeyboardAction::RuntimeKeyBinding(binding_id) => {
+                        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+                        self.sync_runtime_display_state();
+                        match self
+                            .decoration_evaluator
+                            .invoke_key_binding(&binding_id, now_ms)
+                        {
+                            Ok(invocation) => {
+                                self.consume_runtime_display_config(invocation.display_config);
+                                self.consume_runtime_key_binding_config(
+                                    invocation.key_binding_config,
+                                );
+                                self.consume_runtime_process_config(invocation.process_config);
+                                if !invocation.process_actions.is_empty() {
+                                    self.apply_runtime_process_actions(invocation.process_actions);
+                                }
+                                if invocation.dirty {
+                                    self.runtime_poll_dirty = true;
+                                    self.runtime_dirty_window_ids
+                                        .extend(invocation.dirty_window_ids.into_iter());
+                                    self.request_tty_maintenance("runtime-key-binding-dirty");
+                                    self.schedule_redraw();
+                                }
+                                if !invocation.actions.is_empty() {
+                                    self.request_tty_maintenance("runtime-key-binding-actions");
+                                    self.apply_runtime_window_actions(invocation.actions);
+                                    self.schedule_redraw();
+                                }
+                                self.runtime_scheduler_enabled =
+                                    invocation.next_poll_in_ms.is_some();
+                                if invocation.next_poll_in_ms == Some(0) {
+                                    self.request_tty_maintenance("runtime-key-binding-animation");
+                                    self.schedule_redraw();
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    ?error,
+                                    binding_id,
+                                    "failed to invoke runtime key binding"
+                                );
+                            }
+                        }
+                    }
                     KeyboardAction::Forward => {}
                 }
             }
@@ -179,6 +241,9 @@ impl ShojiWM {
                                 ) {
                                     self.consume_runtime_display_config(
                                         invocation.display_config.clone(),
+                                    );
+                                    self.consume_runtime_key_binding_config(
+                                        invocation.key_binding_config.clone(),
                                     );
                                     self.consume_runtime_process_config(
                                         invocation.process_config.clone(),

@@ -69,6 +69,10 @@ use crate::runtime_process::{
     RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
     kill_runtime_service, should_restart_service, spawn_runtime_process,
 };
+use crate::runtime_key_binding::{
+    CompiledRuntimeKeyBinding, RuntimeKeyBindingConfigUpdate, RuntimeKeyBindingEntry,
+    compile_runtime_key_bindings,
+};
 use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
     DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
@@ -167,6 +171,8 @@ pub struct ShojiWM {
     pub runtime_process_once_runs: HashMap<String, u64>,
     pub runtime_process_suppressed_services: HashMap<String, u64>,
     pub runtime_managed_services: BTreeMap<String, ManagedRuntimeService>,
+    pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
+    pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -427,6 +433,8 @@ impl ShojiWM {
             runtime_process_once_runs: Default::default(),
             runtime_process_suppressed_services: Default::default(),
             runtime_managed_services: Default::default(),
+            runtime_key_binding_entries: Default::default(),
+            runtime_key_bindings: Vec::new(),
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect,
@@ -543,6 +551,7 @@ impl ShojiWM {
                 }
 
                 state.consume_runtime_display_config(tick.display_config);
+                state.consume_runtime_key_binding_config(tick.key_binding_config);
                 state.consume_runtime_process_config(tick.process_config);
                 if !tick.process_actions.is_empty() {
                     state.apply_runtime_process_actions(tick.process_actions);
@@ -586,6 +595,7 @@ impl ShojiWM {
         match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
             Ok(result) => {
                 self.consume_runtime_display_config(result.display_config);
+                self.consume_runtime_key_binding_config(result.key_binding_config);
                 self.consume_runtime_process_config(result.process_config);
                 if !result.process_actions.is_empty() {
                     self.apply_runtime_process_actions(result.process_actions);
@@ -798,6 +808,28 @@ impl ShojiWM {
     pub fn consume_runtime_display_config(&mut self, update: Option<RuntimeDisplayConfigUpdate>) {
         if let Some(update) = update {
             self.apply_runtime_display_config_update(update);
+        }
+    }
+
+    pub fn apply_runtime_key_binding_config_update(
+        &mut self,
+        update: RuntimeKeyBindingConfigUpdate,
+    ) {
+        self.runtime_key_binding_entries = update
+            .entries
+            .into_iter()
+            .map(|entry| (entry.id.clone(), entry))
+            .collect();
+        self.runtime_key_bindings =
+            compile_runtime_key_bindings(&self.runtime_key_binding_entries);
+    }
+
+    pub fn consume_runtime_key_binding_config(
+        &mut self,
+        update: Option<RuntimeKeyBindingConfigUpdate>,
+    ) {
+        if let Some(update) = update {
+            self.apply_runtime_key_binding_config_update(update);
         }
     }
 
