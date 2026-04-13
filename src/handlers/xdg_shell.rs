@@ -1,7 +1,9 @@
 use smithay::{
     delegate_xdg_shell,
     desktop::{
-        PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
+        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
+        WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords,
+        layer_map_for_output,
     },
     input::{
         Seat,
@@ -105,8 +107,21 @@ impl XdgShellHandler for ShojiWM {
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         debug!(surface = ?surface.wl_surface().id(), "new xdg popup received");
+        self.note_xdg_popup_created(surface.wl_surface().id().protocol_id());
         self.unconstrain_popup(&surface);
-        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+        let popup_kind = PopupKind::Xdg(surface.clone());
+        match self.popups.track_popup(popup_kind.clone()) {
+            Ok(()) => self.note_popup_tracked(&popup_kind, "xdg-new-popup"),
+            Err(err) => warn!(
+                surface_id = surface.wl_surface().id().protocol_id(),
+                error = ?err,
+                "failed to track xdg popup"
+            ),
+        }
+        self.request_tty_maintenance("xdg-popup-created");
+        self.refresh_pointer_focus(
+            std::time::Duration::from(self.clock.now()).as_millis() as u32,
+        );
         self.schedule_redraw();
     }
 
@@ -191,8 +206,53 @@ impl XdgShellHandler for ShojiWM {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let seat = Seat::from_resource(&seat).unwrap();
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+
+        let ret = self
+            .popups
+            .grab_popup::<Self>(root.clone(), popup, &seat, serial);
+
+        if let Ok(mut grab) = ret {
+            if let Some(keyboard) = seat.get_keyboard() {
+                let can_receive_keyboard_focus = self
+                    .space
+                    .outputs()
+                    .find_map(|output| {
+                        let map = layer_map_for_output(output);
+                        map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                            .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
+                    })
+                    .unwrap_or(true);
+
+                if can_receive_keyboard_focus {
+                    if keyboard.is_grabbed()
+                        && !(keyboard.has_grab(serial)
+                            || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+                    {
+                        grab.ungrab(PopupUngrabStrategy::All);
+                        return;
+                    }
+                    keyboard.set_focus(self, grab.current_grab(), serial);
+                    keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+                }
+            }
+
+            if let Some(pointer) = seat.get_pointer() {
+                if pointer.is_grabbed()
+                    && !(pointer.has_grab(serial)
+                        || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+                {
+                    grab.ungrab(PopupUngrabStrategy::All);
+                    return;
+                }
+                pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+            }
+        }
     }
 }
 
@@ -241,9 +301,10 @@ fn check_grab(
 }
 
 /// Should be called on `WlSurface::commit`
-pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
+pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     // Handle toplevel commits.
-    if let Some(window) = space
+    if let Some(window) = state
+        .space
         .elements()
         .find(|w| w.toplevel().unwrap().wl_surface() == surface)
         .cloned()
@@ -264,15 +325,22 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     }
 
     // Handle popup commits.
-    popups.commit(surface);
-    if let Some(popup) = popups.find_popup(surface) {
+    state.popups.commit(surface);
+    if let Some(popup) = state.find_popup_with_debug(surface, "xdg-handle-commit") {
         match popup {
             PopupKind::Xdg(ref xdg) => {
+                state.note_xdg_popup_committed(xdg.wl_surface().id().protocol_id());
                 if !xdg.is_initial_configure_sent() {
                     // NOTE: This should never fail as the initial configure is always
                     // allowed.
                     xdg.send_configure().expect("initial configure failed");
+                    let _ = state.display_handle.flush_clients();
                 }
+                state.request_tty_maintenance("xdg-popup-initial-configure");
+                state.refresh_pointer_focus(
+                    std::time::Duration::from(state.clock.now()).as_millis() as u32,
+                );
+                state.schedule_redraw();
             }
             PopupKind::InputMethod(ref _input_method) => {}
         }

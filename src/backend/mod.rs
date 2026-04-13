@@ -261,7 +261,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
             if window_count_after_refresh != window_count_before_refresh {
                 state.schedule_redraw();
             }
-            state.popups.cleanup();
+            state.cleanup_popups_with_debug("tty-pre-render-maintenance");
         }
 
         let mut rendered_this_iteration = false;

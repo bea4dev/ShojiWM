@@ -79,6 +79,12 @@ impl SeatHandler for ShojiWM {
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+        if std::env::var_os("SHOJI_LAYER_FOCUS_DEBUG").is_some() {
+            tracing::debug!(
+                focused_surface = focused.map(|surface| surface.id().protocol_id()),
+                "keyboard focus changed"
+            );
+        }
     }
 }
 
@@ -238,14 +244,24 @@ impl TabletSeatHandler for ShojiWM {
 
 impl InputMethodHandler for ShojiWM {
     fn new_popup(&mut self, surface: PopupSurface) {
-        if let Err(err) = self.popups.track_popup(PopupKind::from(surface)) {
+        let popup_kind = PopupKind::from(surface);
+        if let Err(err) = self.popups.track_popup(popup_kind.clone()) {
             tracing::warn!(?err, "failed to track input method popup");
+        } else {
+            self.note_popup_tracked(&popup_kind, "input-method-new-popup");
         }
     }
 
     fn popup_repositioned(&mut self, _surface: PopupSurface) {}
 
     fn dismiss_popup(&mut self, surface: PopupSurface) {
+        self.note_popup_dismiss_requested(
+            surface.wl_surface(),
+            surface
+                .get_parent()
+                .map(|parent| parent.surface.id().protocol_id()),
+            "input-method-dismiss-popup",
+        );
         if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
             let _ =
                 smithay::desktop::PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));

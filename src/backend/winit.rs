@@ -1010,7 +1010,7 @@ pub fn init_winit(
                     }
 
                     state.space.refresh();
-                    state.popups.cleanup();
+                    state.cleanup_popups_with_debug("winit-post-render");
                     state.pending_decoration_damage.clear();
                     state.clear_source_damage();
                     state.finish_damage_blink_frame();

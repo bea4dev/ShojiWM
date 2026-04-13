@@ -7,7 +7,7 @@ use smithay::{
         keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, CursorIcon, MotionEvent},
     },
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    reexports::wayland_server::Resource,
     utils::{SERIAL_COUNTER, Serial},
 };
 use std::time::Instant;
@@ -29,6 +29,19 @@ enum KeyboardAction {
     Forward,
     Quit,
     RuntimeKeyBinding(String),
+}
+
+fn layer_focus_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_LAYER_FOCUS_DEBUG").is_some()
+}
+
+fn pointer_button_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_POINTER_BUTTON_DEBUG").is_some()
+}
+
+fn unfocused_popup_focus_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_UNFOCUSED_POPUP_FOCUS_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 impl ShojiWM {
@@ -144,7 +157,8 @@ impl ShojiWM {
                 );
 
                 let serial = SERIAL_COUNTER.next_serial();
-                let under = self.surface_under(pos);
+                self.pointer_contents = self.pointer_contents_at(pos);
+                let under = self.pointer_contents.surface.clone();
 
                 pointer.motion(
                     self,
@@ -172,7 +186,8 @@ impl ShojiWM {
 
                 let pointer = self.seat.get_pointer().unwrap();
 
-                let under = self.surface_under(pos);
+                self.pointer_contents = self.pointer_contents_at(pos);
+                let under = self.pointer_contents.surface.clone();
 
                 pointer.motion(
                     self,
@@ -196,10 +211,138 @@ impl ShojiWM {
 
                 let button_state = event.state();
 
+                if pointer_button_debug_enabled() {
+                    debug!(
+                        button,
+                        state = ?button_state,
+                        pointer_location = ?pointer.current_location(),
+                        "pointer button event received"
+                    );
+                }
+                if button == 273 {
+                    self.note_right_click_button(
+                        matches!(button_state, ButtonState::Pressed),
+                        pointer.current_location(),
+                        "process-input-event",
+                    );
+                }
+
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+                    if unfocused_popup_focus_debug_enabled() && button == 273 {
+                        let pos = pointer.current_location();
+                        let keyboard_focus = self
+                            .seat
+                            .get_keyboard()
+                            .and_then(|keyboard| keyboard.current_focus())
+                            .map(|surface| surface.id().protocol_id());
+                        let transformed_window_under = self
+                            .window_under_transformed(LogicalPoint::new(
+                                pos.x.floor() as i32,
+                                pos.y.floor() as i32,
+                            ))
+                            .map(|(window, _)| {
+                                window
+                                    .toplevel()
+                                    .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                                    .unwrap_or_default()
+                            });
+                        let raw_window_under = self.raw_window_under(LogicalPoint::new(
+                            pos.x.floor() as i32,
+                            pos.y.floor() as i32,
+                        ))
+                        .map(|(window, _)| {
+                            window
+                                .toplevel()
+                                .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                                .unwrap_or_default()
+                        });
+                        let layer_under = self.layer_surface_under(pos).map(|layer| {
+                            (
+                                layer.wl_surface().id().protocol_id(),
+                                layer.layer(),
+                                layer.cached_state().keyboard_interactivity,
+                            )
+                        });
+                        let pointer_target_before = self
+                            .surface_under(pos)
+                            .map(|(surface, origin)| (surface.id().protocol_id(), origin));
+                        debug!(
+                            button,
+                            pointer_location = ?pos,
+                            keyboard_focus_surface = ?keyboard_focus,
+                            transformed_window_under = ?transformed_window_under,
+                            raw_window_under = ?raw_window_under,
+                            layer_under = ?layer_under,
+                            pointer_target_before = ?pointer_target_before,
+                            "unfocused popup focus debug: pointer press pre-focus"
+                        );
+                    }
+                    self.pointer_contents =
+                        self.pointer_contents_at(pointer.current_location());
+                    let under = self.pointer_contents.surface.clone();
+                    if layer_focus_debug_enabled() {
+                        debug!(
+                            pointer_location = ?pointer.current_location(),
+                            pointer_target_surface =
+                                under.as_ref().map(|(surface, _)| surface.id().protocol_id()),
+                            pointer_target_origin = ?under.as_ref().map(|(_, origin)| *origin),
+                            "pointer target before button dispatch"
+                        );
+                    }
+                    pointer.motion(
+                        self,
+                        under,
+                        &MotionEvent {
+                            location: pointer.current_location(),
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+
+                    if layer_focus_debug_enabled() {
+                        let keyboard_focus = self
+                            .seat
+                            .get_keyboard()
+                            .and_then(|keyboard| keyboard.current_focus())
+                            .map(|surface| surface.id().protocol_id());
+                        debug!(
+                            pointer_location = ?pointer.current_location(),
+                            button,
+                            keyboard_focus_surface = ?keyboard_focus,
+                            layer_under = ?self.pointer_contents.layer.as_ref().and_then(|layer| {
+                                layer.can_receive_keyboard_focus().then(|| {
+                                    (
+                                        layer.wl_surface().id().protocol_id(),
+                                        layer.layer(),
+                                        layer.cached_state().keyboard_interactivity,
+                                    )
+                                })
+                            }),
+                            any_layer_under = ?self.pointer_contents.layer.as_ref().map(|layer| {
+                                (
+                                    layer.wl_surface().id().protocol_id(),
+                                    layer.layer(),
+                                    layer.cached_state().keyboard_interactivity,
+                                )
+                            }),
+                            "layer focus decision on pointer press"
+                        );
+                    }
+                    let layer_under_pointer = self.pointer_contents.layer.clone();
                     let _ = self.refresh_window_decorations();
 
-                    if let Some((window, hit)) = self.decoration_under(pointer.current_location()) {
+                    if layer_under_pointer.is_none()
+                        && let Some((window, hit)) =
+                            self.decoration_under(pointer.current_location())
+                        && self.pointer_allows_window_interaction(
+                            self.pointer_contents
+                                .surface
+                                .as_ref()
+                                .map(|(surface, _)| surface),
+                            &window,
+                        )
+                    {
                         self.focus_window(&window, serial);
 
                         match hit {
@@ -359,18 +502,47 @@ impl ShojiWM {
                         }
 
                         pointer.frame(self);
+                        let _ = self.display_handle.flush_clients();
                         self.schedule_redraw();
                         return;
-                    } else if let Some((window, _loc)) = self
+                    } else if layer_under_pointer.is_none()
+                        && let Some((window, _loc)) = self
                         .window_under_transformed(LogicalPoint::new(
                             pointer.current_location().x.floor() as i32,
                             pointer.current_location().y.floor() as i32,
                         ))
                         .map(|(w, _)| (w.clone(), ()))
+                        && self.pointer_allows_window_interaction(
+                            self.pointer_contents
+                                .surface
+                                .as_ref()
+                                .map(|(surface, _)| surface),
+                            &window,
+                        )
                     {
                         self.focus_window(&window, serial);
                     } else {
-                        self.clear_focus(serial);
+                        self.focus_layer_surface_if_on_demand(self.pointer_contents.layer.clone());
+                        self.update_keyboard_focus(serial);
+                    }
+
+                    if unfocused_popup_focus_debug_enabled() && button == 273 {
+                        let pos = pointer.current_location();
+                        let keyboard_focus = self
+                            .seat
+                            .get_keyboard()
+                            .and_then(|keyboard| keyboard.current_focus())
+                            .map(|surface| surface.id().protocol_id());
+                        let pointer_target_after = self
+                            .surface_under(pos)
+                            .map(|(surface, origin)| (surface.id().protocol_id(), origin));
+                        debug!(
+                            button,
+                            pointer_location = ?pos,
+                            keyboard_focus_surface = ?keyboard_focus,
+                            pointer_target_after = ?pointer_target_after,
+                            "unfocused popup focus debug: pointer press post-focus"
+                        );
                     }
                 };
 
@@ -384,6 +556,21 @@ impl ShojiWM {
                     },
                 );
                 pointer.frame(self);
+                let _ = self.display_handle.flush_clients();
+                if pointer_button_debug_enabled() {
+                    debug!(
+                        button,
+                        state = ?button_state,
+                        "pointer button forwarded and flushed"
+                    );
+                }
+                if std::env::var_os("SHOJI_RIGHT_CLICK_TRACE").is_some() && button == 273 {
+                    debug!(
+                        state = ?button_state,
+                        pointer_location = ?pointer.current_location(),
+                        "right click trace: button forwarded and flushed"
+                    );
+                }
             }
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
@@ -486,17 +673,76 @@ impl ShojiWM {
 }
 
 impl ShojiWM {
+    fn surface_has_popup_ancestor(&self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+        let mut current = Some(surface.clone());
+        while let Some(candidate) = current {
+            if self.popups.find_popup(&candidate).is_some() {
+                return true;
+            }
+            current = smithay::wayland::compositor::get_parent(&candidate);
+        }
+        false
+    }
+
+    fn surface_is_over_window_non_popup_tree(
+        &self,
+        top_surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        window: &smithay::desktop::Window,
+    ) -> bool {
+        if self.surface_has_popup_ancestor(top_surface) {
+            return false;
+        }
+
+        let mut root = top_surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+
+        window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+    }
+
+    fn pointer_allows_window_interaction(
+        &self,
+        pointer_surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+        window: &smithay::desktop::Window,
+    ) -> bool {
+        if self.pointer_contents.layer.is_some() {
+            return false;
+        }
+
+        match pointer_surface {
+            Some(surface) => self.surface_is_over_window_non_popup_tree(surface, window),
+            None => true,
+        }
+    }
+
     fn update_decoration_cursor_icon(
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        let next_override = self.decoration_under(pos).and_then(|(_, hit)| match hit {
-            DecorationHitTestResult::Resize(edges) => Some(resize_edges_to_cursor_icon(edges)),
-            DecorationHitTestResult::Move
-            | DecorationHitTestResult::Action(_)
-            | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
-            DecorationHitTestResult::ClientArea => None,
-        });
+        let pointer_contents = self.pointer_contents_at(pos);
+        let next_override = if pointer_contents.layer.is_some() {
+            None
+        } else {
+            self.decoration_under(pos).and_then(|(window, hit)| {
+                self.pointer_allows_window_interaction(
+                    pointer_contents.surface.as_ref().map(|(surface, _)| surface),
+                    &window,
+                )
+                    .then_some(hit)
+                    .and_then(|hit| match hit {
+                        DecorationHitTestResult::Resize(edges) => {
+                            Some(resize_edges_to_cursor_icon(edges))
+                        }
+                        DecorationHitTestResult::Move
+                        | DecorationHitTestResult::Action(_)
+                        | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
+                        DecorationHitTestResult::ClientArea => None,
+                    })
+            })
+        };
 
         if self.cursor_override != next_override {
             self.cursor_override = next_override;
@@ -511,25 +757,9 @@ impl ShojiWM {
             .map(|toplevel| toplevel.wl_surface().id().protocol_id())
             .unwrap_or_default();
         self.space.raise_element(window, true);
-
-        for candidate in self.space.elements() {
-            let should_activate = candidate == window;
-            if candidate.set_activated(should_activate) {
-                if let Some(toplevel) = candidate.toplevel() {
-                    let _ = toplevel.send_pending_configure();
-                }
-            }
-        }
-
-        if let Some(toplevel) = window.toplevel() {
-            self.seat.get_keyboard().unwrap().set_focus(
-                self,
-                Some(toplevel.wl_surface().clone()),
-                serial,
-            );
-        }
-
-        self.schedule_redraw();
+        self.set_window_keyboard_focus_target(Some(window));
+        self.focus_layer_surface_if_on_demand(None);
+        self.update_keyboard_focus(serial);
         debug!(
             window_id,
             elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
@@ -537,26 +767,27 @@ impl ShojiWM {
         );
     }
 
-    fn clear_focus(&mut self, serial: Serial) {
-        let started_at = Instant::now();
-        for window in self.space.elements() {
-            if window.set_activated(false) {
-                if let Some(toplevel) = window.toplevel() {
-                    let _ = toplevel.send_pending_configure();
-                }
-            }
+    pub(crate) fn refresh_pointer_focus(&mut self, time_msec: u32) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if pointer.is_grabbed() {
+            return;
         }
 
-        self.seat
-            .get_keyboard()
-            .unwrap()
-            .set_focus(self, Option::<WlSurface>::None, serial);
-
-        self.schedule_redraw();
-        debug!(
-            elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
-            "clear_focus finished"
+        let location = pointer.current_location();
+        self.pointer_contents = self.pointer_contents_at(location);
+        let under = self.pointer_contents.surface.clone();
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: time_msec,
+            },
         );
+        pointer.frame(self);
     }
 }
 

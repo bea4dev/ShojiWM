@@ -8,7 +8,11 @@ use std::{
 use smithay::{
     backend::drm::DrmNode,
     backend::renderer::element::memory::MemoryRenderBuffer,
-    desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
+    desktop::{
+        LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType,
+        find_popup_root_surface,
+        layer_map_for_output,
+    },
     input::{
         Seat, SeatState,
         pointer::{CursorIcon, CursorImageStatus},
@@ -27,9 +31,10 @@ use smithay::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
+            Resource,
         },
     },
-    utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale},
+    utils::{Clock, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Scale},
     wayland::{
         background_effect::BackgroundEffectState,
         commit_timing::CommitTimingManagerState,
@@ -100,6 +105,39 @@ use tracing::{debug, info, warn};
 pub struct OwnedDamageRect {
     pub owner: String,
     pub rect: LogicalRect,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PopupLatencyDebugState {
+    pub surface_id: u32,
+    pub created_at: Duration,
+    pub committed_at: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RightClickDebugState {
+    pub pressed_at: Option<Duration>,
+    pub released_at: Option<Duration>,
+    pub location: Option<Point<f64, Logical>>,
+}
+
+#[derive(Clone, Default)]
+pub struct PointerContents {
+    pub surface: Option<(WlSurface, Point<f64, Logical>)>,
+    pub layer: Option<LayerSurface>,
+}
+
+#[derive(Clone)]
+pub struct PopupLifecycleDebugEntry {
+    pub surface: WlSurface,
+    pub root_surface_id: Option<u32>,
+    pub kind: &'static str,
+    pub tracked_at: Duration,
+}
+
+fn popup_lifecycle_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_POPUP_LIFECYCLE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 pub struct ShojiWM {
@@ -178,12 +216,19 @@ pub struct ShojiWM {
     pub configured_background_effect: Option<BackgroundEffectConfig>,
     pub configured_layer_effects: HashMap<String, BackgroundEffectConfig>,
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    pub pointer_contents: PointerContents,
+    pub layer_shell_on_demand_focus: Option<LayerSurface>,
+    pub window_keyboard_focus: Option<WlSurface>,
+    pub mapped_on_demand_layer_surfaces: HashSet<u32>,
     pub force_full_damage: bool,
     pub debug_previous_scene_signatures: HashMap<String, Vec<String>>,
     pub tty_maintenance_pending: bool,
     pub tty_maintenance_reasons: BTreeSet<&'static str>,
     pub event_source_wake_counts: BTreeMap<&'static str, u64>,
     pub wayland_display_dispatched_request_count: u64,
+    pub popup_latency_debug: Option<PopupLatencyDebugState>,
+    pub popup_lifecycle_debug_entries: BTreeMap<u32, PopupLifecycleDebugEntry>,
+    pub right_click_debug: RightClickDebugState,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -226,6 +271,130 @@ impl ShojiWM {
             .min()
             .unwrap_or(8)
             .clamp(1, 250)
+    }
+
+    pub fn pointer_contents_at(&self, pos: Point<f64, Logical>) -> PointerContents {
+        let surface = self.surface_under(pos);
+        let layer = surface
+            .as_ref()
+            .and_then(|(surface, _)| self.layer_surface_for_hit_surface(surface));
+        PointerContents { surface, layer }
+    }
+
+    pub fn set_window_keyboard_focus_target(&mut self, window: Option<&Window>) {
+        self.window_keyboard_focus = window.and_then(|window| {
+            window
+                .toplevel()
+                .map(|toplevel| toplevel.wl_surface().clone())
+        });
+    }
+
+    pub fn focus_layer_surface_if_on_demand(&mut self, layer: Option<LayerSurface>) {
+        if let Some(layer) = layer {
+            if matches!(
+                layer.cached_state().keyboard_interactivity,
+                smithay::wayland::shell::wlr_layer::KeyboardInteractivity::OnDemand
+            ) {
+                self.layer_shell_on_demand_focus = Some(layer);
+                return;
+            }
+        }
+
+        self.layer_shell_on_demand_focus = None;
+    }
+
+    fn exclusive_layer_focus_surface(&self) -> Option<WlSurface> {
+        let target_layers = [
+            WlrLayer::Overlay,
+            WlrLayer::Top,
+            WlrLayer::Bottom,
+            WlrLayer::Background,
+        ];
+
+        self.space.outputs().find_map(|output| {
+            let layers = layer_map_for_output(output);
+            target_layers.iter().find_map(|target_layer| {
+                layers.layers_on(*target_layer).find_map(|layer| {
+                    let mapped = layers.layer_geometry(layer).is_some();
+                    (mapped
+                        && matches!(
+                            layer.cached_state().keyboard_interactivity,
+                            smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive
+                        ))
+                    .then(|| layer.wl_surface().clone())
+                })
+            })
+        })
+    }
+
+    fn prune_keyboard_focus_targets(&mut self) {
+        if let Some(surface) = self.layer_shell_on_demand_focus.as_ref() {
+            let alive = surface.alive();
+            let mapped = self.space.outputs().any(|output| {
+                let layers = layer_map_for_output(output);
+                layers.layer_geometry(surface).is_some()
+            });
+            let still_on_demand = matches!(
+                surface.cached_state().keyboard_interactivity,
+                smithay::wayland::shell::wlr_layer::KeyboardInteractivity::OnDemand
+            );
+
+            if !(alive && mapped && still_on_demand) {
+                self.layer_shell_on_demand_focus = None;
+            }
+        }
+
+        if let Some(surface) = self.window_keyboard_focus.as_ref() {
+            let still_mapped = self.space.elements().any(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+            });
+            if !still_mapped {
+                self.window_keyboard_focus = None;
+            }
+        }
+    }
+
+    pub fn update_keyboard_focus(&mut self, serial: smithay::utils::Serial) {
+        self.prune_keyboard_focus_targets();
+
+        let desired_focus = self
+            .exclusive_layer_focus_surface()
+            .or_else(|| {
+                self.layer_shell_on_demand_focus
+                    .as_ref()
+                    .map(|layer| layer.wl_surface().clone())
+            })
+            .or_else(|| self.window_keyboard_focus.clone());
+
+        let focused_window_surface = desired_focus.as_ref();
+
+        for candidate in self.space.elements() {
+            let should_activate = candidate.toplevel().is_some_and(|toplevel| {
+                focused_window_surface.is_some_and(|surface| toplevel.wl_surface() == surface)
+            });
+            if candidate.set_activated(should_activate) {
+                if let Some(toplevel) = candidate.toplevel() {
+                    let _ = toplevel.send_pending_configure();
+                }
+            }
+        }
+
+        let current_focus = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        let focus_changed = current_focus.as_ref().map(|surface| surface.id())
+            != desired_focus.as_ref().map(|surface| surface.id());
+
+        if focus_changed {
+            self.seat
+                .get_keyboard()
+                .unwrap()
+                .set_focus(self, desired_focus, serial);
+            self.schedule_redraw();
+        }
     }
 
     pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
@@ -440,12 +609,23 @@ impl ShojiWM {
             configured_background_effect,
             configured_layer_effects: HashMap::new(),
             layer_backdrop_cache: HashMap::new(),
+            pointer_contents: PointerContents::default(),
+            layer_shell_on_demand_focus: None,
+            window_keyboard_focus: None,
+            mapped_on_demand_layer_surfaces: Default::default(),
             force_full_damage,
             debug_previous_scene_signatures: HashMap::new(),
             tty_maintenance_pending: true,
             tty_maintenance_reasons: BTreeSet::new(),
             event_source_wake_counts: BTreeMap::new(),
             wayland_display_dispatched_request_count: 0,
+            popup_latency_debug: None,
+            popup_lifecycle_debug_entries: BTreeMap::new(),
+            right_click_debug: RightClickDebugState {
+                pressed_at: None,
+                released_at: None,
+                location: None,
+            },
 
             is_running: true,
             needs_redraw: true,
@@ -1079,31 +1259,21 @@ impl ShojiWM {
         let output_geo = self.space.output_geometry(output).unwrap();
         let layers = layer_map_for_output(output);
 
-        if let Some(focus) = [WlrLayer::Overlay, WlrLayer::Top]
-            .into_iter()
-            .flat_map(|target_layer| layers.layers_on(target_layer).rev())
-            .find_map(|layer| {
-                let layer_geo = layers.layer_geometry(layer).unwrap();
-                let layer_loc = layer_geo.loc - layer.geometry().loc;
-                let result = layer
-                    .surface_under(
-                        pos - output_geo.loc.to_f64() - layer_loc.to_f64(),
-                        WindowSurfaceType::ALL,
-                    )
-                    .map(|(surface, loc)| (surface, (loc + layer_loc + output_geo.loc).to_f64()));
-                debug!(
-                    pos = ?pos,
-                    output = %output.name(),
-                    layer = ?layer.layer(),
-                    layer_geo = ?layer_geo,
-                    layer_surface_geo = ?layer.geometry(),
-                    layer_origin = ?layer_loc,
-                    hit = result.is_some(),
-                    "layer-shell top/overlay hit-test"
-                );
-                result
-            })
-        {
+        if let Some(focus) = self.layer_surface_under_with_policy(
+            &layers,
+            &output_geo,
+            pos,
+            &[WlrLayer::Overlay, WlrLayer::Top],
+            true,
+        ).or_else(|| {
+            self.layer_surface_under_with_policy(
+                &layers,
+                &output_geo,
+                pos,
+                &[WlrLayer::Overlay, WlrLayer::Top],
+                false,
+            )
+        }) {
             return Some(focus);
         }
 
@@ -1146,27 +1316,67 @@ impl ShojiWM {
                 .map(|(surface, loc)| (surface, loc.to_f64() + location.to_f64()));
         }
 
-        [WlrLayer::Bottom, WlrLayer::Background]
-            .into_iter()
+        self.layer_surface_under_with_policy(
+            &layers,
+            &output_geo,
+            pos,
+            &[WlrLayer::Bottom, WlrLayer::Background],
+            false,
+        )
+    }
+
+    fn layer_surface_under_with_policy(
+        &self,
+        layers: &smithay::desktop::LayerMap,
+        output_geo: &Rectangle<i32, Logical>,
+        pos: Point<f64, Logical>,
+        target_layers: &[WlrLayer],
+        skip_noninteractive_fullscreen: bool,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        target_layers
+            .iter()
+            .copied()
             .flat_map(|target_layer| layers.layers_on(target_layer).rev())
             .find_map(|layer| {
                 let layer_geo = layers.layer_geometry(layer).unwrap();
-                let layer_loc = layer_geo.loc - layer.geometry().loc;
+                let keyboard_interactivity = layer.cached_state().keyboard_interactivity;
+                let is_full_output_cover =
+                    layer_geo.loc == (0, 0).into() && layer_geo.size == output_geo.size;
+
+                if skip_noninteractive_fullscreen
+                    && matches!(keyboard_interactivity, smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None)
+                    && is_full_output_cover
+                {
+                    debug!(
+                        pos = ?pos,
+                        output = %output_geo.loc.x,
+                        layer_surface_id = layer.wl_surface().id().protocol_id(),
+                        layer = ?layer.layer(),
+                        layer_geo = ?layer_geo,
+                        keyboard_interactivity = ?keyboard_interactivity,
+                        "skipping fullscreen non-interactive layer during preferred hit-test"
+                    );
+                    return None;
+                }
+
                 let result = layer
                     .surface_under(
-                        pos - output_geo.loc.to_f64() - layer_loc.to_f64(),
+                        pos - output_geo.loc.to_f64() - layer_geo.loc.to_f64(),
                         WindowSurfaceType::ALL,
                     )
-                    .map(|(surface, loc)| (surface, (loc + layer_loc + output_geo.loc).to_f64()));
+                    .map(|(surface, loc)| (surface, (loc + layer_geo.loc + output_geo.loc).to_f64()));
                 debug!(
                     pos = ?pos,
-                    output = %output.name(),
+                    output = %output_geo.loc.x,
+                    layer_surface_id = layer.wl_surface().id().protocol_id(),
                     layer = ?layer.layer(),
                     layer_geo = ?layer_geo,
                     layer_surface_geo = ?layer.geometry(),
-                    layer_origin = ?layer_loc,
+                    layer_origin = ?layer_geo.loc,
+                    keyboard_interactivity = ?keyboard_interactivity,
+                    hit_surface_id = result.as_ref().map(|(surface, _)| surface.id().protocol_id()),
                     hit = result.is_some(),
-                    "layer-shell bottom/background hit-test"
+                    "layer-shell hit-test"
                 );
                 result
             })
@@ -1197,6 +1407,47 @@ impl ShojiWM {
                 bbox.size.h,
             );
             rect.contains(logical_pos).then_some((window, rect))
+        })
+    }
+
+    pub fn layer_surface_under(&self, pos: Point<f64, Logical>) -> Option<LayerSurface> {
+        let output = self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+        })?;
+        let output_geo = self.space.output_geometry(output)?;
+        let layers = layer_map_for_output(output);
+        let output_local = pos - output_geo.loc.to_f64();
+
+        [
+            WlrLayer::Overlay,
+            WlrLayer::Top,
+            WlrLayer::Bottom,
+            WlrLayer::Background,
+        ]
+        .into_iter()
+        .find_map(|target_layer| {
+            let layer = layers.layer_under(target_layer, output_local)?;
+            let layer_geo = layers.layer_geometry(layer)?;
+            let local = output_local - layer_geo.loc.to_f64();
+            layer
+                .surface_under(local, WindowSurfaceType::ALL)
+                .map(|_| layer.clone())
+        })
+    }
+
+    pub fn layer_surface_for_hit_surface(&self, surface: &WlSurface) -> Option<LayerSurface> {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+
+        self.space.outputs().find_map(|output| {
+            let layers = layer_map_for_output(output);
+            layers
+                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .cloned()
         })
     }
 
@@ -1248,6 +1499,211 @@ impl ShojiWM {
 
     pub fn schedule_redraw(&mut self) {
         self.needs_redraw = true;
+    }
+
+    pub fn note_xdg_popup_created(&mut self, surface_id: u32) {
+        self.popup_latency_debug = Some(PopupLatencyDebugState {
+            surface_id,
+            created_at: Duration::from(self.clock.now()),
+            committed_at: None,
+        });
+        if std::env::var_os("SHOJI_RIGHT_CLICK_TRACE").is_some() {
+            let now = Duration::from(self.clock.now());
+            info!(
+                surface_id,
+                since_right_press_ms = self
+                    .right_click_debug
+                    .pressed_at
+                    .and_then(|pressed| now.checked_sub(pressed))
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                since_right_release_ms = self
+                    .right_click_debug
+                    .released_at
+                    .and_then(|released| now.checked_sub(released))
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                right_click_location = ?self.right_click_debug.location,
+                "right click trace: xdg popup created"
+            );
+        }
+        if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
+            tracing::info!(surface_id, "xdg popup latency: created");
+        }
+    }
+
+    pub fn note_right_click_button(
+        &mut self,
+        pressed: bool,
+        location: Point<f64, Logical>,
+        source: &'static str,
+    ) {
+        let now = Duration::from(self.clock.now());
+        if pressed {
+            self.right_click_debug.pressed_at = Some(now);
+        } else {
+            self.right_click_debug.released_at = Some(now);
+        }
+        self.right_click_debug.location = Some(location);
+
+        if std::env::var_os("SHOJI_RIGHT_CLICK_TRACE").is_some() {
+            info!(
+                source,
+                pressed,
+                location = ?location,
+                "right click trace: button observed"
+            );
+        }
+    }
+
+    pub fn note_xdg_popup_committed(&mut self, surface_id: u32) {
+        if let Some(popup_debug) = self.popup_latency_debug.as_mut() {
+            if popup_debug.surface_id == surface_id {
+                popup_debug.committed_at = Some(Duration::from(self.clock.now()));
+                if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
+                    tracing::info!(
+                        surface_id,
+                        created_to_commit_ms = popup_debug
+                            .committed_at
+                            .and_then(|commit| commit.checked_sub(popup_debug.created_at))
+                            .map(|delta| delta.as_secs_f64() * 1000.0),
+                        "xdg popup latency: committed"
+                    );
+                }
+            }
+        }
+    }
+
+    fn popup_kind_name(popup: &PopupKind) -> &'static str {
+        match popup {
+            PopupKind::Xdg(_) => "xdg",
+            PopupKind::InputMethod(_) => "input-method",
+        }
+    }
+
+    fn popup_surface_id(popup: &PopupKind) -> u32 {
+        match popup {
+            PopupKind::Xdg(surface) => surface.wl_surface().id().protocol_id(),
+            PopupKind::InputMethod(surface) => surface.wl_surface().id().protocol_id(),
+        }
+    }
+
+    fn popup_root_surface_id(popup: &PopupKind) -> Option<u32> {
+        find_popup_root_surface(popup)
+            .ok()
+            .map(|surface| surface.id().protocol_id())
+    }
+
+    pub fn note_popup_tracked(&mut self, popup: &PopupKind, source: &'static str) {
+        let surface_id = Self::popup_surface_id(popup);
+        let root_surface_id = Self::popup_root_surface_id(popup);
+        let kind = Self::popup_kind_name(popup);
+        self.popup_lifecycle_debug_entries.insert(
+            surface_id,
+            PopupLifecycleDebugEntry {
+                surface: match popup {
+                    PopupKind::Xdg(surface) => surface.wl_surface().clone(),
+                    PopupKind::InputMethod(surface) => surface.wl_surface().clone(),
+                },
+                root_surface_id,
+                kind,
+                tracked_at: Duration::from(self.clock.now()),
+            },
+        );
+        if popup_lifecycle_debug_enabled() {
+            info!(
+                source,
+                surface_id,
+                root_surface_id,
+                kind,
+                tracked_count = self.popup_lifecycle_debug_entries.len(),
+                "popup lifecycle: tracked popup"
+            );
+        }
+    }
+
+    pub fn find_popup_with_debug(
+        &mut self,
+        surface: &WlSurface,
+        source: &'static str,
+    ) -> Option<PopupKind> {
+        let surface_id = surface.id().protocol_id();
+        let found = self.popups.find_popup(surface);
+        if popup_lifecycle_debug_enabled() {
+            let known = self.popup_lifecycle_debug_entries.get(&surface_id);
+            info!(
+                source,
+                surface_id,
+                found = found.is_some(),
+                found_kind = found.as_ref().map(Self::popup_kind_name),
+                found_root_surface_id = found.as_ref().and_then(Self::popup_root_surface_id),
+                known = known.is_some(),
+                known_kind = known.map(|entry| entry.kind),
+                known_root_surface_id = known.and_then(|entry| entry.root_surface_id),
+                tracked_count = self.popup_lifecycle_debug_entries.len(),
+                "popup lifecycle: find_popup"
+            );
+        }
+        found
+    }
+
+    pub fn note_popup_dismiss_requested(
+        &mut self,
+        surface: &WlSurface,
+        parent_surface_id: Option<u32>,
+        source: &'static str,
+    ) {
+        if !popup_lifecycle_debug_enabled() {
+            return;
+        }
+        let surface_id = surface.id().protocol_id();
+        let known = self.popup_lifecycle_debug_entries.get(&surface_id);
+        info!(
+            source,
+            surface_id,
+            parent_surface_id,
+            known = known.is_some(),
+            known_kind = known.map(|entry| entry.kind),
+            known_root_surface_id = known.and_then(|entry| entry.root_surface_id),
+            tracked_count = self.popup_lifecycle_debug_entries.len(),
+            "popup lifecycle: dismiss requested"
+        );
+    }
+
+    pub fn cleanup_popups_with_debug(&mut self, source: &'static str) {
+        if popup_lifecycle_debug_enabled() {
+            info!(
+                source,
+                tracked_count = self.popup_lifecycle_debug_entries.len(),
+                "popup lifecycle: cleanup start"
+            );
+        }
+        self.popups.cleanup();
+
+        let mut removed_entries = Vec::new();
+        for (surface_id, entry) in &self.popup_lifecycle_debug_entries {
+            if self.popups.find_popup(&entry.surface).is_none() {
+                removed_entries.push((
+                    *surface_id,
+                    entry.root_surface_id,
+                    entry.kind,
+                    Duration::from(self.clock.now())
+                        .checked_sub(entry.tracked_at)
+                        .map(|delta| delta.as_secs_f64() * 1000.0),
+                ));
+            }
+        }
+
+        for (surface_id, _, _, _) in &removed_entries {
+            self.popup_lifecycle_debug_entries.remove(surface_id);
+        }
+
+        if popup_lifecycle_debug_enabled() {
+            info!(
+                source,
+                removed = ?removed_entries,
+                remaining_tracked_count = self.popup_lifecycle_debug_entries.len(),
+                "popup lifecycle: cleanup finish"
+            );
+        }
     }
 
     pub fn logical_damage_rect_for_window(&self, window: &Window) -> Option<LogicalRect> {

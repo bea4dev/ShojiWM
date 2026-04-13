@@ -7,7 +7,7 @@ edition = "2024"
 bitflags = "2.11.0"
 thiserror = "2.0.12"
 smithay = {
-    git = "https://github.com/Smithay/smithay/",
+    git = "https://github.com/Smithay/smithay.git",
     rev = "f6d10709db2bb68c46b9c128a4163d035356572c",
     features = ["use_system_lib"]
 }

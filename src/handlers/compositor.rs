@@ -205,7 +205,13 @@ impl CompositorHandler for ShojiWM {
             debug!(surface = ?window.toplevel().unwrap().wl_surface().id(), "toplevel commit matched mapped window");
         }
 
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        xdg_shell::handle_commit(self, surface);
+        if self
+            .find_popup_with_debug(surface, "compositor-post-commit")
+            .is_some()
+        {
+            self.request_tty_maintenance("xdg-popup-commit");
+        }
         layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
 

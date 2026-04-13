@@ -368,6 +368,22 @@ fn frame_finish(
     }
 
     surface.last_presented_at = Some(presentation_clock);
+    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
+        if let Some(popup_debug) = state.popup_latency_debug.take() {
+            tracing::info!(
+                surface_id = popup_debug.surface_id,
+                created_to_frame_finish_ms = presentation_clock
+                    .checked_sub(popup_debug.created_at)
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                commit_to_frame_finish_ms = popup_debug
+                    .committed_at
+                    .and_then(|commit| presentation_clock.checked_sub(commit))
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                output = %surface.output.name(),
+                "xdg popup latency: frame finish"
+            );
+        }
+    }
 
     surface.frame_pending = false;
     surface.queued_at = None;
@@ -393,6 +409,23 @@ pub fn render_if_needed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !state.needs_redraw {
         return Ok(());
+    }
+
+    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
+        if let Some(popup_debug) = state.popup_latency_debug {
+            let now = Duration::from(state.clock.now());
+            tracing::info!(
+                surface_id = popup_debug.surface_id,
+                created_to_render_start_ms = now
+                    .checked_sub(popup_debug.created_at)
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                commit_to_render_start_ms = popup_debug
+                    .committed_at
+                    .and_then(|commit| now.checked_sub(commit))
+                    .map(|delta| delta.as_secs_f64() * 1000.0),
+                "xdg popup latency: render_if_needed start"
+            );
+        }
     }
 
     trace!(
