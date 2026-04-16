@@ -6017,6 +6017,7 @@ fn schedule_estimated_vblank_callback(
                     callback_time,
                     Some(sequence),
                 );
+                let _ = state.display_handle.flush_clients();
             }
             TimeoutAction::Drop
         })

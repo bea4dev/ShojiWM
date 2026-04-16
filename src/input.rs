@@ -557,6 +557,13 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 let _ = self.display_handle.flush_clients();
+                // Ensure the next redraw runs so frame callbacks flow to the clients that just
+                // received the button event. Without this, a button press on an idle surface
+                // (e.g. clicking a noctalia bar widget) does not trigger a render, so Quickshell
+                // can stall waiting for a wl_surface.frame callback before it even begins
+                // rendering the popup. Cursor motion has the same effect via the PointerMotion
+                // handler; doing it here keeps button and motion symmetric.
+                self.schedule_redraw();
                 if pointer_button_debug_enabled() {
                     debug!(
                         button,
