@@ -1262,54 +1262,70 @@ fn render_surface(
                     },
                 )? {
                     if let Some(root_origin) = root_origin {
-                        let stable_key = window_decorations
-                            .get(window)
-                            .and_then(|decoration| {
-                                decoration
-                                    .icon_buffers
-                                    .iter()
-                                    .find(|buffer| buffer.order == order)
-                                    .map(|buffer| buffer.stable_key.clone())
-                            })
-                            .unwrap_or_else(|| format!("icon-order-{order}"));
+                        let debug_stable = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                            Some(
+                                window_decorations
+                                    .get(window)
+                                    .and_then(|decoration| {
+                                        decoration
+                                            .icon_buffers
+                                            .iter()
+                                            .find(|buffer| buffer.order == order)
+                                            .map(|buffer| buffer.stable_key.clone())
+                                    })
+                                    .unwrap_or_else(|| format!("icon-order-{order}")),
+                            )
+                        } else {
+                            None
+                        };
                         let pre_transform_geometry =
-                            smithay::backend::renderer::element::Element::geometry(&element, scale);
+                            if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                Some(smithay::backend::renderer::element::Element::geometry(
+                                    &element, scale,
+                                ))
+                            } else {
+                                None
+                            };
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
                             composition_visual,
                         )?;
-                        let post_transform_geometry = items.first().map(|item| {
-                            smithay::backend::renderer::element::Element::geometry(item, scale)
-                        });
-                        debug_ui_pre_geometries.push((
-                            order,
-                            stable_key.clone(),
-                            "app-icon",
-                            pre_transform_geometry,
-                        ));
-                        if let Some(post_transform_geometry) = post_transform_geometry {
-                            debug_ui_geometries.push((
+                        if let (Some(stable_key), Some(pre_transform_geometry)) =
+                            (debug_stable, pre_transform_geometry)
+                        {
+                            let post_transform_geometry = items.first().map(|item| {
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
+                            });
+                            debug_ui_pre_geometries.push((
                                 order,
                                 stable_key.clone(),
                                 "app-icon",
-                                post_transform_geometry,
+                                pre_transform_geometry,
                             ));
+                            if let Some(post_transform_geometry) = post_transform_geometry {
+                                debug_ui_geometries.push((
+                                    order,
+                                    stable_key.clone(),
+                                    "app-icon",
+                                    post_transform_geometry,
+                                ));
+                            }
+                            tracing::info!(
+                                output = %output.name(),
+                                window_id = %window_id,
+                                stable_key = %stable_key,
+                                source_kind = %"app-icon",
+                                order,
+                                root_origin = ?root_origin,
+                                visual_origin = ?composition_visual.origin,
+                                visual_scale = ?composition_visual.scale,
+                                visual_translation = ?composition_visual.translation,
+                                pre_transform_geometry = ?pre_transform_geometry,
+                                post_transform_geometry = ?post_transform_geometry,
+                                "gap debug tty transformed decoration geometry"
+                            );
                         }
-                        tracing::info!(
-                            output = %output.name(),
-                            window_id = %window_id,
-                            stable_key = %stable_key,
-                            source_kind = %"app-icon",
-                            order,
-                            root_origin = ?root_origin,
-                            visual_origin = ?composition_visual.origin,
-                            visual_scale = ?composition_visual.scale,
-                            visual_translation = ?composition_visual.translation,
-                            pre_transform_geometry = ?pre_transform_geometry,
-                            post_transform_geometry = ?post_transform_geometry,
-                            "gap debug tty transformed decoration geometry"
-                        );
                         if use_full_window_snapshot {
                             snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {
@@ -1331,54 +1347,70 @@ fn render_surface(
                     },
                 )? {
                     if let Some(root_origin) = root_origin {
-                        let stable_key = window_decorations
-                            .get(window)
-                            .and_then(|decoration| {
-                                decoration
-                                    .text_buffers
-                                    .iter()
-                                    .find(|buffer| buffer.order == order)
-                                    .map(|buffer| buffer.stable_key.clone())
-                            })
-                            .unwrap_or_else(|| format!("label-order-{order}"));
+                        let debug_stable = if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                            Some(
+                                window_decorations
+                                    .get(window)
+                                    .and_then(|decoration| {
+                                        decoration
+                                            .text_buffers
+                                            .iter()
+                                            .find(|buffer| buffer.order == order)
+                                            .map(|buffer| buffer.stable_key.clone())
+                                    })
+                                    .unwrap_or_else(|| format!("label-order-{order}")),
+                            )
+                        } else {
+                            None
+                        };
                         let pre_transform_geometry =
-                            smithay::backend::renderer::element::Element::geometry(&element, scale);
+                            if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                Some(smithay::backend::renderer::element::Element::geometry(
+                                    &element, scale,
+                                ))
+                            } else {
+                                None
+                            };
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
                             composition_visual,
                         )?;
-                        let post_transform_geometry = items.first().map(|item| {
-                            smithay::backend::renderer::element::Element::geometry(item, scale)
-                        });
-                        debug_ui_pre_geometries.push((
-                            order,
-                            stable_key.clone(),
-                            "label",
-                            pre_transform_geometry,
-                        ));
-                        if let Some(post_transform_geometry) = post_transform_geometry {
-                            debug_ui_geometries.push((
+                        if let (Some(stable_key), Some(pre_transform_geometry)) =
+                            (debug_stable, pre_transform_geometry)
+                        {
+                            let post_transform_geometry = items.first().map(|item| {
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
+                            });
+                            debug_ui_pre_geometries.push((
                                 order,
                                 stable_key.clone(),
                                 "label",
-                                post_transform_geometry,
+                                pre_transform_geometry,
                             ));
+                            if let Some(post_transform_geometry) = post_transform_geometry {
+                                debug_ui_geometries.push((
+                                    order,
+                                    stable_key.clone(),
+                                    "label",
+                                    post_transform_geometry,
+                                ));
+                            }
+                            tracing::info!(
+                                output = %output.name(),
+                                window_id = %window_id,
+                                stable_key = %stable_key,
+                                source_kind = %"label",
+                                order,
+                                root_origin = ?root_origin,
+                                visual_origin = ?composition_visual.origin,
+                                visual_scale = ?composition_visual.scale,
+                                visual_translation = ?composition_visual.translation,
+                                pre_transform_geometry = ?pre_transform_geometry,
+                                post_transform_geometry = ?post_transform_geometry,
+                                "gap debug tty transformed decoration geometry"
+                            );
                         }
-                        tracing::info!(
-                            output = %output.name(),
-                            window_id = %window_id,
-                            stable_key = %stable_key,
-                            source_kind = %"label",
-                            order,
-                            root_origin = ?root_origin,
-                            visual_origin = ?composition_visual.origin,
-                            visual_scale = ?composition_visual.scale,
-                            visual_translation = ?composition_visual.translation,
-                            pre_transform_geometry = ?pre_transform_geometry,
-                            post_transform_geometry = ?post_transform_geometry,
-                            "gap debug tty transformed decoration geometry"
-                        );
                         if use_full_window_snapshot {
                             snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {

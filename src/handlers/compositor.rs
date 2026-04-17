@@ -68,6 +68,9 @@ impl CompositorHandler for ShojiWM {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(data) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &data.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
@@ -98,7 +101,7 @@ impl CompositorHandler for ShojiWM {
             if let Some(window) = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+                .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root))
             {
                 pending_source_damage = Some((
                     window.clone(),
@@ -202,7 +205,9 @@ impl CompositorHandler for ShojiWM {
                 self.pending_decoration_damage
                     .push(decoration.layout.root.rect);
             }
-            debug!(surface = ?window.toplevel().unwrap().wl_surface().id(), "toplevel commit matched mapped window");
+            if let Some(top) = window.toplevel() {
+                debug!(surface = ?top.wl_surface().id(), "toplevel commit matched mapped window");
+            }
         }
 
         xdg_shell::handle_commit(self, surface);

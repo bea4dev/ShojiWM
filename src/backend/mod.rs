@@ -69,6 +69,7 @@ fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     state.warmup_decoration_runtime();
+    state.start_xwayland(&event_loop);
 
     spawn_client();
 
@@ -80,6 +81,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<ShojiWM> = EventLoop::try_new()?;
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display);
+    state.start_xwayland(&event_loop);
 
     let (mut session, _session_notifier) = LibSeatSession::new()?;
     let seat_name = session.seat();

@@ -64,7 +64,9 @@ use smithay::{
         viewporter::ViewporterState,
         virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::XdgActivationState,
+        xwayland_shell::XWaylandShellState,
     },
+    xwayland::{X11Wm, XWayland, XWaylandEvent},
 };
 use xcursor::parser::Image;
 
@@ -245,6 +247,11 @@ pub struct ShojiWM {
     pub default_decoration_mode: DecorationMode,
     pub display_config: DisplayConfig,
     pub clock: Clock<Monotonic>,
+
+    pub xwayland_shell_state: XWaylandShellState,
+    pub xwayland: Option<XWayland>,
+    pub xwm: Option<X11Wm>,
+    pub xdisplay: Option<u32>,
 }
 
 impl ShojiWM {
@@ -429,6 +436,7 @@ impl ShojiWM {
         let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
         let fixes_state = FixesState::new::<Self>(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         TextInputManagerState::new::<Self>(&dh);
         InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
         VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
@@ -645,6 +653,73 @@ impl ShojiWM {
             default_decoration_mode: DecorationMode::ServerSide,
             display_config: DisplayConfig::from_env(),
             clock,
+
+            xwayland_shell_state,
+            xwayland: None,
+            xwm: None,
+            xdisplay: None,
+        }
+    }
+
+    pub fn start_xwayland(&mut self, event_loop: &EventLoop<'static, ShojiWM>) {
+        use std::process::Stdio;
+
+        let (xwayland, client) = match XWayland::spawn(
+            &self.display_handle,
+            None,
+            std::iter::empty::<(String, String)>(),
+            true,
+            Stdio::null(),
+            Stdio::null(),
+            |_| (),
+        ) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(?err, "failed to spawn XWayland");
+                return;
+            }
+        };
+
+        // Publish DISPLAY as soon as the X11 socket is reserved, so any child
+        // process spawned before XWayland finishes handshake still inherits it.
+        // libX11 will retry connecting briefly until Xwayland accepts.
+        let display_number = xwayland.display_number();
+        self.xdisplay = Some(display_number);
+        unsafe {
+            std::env::set_var("DISPLAY", format!(":{}", display_number));
+        }
+        info!(display = display_number, "XWayland spawned, DISPLAY exported");
+
+        let display_handle = self.display_handle.clone();
+        let loop_handle = event_loop.handle();
+        let source_handle = loop_handle.clone();
+        let insert_result = loop_handle.insert_source(xwayland, move |event, _, state| match event {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
+                match X11Wm::start_wm(
+                    source_handle.clone(),
+                    &display_handle,
+                    x11_socket,
+                    client.clone(),
+                ) {
+                    Ok(wm) => {
+                        info!(display = display_number, "XWayland ready, X11Wm started");
+                        state.xwm = Some(wm);
+                    }
+                    Err(err) => {
+                        warn!(?err, "failed to start X11 window manager");
+                    }
+                }
+            }
+            XWaylandEvent::Error => {
+                warn!("XWayland exited unexpectedly during startup");
+            }
+        });
+
+        if let Err(err) = insert_result {
+            warn!(?err, "failed to insert XWayland event source");
         }
     }
 
