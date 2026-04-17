@@ -292,9 +292,10 @@ impl ShojiWM {
 
     pub fn set_window_keyboard_focus_target(&mut self, window: Option<&Window>) {
         self.window_keyboard_focus = window.and_then(|window| {
-            window
-                .toplevel()
-                .map(|toplevel| toplevel.wl_surface().clone())
+            if let Some(toplevel) = window.toplevel() {
+                return Some(toplevel.wl_surface().clone());
+            }
+            window.x11_surface().and_then(|x11| x11.wl_surface())
         });
     }
 
@@ -355,9 +356,17 @@ impl ShojiWM {
 
         if let Some(surface) = self.window_keyboard_focus.as_ref() {
             let still_mapped = self.space.elements().any(|window| {
-                window
+                if window
                     .toplevel()
                     .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                {
+                    return true;
+                }
+                window
+                    .x11_surface()
+                    .and_then(|x11| x11.wl_surface())
+                    .as_ref()
+                    == Some(surface)
             });
             if !still_mapped {
                 self.window_keyboard_focus = None;
@@ -380,9 +389,16 @@ impl ShojiWM {
         let focused_window_surface = desired_focus.as_ref();
 
         for candidate in self.space.elements() {
-            let should_activate = candidate.toplevel().is_some_and(|toplevel| {
+            let should_activate = if let Some(toplevel) = candidate.toplevel() {
                 focused_window_surface.is_some_and(|surface| toplevel.wl_surface() == surface)
-            });
+            } else if let Some(x11) = candidate.x11_surface() {
+                match (focused_window_surface, x11.wl_surface()) {
+                    (Some(focused), Some(wl)) => focused == &wl,
+                    _ => false,
+                }
+            } else {
+                false
+            };
             if candidate.set_activated(should_activate) {
                 if let Some(toplevel) = candidate.toplevel() {
                     let _ = toplevel.send_pending_configure();

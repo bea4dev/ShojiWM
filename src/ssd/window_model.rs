@@ -140,19 +140,7 @@ impl ShojiWM {
     /// Build a TypeScript-facing window snapshot for a mapped window.
     pub fn snapshot_window(&self, window: &Window) -> WaylandWindowSnapshot {
         let Some(toplevel) = window.toplevel() else {
-            return WaylandWindowSnapshot {
-                id: "unknown".into(),
-                title: String::new(),
-                app_id: None,
-                position: WindowPositionSnapshot::default(),
-                is_focused: false,
-                is_floating: true,
-                is_maximized: false,
-                is_fullscreen: false,
-                is_xwayland: false,
-                icon: None,
-                interaction: DecorationInteractionSnapshot::default(),
-            };
+            return self.snapshot_x11_window(window);
         };
 
         let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
@@ -220,6 +208,74 @@ impl ShojiWM {
         }
     }
 
+    fn snapshot_x11_window(&self, window: &Window) -> WaylandWindowSnapshot {
+        let Some(x11) = window.x11_surface() else {
+            return WaylandWindowSnapshot {
+                id: "unknown".into(),
+                title: String::new(),
+                app_id: None,
+                position: WindowPositionSnapshot::default(),
+                is_focused: false,
+                is_floating: true,
+                is_maximized: false,
+                is_fullscreen: false,
+                is_xwayland: false,
+                icon: None,
+                interaction: DecorationInteractionSnapshot::default(),
+            };
+        };
+
+        let title = x11.title();
+        let class = x11.class();
+        let app_id = (!class.is_empty()).then_some(class);
+
+        let focused_surface = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        let is_focused = match (focused_surface.as_ref(), x11.wl_surface()) {
+            (Some(focused), Some(wl)) => focused == &wl,
+            _ => false,
+        };
+
+        let position = self
+            .space
+            .element_location(window)
+            .map(|loc| {
+                let geometry = window.geometry();
+                WindowPositionSnapshot {
+                    x: loc.x + geometry.loc.x,
+                    y: loc.y + geometry.loc.y,
+                    width: geometry.size.w.max(1),
+                    height: geometry.size.h.max(1),
+                }
+            })
+            .unwrap_or_default();
+
+        let runtime_id = if let Some(existing) = self.window_decorations.get(window) {
+            existing.snapshot.id.clone()
+        } else {
+            runtime_id_for_x11_window(&x11)
+        };
+
+        WaylandWindowSnapshot {
+            id: runtime_id,
+            title,
+            app_id: app_id.clone(),
+            position,
+            is_focused,
+            is_floating: true,
+            is_maximized: false,
+            is_fullscreen: false,
+            is_xwayland: true,
+            icon: app_id.as_ref().map(|name| WindowIconSnapshot {
+                name: Some(name.clone()),
+                bytes: None,
+            }),
+            interaction: DecorationInteractionSnapshot::default(),
+        }
+    }
+
     pub fn snapshot_windows(&self) -> Vec<WaylandWindowSnapshot> {
         self.space
             .elements()
@@ -277,6 +333,10 @@ fn runtime_id_for_window(window: &Window, protocol_id: u32) -> String {
                 .map(|client| format!("{:?}:{}", client.id(), protocol_id))
         })
         .unwrap_or_else(|| format!("unknown-client:{protocol_id}"))
+}
+
+fn runtime_id_for_x11_window(surface: &smithay::xwayland::X11Surface) -> String {
+    format!("x11:{}", surface.window_id())
 }
 
 pub fn layer_runtime_id(layer: &LayerSurface) -> String {

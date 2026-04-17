@@ -195,14 +195,14 @@ impl XdgShellHandler for ShojiWM {
 
             surface.send_pending_configure();
 
-            let grab = ResizeSurfaceGrab::start(
+            if let Some(grab) = ResizeSurfaceGrab::start(
                 start_data,
                 window,
                 edges.into(),
                 Rectangle::new(initial_window_location, initial_window_size),
-            );
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
+            ) {
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+            }
         }
     }
 

@@ -470,7 +470,7 @@ impl ShojiWM {
                                         toplevel.send_pending_configure();
                                     }
 
-                                    let grab = ResizeSurfaceGrab::start(
+                                    if let Some(grab) = ResizeSurfaceGrab::start(
                                         start_data,
                                         window,
                                         resize_edges_to_grab(edges),
@@ -478,13 +478,14 @@ impl ShojiWM {
                                             initial_window_location,
                                             initial_window_size,
                                         ),
-                                    );
-                                    pointer.set_grab(
-                                        self,
-                                        grab,
-                                        serial,
-                                        smithay::input::pointer::Focus::Clear,
-                                    );
+                                    ) {
+                                        pointer.set_grab(
+                                            self,
+                                            grab,
+                                            serial,
+                                            smithay::input::pointer::Focus::Clear,
+                                        );
+                                    }
                                 }
                             }
                             DecorationHitTestResult::ClientArea => {
