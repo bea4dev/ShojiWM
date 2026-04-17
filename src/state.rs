@@ -63,6 +63,7 @@ use smithay::{
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
         virtual_keyboard::VirtualKeyboardManagerState,
+        xdg_activation::XdgActivationState,
     },
 };
 use xcursor::parser::Image;
@@ -152,6 +153,7 @@ pub struct ShojiWM {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
+    pub xdg_activation_state: XdgActivationState,
     pub xdg_decoration_state: XdgDecorationState,
     pub kde_decoration_state: KdeDecorationState,
     pub shm_state: ShmState,
@@ -410,6 +412,7 @@ impl ShojiWM {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeDecorationMode::Server);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -546,6 +549,7 @@ impl ShojiWM {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            xdg_activation_state,
             xdg_decoration_state,
             kde_decoration_state,
             shm_state,

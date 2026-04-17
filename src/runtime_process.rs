@@ -101,6 +101,23 @@ pub struct ManagedRuntimeService {
     pub last_started_generation: u64,
 }
 
+fn prepare_runtime_process_environment(command: &mut Command) {
+    for key in [
+        "NIRI_SOCKET",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "SWAYSOCK",
+        "I3SOCK",
+        "LABWC_PID",
+    ] {
+        command.env(key, "");
+    }
+
+    // Child processes launched by ShojiWM should identify this compositor session,
+    // not whichever compositor environment may have existed before ShojiWM started.
+    command.env("XDG_CURRENT_DESKTOP", "ShojiWM");
+    command.env("XDG_SESSION_DESKTOP", "ShojiWM");
+}
+
 pub fn spawn_runtime_process(
     launch: &RuntimeProcessLaunch,
     cwd: Option<&str>,
@@ -132,6 +149,8 @@ pub fn spawn_runtime_process(
             cmd
         }
     };
+
+    prepare_runtime_process_environment(&mut command);
 
     if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
         command.current_dir(cwd);

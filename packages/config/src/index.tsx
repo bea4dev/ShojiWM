@@ -24,6 +24,8 @@ import {
 } from "shoji_wm";
 import type { DecorationRenderable, Direction, MaybeSignal } from "shoji_wm/types";
 
+const NOCTALIA_SHELL_PATH = "/home/bea4dev/Documents/development/noctalia-shell-shojiwm";
+
 /*
 WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     for (let displayName of WINDOW_MANAGER.output.list) {
@@ -40,7 +42,7 @@ WINDOW_MANAGER.process.once("fcitx5", {
     runPolicy: "once-per-session",
 });
 WINDOW_MANAGER.process.once("shell", {
-    command: ["qs", "-c", "noctalia-shell"],
+    command: ["qs", "--path", NOCTALIA_SHELL_PATH],
     runPolicy: "once-per-session",
 });
 
@@ -49,10 +51,10 @@ WINDOW_MANAGER.key.bind("terminal", "Super+T", () => {
     WINDOW_MANAGER.process.spawn({ command: ["kitty"] });
 });
 WINDOW_MANAGER.key.bind("launcher", "Super+A", () => {
-    WINDOW_MANAGER.process.spawn({ command: ["qs", "-c", "noctalia-shell", "ipc", "call", "launcher", "toggle"] });
+    WINDOW_MANAGER.process.spawn({ command: ["qs", "--path", NOCTALIA_SHELL_PATH, "ipc", "call", "launcher", "toggle"] });
 });
 WINDOW_MANAGER.key.bind("clipboard", "Super+V", () => {
-    WINDOW_MANAGER.process.spawn({ command: ["qs", "-c", "noctalia-shell", "ipc", "call", "launcher", "clipboard"] });
+    WINDOW_MANAGER.process.spawn({ command: ["qs", "--path", NOCTALIA_SHELL_PATH, "ipc", "call", "launcher", "clipboard"] });
 });
 
 

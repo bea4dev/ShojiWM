@@ -44,12 +44,16 @@ use smithay::wayland::text_input::TextInputSeat;
 use smithay::wayland::virtual_keyboard::{
     VirtualKeyboardManagerGlobalData, VirtualKeyboardManagerState, VirtualKeyboardUserData,
 };
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::{
     delegate_commit_timing, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_fifo, delegate_fixes, delegate_fractional_scale,
     delegate_input_method_manager, delegate_kde_decoration, delegate_layer_shell, delegate_output,
-    delegate_presentation, delegate_primary_selection, delegate_seat, delegate_single_pixel_buffer,
-    delegate_text_input_manager, delegate_viewporter, delegate_xdg_decoration,
+    delegate_presentation, delegate_primary_selection, delegate_seat,
+    delegate_single_pixel_buffer, delegate_text_input_manager, delegate_viewporter,
+    delegate_xdg_activation, delegate_xdg_decoration,
 };
 use smithay::delegate_background_effect;
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
@@ -102,9 +106,61 @@ delegate_fixes!(ShojiWM);
 delegate_text_input_manager!(ShojiWM);
 delegate_input_method_manager!(ShojiWM);
 delegate_kde_decoration!(ShojiWM);
+delegate_xdg_activation!(ShojiWM);
 delegate_background_effect!(ShojiWM);
 delegate_global_dispatch!(ShojiWM: [ZwpVirtualKeyboardManagerV1: VirtualKeyboardManagerGlobalData] => VirtualKeyboardManagerState);
 delegate_dispatch!(ShojiWM: [ZwpVirtualKeyboardManagerV1: ()] => VirtualKeyboardManagerState);
+
+impl XdgActivationHandler for ShojiWM {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        let Some((serial, seat)) = data.serial else {
+            return false;
+        };
+
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+
+        Seat::from_resource(&seat) == Some(self.seat.clone())
+            && keyboard
+                .last_enter()
+                .map(|last_enter| serial.is_no_older_than(&last_enter))
+                .unwrap_or(false)
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        if token_data.timestamp.elapsed().as_secs() >= 10 {
+            return;
+        }
+
+        let window = self
+            .space
+            .elements()
+            .find(|candidate| {
+                candidate
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == &surface)
+            })
+            .cloned();
+
+        if let Some(window) = window {
+            self.space.raise_element(&window, true);
+            self.set_window_keyboard_focus_target(Some(&window));
+            self.focus_layer_surface_if_on_demand(None);
+            self.update_keyboard_focus(Serial::from(0));
+            self.schedule_redraw();
+        }
+    }
+}
 
 impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<ShojiWM>, ShojiWM> for ShojiWM {
     fn request(

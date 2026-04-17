@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging(&args)?;
     install_panic_hook();
     apply_runtime_overrides(&args);
+    sanitize_inherited_compositor_environment();
 
     let backend = if args.tty {
         ShojiWMBackend::TTY
@@ -81,6 +82,23 @@ fn panic_payload_message(panic_info: &panic::PanicHookInfo<'_>) -> String {
 fn apply_runtime_overrides(args: &CliArgs) {
     if !args.tty_outputs.is_empty() {
         unsafe { std::env::set_var("SHOJI_TTY_OUTPUT", args.tty_outputs.join(",")) };
+    }
+}
+
+fn sanitize_inherited_compositor_environment() {
+    for key in [
+        "NIRI_SOCKET",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "SWAYSOCK",
+        "I3SOCK",
+        "LABWC_PID",
+    ] {
+        unsafe { std::env::set_var(key, "") };
+    }
+
+    unsafe {
+        std::env::set_var("XDG_CURRENT_DESKTOP", "ShojiWM");
+        std::env::set_var("XDG_SESSION_DESKTOP", "ShojiWM");
     }
 }
 
