@@ -32,14 +32,19 @@ fn compute_sample_uv_compensation(
     src_loc: Vector2<f32>,
     src_size: Vector2<f32>,
     buffer_size: Vector2<f32>,
+    sampled_pixels: Vector2<f32>,
     projected_pixels: Vector2<f32>,
 ) -> SampleUvCompensation {
     let safe_buffer = Vector2::new(buffer_size.x.max(1.0), buffer_size.y.max(1.0));
     let uv_tl = src_loc.div_element_wise(safe_buffer);
     let uv_br = (src_loc + src_size).div_element_wise(safe_buffer);
-    let sampled_texels = (uv_br - uv_tl).mul_element_wise(safe_buffer);
-    let misalignment = sampled_texels - projected_pixels;
-    let adjusted_uv_br = uv_br - misalignment.div_element_wise(safe_buffer);
+    let uv_range = uv_br - uv_tl;
+    let safe_sampled_pixels = Vector2::new(sampled_pixels.x.max(1.0), sampled_pixels.y.max(1.0));
+    let misalignment = sampled_pixels - projected_pixels;
+    let adjusted_uv_br = uv_br
+        - misalignment
+            .div_element_wise(safe_sampled_pixels)
+            .mul_element_wise(uv_range);
     let enabled = misalignment.x.abs() > 0.01 || misalignment.y.abs() > 0.01;
 
     SampleUvCompensation {
@@ -47,7 +52,7 @@ fn compute_sample_uv_compensation(
         uv_br: [uv_br.x, uv_br.y],
         adjusted_uv_br: [adjusted_uv_br.x, adjusted_uv_br.y],
         buffer_size: [safe_buffer.x, safe_buffer.y],
-        sampled_texels: [sampled_texels.x, sampled_texels.y],
+        sampled_texels: [sampled_pixels.x, sampled_pixels.y],
         projected_pixels: [projected_pixels.x, projected_pixels.y],
         misalignment: [misalignment.x, misalignment.y],
         enabled,
@@ -238,6 +243,7 @@ impl ClippedSurfaceElement {
             src_loc,
             src_size,
             buffer_size,
+            Vector2::new(element_geometry.size.w as f32, element_geometry.size.h as f32),
             Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32),
         );
         if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
