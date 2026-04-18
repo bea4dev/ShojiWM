@@ -63,11 +63,11 @@ fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<ShojiWM> = EventLoop::try_new()?;
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display);
+    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
     info!("initializing winit backend");
     winit::init_winit(&mut event_loop, &mut state)?;
 
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     state.warmup_decoration_runtime();
     state.start_xwayland(&event_loop);
 
@@ -81,6 +81,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<ShojiWM> = EventLoop::try_new()?;
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display);
+    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     state.start_xwayland(&event_loop);
 
     let (mut session, _session_notifier) = LibSeatSession::new()?;
@@ -190,7 +191,6 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     info!(socket = ?state.socket_name, "set wayland display for tty backend");
     state.warmup_decoration_runtime();
     std::process::Command::new("weston-terminal").spawn().ok();

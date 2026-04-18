@@ -29,3 +29,7 @@ fontdue = "0.9.3"
 cosmic-text = "0.17.2"
 png = "0.17.16"
 resvg = "0.45.1"
+
+[patch."https://github.com/Smithay/smithay.git"]
+smithay = { path = "misc/smithay" }
+smithay-drm-extras = { path = "misc/smithay/smithay-drm-extras" }

@@ -21,6 +21,7 @@ pub mod runtime_key_binding;
 pub mod runtime_process;
 pub mod ssd;
 pub mod state;
+pub mod xwayland_satellite;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
@@ -83,6 +84,15 @@ fn apply_runtime_overrides(args: &CliArgs) {
     if !args.tty_outputs.is_empty() {
         unsafe { std::env::set_var("SHOJI_TTY_OUTPUT", args.tty_outputs.join(",")) };
     }
+    if args.xwayland_satellite {
+        unsafe { std::env::set_var("SHOJI_XWAYLAND_SATELLITE", "1") };
+    }
+    if let Some(path) = args.xwayland_satellite_path.as_deref() {
+        unsafe { std::env::set_var("SHOJI_XWAYLAND_SATELLITE_PATH", path) };
+    }
+    if let Some(glamor) = args.xwayland_satellite_glamor.as_deref() {
+        unsafe { std::env::set_var("SHOJI_XWAYLAND_SATELLITE_GLAMOR", glamor) };
+    }
 }
 
 fn sanitize_inherited_compositor_environment() {
@@ -108,6 +118,9 @@ struct CliArgs {
     log_off: bool,
     no_log_rotate: bool,
     tty_outputs: Vec<String>,
+    xwayland_satellite: bool,
+    xwayland_satellite_path: Option<String>,
+    xwayland_satellite_glamor: Option<String>,
 }
 
 impl CliArgs {
@@ -117,14 +130,32 @@ impl CliArgs {
             std::env::var_os("SHOJI_LOG").is_some_and(|value| value == "off" || value == "0");
         let env_no_rotate = std::env::var_os("SHOJI_LOG_ROTATE")
             .is_some_and(|value| value == "0" || value == "off");
+        let env_xwayland_satellite = std::env::var_os("SHOJI_XWAYLAND_SATELLITE")
+            .is_some_and(|value| value != "0" && value != "off");
+        let env_xwayland_satellite_path = std::env::var("SHOJI_XWAYLAND_SATELLITE_PATH").ok();
+        let env_xwayland_satellite_glamor =
+            std::env::var("SHOJI_XWAYLAND_SATELLITE_GLAMOR").ok();
 
         let tty_outputs = parse_tty_outputs(&args);
+        let xwayland_satellite_path =
+            parse_option_value(&args, "--xwayland-satellite-path")
+                .or(env_xwayland_satellite_path);
+        let xwayland_satellite_glamor =
+            parse_option_value(&args, "--xwayland-satellite-glamor")
+                .or(env_xwayland_satellite_glamor)
+                .filter(|value| matches!(value.as_str(), "gl" | "es" | "none"));
+        let xwayland_satellite = args.iter().any(|arg| arg == "--xwayland-satellite")
+            || env_xwayland_satellite
+            || xwayland_satellite_path.is_some();
 
         Self {
             tty: args.iter().any(|arg| arg == "--tty"),
             log_off: args.iter().any(|arg| arg == "--log-off") || env_log_off,
             no_log_rotate: args.iter().any(|arg| arg == "--no-log-rotate") || env_no_rotate,
             tty_outputs,
+            xwayland_satellite,
+            xwayland_satellite_path,
+            xwayland_satellite_glamor,
         }
     }
 }
@@ -154,6 +185,24 @@ fn split_tty_outputs(value: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn parse_option_value(args: &[String], option: &str) -> Option<String> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if let Some(value) = arg.strip_prefix(&format!("{option}=")) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        } else if arg == option {
+            if let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) {
+                return Some(value.clone());
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {

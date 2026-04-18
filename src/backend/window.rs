@@ -36,6 +36,10 @@ fn popup_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn gap_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_GAP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn clip_selection_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIP_SELECTION_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -528,6 +532,10 @@ pub fn clipped_surface_elements(
         .iter()
         .map(|element| Element::geometry(element, output_scale))
         .collect::<Vec<_>>();
+    let element_srcs = elements
+        .iter()
+        .map(|element| Element::src(element))
+        .collect::<Vec<_>>();
     let selected_indices = geometry
         .map(|forced_geometry| {
             let best_score = element_geometries
@@ -550,6 +558,28 @@ pub fn clipped_surface_elements(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if gap_debug_enabled() {
+        let surface_kind = match window.underlying_surface() {
+            WindowSurface::Wayland(_) => "wayland",
+            WindowSurface::X11(_) => "x11",
+        };
+        info!(
+            debug_label = ?debug_label,
+            surface_kind,
+            base_location = ?location,
+            forced_geometry = ?geometry,
+            output_origin = ?output_origin,
+            output_scale = ?output_scale,
+            clip_scale = ?clip_scale,
+            alpha,
+            clip = ?clip,
+            element_count = element_geometries.len(),
+            chosen_indices = ?selected_indices,
+            element_geometries = ?element_geometries,
+            element_srcs = ?element_srcs,
+            "gap debug clipped surface selection",
+        );
+    }
     if let (Some(debug_label), true) = (
         debug_label.as_deref(),
         clip_selection_debug_allowed(
@@ -573,6 +603,17 @@ pub fn clipped_surface_elements(
             .map(|(index, element)| {
                 let geometry_override =
                     geometry.filter(|_| selected_indices.contains(&index));
+                if gap_debug_enabled() {
+                    info!(
+                        debug_label = ?debug_label,
+                        index,
+                        element_geometry = ?Element::geometry(&element, output_scale),
+                        element_src = ?Element::src(&element),
+                        geometry_override = ?geometry_override,
+                        clip = ?clip,
+                        "gap debug clipped surface candidate",
+                    );
+                }
                 if geometry_override.is_some() {
                     ClippedSurfaceElement::new(
                         renderer,

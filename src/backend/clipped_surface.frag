@@ -22,6 +22,7 @@ uniform vec2 sample_uv_tl;
 uniform vec2 sample_uv_br;
 uniform vec2 adjusted_sample_uv_br;
 uniform vec2 sample_buffer_size;
+uniform vec2 sample_uv_snap_axes;
 uniform float sample_uv_compensation_enabled;
 
 float rounded_alpha(vec2 coords, vec2 size) {
@@ -48,15 +49,22 @@ void main() {
         vec2 original_range = max(sample_uv_br - sample_uv_tl, vec2(0.000001));
         vec2 range_coords = (v_coords - sample_uv_tl) / original_range;
         sample_coords = mix(sample_uv_tl, adjusted_sample_uv_br, range_coords);
-        sample_coords = clamp(sample_coords, vec2(0.0), vec2(1.0));
 
-        // Emulate nearest-neighbor edge repeat when we compensate a one-pixel
-        // projection mismatch. This keeps the client sharp instead of blending
-        // the last texel into the corrected edge.
+        // Emulate nearest-neighbor edge repeat only on the compensated axes.
+        // Snapping both axes turns the untouched one into nearest-neighbor
+        // sampling too, which produces visible artifacts on fine content.
         vec2 safe_buffer_size = max(sample_buffer_size, vec2(1.0));
         vec2 texel_size = vec2(1.0) / safe_buffer_size;
-        sample_coords = (floor(sample_coords * safe_buffer_size) + 0.5) * texel_size;
-        sample_coords = clamp(sample_coords, texel_size * 0.5, vec2(1.0) - texel_size * 0.5);
+        vec2 snapped_coords = (floor(sample_coords * safe_buffer_size) + 0.5) * texel_size;
+        vec2 snap_axes = clamp(sample_uv_snap_axes, vec2(0.0), vec2(1.0));
+        sample_coords = mix(sample_coords, snapped_coords, snap_axes);
+        vec2 min_coords = mix(vec2(0.0), texel_size * 0.5, snap_axes);
+        vec2 max_coords = mix(
+            vec2(1.0),
+            max(sample_uv_br, adjusted_sample_uv_br) + texel_size,
+            snap_axes
+        );
+        sample_coords = clamp(sample_coords, min_coords, max_coords);
     }
 
     vec4 color = texture2D(tex, sample_coords);

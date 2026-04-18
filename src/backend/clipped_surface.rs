@@ -22,6 +22,7 @@ struct SampleUvCompensation {
     uv_br: [f32; 2],
     adjusted_uv_br: [f32; 2],
     buffer_size: [f32; 2],
+    snap_axes: [f32; 2],
     sampled_texels: [f32; 2],
     projected_pixels: [f32; 2],
     misalignment: [f32; 2],
@@ -39,19 +40,43 @@ fn compute_sample_uv_compensation(
     let uv_tl = src_loc.div_element_wise(safe_buffer);
     let uv_br = (src_loc + src_size).div_element_wise(safe_buffer);
     let uv_range = uv_br - uv_tl;
-    let safe_sampled_pixels = Vector2::new(sampled_pixels.x.max(1.0), sampled_pixels.y.max(1.0));
     let misalignment = sampled_pixels - projected_pixels;
+    let absolute_misalignment = Vector2::new(misalignment.x.abs(), misalignment.y.abs());
+    let compensation_min = 0.5;
+    let compensation_max = 2.0;
+    // Compensate when sampled texels and projected pixels differ by at least
+    // half a pixel on an axis, but only for tiny mismatches that look like
+    // raster-grid rounding drift (for example 1919 -> 1920). Large differences
+    // indicate intentional scaling and must not be compensated.
+    let snap_x = (absolute_misalignment.x >= compensation_min
+        && absolute_misalignment.x <= compensation_max) as i32 as f32;
+    let snap_y = (absolute_misalignment.y >= compensation_min
+        && absolute_misalignment.y <= compensation_max) as i32 as f32;
+    let effective_misalignment = Vector2::new(
+        if snap_x > 0.5 {
+            absolute_misalignment.x
+        } else {
+            0.0
+        },
+        if snap_y > 0.5 {
+            absolute_misalignment.y
+        } else {
+            0.0
+        },
+    );
+    let safe_projected_pixels = Vector2::new(projected_pixels.x.max(1.0), projected_pixels.y.max(1.0));
     let adjusted_uv_br = uv_br
-        - misalignment
-            .div_element_wise(safe_sampled_pixels)
+        + effective_misalignment
+            .div_element_wise(safe_projected_pixels)
             .mul_element_wise(uv_range);
-    let enabled = misalignment.x.abs() > 0.01 || misalignment.y.abs() > 0.01;
+    let enabled = snap_x > 0.5 || snap_y > 0.5;
 
     SampleUvCompensation {
         uv_tl: [uv_tl.x, uv_tl.y],
         uv_br: [uv_br.x, uv_br.y],
         adjusted_uv_br: [adjusted_uv_br.x, adjusted_uv_br.y],
         buffer_size: [safe_buffer.x, safe_buffer.y],
+        snap_axes: [snap_x, snap_y],
         sampled_texels: [sampled_pixels.x, sampled_pixels.y],
         projected_pixels: [projected_pixels.x, projected_pixels.y],
         misalignment: [misalignment.x, misalignment.y],
@@ -79,6 +104,7 @@ pub struct ClippedSurfaceElement {
     sample_uv_br: [f32; 2],
     adjusted_sample_uv_br: [f32; 2],
     sample_buffer_size: [f32; 2],
+    sample_uv_snap_axes: [f32; 2],
     sample_uv_compensation_enabled: f32,
 }
 
@@ -88,6 +114,8 @@ struct ClippedSurfaceProgram(GlesTexProgram);
 fn clipped_uniforms_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIPPED_UNIFORMS_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
+        || std::env::var_os("SHOJI_GAP_DEBUG")
+            .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 impl ClippedSurfaceElement {
@@ -147,6 +175,10 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_2f,
                     ),
                     UniformName::new(
+                        "sample_uv_snap_axes",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
                         "sample_uv_compensation_enabled",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
@@ -165,7 +197,15 @@ impl ClippedSurfaceElement {
             .expect("clipped surface shader should be cached");
 
         let element_geometry = inner.geometry(output_scale);
-        let render_geometry = forced_geometry.unwrap_or(element_geometry);
+        // Keep the actual surface draw quad on the geometry reported by the
+        // Wayland surface element. For xwayland-satellite this is the only
+        // geometry that is guaranteed to stay in lockstep with the received
+        // buffer size and viewport destination. Shrinking the draw quad to the
+        // SSD slot by one rounded pixel is what exposed the sharp edge
+        // artifact: it introduced a second raster grid after Smithay had
+        // already snapped the surface. We still use the SSD clip to constrain
+        // visibility inside the slot, but avoid a second geometry snap.
+        let render_geometry = element_geometry;
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
         // element_geometry.loc is in output-local physical coordinates.
@@ -239,15 +279,35 @@ impl ClippedSurfaceElement {
         let view = inner.view();
         let src_loc = Vector2::new(view.src.loc.x as f32, view.src.loc.y as f32);
         let src_size = Vector2::new(view.src.size.w as f32, view.src.size.h as f32);
+        let sampled_pixels = if src_size.x > 0.0 && src_size.y > 0.0 {
+            src_size
+        } else {
+            Vector2::new(element_geometry.size.w as f32, element_geometry.size.h as f32)
+        };
+        let view_dst_pixels = Vector2::new(
+            view.dst.w.max(0) as f32 * output_scale_x,
+            view.dst.h.max(0) as f32 * output_scale_y,
+        );
+        // Match the sampling to the viewport destination that the client asked
+        // the compositor to project to. For xwayland-satellite we have seen
+        // one-pixel mismatches between source texels and projected pixels
+        // (e.g. 1919 -> 1920), which can blur the entire surface if we do not
+        // bias the mismatch to the final texel.
+        let projected_pixels = if view.dst.w > 0 && view.dst.h > 0 {
+            view_dst_pixels
+        } else {
+            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32)
+        };
         let sample_uv_compensation = compute_sample_uv_compensation(
             src_loc,
             src_size,
             buffer_size,
-            Vector2::new(element_geometry.size.w as f32, element_geometry.size.h as f32),
-            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32),
+            sampled_pixels,
+            projected_pixels,
         );
         if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
             tracing::info!(
+                debug_label = ?debug_label,
                 output_origin = ?output_origin,
                 output_scale = ?output_scale,
                 clip_scale = ?clip_scale,
@@ -264,6 +324,9 @@ impl ClippedSurfaceElement {
                 slot_rect_precise = ?clip.rect_precise,
                 mask_rect_precise = ?clip.mask_rect_precise,
                 clip_size_delta_px = ?clip_size_delta_px,
+                forced_geometry = ?forced_geometry,
+                view_dst_pixels = ?view_dst_pixels,
+                projected_pixels = ?projected_pixels,
                 sample_uv_compensation = ?sample_uv_compensation,
                 "gap debug clipped surface raw element"
             );
@@ -321,6 +384,7 @@ impl ClippedSurfaceElement {
             sample_uv_br: sample_uv_compensation.uv_br,
             adjusted_sample_uv_br: sample_uv_compensation.adjusted_uv_br,
             sample_buffer_size: sample_uv_compensation.buffer_size,
+            sample_uv_snap_axes: sample_uv_compensation.snap_axes,
             sample_uv_compensation_enabled: if sample_uv_compensation.enabled {
                 1.0
             } else {
@@ -427,6 +491,7 @@ impl ClippedSurfaceElement {
                 sample_uv_br = ?self.sample_uv_br,
                 adjusted_sample_uv_br = ?self.adjusted_sample_uv_br,
                 sample_buffer_size = ?self.sample_buffer_size,
+                sample_uv_snap_axes = ?self.sample_uv_snap_axes,
                 sample_uv_compensation_enabled = self.sample_uv_compensation_enabled,
                 clip_coords_at_uv_00 = ?map_uv(0.0, 0.0),
                 clip_coords_at_uv_10 = ?map_uv(1.0, 0.0),
@@ -452,6 +517,7 @@ impl ClippedSurfaceElement {
             Uniform::new("sample_uv_br", self.sample_uv_br),
             Uniform::new("adjusted_sample_uv_br", self.adjusted_sample_uv_br),
             Uniform::new("sample_buffer_size", self.sample_buffer_size),
+            Uniform::new("sample_uv_snap_axes", self.sample_uv_snap_axes),
             Uniform::new(
                 "sample_uv_compensation_enabled",
                 self.sample_uv_compensation_enabled,
@@ -546,7 +612,44 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
     ) -> Result<(), GlesError> {
         match &self.inner {
             ClippedSurfaceInner::Mapped(inner) => {
-                frame.override_default_tex_program(self.program.clone(), self.uniforms());
+                let uniforms = self.uniforms();
+                if std::env::var_os("SHOJI_GAP_DEBUG")
+                    .is_some_and(|value| value != "0" && !value.is_empty())
+                {
+                    let view = inner.view();
+                    let view_dst_pixels = (
+                        view.dst.w.max(0) as f64 * self.output_scale as f64,
+                        view.dst.h.max(0) as f64 * self.output_scale as f64,
+                    );
+                    let src_scale = (
+                        dst.size.w as f64 / src.size.w.max(1.0),
+                        dst.size.h as f64 / src.size.h.max(1.0),
+                    );
+                    let dst_vs_view = (
+                        dst.size.w as f64 - view_dst_pixels.0,
+                        dst.size.h as f64 - view_dst_pixels.1,
+                    );
+                    tracing::info!(
+                        debug_label = self.debug_label(),
+                        src = ?src,
+                        dst = ?dst,
+                        element_geometry = ?self.geometry,
+                        inner_geometry = ?inner.geometry(Scale::from((1.0, 1.0))),
+                        inner_src = ?inner.src(),
+                        inner_view = ?view,
+                        inner_transform = ?inner.transform(),
+                        inner_alpha = inner.alpha(),
+                        inner_kind = ?inner.kind(),
+                        src_scale = ?src_scale,
+                        view_dst_pixels = ?view_dst_pixels,
+                        dst_minus_view_dst = ?dst_vs_view,
+                        damage = ?damage,
+                        opaque_regions = ?opaque_regions,
+                        uniform_count = uniforms.len(),
+                        "gap debug clipped surface draw begin"
+                    );
+                }
+                frame.override_default_tex_program(self.program.clone(), uniforms);
                 let result = RenderElement::<GlesRenderer>::draw(
                     inner,
                     frame,
@@ -557,6 +660,17 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
                     cache,
                 );
                 frame.clear_tex_program_override();
+                if std::env::var_os("SHOJI_GAP_DEBUG")
+                    .is_some_and(|value| value != "0" && !value.is_empty())
+                {
+                    tracing::info!(
+                        debug_label = self.debug_label(),
+                        src = ?src,
+                        dst = ?dst,
+                        result = ?result.as_ref().map(|_| ()),
+                        "gap debug clipped surface draw end"
+                    );
+                }
                 result
             }
         }
@@ -579,6 +693,7 @@ mod tests {
             Vector2::new(2646.0, 1586.0),
             Vector2::new(2646.0, 1586.0),
             Vector2::new(2646.0, 1586.0),
+            Vector2::new(2646.0, 1586.0),
         );
 
         assert!(!compensation.enabled);
@@ -589,6 +704,7 @@ mod tests {
     fn expands_sampling_when_projection_is_one_pixel_wider() {
         let compensation = compute_sample_uv_compensation(
             Vector2::new(0.0, 0.0),
+            Vector2::new(2646.0, 1586.0),
             Vector2::new(2646.0, 1586.0),
             Vector2::new(2646.0, 1586.0),
             Vector2::new(2647.0, 1586.0),
@@ -605,11 +721,58 @@ mod tests {
             Vector2::new(0.0, 0.0),
             Vector2::new(1230.0, 796.0),
             Vector2::new(1230.0, 796.0),
+            Vector2::new(1230.0, 796.0),
             Vector2::new(1230.0, 795.0),
         );
 
         assert!(compensation.enabled);
         assert_eq!(compensation.adjusted_uv_br[0], compensation.uv_br[0]);
-        assert!(compensation.adjusted_uv_br[1] < compensation.uv_br[1]);
+        assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+    }
+
+    #[test]
+    fn shrinks_sampling_for_fractional_projection_mismatch() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(1890.0, 1063.0),
+            Vector2::new(1890.0, 1063.0),
+            Vector2::new(1890.0, 1063.0),
+            Vector2::new(1890.2539, 1062.2559),
+        );
+
+        assert!(compensation.enabled);
+        assert_eq!(compensation.adjusted_uv_br[0], compensation.uv_br[0]);
+        assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+    }
+
+    #[test]
+    fn compensates_when_source_texels_are_one_pixel_shorter_on_both_axes() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(1919.0, 1199.0),
+            Vector2::new(1919.0, 1199.0),
+            Vector2::new(1919.0, 1199.0),
+            Vector2::new(1920.0, 1200.0),
+        );
+
+        assert!(compensation.enabled);
+        assert_eq!(compensation.snap_axes, [1.0, 1.0]);
+        assert!(compensation.adjusted_uv_br[0] > compensation.uv_br[0]);
+        assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+    }
+
+    #[test]
+    fn leaves_intentional_large_scaling_mismatch_unchanged() {
+        let compensation = compute_sample_uv_compensation(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(640.0, 480.0),
+            Vector2::new(640.0, 480.0),
+            Vector2::new(640.0, 480.0),
+            Vector2::new(800.0, 600.0),
+        );
+
+        assert!(!compensation.enabled);
+        assert_eq!(compensation.snap_axes, [0.0, 0.0]);
+        assert_eq!(compensation.adjusted_uv_br, compensation.uv_br);
     }
 }

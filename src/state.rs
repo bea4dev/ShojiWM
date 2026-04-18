@@ -77,6 +77,7 @@ use crate::runtime_process::{
     RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
     kill_runtime_service, should_restart_service, spawn_runtime_process,
 };
+use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
 use crate::runtime_key_binding::{
     CompiledRuntimeKeyBinding, RuntimeKeyBindingConfigUpdate, RuntimeKeyBindingEntry,
     compile_runtime_key_bindings,
@@ -252,6 +253,7 @@ pub struct ShojiWM {
     pub xwayland: Option<XWayland>,
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
+    pub xwayland_satellite: Option<SatelliteInstance>,
 }
 
 impl ShojiWM {
@@ -674,10 +676,34 @@ impl ShojiWM {
             xwayland: None,
             xwm: None,
             xdisplay: None,
+            xwayland_satellite: None,
         }
     }
 
     pub fn start_xwayland(&mut self, event_loop: &EventLoop<'static, ShojiWM>) {
+        if satellite_requested() {
+            match spawn_satellite() {
+                Ok(instance) => {
+                    self.xdisplay = Some(instance.display_number);
+                    unsafe {
+                        std::env::set_var("DISPLAY", &instance.display_name);
+                    }
+                    info!(
+                        display = %instance.display_name,
+                        "xwayland-satellite started, DISPLAY exported"
+                    );
+                    self.xwayland_satellite = Some(instance);
+                    return;
+                }
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "failed to start xwayland-satellite, falling back to built-in XWayland"
+                    );
+                }
+            }
+        }
+
         use std::process::Stdio;
 
         let (xwayland, client) = match XWayland::spawn(
