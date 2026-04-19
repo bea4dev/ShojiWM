@@ -357,16 +357,13 @@ impl ClippedSurfaceElement {
             view.dst.w.max(0) as f32 * output_scale_x,
             view.dst.h.max(0) as f32 * output_scale_y,
         );
-        // Match the sampling to the viewport destination that the client asked
-        // the compositor to project to. For xwayland-satellite we have seen
-        // one-pixel mismatches between source texels and projected pixels
-        // (e.g. 1919 -> 1920), which can blur the entire surface if we do not
-        // bias the mismatch to the final texel.
-        let projected_pixels = if view.dst.w > 0 && view.dst.h > 0 {
-            view_dst_pixels
-        } else {
-            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32)
-        };
+        // Use the actual draw-quad size as the projection target. When
+        // forced_geometry expands the quad by 1 px beyond the viewport
+        // destination, the UV compensation must account for that extra pixel;
+        // otherwise the texture is bilinearly stretched to fill the larger
+        // quad and the surface appears blurry.
+        let projected_pixels =
+            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32);
         let sample_uv_compensation = compute_sample_uv_compensation(
             src_loc,
             src_size,
