@@ -53,18 +53,27 @@ void main() {
         vec2 range_coords = (v_coords - sample_uv_tl) / original_range;
         sample_coords = mix(sample_uv_tl, adjusted_sample_uv_br, range_coords);
 
-        // Emulate nearest-neighbor edge repeat only on the compensated axes.
-        // Snapping both axes turns the untouched one into nearest-neighbor
-        // sampling too, which produces visible artifacts on fine content.
+        // Emulate nearest-neighbor with GL_CLAMP_TO_EDGE on the compensated
+        // axes.  Snapping both axes turns the untouched one into nearest-
+        // neighbor sampling too, which produces visible artifacts on fine
+        // content.
         vec2 safe_buffer_size = max(sample_buffer_size, vec2(1.0));
         vec2 texel_size = vec2(1.0) / safe_buffer_size;
-        vec2 snapped_coords = (floor(sample_coords * safe_buffer_size) + 0.5) * texel_size;
+        // Clamp texel index to [0, N-1] so we never sample past the buffer
+        // edge (GL_REPEAT would wrap and show the opposite side).
+        vec2 texel_index = clamp(
+            floor(sample_coords * safe_buffer_size),
+            vec2(0.0),
+            safe_buffer_size - vec2(1.0)
+        );
+        vec2 snapped_coords = (texel_index + 0.5) * texel_size;
         vec2 snap_axes = clamp(sample_uv_snap_axes, vec2(0.0), vec2(1.0));
         sample_coords = mix(sample_coords, snapped_coords, snap_axes);
+        // Clamp to the first/last texel centers to emulate GL_CLAMP_TO_EDGE.
         vec2 min_coords = mix(vec2(0.0), texel_size * 0.5, snap_axes);
         vec2 max_coords = mix(
             vec2(1.0),
-            max(sample_uv_br, adjusted_sample_uv_br) + texel_size,
+            sample_uv_br - texel_size * 0.5,
             snap_axes
         );
         sample_coords = clamp(sample_coords, min_coords, max_coords);
