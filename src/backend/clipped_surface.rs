@@ -12,7 +12,8 @@ use smithay::{
 };
 
 use crate::backend::visual::{
-    PreciseLogicalRect, SnappedLogicalRect, precise_logical_rect_in_element_space,
+    PreciseLogicalRect, SnappedLogicalRect, snapped_precise_logical_rect_for_element,
+    snapped_precise_logical_rect_in_element_space,
 };
 use crate::ssd::ContentClip;
 
@@ -95,7 +96,8 @@ pub struct ClippedSurfaceElement {
     geometry: Rectangle<i32, Physical>,
     program: GlesTexProgram,
     debug_label: Option<String>,
-    clip_rect: SnappedLogicalRect,
+    slot_rect: SnappedLogicalRect,
+    mask_rect: SnappedLogicalRect,
     corner_radius: [f32; 4],
     rect_bounds_enabled: f32,
     output_scale: f32,
@@ -119,6 +121,45 @@ fn clipped_uniforms_debug_enabled() -> bool {
 }
 
 impl ClippedSurfaceElement {
+    fn align_mask_shared_edges_to_slot(
+        mut mask_rect: SnappedLogicalRect,
+        mask_rect_precise: PreciseLogicalRect,
+        slot_rect: SnappedLogicalRect,
+        slot_rect_precise: PreciseLogicalRect,
+        output_scale: Scale<f64>,
+    ) -> SnappedLogicalRect {
+        let epsilon_x = (1.0 / output_scale.x.abs().max(0.0001)) as f32;
+        let epsilon_y = (1.0 / output_scale.y.abs().max(0.0001)) as f32;
+
+        let shares_left = (mask_rect_precise.x - slot_rect_precise.x).abs() <= epsilon_x;
+        let shares_top = (mask_rect_precise.y - slot_rect_precise.y).abs() <= epsilon_y;
+        let shares_right = ((mask_rect_precise.x + mask_rect_precise.width)
+            - (slot_rect_precise.x + slot_rect_precise.width))
+            .abs()
+            <= epsilon_x;
+        let shares_bottom = ((mask_rect_precise.y + mask_rect_precise.height)
+            - (slot_rect_precise.y + slot_rect_precise.height))
+            .abs()
+            <= epsilon_y;
+
+        if shares_left {
+            mask_rect.x = slot_rect.x;
+        }
+        if shares_top {
+            mask_rect.y = slot_rect.y;
+        }
+        if shares_right {
+            let slot_right = slot_rect.x + slot_rect.width;
+            mask_rect.width = (slot_right - mask_rect.x).max(0.0);
+        }
+        if shares_bottom {
+            let slot_bottom = slot_rect.y + slot_rect.height;
+            mask_rect.height = (slot_bottom - mask_rect.y).max(0.0);
+        }
+
+        mask_rect
+    }
+
     pub fn new(
         renderer: &mut GlesRenderer,
         inner: WaylandSurfaceRenderElement<GlesRenderer>,
@@ -143,7 +184,19 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                     UniformName::new(
-                        "clip_size",
+                        "slot_origin",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "slot_size",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "mask_origin",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "mask_size",
                         smithay::backend::renderer::gles::UniformType::_2f,
                     ),
                     UniformName::new(
@@ -155,7 +208,7 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                     UniformName::new(
-                        "input_to_clip",
+                        "input_to_local",
                         smithay::backend::renderer::gles::UniformType::Matrix3x3,
                     ),
                     UniformName::new(
@@ -197,29 +250,34 @@ impl ClippedSurfaceElement {
             .expect("clipped surface shader should be cached");
 
         let element_geometry = inner.geometry(output_scale);
-        // Keep the actual surface draw quad on the geometry reported by the
-        // Wayland surface element. For xwayland-satellite this is the only
-        // geometry that is guaranteed to stay in lockstep with the received
-        // buffer size and viewport destination. Shrinking the draw quad to the
-        // SSD slot by one rounded pixel is what exposed the sharp edge
-        // artifact: it introduced a second raster grid after Smithay had
-        // already snapped the surface. We still use the SSD clip to constrain
-        // visibility inside the slot, but avoid a second geometry snap.
-        let render_geometry = element_geometry;
+        // Prefer the compositor-computed slot geometry when it only differs by
+        // a tiny amount from Smithay's surface element geometry. The logs for
+        // the current gap bug show the border/client slot rounded to 1472 px
+        // wide while the surface element stayed at 1471 px, producing
+        // `edge_delta=(1,0,1,0)` and a visible 1 px gap. At the same time we
+        // do not want to reintroduce the earlier "second raster grid" issue by
+        // blindly replacing the element geometry with a meaningfully different
+        // forced geometry.
+        let render_geometry = forced_geometry
+            .filter(|forced| {
+                (forced.size.w - element_geometry.size.w).abs() <= 1
+                    && (forced.size.h - element_geometry.size.h).abs() <= 1
+            })
+            .unwrap_or(element_geometry);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
-        // element_geometry.loc is in output-local physical coordinates.
-        // clip.mask_rect_precise is in global logical coordinates (derived from the decoration
-        // layout which uses space.element_location as origin).
+        // render_geometry.loc is in output-local physical coordinates.
+        // clip.rect_precise is in global logical coordinates (derived from the decoration layout
+        // which uses space.element_location as origin).
         // To subtract them correctly we must work in the same coordinate space.
         // Adding output_origin converts the output-local logical position to global logical,
         // so that (clip.x - element_rect_precise.x) gives the element-relative clip offset
         // on any output, not just on the primary output whose origin is (0, 0).
         let element_rect_precise = PreciseLogicalRect {
-            x: element_geometry.loc.x as f32 / output_scale_x + output_origin.x as f32,
-            y: element_geometry.loc.y as f32 / output_scale_y + output_origin.y as f32,
-            width: element_geometry.size.w as f32 / output_scale_x,
-            height: element_geometry.size.h as f32 / output_scale_y,
+            x: render_geometry.loc.x as f32 / output_scale_x + output_origin.x as f32,
+            y: render_geometry.loc.y as f32 / output_scale_y + output_origin.y as f32,
+            width: render_geometry.size.w as f32 / output_scale_x,
+            height: render_geometry.size.h as f32 / output_scale_y,
         };
         // element_rect_logical uses only width/height (size, not position), so it is not
         // affected by the global/output-local distinction.
@@ -231,41 +289,52 @@ impl ClippedSurfaceElement {
         };
         let local_clip = Rectangle::new(
             Point::from((
-                (clip.mask_rect_precise.x - element_rect_precise.x).round() as i32,
-                (clip.mask_rect_precise.y - element_rect_precise.y).round() as i32,
+                (clip.rect_precise.x - element_rect_precise.x).round() as i32,
+                (clip.rect_precise.y - element_rect_precise.y).round() as i32,
             )),
-            clip.mask_rect.size,
+            clip.rect.size,
         );
-        let mut snapped_clip_rect =
-            precise_logical_rect_in_element_space(clip.mask_rect_precise, element_rect_precise);
+        let mut snapped_slot_rect =
+            snapped_precise_logical_rect_in_element_space(clip.rect_precise, element_rect_precise, output_scale);
+        let snap_rect_with_output_origin = snapped_precise_logical_rect_for_element(
+            clip.rect_precise,
+            element_rect_precise,
+                output_origin, output_scale,
+            );
         let clip_size_delta_px = (
-            ((snapped_clip_rect.width - element_rect_logical.width) * output_scale_x).abs(),
-            ((snapped_clip_rect.height - element_rect_logical.height) * output_scale_y).abs(),
+            ((snapped_slot_rect.width - element_rect_logical.width) * output_scale_x).abs(),
+            ((snapped_slot_rect.height - element_rect_logical.height) * output_scale_y).abs(),
         );
-        // Keep the clip rect on the shared-edge grid unless the difference is
-        // just floating point noise. Treating a real 1px size difference as
-        // equivalent collapses the client width back to the surface geometry
-        // and reintroduces the visible right-edge gap against decoration boxes.
-        if clip_size_delta_px.0 <= 0.01 && clip_size_delta_px.1 <= 0.01 {
-            snapped_clip_rect.x = element_rect_logical.x;  // = 0.0: clip starts at element origin
-            snapped_clip_rect.y = element_rect_logical.y;  // = 0.0
-            snapped_clip_rect.width = element_rect_logical.width;
-            snapped_clip_rect.height = element_rect_logical.height;
+        // When we intentionally override the draw quad with `forced_geometry`,
+        // Smithay's surface element geometry and the compositor's chosen slot
+        // can differ by a single rasterized pixel due to independent rounding
+        // of viewport-dst and logical edges. In that case the client visibly
+        // "jitters" by 1 px while moving. Snap the slot back onto the draw
+        // quad whenever the mismatch is within one physical pixel.
+        let allowed_clip_delta_px = if forced_geometry.is_some() { 1.01 } else { 0.01 };
+        if clip_size_delta_px.0 <= allowed_clip_delta_px && clip_size_delta_px.1 <= allowed_clip_delta_px {
+            snapped_slot_rect.x = element_rect_logical.x;  // = 0.0: clip starts at element origin
+            snapped_slot_rect.y = element_rect_logical.y;  // = 0.0
+            snapped_slot_rect.width = element_rect_logical.width;
+            snapped_slot_rect.height = element_rect_logical.height;
         }
-        let physical_left = (((clip.mask_rect_precise.x - element_rect_precise.x) as f64)
-            * output_scale.x)
-            .round() as i32;
-        let physical_top = (((clip.mask_rect_precise.y - element_rect_precise.y) as f64)
-            * output_scale.y)
-            .round() as i32;
-        let physical_right = ((((clip.mask_rect_precise.x + clip.mask_rect_precise.width)
-            - element_rect_precise.x) as f64)
-            * output_scale.x)
-            .round() as i32;
-        let physical_bottom = ((((clip.mask_rect_precise.y + clip.mask_rect_precise.height)
-            - element_rect_precise.y) as f64)
-            * output_scale.y)
-            .round() as i32;
+        let snapped_mask_rect = Self::align_mask_shared_edges_to_slot(
+            snapped_precise_logical_rect_in_element_space(
+                clip.mask_rect_precise,
+                element_rect_precise,
+                output_scale,
+            ),
+            clip.mask_rect_precise,
+            snapped_slot_rect,
+            clip.rect_precise,
+            output_scale,
+        );
+        let physical_left = (snapped_slot_rect.x * output_scale_x).round() as i32;
+        let physical_top = (snapped_slot_rect.y * output_scale_y).round() as i32;
+        let physical_right =
+            ((snapped_slot_rect.x + snapped_slot_rect.width) * output_scale_x).round() as i32;
+        let physical_bottom =
+            ((snapped_slot_rect.y + snapped_slot_rect.height) * output_scale_y).round() as i32;
         let physical_clip: Rectangle<i32, Physical> = Rectangle::new(
             Point::from((physical_left, physical_top)),
             (
@@ -318,8 +387,10 @@ impl ClippedSurfaceElement {
                 raw_view = ?inner.view(),
                 raw_transform = ?inner.transform(),
                 clip = ?clip,
-                aligned_clip_rect_precise = ?snapped_clip_rect,
-                aligned_clip_rect = ?snapped_clip_rect,
+                aligned_clip_rect_precise = ?snapped_slot_rect,
+                aligned_clip_rect = ?snapped_slot_rect,
+                aligned_clip_rect_output_origin = ?snap_rect_with_output_origin,
+                aligned_mask_rect = ?snapped_mask_rect,
                 element_rect_logical = ?element_rect_logical,
                 slot_rect_precise = ?clip.rect_precise,
                 mask_rect_precise = ?clip.mask_rect_precise,
@@ -328,6 +399,7 @@ impl ClippedSurfaceElement {
                 view_dst_pixels = ?view_dst_pixels,
                 projected_pixels = ?projected_pixels,
                 sample_uv_compensation = ?sample_uv_compensation,
+                render_geometry = ?render_geometry,
                 "gap debug clipped surface raw element"
             );
         }
@@ -371,11 +443,12 @@ impl ClippedSurfaceElement {
             geometry: render_geometry,
             program: program.0.clone(),
             debug_label,
-            clip_rect: snapped_clip_rect,
+            slot_rect: snapped_slot_rect,
+            mask_rect: snapped_mask_rect,
             corner_radius: {
                 let scale_x = clip_scale.x.abs().max(0.0001) as f32;
                 clip.corner_radii_precise
-                    .map(|radius| ((radius.max(0.0) * scale_x).round() / scale_x).max(0.0))
+                    .map(|radius| ((radius * scale_x).round() / scale_x).max(0.0))
             },
             rect_bounds_enabled: 1.0,
             output_scale: output_scale.x as f32,
@@ -398,7 +471,7 @@ impl ClippedSurfaceElement {
     }
 
     fn uniforms(&self) -> Vec<Uniform<'static>> {
-        let (clip_size, corner_radius, input_to_clip_array) = match &self.inner {
+        let (slot_origin, slot_size, mask_origin, mask_size, corner_radius, input_to_local_array) = match &self.inner {
             ClippedSurfaceInner::Mapped(inner) => {
                 let element_geometry = self.geometry;
                 let element_size = Vector2::new(
@@ -406,8 +479,10 @@ impl ClippedSurfaceElement {
                     element_geometry.size.h as f32 / self.output_scale.max(0.0001),
                 );
 
-                let clip_loc = Vector2::new(self.clip_rect.x, self.clip_rect.y);
-                let clip_size = Vector2::new(self.clip_rect.width, self.clip_rect.height);
+                let slot_origin = Vector2::new(self.slot_rect.x, self.slot_rect.y);
+                let slot_size = Vector2::new(self.slot_rect.width, self.slot_rect.height);
+                let mask_origin = Vector2::new(self.mask_rect.x, self.mask_rect.y);
+                let mask_size = Vector2::new(self.mask_rect.width, self.mask_rect.height);
 
                 let buffer_size = inner.buffer_size();
                 let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
@@ -427,12 +502,11 @@ impl ClippedSurfaceElement {
                     * Matrix3::from_cols(tm[0], tm[1], tm[2])
                     * Matrix3::from_translation(Vector2::new(-0.5, -0.5));
 
-                let input_to_clip = transform_matrix
+                let input_to_local = transform_matrix
                     * Matrix3::from_nonuniform_scale(
-                        element_size.x / clip_size.x,
-                        element_size.y / clip_size.y,
+                        element_size.x,
+                        element_size.y,
                     )
-                    * Matrix3::from_translation((-clip_loc).div_element_wise(element_size))
                     * Matrix3::from_nonuniform_scale(
                         buffer_size.x / src_size.x,
                         buffer_size.y / src_size.y,
@@ -440,18 +514,21 @@ impl ClippedSurfaceElement {
                     * Matrix3::from_translation(-src_loc.div_element_wise(buffer_size));
 
                 (
-                    clip_size,
+                    slot_origin,
+                    slot_size,
+                    mask_origin,
+                    mask_size,
                     self.corner_radius,
                     [
-                        input_to_clip.x.x,
-                        input_to_clip.x.y,
-                        input_to_clip.x.z,
-                        input_to_clip.y.x,
-                        input_to_clip.y.y,
-                        input_to_clip.y.z,
-                        input_to_clip.z.x,
-                        input_to_clip.z.y,
-                        input_to_clip.z.z,
+                        input_to_local.x.x,
+                        input_to_local.x.y,
+                        input_to_local.x.z,
+                        input_to_local.y.x,
+                        input_to_local.y.y,
+                        input_to_local.y.z,
+                        input_to_local.z.x,
+                        input_to_local.z.y,
+                        input_to_local.z.z,
                     ],
                 )
             }
@@ -461,32 +538,36 @@ impl ClippedSurfaceElement {
             let map_uv = |u: f32, v: f32| {
                 let mapped = Matrix3::from_cols(
                     Vector3::new(
-                        input_to_clip_array[0],
-                        input_to_clip_array[1],
-                        input_to_clip_array[2],
+                        input_to_local_array[0],
+                        input_to_local_array[1],
+                        input_to_local_array[2],
                     ),
                     Vector3::new(
-                        input_to_clip_array[3],
-                        input_to_clip_array[4],
-                        input_to_clip_array[5],
+                        input_to_local_array[3],
+                        input_to_local_array[4],
+                        input_to_local_array[5],
                     ),
                     Vector3::new(
-                        input_to_clip_array[6],
-                        input_to_clip_array[7],
-                        input_to_clip_array[8],
+                        input_to_local_array[6],
+                        input_to_local_array[7],
+                        input_to_local_array[8],
                     ),
                 ) * Vector3::new(u, v, 1.0);
 
-                [mapped.x * clip_size.x, mapped.y * clip_size.y]
+                [mapped.x, mapped.y]
             };
 
             tracing::info!(
                 debug_label = self.debug_label(),
                 geometry = ?self.geometry,
-                clip_rect = ?self.clip_rect,
-                clip_size = ?[clip_size.x, clip_size.y],
+                slot_rect = ?self.slot_rect,
+                slot_origin = ?[slot_origin.x, slot_origin.y],
+                slot_size = ?[slot_size.x, slot_size.y],
+                mask_rect = ?self.mask_rect,
+                mask_origin = ?[mask_origin.x, mask_origin.y],
+                mask_size = ?[mask_size.x, mask_size.y],
                 corner_radius = ?corner_radius,
-                input_to_clip = ?input_to_clip_array,
+                input_to_local = ?input_to_local_array,
                 sample_uv_tl = ?self.sample_uv_tl,
                 sample_uv_br = ?self.sample_uv_br,
                 adjusted_sample_uv_br = ?self.adjusted_sample_uv_br,
@@ -503,13 +584,16 @@ impl ClippedSurfaceElement {
 
         vec![
             Uniform::new("clip_scale", self.clip_scale),
-            Uniform::new("clip_size", [clip_size.x, clip_size.y]),
+            Uniform::new("slot_origin", [slot_origin.x, slot_origin.y]),
+            Uniform::new("slot_size", [slot_size.x, slot_size.y]),
+            Uniform::new("mask_origin", [mask_origin.x, mask_origin.y]),
+            Uniform::new("mask_size", [mask_size.x, mask_size.y]),
             Uniform::new("corner_radius", corner_radius),
             Uniform::new("rect_bounds_enabled", self.rect_bounds_enabled),
             Uniform::new(
-                "input_to_clip",
+                "input_to_local",
                 smithay::backend::renderer::gles::UniformValue::Matrix3x3 {
-                    matrices: vec![input_to_clip_array],
+                    matrices: vec![input_to_local_array],
                     transpose: false,
                 },
             ),
@@ -685,6 +769,12 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
 mod tests {
     use super::compute_sample_uv_compensation;
     use cgmath::Vector2;
+    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+
+    use crate::backend::visual::{
+        PreciseLogicalRect, snapped_precise_logical_rect_for_element,
+        snapped_precise_logical_rect_in_element_space,
+    };
 
     #[test]
     fn leaves_matching_projection_unchanged() {
@@ -774,5 +864,43 @@ mod tests {
         assert!(!compensation.enabled);
         assert_eq!(compensation.snap_axes, [0.0, 0.0]);
         assert_eq!(compensation.adjusted_uv_br, compensation.uv_br);
+    }
+
+    #[test]
+    fn output_origin_aware_snap_rect_avoids_false_client_gap() {
+        let output_scale = Scale::from((1.25, 1.25));
+        let output_origin = Point::<i32, Logical>::from((1537, 0));
+        let element_geometry =
+            Rectangle::<i32, Physical>::new(Point::from((0, 0)), (1000, 750).into());
+        let element_rect = PreciseLogicalRect {
+            x: element_geometry.loc.x as f32 / output_scale.x as f32 + output_origin.x as f32,
+            y: element_geometry.loc.y as f32 / output_scale.y as f32 + output_origin.y as f32,
+            width: element_geometry.size.w as f32 / output_scale.x as f32,
+            height: element_geometry.size.h as f32 / output_scale.y as f32,
+        };
+        let clip_rect = PreciseLogicalRect {
+            x: 1537.32,
+            y: 0.0,
+            width: 799.36,
+            height: 600.0,
+        };
+
+        let snapped_with_output_origin = snapped_precise_logical_rect_for_element(
+            clip_rect,
+            element_rect,
+            output_origin,
+            output_scale,
+        );
+        let snapped_with_absolute_global =
+            snapped_precise_logical_rect_in_element_space(clip_rect, element_rect, output_scale);
+
+        assert_eq!(snapped_with_output_origin.x, 0.0);
+        assert_eq!(snapped_with_output_origin.y, 0.0);
+        assert_eq!(snapped_with_output_origin.width, 800.0);
+        assert_eq!(snapped_with_output_origin.height, 600.0);
+        assert_eq!(snapped_with_absolute_global.x, 0.8);
+        assert_eq!(snapped_with_absolute_global.y, 0.0);
+        assert_eq!(snapped_with_absolute_global.width, 799.2);
+        assert_eq!(snapped_with_absolute_global.height, 600.0);
     }
 }

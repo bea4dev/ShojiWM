@@ -61,8 +61,7 @@ use crate::{
     backend::decoration,
     backend::snapshot,
     backend::visual::{
-        WindowVisualState, relative_physical_rect_from_root_precise, root_physical_origin,
-        transformed_root_rect, window_visual_state,
+        WindowVisualState, root_physical_origin, transformed_root_rect, window_visual_state,
     },
     backend::window as window_render,
     config::DisplayModePreference,
@@ -864,12 +863,13 @@ fn render_surface(
                 decoration.content_clip.map(|clip| {
                     let root_origin =
                         root_physical_origin(decoration.layout.root.rect, output_geo, scale);
-                    let local_geometry = relative_physical_rect_from_root_precise(
-                        clip.rect_precise,
-                        decoration.layout.root.rect,
-                        output_geo,
-                        scale,
-                    );
+                    let local_geometry =
+                        crate::backend::visual::relative_physical_rect_from_root_precise(
+                            clip.rect_precise,
+                            decoration.layout.root.rect,
+                            output_geo,
+                            scale,
+                        );
                     smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
                             root_origin.x + local_geometry.loc.x,
@@ -2130,12 +2130,13 @@ fn render_surface(
                                     output_geo,
                                     scale,
                                 );
-                                let local_geometry = relative_physical_rect_from_root_precise(
-                                    content_clip.rect_precise,
-                                    decoration.layout.root.rect,
-                                    output_geo,
-                                    scale,
-                                );
+                                let local_geometry =
+                                    crate::backend::visual::relative_physical_rect_from_root_precise(
+                                        content_clip.rect_precise,
+                                        decoration.layout.root.rect,
+                                        output_geo,
+                                        scale,
+                                    );
                                 Some(smithay::utils::Rectangle::new(
                                     smithay::utils::Point::from((
                                         root_origin.x + local_geometry.loc.x,

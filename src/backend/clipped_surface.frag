@@ -14,10 +14,13 @@ uniform sampler2D tex;
 #endif
 
 uniform float clip_scale;
-uniform vec2 clip_size;
+uniform vec2 slot_size;
+uniform vec2 slot_origin;
+uniform vec2 mask_size;
+uniform vec2 mask_origin;
 uniform vec4 corner_radius;
 uniform float rect_bounds_enabled;
-uniform mat3 input_to_clip;
+uniform mat3 input_to_local;
 uniform vec2 sample_uv_tl;
 uniform vec2 sample_uv_br;
 uniform vec2 adjusted_sample_uv_br;
@@ -26,7 +29,7 @@ uniform vec2 sample_uv_snap_axes;
 uniform float sample_uv_compensation_enabled;
 
 float rounded_alpha(vec2 coords, vec2 size) {
-    if (rect_bounds_enabled > 0.5 && (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y)) {
+    if (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y) {
         return 0.0;
     }
     vec2 half_size = size * 0.5;
@@ -68,8 +71,14 @@ void main() {
     }
 
     vec4 color = texture2D(tex, sample_coords);
-    vec2 normalized = (input_to_clip * vec3(v_coords, 1.0)).xy;
-    vec2 coords = normalized * clip_size;
-    color *= rounded_alpha(coords, clip_size);
+    vec2 local_coords = (input_to_local * vec3(v_coords, 1.0)).xy;
+    if (rect_bounds_enabled > 0.5) {
+        vec2 slot_coords = local_coords - slot_origin;
+        if (slot_coords.x < 0.0 || slot_coords.y < 0.0 || slot_coords.x > slot_size.x || slot_coords.y > slot_size.y) {
+            discard;
+        }
+    }
+    vec2 mask_coords = local_coords - mask_origin;
+    color *= rounded_alpha(mask_coords, mask_size);
     gl_FragColor = color * alpha;
 }

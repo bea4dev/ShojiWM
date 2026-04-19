@@ -28,8 +28,7 @@ use tracing::{info, trace, warn};
 use crate::{
     ShojiWM,
     backend::visual::{
-        WindowVisualState, relative_physical_rect_from_root_precise, root_physical_origin,
-        transformed_root_rect, window_visual_state,
+        WindowVisualState, root_physical_origin, transformed_root_rect, window_visual_state,
     },
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
@@ -264,7 +263,7 @@ pub fn init_winit(
                                             scale,
                                         );
                                         let local_geometry =
-                                            relative_physical_rect_from_root_precise(
+                                            crate::backend::visual::relative_physical_rect_from_root_precise(
                                                 clip.rect_precise,
                                                 decoration.layout.root.rect,
                                                 output_geo,
