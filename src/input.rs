@@ -522,8 +522,21 @@ impl ShojiWM {
                         )
                     {
                         self.focus_window(&window, serial);
+                    } else if let Some(layer) = layer_under_pointer {
+                        if layer.can_receive_keyboard_focus() {
+                            self.focus_layer_surface_if_on_demand(Some(layer));
+                            self.update_keyboard_focus(serial);
+                        } else if layer_focus_debug_enabled() {
+                            debug!(
+                                layer_surface_id = layer.wl_surface().id().protocol_id(),
+                                layer = ?layer.layer(),
+                                keyboard_interactivity =
+                                    ?layer.cached_state().keyboard_interactivity,
+                                "leaving keyboard focus unchanged for non-interactive layer press"
+                            );
+                        }
                     } else {
-                        self.focus_layer_surface_if_on_demand(self.pointer_contents.layer.clone());
+                        self.focus_layer_surface_if_on_demand(None);
                         self.update_keyboard_focus(serial);
                     }
 

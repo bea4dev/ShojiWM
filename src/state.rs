@@ -1609,10 +1609,17 @@ impl ShojiWM {
             root = parent;
         }
 
+        let popup_root = self
+            .popups
+            .find_popup(surface)
+            .or_else(|| self.popups.find_popup(&root))
+            .and_then(|popup| smithay::desktop::find_popup_root_surface(&popup).ok());
+        let target_root = popup_root.as_ref().unwrap_or(&root);
+
         self.space.outputs().find_map(|output| {
             let layers = layer_map_for_output(output);
             layers
-                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .layer_for_surface(target_root, WindowSurfaceType::TOPLEVEL)
                 .cloned()
         })
     }

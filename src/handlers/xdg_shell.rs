@@ -21,8 +21,8 @@ use smithay::{
     wayland::{
         compositor::with_states,
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
+            PopupSurface, PositionerState, ToplevelSurface, XDG_POPUP_ROLE, XdgShellHandler,
+            XdgShellState, XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
         },
     },
 };
@@ -305,6 +305,9 @@ fn check_grab(
 
 /// Should be called on `WlSurface::commit`
 pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
+    let is_xdg_popup_surface =
+        smithay::wayland::compositor::get_role(surface) == Some(XDG_POPUP_ROLE);
+
     // Handle toplevel commits.
     if let Some(window) = state
         .space
@@ -347,6 +350,13 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
             }
             PopupKind::InputMethod(ref _input_method) => {}
         }
+    } else if is_xdg_popup_surface {
+        // Some toolkit popup paths can commit before our popup tracking is observable through the
+        // regular lookup path. We still need a pre-render refresh so the first click after the
+        // popup appears targets the newly visible surface tree rather than the stale parent layer.
+        state.request_tty_maintenance("xdg-popup-commit-untracked");
+        state.refresh_pointer_focus(std::time::Duration::from(state.clock.now()).as_millis() as u32);
+        state.schedule_redraw();
     }
 }
 
