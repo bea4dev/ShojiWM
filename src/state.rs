@@ -1405,6 +1405,10 @@ impl ShojiWM {
             return Some(focus);
         }
 
+        if let Some(focus) = self.window_popup_surface_under(pos) {
+            return Some(focus);
+        }
+
         let logical_pos = LogicalPoint::new(pos.x.floor() as i32, pos.y.floor() as i32);
         if let Some((window, decoration)) = self.window_under_transformed(logical_pos) {
             let transformed_client = transformed_rect(
@@ -1451,6 +1455,35 @@ impl ShojiWM {
             &[WlrLayer::Bottom, WlrLayer::Background],
             false,
         )
+    }
+
+    fn window_popup_surface_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.space.elements().rev().find_map(|window| {
+            let location = self.space.element_location(window)?;
+
+            if let Some(decoration) = self.window_decorations.get(window) {
+                let local_pos = inverse_transform_point(
+                    pos,
+                    decoration.layout.root.rect,
+                    decoration.visual_transform,
+                );
+
+                return window
+                    .surface_under(local_pos - location.to_f64(), WindowSurfaceType::POPUP)
+                    .map(|(surface, loc)| {
+                        let desired_local = (local_pos - location.to_f64()) - loc.to_f64();
+                        let surface_origin = pos - desired_local;
+                        (surface, surface_origin)
+                    });
+            }
+
+            window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::POPUP)
+                .map(|(surface, loc)| (surface, loc.to_f64() + location.to_f64()))
+        })
     }
 
     fn layer_surface_under_with_policy(
