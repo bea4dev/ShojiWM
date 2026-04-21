@@ -6,10 +6,10 @@ use smithay::{
         renderer::{
             ImportEgl, ImportMemWl,
             damage::OutputDamageTracker,
+            element::Element,
             element::solid::SolidColorRenderElement,
             element::surface::WaylandSurfaceRenderElement,
             element::texture::TextureRenderElement,
-            element::Element,
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             gles::{GlesRenderer, GlesTexture},
         },
@@ -90,10 +90,10 @@ fn capture_snapshot_from_output_elements(
     Option<crate::backend::snapshot::LiveWindowSnapshot>,
     smithay::backend::renderer::gles::GlesError,
 > {
-    let capture_origin: Point<i32, smithay::utils::Physical> =
-        (Point::from((rect.x, rect.y)) - output_geo.loc)
-            .to_f64()
-            .to_physical_precise_round(scale);
+    let capture_origin: Point<i32, smithay::utils::Physical> = (Point::from((rect.x, rect.y))
+        - output_geo.loc)
+        .to_f64()
+        .to_physical_precise_round(scale);
     let relocated = elements
         .iter()
         .map(|element| {
@@ -109,7 +109,16 @@ fn capture_snapshot_from_output_elements(
         1.0,
         smithay::utils::Transform::Normal,
     );
-    snapshot::capture_snapshot(renderer, existing, &mut tracker, rect, 0, true, scale, &relocated)
+    snapshot::capture_snapshot(
+        renderer,
+        existing,
+        &mut tracker,
+        rect,
+        0,
+        true,
+        scale,
+        &relocated,
+    )
 }
 
 pub fn init_winit(
@@ -1276,18 +1285,20 @@ fn transform_backdrop_elements(
             };
             let relocated =
                 RelocateRenderElement::from_element(element, root_origin, Relocate::Relative);
-            let transformed = WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
-                RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
-                visual.translation,
-                Relocate::Relative,
-            ));
+            let transformed =
+                WinitRenderElements::TransformedBackdrop(RelocateRenderElement::from_element(
+                    RescaleRenderElement::from_element(relocated, visual.origin, visual.scale),
+                    visual.translation,
+                    Relocate::Relative,
+                ));
             if let (Some(debug_label), Some(pre_transform_geometry)) =
                 (debug_label, pre_transform_geometry)
             {
-                let post_transform_geometry = smithay::backend::renderer::element::Element::geometry(
-                    &transformed,
-                    smithay::utils::Scale::from((1.0, 1.0)),
-                );
+                let post_transform_geometry =
+                    smithay::backend::renderer::element::Element::geometry(
+                        &transformed,
+                        smithay::utils::Scale::from((1.0, 1.0)),
+                    );
                 tracing::info!(
                     backdrop = %debug_label,
                     root_origin = ?root_origin,
@@ -2261,16 +2272,20 @@ fn lower_layer_scene_elements(
                 capture_geo.size.h,
                 scale,
             ),
-            Some(crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
-                effect_rect,
-                capture_geo.loc,
-                scale,
-            )),
-            Some(crate::backend::visual::logical_size_to_physical_buffer_size(
-                effect_rect.width,
-                effect_rect.height,
-                scale,
-            )),
+            Some(
+                crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
+                    effect_rect,
+                    capture_geo.loc,
+                    scale,
+                ),
+            ),
+            Some(
+                crate::backend::visual::logical_size_to_physical_buffer_size(
+                    effect_rect.width,
+                    effect_rect.height,
+                    scale,
+                ),
+            ),
             &config.effect,
         )
         .ok();
@@ -2599,16 +2614,20 @@ fn configured_background_effect_elements_for_layer(
             actual_capture_geo.size.h,
             scale,
         ),
-        Some(crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
-            effect_rect,
-            actual_capture_geo.loc,
-            scale,
-        )),
-        Some(crate::backend::visual::logical_size_to_physical_buffer_size(
-            effect_rect.width,
-            effect_rect.height,
-            scale,
-        )),
+        Some(
+            crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
+                effect_rect,
+                actual_capture_geo.loc,
+                scale,
+            ),
+        ),
+        Some(
+            crate::backend::visual::logical_size_to_physical_buffer_size(
+                effect_rect.width,
+                effect_rect.height,
+                scale,
+            ),
+        ),
         &config.effect,
     )
     .ok();
@@ -2927,7 +2946,10 @@ fn configured_background_effect_elements_for_window(
                 let capture_visual = WindowVisualState {
                     origin: smithay::utils::Point::from((0, 0)),
                     scale: smithay::utils::Scale::from((1.0, 1.0)),
-                    translation: Point::from((-capture_origin_physical.x, -capture_origin_physical.y)),
+                    translation: Point::from((
+                        -capture_origin_physical.x,
+                        -capture_origin_physical.y,
+                    )),
                     opacity: 1.0,
                 };
                 backdrop_scene.extend(
@@ -3110,12 +3132,13 @@ fn window_scene_elements_for_capture(
     let mut elements = Vec::new();
 
     if let Some(decoration) = state.window_decorations.get(window) {
-        let root_origin = crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
-            Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
-            output_origin,
-            capture_origin_physical,
-            scale,
-        );
+        let root_origin =
+            crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
+                Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+                output_origin,
+                capture_origin_physical,
+                scale,
+            );
         let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
         let mut decoration = decoration.clone();
         if let Ok(backgrounds) = crate::backend::decoration::ordered_background_elements_for_window(
@@ -3323,9 +3346,13 @@ fn closing_snapshot_elements(
                 ));
             }
             // Render the frozen client-area snapshot as the window content.
-            if let Some(element) =
-                snapshot::live_snapshot_element(renderer, &snapshot.live, output_geo, scale, visual.opacity)
-            {
+            if let Some(element) = snapshot::live_snapshot_element(
+                renderer,
+                &snapshot.live,
+                output_geo,
+                scale,
+                visual.opacity,
+            ) {
                 elements.extend(transform_snapshot_elements(vec![element], visual));
             }
             elements

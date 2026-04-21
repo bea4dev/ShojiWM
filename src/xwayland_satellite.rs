@@ -6,6 +6,7 @@ use smithay::reexports::rustix::{
 };
 use std::{
     ffi::OsString,
+    fs::{self, OpenOptions},
     io,
     os::{
         fd::{AsRawFd, BorrowedFd, OwnedFd},
@@ -21,6 +22,7 @@ use tracing::warn;
 
 const TMP_UNIX_DIR: &str = "/tmp";
 const X11_TMP_UNIX_DIR: &str = "/tmp/.X11-unix";
+const SATELLITE_LOG_FILE: &str = "xwayland-satellite.log";
 
 pub struct SatelliteInstance {
     pub display_name: String,
@@ -38,8 +40,7 @@ impl Drop for UnlinkGuard {
 }
 
 pub fn satellite_requested() -> bool {
-    std::env::var_os("SHOJI_XWAYLAND_SATELLITE")
-        .is_some_and(|value| value != "0" && value != "off")
+    std::env::var_os("SHOJI_XWAYLAND_SATELLITE").is_some_and(|value| value != "0" && value != "off")
 }
 
 pub fn spawn_satellite() -> Result<SatelliteInstance, Box<dyn std::error::Error>> {
@@ -84,9 +85,7 @@ fn expand_tilde_in_path(path: OsString) -> PathBuf {
         return path;
     };
     if raw == "~" {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or(path);
+        return std::env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
     }
     if let Some(rest) = raw.strip_prefix("~/") {
         return std::env::var_os("HOME")
@@ -126,10 +125,9 @@ fn ensure_x11_unix_dir() -> Result<(), Box<dyn std::error::Error>> {
     match mkdir(X11_TMP_UNIX_DIR, 0o1777.into()) {
         Ok(()) => Ok(()),
         Err(Errno::EXIST) => ensure_x11_unix_perms(),
-        Err(error) => Err(io::Error::other(format!(
-            "failed to create {X11_TMP_UNIX_DIR}: {error}"
-        ))
-        .into()),
+        Err(error) => {
+            Err(io::Error::other(format!("failed to create {X11_TMP_UNIX_DIR}: {error}")).into())
+        }
     }
 }
 
@@ -150,9 +148,7 @@ fn ensure_x11_unix_perms() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn pick_x11_display(
-    start: u32,
-) -> Result<(u32, OwnedFd, UnlinkGuard), Box<dyn std::error::Error>> {
+fn pick_x11_display(start: u32) -> Result<(u32, OwnedFd, UnlinkGuard), Box<dyn std::error::Error>> {
     for display_number in start..start + 50 {
         let lock_path = PathBuf::from(format!("/tmp/.X{display_number}-lock"));
         let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
@@ -228,9 +224,25 @@ fn spawn_satellite_process(
         .arg("-listenfd")
         .arg(unix_raw.to_string())
         .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
+
+    if satellite_logging_enabled() {
+        let log_path = satellite_log_path();
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let log_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)?;
+        let stderr_file = log_file.try_clone()?;
+        command.stdout(Stdio::from(log_file));
+        command.stderr(Stdio::from(stderr_file));
+    } else {
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+    }
 
     if let Some(abstract_raw) = abstract_raw {
         command.arg("-listenfd").arg(abstract_raw.to_string());
@@ -244,8 +256,9 @@ fn spawn_satellite_process(
     unsafe {
         command.pre_exec(move || {
             let unix_fd = BorrowedFd::borrow_raw(unix_raw);
-            fcntl_setfd(unix_fd, FdFlags::empty())
-                .map_err(|error| io::Error::other(format!("failed to pass unix socket fd: {error}")))?;
+            fcntl_setfd(unix_fd, FdFlags::empty()).map_err(|error| {
+                io::Error::other(format!("failed to pass unix socket fd: {error}"))
+            })?;
 
             if let Some(abstract_raw) = abstract_raw {
                 let abstract_fd = BorrowedFd::borrow_raw(abstract_raw);
@@ -259,6 +272,24 @@ fn spawn_satellite_process(
     }
 
     Ok(command.spawn()?)
+}
+
+fn satellite_logging_enabled() -> bool {
+    std::env::var_os("SHOJI_XWAYLAND_SATELLITE_LOG")
+        .is_some_and(|value| value != "0" && value != "off")
+}
+
+fn satellite_log_path() -> PathBuf {
+    std::env::var_os("SHOJI_XWAYLAND_SATELLITE_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("shoji_wm")
+                .join("logs")
+                .join(SATELLITE_LOG_FILE)
+        })
 }
 
 fn spawn_waiter_thread(path: PathBuf, mut child: Child) {

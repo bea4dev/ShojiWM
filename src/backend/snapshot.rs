@@ -1,4 +1,3 @@
-use std::hash::{Hash, Hasher};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -15,6 +14,7 @@ use smithay::{
     output::OutputModeSource,
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -70,9 +70,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             damage,
             ..
         } = existing;
-        if texture.size().w == physical.size.w
-            && texture.size().h == physical.size.h
-        {
+        if texture.size().w == physical.size.w && texture.size().h == physical.size.h {
             LiveWindowSnapshot {
                 id,
                 texture,
@@ -121,14 +119,13 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
     // redraw). If the size matches, use age=1 so only the actually changed regions are
     // re-rendered into the offscreen texture and added to the DamageBag.
     let age = match tracker.mode() {
-        OutputModeSource::Static { size, scale: tracker_scale, .. }
-            if *size == physical.size && *tracker_scale == Scale::from(scale.x) =>
-        {
-            1
-        }
+        OutputModeSource::Static {
+            size,
+            scale: tracker_scale,
+            ..
+        } if *size == physical.size && *tracker_scale == Scale::from(scale.x) => 1,
         _ => {
-            *tracker =
-                OutputDamageTracker::new(physical.size, scale.x, Transform::Normal);
+            *tracker = OutputDamageTracker::new(physical.size, scale.x, Transform::Normal);
             0
         }
     };
@@ -244,10 +241,7 @@ pub fn duplicate_snapshot(
     Ok(duplicated)
 }
 
-pub fn render_element_scene_signature<E: Element>(
-    elements: &[E],
-    scale: Scale<f64>,
-) -> u64 {
+pub fn render_element_scene_signature<E: Element>(elements: &[E], scale: Scale<f64>) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     elements.len().hash(&mut hasher);
     for element in elements {

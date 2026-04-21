@@ -214,8 +214,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         let maintenance_pending = state.take_tty_maintenance_pending();
         let maintenance_reasons = state.take_tty_maintenance_reasons();
         let dispatched_wayland_requests = state.take_wayland_display_dispatched_request_count();
-        let allow_idle_maintenance =
-            last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
+        let allow_idle_maintenance = last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
 
         // Ordering matters here.
         //

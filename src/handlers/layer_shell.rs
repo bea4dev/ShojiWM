@@ -1,3 +1,4 @@
+use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     output::Output,
@@ -13,7 +14,6 @@ use smithay::{
         },
     },
 };
-use smithay::utils::SERIAL_COUNTER;
 use tracing::{debug, info};
 
 use crate::state::ShojiWM;
@@ -174,9 +174,7 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         let surface_id = layer.wl_surface().id().protocol_id();
         let keyboard_interactivity = layer.cached_state().keyboard_interactivity;
         let is_mapped = layer_geo.is_some();
-        let was_mapped = state
-            .mapped_on_demand_layer_surfaces
-            .contains(&surface_id);
+        let was_mapped = state.mapped_on_demand_layer_surfaces.contains(&surface_id);
 
         if matches!(
             keyboard_interactivity,
@@ -215,9 +213,7 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
 
     drop(map);
     state.update_keyboard_focus(SERIAL_COUNTER.next_serial());
-    state.refresh_pointer_focus(
-        std::time::Duration::from(state.clock.now()).as_millis() as u32,
-    );
+    state.refresh_pointer_focus(std::time::Duration::from(state.clock.now()).as_millis() as u32);
     state.schedule_redraw();
 }
 

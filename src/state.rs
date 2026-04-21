@@ -10,8 +10,7 @@ use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer,
     desktop::{
         LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType,
-        find_popup_root_surface,
-        layer_map_for_output,
+        find_popup_root_surface, layer_map_for_output,
     },
     input::{
         Seat, SeatState,
@@ -28,10 +27,9 @@ use smithay::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_server::{
-            Display, DisplayHandle,
+            Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Resource,
         },
     },
     utils::{Clock, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Scale},
@@ -72,15 +70,14 @@ use xcursor::parser::Image;
 
 use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
+use crate::runtime_key_binding::{
+    CompiledRuntimeKeyBinding, RuntimeKeyBindingConfigUpdate, RuntimeKeyBindingEntry,
+    compile_runtime_key_bindings,
+};
 use crate::runtime_process::{
     ManagedRuntimeService, RuntimeProcessAction, RuntimeProcessConfigUpdate, RuntimeProcessEntry,
     RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
     kill_runtime_service, should_restart_service, spawn_runtime_process,
-};
-use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
-use crate::runtime_key_binding::{
-    CompiledRuntimeKeyBinding, RuntimeKeyBindingConfigUpdate, RuntimeKeyBindingEntry,
-    compile_runtime_key_bindings,
 };
 use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
@@ -88,6 +85,7 @@ use crate::ssd::{
     OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot, WaylandWindowSnapshot,
     WindowDecorationState, WindowPositionSnapshot,
 };
+use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
 use crate::{
     backend::{
         async_assets::{AsyncAssetResult, spawn_async_asset_worker},
@@ -183,7 +181,8 @@ pub struct ShojiWM {
     pub windows_ready_for_decoration: HashSet<String>,
     pub live_window_snapshots: HashMap<String, LiveWindowSnapshot>,
     pub complete_window_snapshots: HashMap<String, LiveWindowSnapshot>,
-    pub complete_window_snapshot_trackers: HashMap<String, smithay::backend::renderer::damage::OutputDamageTracker>,
+    pub complete_window_snapshot_trackers:
+        HashMap<String, smithay::backend::renderer::damage::OutputDamageTracker>,
     pub closing_window_snapshots: HashMap<String, ClosingWindowSnapshot>,
     pub snapshot_dirty_window_ids: HashSet<String>,
     pub transform_snapshot_window_ids: HashSet<String>,
@@ -730,35 +729,39 @@ impl ShojiWM {
         unsafe {
             std::env::set_var("DISPLAY", format!(":{}", display_number));
         }
-        info!(display = display_number, "XWayland spawned, DISPLAY exported");
+        info!(
+            display = display_number,
+            "XWayland spawned, DISPLAY exported"
+        );
 
         let display_handle = self.display_handle.clone();
         let loop_handle = event_loop.handle();
         let source_handle = loop_handle.clone();
-        let insert_result = loop_handle.insert_source(xwayland, move |event, _, state| match event {
-            XWaylandEvent::Ready {
-                x11_socket,
-                display_number,
-            } => {
-                match X11Wm::start_wm(
-                    source_handle.clone(),
-                    &display_handle,
+        let insert_result =
+            loop_handle.insert_source(xwayland, move |event, _, state| match event {
+                XWaylandEvent::Ready {
                     x11_socket,
-                    client.clone(),
-                ) {
-                    Ok(wm) => {
-                        info!(display = display_number, "XWayland ready, X11Wm started");
-                        state.xwm = Some(wm);
-                    }
-                    Err(err) => {
-                        warn!(?err, "failed to start X11 window manager");
+                    display_number,
+                } => {
+                    match X11Wm::start_wm(
+                        source_handle.clone(),
+                        &display_handle,
+                        x11_socket,
+                        client.clone(),
+                    ) {
+                        Ok(wm) => {
+                            info!(display = display_number, "XWayland ready, X11Wm started");
+                            state.xwm = Some(wm);
+                        }
+                        Err(err) => {
+                            warn!(?err, "failed to start X11 window manager");
+                        }
                     }
                 }
-            }
-            XWaylandEvent::Error => {
-                warn!("XWayland exited unexpectedly during startup");
-            }
-        });
+                XWaylandEvent::Error => {
+                    warn!("XWayland exited unexpectedly during startup");
+                }
+            });
 
         if let Err(err) = insert_result {
             warn!(?err, "failed to insert XWayland event source");
@@ -1121,8 +1124,7 @@ impl ShojiWM {
             .into_iter()
             .map(|entry| (entry.id.clone(), entry))
             .collect();
-        self.runtime_key_bindings =
-            compile_runtime_key_bindings(&self.runtime_key_binding_entries);
+        self.runtime_key_bindings = compile_runtime_key_bindings(&self.runtime_key_binding_entries);
     }
 
     pub fn consume_runtime_key_binding_config(
@@ -1283,9 +1285,10 @@ impl ShojiWM {
                     let should_run = match (run_policy, self.runtime_process_once_runs.get(&id)) {
                         (RuntimeProcessRunPolicy::OncePerSession, Some(_)) => false,
                         (RuntimeProcessRunPolicy::OncePerSession, None) => true,
-                        (RuntimeProcessRunPolicy::OncePerConfigVersion, Some(last_run_generation)) => {
-                            *last_run_generation != generation
-                        }
+                        (
+                            RuntimeProcessRunPolicy::OncePerConfigVersion,
+                            Some(last_run_generation),
+                        ) => *last_run_generation != generation,
                         (RuntimeProcessRunPolicy::OncePerConfigVersion, None) => true,
                     };
 
@@ -1295,7 +1298,8 @@ impl ShojiWM {
 
                     match spawn_runtime_process(&launch, cwd.as_deref(), &env) {
                         Ok(_child) => {
-                            self.runtime_process_once_runs.insert(id.clone(), generation);
+                            self.runtime_process_once_runs
+                                .insert(id.clone(), generation);
                             info!(process_id = %id, run_policy = ?run_policy, "started runtime once process");
                         }
                         Err(error) => {
@@ -1306,10 +1310,7 @@ impl ShojiWM {
                 RuntimeProcessEntry::Service { ref id, .. } => {
                     let service_id = id.clone();
                     let RuntimeProcessEntry::Service {
-                        launch,
-                        cwd,
-                        env,
-                        ..
+                        launch, cwd, env, ..
                     } = &entry
                     else {
                         unreachable!("matched service entry above");
@@ -1325,7 +1326,10 @@ impl ShojiWM {
                     {
                         continue;
                     }
-                    if self.runtime_managed_services.contains_key(service_id.as_str()) {
+                    if self
+                        .runtime_managed_services
+                        .contains_key(service_id.as_str())
+                    {
                         continue;
                     }
 
@@ -1380,21 +1384,24 @@ impl ShojiWM {
         let output_geo = self.space.output_geometry(output).unwrap();
         let layers = layer_map_for_output(output);
 
-        if let Some(focus) = self.layer_surface_under_with_policy(
-            &layers,
-            &output_geo,
-            pos,
-            &[WlrLayer::Overlay, WlrLayer::Top],
-            true,
-        ).or_else(|| {
-            self.layer_surface_under_with_policy(
+        if let Some(focus) = self
+            .layer_surface_under_with_policy(
                 &layers,
                 &output_geo,
                 pos,
                 &[WlrLayer::Overlay, WlrLayer::Top],
-                false,
+                true,
             )
-        }) {
+            .or_else(|| {
+                self.layer_surface_under_with_policy(
+                    &layers,
+                    &output_geo,
+                    pos,
+                    &[WlrLayer::Overlay, WlrLayer::Top],
+                    false,
+                )
+            })
+        {
             return Some(focus);
         }
 
@@ -1465,7 +1472,10 @@ impl ShojiWM {
                     layer_geo.loc == (0, 0).into() && layer_geo.size == output_geo.size;
 
                 if skip_noninteractive_fullscreen
-                    && matches!(keyboard_interactivity, smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None)
+                    && matches!(
+                        keyboard_interactivity,
+                        smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
+                    )
                     && is_full_output_cover
                 {
                     debug!(
@@ -1485,7 +1495,9 @@ impl ShojiWM {
                         pos - output_geo.loc.to_f64() - layer_geo.loc.to_f64(),
                         WindowSurfaceType::ALL,
                     )
-                    .map(|(surface, loc)| (surface, (loc + layer_geo.loc + output_geo.loc).to_f64()));
+                    .map(|(surface, loc)| {
+                        (surface, (loc + layer_geo.loc + output_geo.loc).to_f64())
+                    });
                 debug!(
                     pos = ?pos,
                     output = %output_geo.loc.x,

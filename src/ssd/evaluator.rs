@@ -827,22 +827,23 @@ impl NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let response: RuntimeEffectConfigResponse = if let Some(response) = runtime.read_response()? {
-            response
-        } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
-                .lock()
-                .map(|stderr| stderr.clone())
-                .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+        let response: RuntimeEffectConfigResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -1389,22 +1390,23 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let response: RuntimeInvokeHandlerResponse = if let Some(response) = runtime.read_response()? {
-            response
-        } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
-                .lock()
-                .map(|stderr| stderr.clone())
-                .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+        let response: RuntimeInvokeHandlerResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -1658,22 +1660,23 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
-        let response: RuntimeLayerEffectsResponse = if let Some(response) = runtime.read_response()? {
-            response
-        } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
-                .lock()
-                .map(|stderr| stderr.clone())
-                .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+        let response: RuntimeLayerEffectsResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(

@@ -1808,10 +1808,8 @@ fn run_effect_pipeline(
             }
             EffectStage::Shader(shader) => {
                 if let Some(region) = pending_sample_region.take() {
-                    let target_size = output_size.unwrap_or((
-                        region.size.w.round() as i32,
-                        region.size.h.round() as i32,
-                    ));
+                    let target_size = output_size
+                        .unwrap_or((region.size.w.round() as i32, region.size.h.round() as i32));
                     current =
                         crop_texture_region(renderer, current, current_size, region, target_size)?;
                     current_size = target_size;
@@ -1824,10 +1822,8 @@ fn run_effect_pipeline(
             }
             EffectStage::Blend { input, mode, alpha } => {
                 if let Some(region) = pending_sample_region.take() {
-                    let target_size = output_size.unwrap_or((
-                        region.size.w.round() as i32,
-                        region.size.h.round() as i32,
-                    ));
+                    let target_size = output_size
+                        .unwrap_or((region.size.w.round() as i32, region.size.h.round() as i32));
                     current =
                         crop_texture_region(renderer, current, current_size, region, target_size)?;
                     current_size = target_size;
@@ -1845,10 +1841,8 @@ fn run_effect_pipeline(
 
     if effect.is_backdrop() {
         if let Some(region) = pending_sample_region.take() {
-            let target_size = output_size.unwrap_or((
-                region.size.w.round() as i32,
-                region.size.h.round() as i32,
-            ));
+            let target_size =
+                output_size.unwrap_or((region.size.w.round() as i32, region.size.h.round() as i32));
             current = crop_texture_region(renderer, current, current_size, region, target_size)?;
             current_size = target_size;
         }

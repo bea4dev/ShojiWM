@@ -6,6 +6,7 @@ use smithay::{
     utils::{Logical, Rectangle},
     wayland::{
         selection::{
+            SelectionTarget,
             data_device::{
                 clear_data_device_selection, current_data_device_selection_userdata,
                 request_data_device_client_selection, set_data_device_selection,
@@ -14,18 +15,22 @@ use smithay::{
                 clear_primary_selection, current_primary_selection_userdata,
                 request_primary_client_selection, set_primary_selection,
             },
-            SelectionTarget,
         },
         xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     },
     xwayland::{
-        xwm::{Reorder, XwmId},
         X11Surface, X11Wm, XwmHandler,
+        xwm::{Reorder, XwmId},
     },
 };
 use tracing::{error, trace, warn};
 
 use crate::state::ShojiWM;
+
+fn xwayland_popup_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_XWAYLAND_POPUP_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
 
 impl XWaylandShellHandler for ShojiWM {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
@@ -64,7 +69,15 @@ impl XwmHandler for ShojiWM {
 
     fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
-    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        if xwayland_popup_debug_enabled() {
+            trace!(
+                window = ?window,
+                geometry = ?window.geometry(),
+                "xwayland override-redirect window created"
+            );
+        }
+    }
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Err(err) = window.set_mapped(true) {
@@ -75,8 +88,7 @@ impl XwmHandler for ShojiWM {
         let smithay_window = Window::new_x11_window(window.clone());
         self.space.map_element(smithay_window, location, true);
         let bbox = window.geometry();
-        let placed =
-            Rectangle::<i32, Logical>::new((location.0, location.1).into(), bbox.size);
+        let placed = Rectangle::<i32, Logical>::new((location.0, location.1).into(), bbox.size);
         if let Err(err) = window.configure(Some(placed)) {
             warn!(?err, "failed to configure newly mapped X11 window");
         }
@@ -85,6 +97,14 @@ impl XwmHandler for ShojiWM {
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let location = window.geometry().loc;
+        if xwayland_popup_debug_enabled() {
+            trace!(
+                window = ?window,
+                geometry = ?window.geometry(),
+                mapped_location = ?location,
+                "xwayland override-redirect window mapped"
+            );
+        }
         let smithay_window = Window::new_x11_window(window);
         self.space
             .map_element(smithay_window, (location.x, location.y), true);
@@ -136,6 +156,13 @@ impl XwmHandler for ShojiWM {
         geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        if xwayland_popup_debug_enabled() && window.is_override_redirect() {
+            trace!(
+                window = ?window,
+                geometry = ?geometry,
+                "xwayland override-redirect configure notify"
+            );
+        }
         if let Some(elem) = self.find_x11_window(&window) {
             self.space.map_element(elem, geometry.loc, false);
             self.schedule_redraw();
@@ -180,7 +207,10 @@ impl XwmHandler for ShojiWM {
             }
             SelectionTarget::Primary => {
                 if let Err(err) = request_primary_client_selection(&self.seat, mime_type, fd) {
-                    error!(?err, "failed to request wayland primary selection for XWayland");
+                    error!(
+                        ?err,
+                        "failed to request wayland primary selection for XWayland"
+                    );
                 }
             }
         }

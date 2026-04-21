@@ -43,7 +43,12 @@ pub struct CompiledRuntimeKeyBinding {
 }
 
 impl CompiledRuntimeKeyBinding {
-    pub fn matches(&self, phase: RuntimeKeyBindingPhase, modifiers: &ModifiersState, handle: &KeysymHandle<'_>) -> bool {
+    pub fn matches(
+        &self,
+        phase: RuntimeKeyBindingPhase,
+        modifiers: &ModifiersState,
+        handle: &KeysymHandle<'_>,
+    ) -> bool {
         self.phase == phase && self.shortcut.matches(modifiers, handle)
     }
 }
@@ -95,14 +100,20 @@ pub fn compile_runtime_key_bindings(
         .filter_map(|entry| match entry.compile() {
             Ok(binding) => Some(binding),
             Err(error) => {
-                tracing::warn!(binding_id = entry.id, ?error, "ignoring invalid runtime key binding");
+                tracing::warn!(
+                    binding_id = entry.id,
+                    ?error,
+                    "ignoring invalid runtime key binding"
+                );
                 None
             }
         })
         .collect()
 }
 
-fn parse_runtime_key_shortcut(shortcut: &str) -> Result<RuntimeKeyShortcut, RuntimeKeyBindingParseError> {
+fn parse_runtime_key_shortcut(
+    shortcut: &str,
+) -> Result<RuntimeKeyShortcut, RuntimeKeyBindingParseError> {
     let parts = shortcut
         .split('+')
         .map(str::trim)
@@ -137,17 +148,18 @@ fn parse_runtime_key_shortcut(shortcut: &str) -> Result<RuntimeKeyShortcut, Runt
             });
         }
 
-        let parsed_keysym = parse_keysym_name(part).ok_or_else(|| {
-            RuntimeKeyBindingParseError::UnknownKey {
+        let parsed_keysym =
+            parse_keysym_name(part).ok_or_else(|| RuntimeKeyBindingParseError::UnknownKey {
                 shortcut: shortcut.to_string(),
                 key: part.to_string(),
-            }
-        })?;
+            })?;
         keysym = Some(parsed_keysym);
     }
 
     let Some(keysym) = keysym else {
-        return Err(RuntimeKeyBindingParseError::MissingKey(shortcut.to_string()));
+        return Err(RuntimeKeyBindingParseError::MissingKey(
+            shortcut.to_string(),
+        ));
     };
 
     Ok(RuntimeKeyShortcut {

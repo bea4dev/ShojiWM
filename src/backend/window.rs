@@ -18,8 +18,8 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         compositor::{RectangleKind, RegionAttributes, with_states},
-        shell::xdg::XdgToplevelSurfaceData,
         shell::wlr_layer::Layer as WlrLayer,
+        shell::xdg::XdgToplevelSurfaceData,
     },
 };
 use tracing::info;
@@ -32,8 +32,7 @@ pub enum WindowClipElement {
 }
 
 fn popup_debug_enabled() -> bool {
-    std::env::var_os("SHOJI_POPUP_DEBUG")
-        .is_some_and(|value| value != "0" && !value.is_empty())
+    std::env::var_os("SHOJI_POPUP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 fn gap_debug_enabled() -> bool {
@@ -280,8 +279,7 @@ where
 {
     match window.underlying_surface() {
         WindowSurface::Wayland(surface) => {
-            let render_origin =
-                location - window.geometry().loc.to_physical_precise_round(scale);
+            let render_origin = location - window.geometry().loc.to_physical_precise_round(scale);
             let elements = render_elements_from_surface_tree(
                 renderer,
                 surface.wl_surface(),
@@ -550,9 +548,8 @@ pub fn clipped_surface_elements(
                 .iter()
                 .enumerate()
                 .filter_map(|(index, element_geometry)| {
-                    let score =
-                        i64::from((element_geometry.size.w - forced_geometry.size.w).abs())
-                            + i64::from((element_geometry.size.h - forced_geometry.size.h).abs());
+                    let score = i64::from((element_geometry.size.w - forced_geometry.size.w).abs())
+                        + i64::from((element_geometry.size.h - forced_geometry.size.h).abs());
                     (score == best_score).then_some(index)
                 })
                 .collect::<Vec<_>>()
@@ -601,8 +598,7 @@ pub fn clipped_surface_elements(
             .into_iter()
             .enumerate()
             .map(|(index, element)| {
-                let geometry_override =
-                    geometry.filter(|_| selected_indices.contains(&index));
+                let geometry_override = geometry.filter(|_| selected_indices.contains(&index));
                 if gap_debug_enabled() {
                     info!(
                         debug_label = ?debug_label,
@@ -631,9 +627,6 @@ pub fn clipped_surface_elements(
                 }
             })
             .collect(),
-        None => Ok(elements
-            .into_iter()
-            .map(WindowClipElement::Raw)
-            .collect()),
+        None => Ok(elements.into_iter().map(WindowClipElement::Raw).collect()),
     }
 }

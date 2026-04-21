@@ -645,8 +645,7 @@ pub fn relative_physical_rect_from_root_global_edges(
     let left_px = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
     let top_px = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
     let right_px = ((((rect.x + rect.width) - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let bottom_px =
-        ((((rect.y + rect.height) - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let bottom_px = ((((rect.y + rect.height) - output_geo.loc.y) as f64) * scale_y).round() as i32;
     Rectangle::new(
         Point::from((left_px - root_left_px, top_px - root_top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),

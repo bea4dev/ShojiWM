@@ -3,11 +3,6 @@ use crate::{
     handlers::{layer_shell, xdg_shell},
     state::{ClientState, ShojiWM},
 };
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-    time::Duration,
-};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_shm,
@@ -32,9 +27,14 @@ use smithay::{
             SubsurfaceUserData, SurfaceAttributes, SurfaceUserData, get_parent, is_sync_subsurface,
             with_states,
         },
-        shm::{ShmHandler, ShmState},
         shell::xdg::SurfaceCachedState,
+        shm::{ShmHandler, ShmState},
     },
+};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Duration,
 };
 use tracing::{debug, info, trace};
 
@@ -121,7 +121,11 @@ impl CompositorHandler for ShojiWM {
                 )
             {
                 let (surface_geometry, attrs) = with_states(surface, |states| {
-                    let geometry = states.cached_state.get::<SurfaceCachedState>().current().geometry;
+                    let geometry = states
+                        .cached_state
+                        .get::<SurfaceCachedState>()
+                        .current()
+                        .geometry;
                     let mut attrs_cache = states.cached_state.get::<SurfaceAttributes>();
                     let attrs = attrs_cache.current();
                     (
@@ -284,12 +288,7 @@ impl Dispatch<WlRegion, RegionUserData> for ShojiWM {
         }
     }
 
-    fn destroyed(
-        state: &mut Self,
-        client: ClientId,
-        resource: &WlRegion,
-        data: &RegionUserData,
-    ) {
+    fn destroyed(state: &mut Self, client: ClientId, resource: &WlRegion, data: &RegionUserData) {
         <CompositorState as Dispatch<WlRegion, RegionUserData, Self>>::destroyed(
             state, client, resource, data,
         );

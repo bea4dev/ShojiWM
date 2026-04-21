@@ -65,7 +65,8 @@ fn compute_sample_uv_compensation(
             0.0
         },
     );
-    let safe_projected_pixels = Vector2::new(projected_pixels.x.max(1.0), projected_pixels.y.max(1.0));
+    let safe_projected_pixels =
+        Vector2::new(projected_pixels.x.max(1.0), projected_pixels.y.max(1.0));
     let adjusted_uv_br = uv_br
         + effective_misalignment
             .div_element_wise(safe_projected_pixels)
@@ -294,13 +295,17 @@ impl ClippedSurfaceElement {
             )),
             clip.rect.size,
         );
-        let mut snapped_slot_rect =
-            snapped_precise_logical_rect_in_element_space(clip.rect_precise, element_rect_precise, output_scale);
+        let mut snapped_slot_rect = snapped_precise_logical_rect_in_element_space(
+            clip.rect_precise,
+            element_rect_precise,
+            output_scale,
+        );
         let snap_rect_with_output_origin = snapped_precise_logical_rect_for_element(
             clip.rect_precise,
             element_rect_precise,
-                output_origin, output_scale,
-            );
+            output_origin,
+            output_scale,
+        );
         let clip_size_delta_px = (
             ((snapped_slot_rect.width - element_rect_logical.width) * output_scale_x).abs(),
             ((snapped_slot_rect.height - element_rect_logical.height) * output_scale_y).abs(),
@@ -311,10 +316,16 @@ impl ClippedSurfaceElement {
         // of viewport-dst and logical edges. In that case the client visibly
         // "jitters" by 1 px while moving. Snap the slot back onto the draw
         // quad whenever the mismatch is within one physical pixel.
-        let allowed_clip_delta_px = if forced_geometry.is_some() { 1.01 } else { 0.01 };
-        if clip_size_delta_px.0 <= allowed_clip_delta_px && clip_size_delta_px.1 <= allowed_clip_delta_px {
-            snapped_slot_rect.x = element_rect_logical.x;  // = 0.0: clip starts at element origin
-            snapped_slot_rect.y = element_rect_logical.y;  // = 0.0
+        let allowed_clip_delta_px = if forced_geometry.is_some() {
+            1.01
+        } else {
+            0.01
+        };
+        if clip_size_delta_px.0 <= allowed_clip_delta_px
+            && clip_size_delta_px.1 <= allowed_clip_delta_px
+        {
+            snapped_slot_rect.x = element_rect_logical.x; // = 0.0: clip starts at element origin
+            snapped_slot_rect.y = element_rect_logical.y; // = 0.0
             snapped_slot_rect.width = element_rect_logical.width;
             snapped_slot_rect.height = element_rect_logical.height;
         }
@@ -351,7 +362,10 @@ impl ClippedSurfaceElement {
         let sampled_pixels = if src_size.x > 0.0 && src_size.y > 0.0 {
             src_size
         } else {
-            Vector2::new(element_geometry.size.w as f32, element_geometry.size.h as f32)
+            Vector2::new(
+                element_geometry.size.w as f32,
+                element_geometry.size.h as f32,
+            )
         };
         let view_dst_pixels = Vector2::new(
             view.dst.w.max(0) as f32 * output_scale_x,
@@ -468,68 +482,66 @@ impl ClippedSurfaceElement {
     }
 
     fn uniforms(&self) -> Vec<Uniform<'static>> {
-        let (slot_origin, slot_size, mask_origin, mask_size, corner_radius, input_to_local_array) = match &self.inner {
-            ClippedSurfaceInner::Mapped(inner) => {
-                let element_geometry = self.geometry;
-                let element_size = Vector2::new(
-                    element_geometry.size.w as f32 / self.output_scale.max(0.0001),
-                    element_geometry.size.h as f32 / self.output_scale.max(0.0001),
-                );
+        let (slot_origin, slot_size, mask_origin, mask_size, corner_radius, input_to_local_array) =
+            match &self.inner {
+                ClippedSurfaceInner::Mapped(inner) => {
+                    let element_geometry = self.geometry;
+                    let element_size = Vector2::new(
+                        element_geometry.size.w as f32 / self.output_scale.max(0.0001),
+                        element_geometry.size.h as f32 / self.output_scale.max(0.0001),
+                    );
 
-                let slot_origin = Vector2::new(self.slot_rect.x, self.slot_rect.y);
-                let slot_size = Vector2::new(self.slot_rect.width, self.slot_rect.height);
-                let mask_origin = Vector2::new(self.mask_rect.x, self.mask_rect.y);
-                let mask_size = Vector2::new(self.mask_rect.width, self.mask_rect.height);
+                    let slot_origin = Vector2::new(self.slot_rect.x, self.slot_rect.y);
+                    let slot_size = Vector2::new(self.slot_rect.width, self.slot_rect.height);
+                    let mask_origin = Vector2::new(self.mask_rect.x, self.mask_rect.y);
+                    let mask_size = Vector2::new(self.mask_rect.width, self.mask_rect.height);
 
-                let buffer_size = inner.buffer_size();
-                let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
+                    let buffer_size = inner.buffer_size();
+                    let buffer_size = Vector2::new(buffer_size.w as f32, buffer_size.h as f32);
 
-                let view = inner.view();
-                let src_loc = Vector2::new(view.src.loc.x as f32, view.src.loc.y as f32);
-                let src_size = Vector2::new(view.src.size.w as f32, view.src.size.h as f32);
+                    let view = inner.view();
+                    let src_loc = Vector2::new(view.src.loc.x as f32, view.src.loc.y as f32);
+                    let src_size = Vector2::new(view.src.size.w as f32, view.src.size.h as f32);
 
-                let transform = match inner.transform() {
-                    Transform::_90 => Transform::_270,
-                    Transform::_270 => Transform::_90,
-                    other => other,
-                };
+                    let transform = match inner.transform() {
+                        Transform::_90 => Transform::_270,
+                        Transform::_270 => Transform::_90,
+                        other => other,
+                    };
 
-                let tm = transform.matrix();
-                let transform_matrix = Matrix3::from_translation(Vector2::new(0.5, 0.5))
-                    * Matrix3::from_cols(tm[0], tm[1], tm[2])
-                    * Matrix3::from_translation(Vector2::new(-0.5, -0.5));
+                    let tm = transform.matrix();
+                    let transform_matrix = Matrix3::from_translation(Vector2::new(0.5, 0.5))
+                        * Matrix3::from_cols(tm[0], tm[1], tm[2])
+                        * Matrix3::from_translation(Vector2::new(-0.5, -0.5));
 
-                let input_to_local = transform_matrix
-                    * Matrix3::from_nonuniform_scale(
-                        element_size.x,
-                        element_size.y,
+                    let input_to_local = transform_matrix
+                        * Matrix3::from_nonuniform_scale(element_size.x, element_size.y)
+                        * Matrix3::from_nonuniform_scale(
+                            buffer_size.x / src_size.x,
+                            buffer_size.y / src_size.y,
+                        )
+                        * Matrix3::from_translation(-src_loc.div_element_wise(buffer_size));
+
+                    (
+                        slot_origin,
+                        slot_size,
+                        mask_origin,
+                        mask_size,
+                        self.corner_radius,
+                        [
+                            input_to_local.x.x,
+                            input_to_local.x.y,
+                            input_to_local.x.z,
+                            input_to_local.y.x,
+                            input_to_local.y.y,
+                            input_to_local.y.z,
+                            input_to_local.z.x,
+                            input_to_local.z.y,
+                            input_to_local.z.z,
+                        ],
                     )
-                    * Matrix3::from_nonuniform_scale(
-                        buffer_size.x / src_size.x,
-                        buffer_size.y / src_size.y,
-                    )
-                    * Matrix3::from_translation(-src_loc.div_element_wise(buffer_size));
-
-                (
-                    slot_origin,
-                    slot_size,
-                    mask_origin,
-                    mask_size,
-                    self.corner_radius,
-                    [
-                        input_to_local.x.x,
-                        input_to_local.x.y,
-                        input_to_local.x.z,
-                        input_to_local.y.x,
-                        input_to_local.y.y,
-                        input_to_local.y.z,
-                        input_to_local.z.x,
-                        input_to_local.z.y,
-                        input_to_local.z.z,
-                    ],
-                )
-            }
-        };
+                }
+            };
 
         if clipped_uniforms_debug_enabled() {
             let map_uv = |u: f32, v: f32| {

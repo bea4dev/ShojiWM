@@ -33,6 +33,10 @@ use crate::{
 };
 use tracing::{debug, info, warn};
 
+fn xdg_popup_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_XDG_POPUP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn apply_decoration_mode(
     state: &mut ShojiWM,
     toplevel: &ToplevelSurface,
@@ -119,9 +123,7 @@ impl XdgShellHandler for ShojiWM {
             ),
         }
         self.request_tty_maintenance("xdg-popup-created");
-        self.refresh_pointer_focus(
-            std::time::Duration::from(self.clock.now()).as_millis() as u32,
-        );
+        self.refresh_pointer_focus(std::time::Duration::from(self.clock.now()).as_millis() as u32);
         self.schedule_redraw();
     }
 
@@ -245,7 +247,8 @@ impl XdgShellHandler for ShojiWM {
             if let Some(pointer) = seat.get_pointer() {
                 if pointer.is_grabbed()
                     && !(pointer.has_grab(serial)
-                        || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+                        || pointer
+                            .has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
                 {
                     grab.ungrab(PopupUngrabStrategy::All);
                     return;
@@ -352,6 +355,7 @@ impl ShojiWM {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
+        let debug_popup = xdg_popup_debug_enabled();
         let Some(window) = self
             .space
             .elements()
@@ -361,26 +365,59 @@ impl ShojiWM {
         };
 
         let window_geo = self.space.element_geometry(window).unwrap();
+        let window_center = smithay::utils::Point::from((
+            window_geo.loc.x + window_geo.size.w / 2,
+            window_geo.loc.y + window_geo.size.h / 2,
+        ));
         let output = self
             .space
             .outputs()
-            .find(|o| {
-                self.space
-                    .output_geometry(o)
-                    .is_some_and(|geo| geo.overlaps(window_geo))
+            .filter_map(|output| {
+                self.space.output_geometry(output).map(|geometry| {
+                    let intersection_area = geometry
+                        .intersection(window_geo)
+                        .map(|intersection| {
+                            i64::from(intersection.size.w.max(0))
+                                * i64::from(intersection.size.h.max(0))
+                        })
+                        .unwrap_or(0);
+                    let contains_center = geometry.contains(window_center);
+                    (output, contains_center, intersection_area)
+                })
             })
+            .max_by_key(|(_, contains_center, intersection_area)| {
+                (*contains_center, *intersection_area)
+            })
+            .map(|(output, _, _)| output)
             .or_else(|| self.space.outputs().next())
             .unwrap();
         let output_geo = self.space.output_geometry(output).unwrap();
+        let popup_toplevel_coords = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
 
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.
         let mut target = output_geo;
-        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        target.loc -= popup_toplevel_coords;
         target.loc -= window_geo.loc;
 
         popup.with_pending_state(|state| {
-            state.geometry = state.positioner.get_unconstrained_geometry(target);
+            let unconstrained = state.positioner.get_unconstrained_geometry(target);
+            if debug_popup {
+                debug!(
+                    popup_surface_id = popup.wl_surface().id().protocol_id(),
+                    root_surface_id = root.id().protocol_id(),
+                    output = %output.name(),
+                    window_geo = ?window_geo,
+                    window_center = ?window_center,
+                    output_geo = ?output_geo,
+                    popup_toplevel_coords = ?popup_toplevel_coords,
+                    positioner_geometry = ?state.positioner.get_geometry(),
+                    target = ?target,
+                    unconstrained = ?unconstrained,
+                    "xdg popup unconstrain"
+                );
+            }
+            state.geometry = unconstrained;
         });
     }
 }

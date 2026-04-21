@@ -176,10 +176,7 @@ pub fn kill_runtime_service(service: &mut ManagedRuntimeService) -> io::Result<(
     }
 }
 
-pub fn should_restart_service(
-    policy: RuntimeProcessRestartPolicy,
-    status: ExitStatus,
-) -> bool {
+pub fn should_restart_service(policy: RuntimeProcessRestartPolicy, status: ExitStatus) -> bool {
     match policy {
         RuntimeProcessRestartPolicy::Never => false,
         RuntimeProcessRestartPolicy::OnExit => true,

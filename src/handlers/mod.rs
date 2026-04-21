@@ -10,7 +10,7 @@ mod xwayland;
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::desktop::{PopupKind, WindowSurfaceType, layer_map_for_output};
+use smithay::desktop::{PopupKind, WindowSurfaceType, find_popup_root_surface, layer_map_for_output};
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
     Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
 };
@@ -183,7 +183,15 @@ impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<ShojiWM>, ShojiWM> f
             ZwpVirtualKeyboardV1,
             VirtualKeyboardUserData<ShojiWM>,
             ShojiWM,
-        >>::request(state, client, virtual_keyboard, request, data, dh, data_init);
+        >>::request(
+            state,
+            client,
+            virtual_keyboard,
+            request,
+            data,
+            dh,
+            data_init,
+        );
 
         if should_flush_forwarded_virtual_keyboard && state.seat.input_method().keyboard_grabbed() {
             let mut active_text_input = false;
@@ -216,6 +224,54 @@ impl FractionalScaleHandler for ShojiWM {
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
         }
+
+        let popup_root = self
+            .popups
+            .find_popup(&surface)
+            .or_else(|| self.popups.find_popup(&root))
+            .and_then(|popup| find_popup_root_surface(&popup).ok());
+
+        let focused_output = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .or_else(|| self.window_keyboard_focus.clone())
+            .or_else(|| {
+                self.layer_shell_on_demand_focus
+                    .as_ref()
+                    .map(|layer| layer.wl_surface().clone())
+            })
+            .and_then(|focused_surface| {
+                let mut focused_root = focused_surface;
+                while let Some(parent) = smithay::wayland::compositor::get_parent(&focused_root) {
+                    focused_root = parent;
+                }
+
+                self.space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .toplevel()
+                            .is_some_and(|toplevel| toplevel.wl_surface() == &focused_root)
+                            || window
+                                .x11_surface()
+                                .and_then(|x11| x11.wl_surface())
+                                .as_ref()
+                                == Some(&focused_root)
+                    })
+                    .cloned()
+                    .and_then(|window| self.space.outputs_for_element(&window).first().cloned())
+                    .or_else(|| {
+                        self.space.outputs().find_map(|output| {
+                            let map = layer_map_for_output(output);
+                            let found = map
+                                .layer_for_surface(&focused_root, WindowSurfaceType::TOPLEVEL)
+                                .is_some();
+                            drop(map);
+                            found.then(|| output.clone())
+                        })
+                    })
+            });
 
         smithay::wayland::compositor::with_states(&surface, |states| {
             let primary_scanout_output =
@@ -277,6 +333,35 @@ impl FractionalScaleHandler for ShojiWM {
                                 })
                         }
                     })
+                    .or_else(|| {
+                        popup_root.as_ref().and_then(|popup_root| {
+                            self.space
+                                .elements()
+                                .find(|window| {
+                                    window
+                                        .toplevel()
+                                        .is_some_and(|toplevel| toplevel.wl_surface() == popup_root)
+                                })
+                                .cloned()
+                                .and_then(|window| {
+                                    self.space.outputs_for_element(&window).first().cloned()
+                                })
+                                .or_else(|| {
+                                    self.space.outputs().find_map(|output| {
+                                        let map = layer_map_for_output(output);
+                                        let found = map
+                                            .layer_for_surface(
+                                                popup_root,
+                                                WindowSurfaceType::TOPLEVEL,
+                                            )
+                                            .is_some();
+                                        drop(map);
+                                        found.then(|| output.clone())
+                                    })
+                                })
+                        })
+                    })
+                    .or_else(|| focused_output.clone())
                     .or_else(|| self.space.outputs().next().cloned());
 
             if let Some(output) = primary_scanout_output {

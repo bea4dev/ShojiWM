@@ -74,9 +74,9 @@ impl ShojiWM {
                                 .find(|binding| binding.matches(key_phase, modifiers, &handle))
                                 .map(|binding| binding.id.clone())
                             {
-                                return FilterResult::Intercept(
-                                    KeyboardAction::RuntimeKeyBinding(binding_id),
-                                );
+                                return FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(
+                                    binding_id,
+                                ));
                             }
 
                             let keysym = handle.modified_sym();
@@ -246,16 +246,17 @@ impl ShojiWM {
                                     .map(|toplevel| toplevel.wl_surface().id().protocol_id())
                                     .unwrap_or_default()
                             });
-                        let raw_window_under = self.raw_window_under(LogicalPoint::new(
-                            pos.x.floor() as i32,
-                            pos.y.floor() as i32,
-                        ))
-                        .map(|(window, _)| {
-                            window
-                                .toplevel()
-                                .map(|toplevel| toplevel.wl_surface().id().protocol_id())
-                                .unwrap_or_default()
-                        });
+                        let raw_window_under = self
+                            .raw_window_under(LogicalPoint::new(
+                                pos.x.floor() as i32,
+                                pos.y.floor() as i32,
+                            ))
+                            .map(|(window, _)| {
+                                window
+                                    .toplevel()
+                                    .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                                    .unwrap_or_default()
+                            });
                         let layer_under = self.layer_surface_under(pos).map(|layer| {
                             (
                                 layer.wl_surface().id().protocol_id(),
@@ -277,8 +278,7 @@ impl ShojiWM {
                             "unfocused popup focus debug: pointer press pre-focus"
                         );
                     }
-                    self.pointer_contents =
-                        self.pointer_contents_at(pointer.current_location());
+                    self.pointer_contents = self.pointer_contents_at(pointer.current_location());
                     let under = self.pointer_contents.surface.clone();
                     if layer_focus_debug_enabled() {
                         debug!(
@@ -508,11 +508,11 @@ impl ShojiWM {
                         return;
                     } else if layer_under_pointer.is_none()
                         && let Some((window, _loc)) = self
-                        .window_under_transformed(LogicalPoint::new(
-                            pointer.current_location().x.floor() as i32,
-                            pointer.current_location().y.floor() as i32,
-                        ))
-                        .map(|(w, _)| (w.clone(), ()))
+                            .window_under_transformed(LogicalPoint::new(
+                                pointer.current_location().x.floor() as i32,
+                                pointer.current_location().y.floor() as i32,
+                            ))
+                            .map(|(w, _)| (w.clone(), ()))
                         && self.pointer_allows_window_interaction(
                             self.pointer_contents
                                 .surface
@@ -681,7 +681,10 @@ impl ShojiWM {
 }
 
 impl ShojiWM {
-    fn surface_has_popup_ancestor(&self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+    fn surface_has_popup_ancestor(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
         let mut current = Some(surface.clone());
         while let Some(candidate) = current {
             if self.popups.find_popup(&candidate).is_some() {
@@ -713,7 +716,9 @@ impl ShojiWM {
 
     fn pointer_allows_window_interaction(
         &self,
-        pointer_surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+        pointer_surface: Option<
+            &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        >,
         window: &smithay::desktop::Window,
     ) -> bool {
         if self.pointer_contents.layer.is_some() {
@@ -736,19 +741,22 @@ impl ShojiWM {
         } else {
             self.decoration_under(pos).and_then(|(window, hit)| {
                 self.pointer_allows_window_interaction(
-                    pointer_contents.surface.as_ref().map(|(surface, _)| surface),
+                    pointer_contents
+                        .surface
+                        .as_ref()
+                        .map(|(surface, _)| surface),
                     &window,
                 )
-                    .then_some(hit)
-                    .and_then(|hit| match hit {
-                        DecorationHitTestResult::Resize(edges) => {
-                            Some(resize_edges_to_cursor_icon(edges))
-                        }
-                        DecorationHitTestResult::Move
-                        | DecorationHitTestResult::Action(_)
-                        | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
-                        DecorationHitTestResult::ClientArea => None,
-                    })
+                .then_some(hit)
+                .and_then(|hit| match hit {
+                    DecorationHitTestResult::Resize(edges) => {
+                        Some(resize_edges_to_cursor_icon(edges))
+                    }
+                    DecorationHitTestResult::Move
+                    | DecorationHitTestResult::Action(_)
+                    | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
+                    DecorationHitTestResult::ClientArea => None,
+                })
             })
         };
 

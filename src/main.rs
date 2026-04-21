@@ -47,7 +47,14 @@ fn install_panic_hook() {
     panic::set_hook(Box::new(move |panic_info| {
         let location = panic_info
             .location()
-            .map(|location| format!("{}:{}:{}", location.file(), location.line(), location.column()))
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
             .unwrap_or_else(|| "<unknown>".to_string());
         let payload = panic_payload_message(panic_info);
         let thread = std::thread::current();
@@ -61,9 +68,7 @@ fn install_panic_hook() {
             backtrace = %backtrace,
             "panic"
         );
-        eprintln!(
-            "panic: thread={thread_name} location={location} payload={payload}\n{backtrace}"
-        );
+        eprintln!("panic: thread={thread_name} location={location} payload={payload}\n{backtrace}");
 
         default_hook(panic_info);
     }));
@@ -133,17 +138,14 @@ impl CliArgs {
         let env_xwayland_satellite = std::env::var_os("SHOJI_XWAYLAND_SATELLITE")
             .is_some_and(|value| value != "0" && value != "off");
         let env_xwayland_satellite_path = std::env::var("SHOJI_XWAYLAND_SATELLITE_PATH").ok();
-        let env_xwayland_satellite_glamor =
-            std::env::var("SHOJI_XWAYLAND_SATELLITE_GLAMOR").ok();
+        let env_xwayland_satellite_glamor = std::env::var("SHOJI_XWAYLAND_SATELLITE_GLAMOR").ok();
 
         let tty_outputs = parse_tty_outputs(&args);
         let xwayland_satellite_path =
-            parse_option_value(&args, "--xwayland-satellite-path")
-                .or(env_xwayland_satellite_path);
-        let xwayland_satellite_glamor =
-            parse_option_value(&args, "--xwayland-satellite-glamor")
-                .or(env_xwayland_satellite_glamor)
-                .filter(|value| matches!(value.as_str(), "gl" | "es" | "none"));
+            parse_option_value(&args, "--xwayland-satellite-path").or(env_xwayland_satellite_path);
+        let xwayland_satellite_glamor = parse_option_value(&args, "--xwayland-satellite-glamor")
+            .or(env_xwayland_satellite_glamor)
+            .filter(|value| matches!(value.as_str(), "gl" | "es" | "none"));
         let xwayland_satellite = args.iter().any(|arg| arg == "--xwayland-satellite")
             || env_xwayland_satellite
             || xwayland_satellite_path.is_some();
