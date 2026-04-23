@@ -4079,6 +4079,30 @@ fn backdrop_shader_elements_for_window(
                 .and_then(|d| d.backdrop_cache.get(&cache_key))
                 .cloned();
 
+            if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                tracing::info!(
+                    window_id = %decoration.snapshot.id,
+                    title = %decoration.snapshot.title,
+                    app_id = ?decoration.snapshot.app_id,
+                    stable_key = %cached.stable_key,
+                    source_effect_rect = ?source_effect_rect,
+                    source_effect_rect_precise = ?source_effect_rect_precise,
+                    display_rect = ?display_rect,
+                    display_rect_precise = ?display_rect_precise,
+                    root_rect = ?root_rect,
+                    output_geo = ?output_geo,
+                    blur_padding,
+                    capture_geo = ?capture_geo,
+                    actual_capture_geo = ?actual_capture_geo,
+                    capture_origin_physical = ?capture_origin_physical,
+                    apply_visual_transform,
+                    uses_backdrop,
+                    uses_xray,
+                    has_existing_cache = existing_cache.is_some(),
+                    "backdrop debug: window shader rects"
+                );
+            }
+
             if !matches!(
                 cached.shader.invalidate_policy(),
                 crate::ssd::EffectInvalidationPolicy::Always
@@ -4186,6 +4210,21 @@ fn backdrop_shader_elements_for_window(
                             ),
                         )
                         .ok()?;
+                    if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                        tracing::info!(
+                            window_id = %decoration.snapshot.id,
+                            title = %decoration.snapshot.title,
+                            app_id = ?decoration.snapshot.app_id,
+                            stable_key = %cached.stable_key,
+                            local_rect = ?local_rect,
+                            local_sample_rect = ?local_sample_rect,
+                            local_capture_rect = ?local_capture_rect,
+                            sample_region = ?sample_region,
+                            geometry = ?geometry,
+                            from_cache = true,
+                            "backdrop debug: window shader element"
+                        );
+                    }
                     if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                         let geometry =
                             smithay::backend::renderer::element::Element::geometry(&element, scale);
@@ -4514,6 +4553,22 @@ fn backdrop_shader_elements_for_window(
                 ),
             )
             .ok()?;
+            if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                tracing::info!(
+                    window_id = %decoration.snapshot.id,
+                    title = %decoration.snapshot.title,
+                    app_id = ?decoration.snapshot.app_id,
+                    stable_key = %cached.stable_key,
+                    local_rect = ?local_rect,
+                    local_sample_rect = ?local_sample_rect,
+                    local_capture_rect = ?local_capture_rect,
+                    sample_region = ?sample_region,
+                    final_backdrop_screen_rect = ?final_backdrop_screen_rect,
+                    geometry = ?geometry,
+                    from_cache = false,
+                    "backdrop debug: window shader element"
+                );
+            }
             if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
                 let geometry =
                     smithay::backend::renderer::element::Element::geometry(&element, scale);
@@ -4579,7 +4634,7 @@ fn protocol_background_effect_rects_for_window(
         return Vec::new();
     };
 
-    crate::backend::window::region_rects_within_bounds(
+    let rects = crate::backend::window::region_rects_within_bounds(
         &region,
         crate::ssd::LogicalRect::new(
             0,
@@ -4597,7 +4652,37 @@ fn protocol_background_effect_rects_for_window(
             rect.height,
         )
     })
-    .collect()
+    .collect::<Vec<_>>();
+
+    if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+        let (surface_geometry, buffer_scale, buffer_delta) =
+            compositor::with_states(wl_surface, |states| {
+                let geometry = states
+                    .cached_state
+                    .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+                    .current()
+                    .geometry;
+                let mut attrs = states
+                    .cached_state
+                    .get::<smithay::wayland::compositor::SurfaceAttributes>();
+                let attrs = attrs.current();
+                (geometry, attrs.buffer_scale, attrs.buffer_delta)
+            });
+        tracing::info!(
+            window_id = %decoration.snapshot.id,
+            title = %decoration.snapshot.title,
+            app_id = ?decoration.snapshot.app_id,
+            client_rect = ?decoration.client_rect,
+            root_rect = ?decoration.layout.root.rect,
+            surface_geometry = ?surface_geometry,
+            buffer_scale,
+            buffer_delta = ?buffer_delta,
+            blur_region_rects = ?rects,
+            "backdrop debug: protocol window rects"
+        );
+    }
+
+    rects
 }
 
 fn protocol_background_effect_rects_for_layer(
@@ -4621,7 +4706,7 @@ fn protocol_background_effect_rects_for_layer(
     drop(map);
     let output_loc = output.current_location();
 
-    crate::backend::window::region_rects_within_bounds(
+    let rects = crate::backend::window::region_rects_within_bounds(
         &region,
         crate::ssd::LogicalRect::new(0, 0, layer_geo.size.w, layer_geo.size.h),
     )
@@ -4634,7 +4719,20 @@ fn protocol_background_effect_rects_for_layer(
             rect.height,
         )
     })
-    .collect()
+    .collect::<Vec<_>>();
+
+    if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+        tracing::info!(
+            layer_surface = ?layer_surface.wl_surface().id(),
+            output = %output.name(),
+            layer_geo = ?layer_geo,
+            output_loc = ?output_loc,
+            blur_region_rects = ?rects,
+            "backdrop debug: protocol layer rects"
+        );
+    }
+
+    rects
 }
 
 fn collect_window_source_damage(
@@ -4858,6 +4956,23 @@ fn configured_background_effect_elements_for_layer(
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
     let uses_backdrop = effect_config.effect.uses_backdrop_input();
     let uses_xray = effect_config.effect.uses_xray_backdrop_input();
+    if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+        tracing::info!(
+            layer_surface = ?layer_surface.wl_surface().id(),
+            layer_id = %layer_id,
+            output = %output.name(),
+            effect_rect = ?effect_rect,
+            output_geo = ?output_geo,
+            blur_padding,
+            capture_geo = ?capture_geo,
+            actual_capture_geo = ?actual_capture_geo,
+            capture_origin_physical = ?capture_origin_physical,
+            scale = ?scale,
+            uses_backdrop,
+            uses_xray,
+            "backdrop debug: layer effect rects"
+        );
+    }
     let relevant_source_damage = {
         let mut entries = Vec::new();
         if uses_backdrop {
@@ -4957,6 +5072,32 @@ fn configured_background_effect_elements_for_layer(
         ),
         &effect_config.effect,
     )?;
+    if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+        tracing::info!(
+            layer_surface = ?layer_surface.wl_surface().id(),
+            output = %output.name(),
+            effect_rect = ?effect_rect,
+            sample_region = ?crate::backend::visual::logical_rect_to_physical_buffer_rect_f64(
+                effect_rect,
+                actual_capture_geo.loc,
+                scale,
+            ),
+            output_size = ?crate::backend::visual::logical_size_to_physical_buffer_size(
+                effect_rect.width,
+                effect_rect.height,
+                scale,
+            ),
+            captured_local_rect = ?smithay::utils::Rectangle::<i32, Logical>::new(
+                smithay::utils::Point::from((
+                    effect_rect.x - output_geo.loc.x,
+                    effect_rect.y - output_geo.loc.y,
+                )),
+                (effect_rect.width, effect_rect.height).into(),
+            ),
+            from_cache = false,
+            "backdrop debug: layer effect texture"
+        );
+    }
     let _captured_local_rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
         smithay::utils::Rectangle::new(
             smithay::utils::Point::from((
@@ -5041,6 +5182,17 @@ fn configured_background_effect_elements_for_layer(
                     )),
                     (rect.width, rect.height).into(),
                 );
+                if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                    tracing::info!(
+                        layer_surface = ?layer_surface.wl_surface().id(),
+                        output = %output.name(),
+                        rect = ?rect,
+                        rect_local = ?rect_local,
+                        captured_local_rect = ?captured_local_rect,
+                        from_cache = true,
+                        "backdrop debug: layer effect element"
+                    );
+                }
                 elements.push(TtyRenderElements::Backdrop(
                     crate::backend::shader_effect::backdrop_shader_element(
                         renderer,
@@ -5114,6 +5266,17 @@ fn configured_background_effect_elements_for_layer(
             smithay::utils::Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)),
             (rect.width, rect.height).into(),
         );
+        if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+            tracing::info!(
+                layer_surface = ?layer_surface.wl_surface().id(),
+                output = %output.name(),
+                rect = ?rect,
+                rect_local = ?rect_local,
+                captured_local_rect = ?captured_local_rect,
+                from_cache = false,
+                "backdrop debug: layer effect element"
+            );
+        }
         elements.push(TtyRenderElements::Backdrop(
             crate::backend::shader_effect::backdrop_shader_element(
                 renderer,
@@ -5667,22 +5830,38 @@ fn configured_background_effect_elements_for_window(
                 {
                     let local_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::from((
+                            effect_rect.x - decoration.layout.root.rect.x,
+                            effect_rect.y - decoration.layout.root.rect.y,
+                        )),
+                        (effect_rect.width, effect_rect.height).into(),
+                    );
+                    let sample_rect = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::from((
                             effect_rect.x - output_geo.loc.x,
                             effect_rect.y - output_geo.loc.y,
                         )),
                         (effect_rect.width, effect_rect.height).into(),
                     );
-                    return crate::backend::shader_effect::backdrop_shader_element(
+                    let geometry =
+                        crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                            effect_rect,
+                            decoration.layout.root.rect,
+                            output_geo,
+                            scale,
+                        );
+                    return crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                         renderer,
                         existing.id.clone(),
                         existing.commit_counter,
                         existing.texture,
                         local_rect,
-                        local_rect,
-                        local_rect,
+                        geometry,
+                        sample_rect,
+                        sample_rect,
                         &effect_config.effect,
                         alpha,
                         scale.x as f32,
+                        [0.0, 0.0],
                         None,
                         0,
                         format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
@@ -5769,6 +5948,44 @@ fn configured_background_effect_elements_for_window(
                 effect_rect.height,
                 scale,
             );
+            if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                tracing::info!(
+                    window_id = %decoration.snapshot.id,
+                    title = %decoration.snapshot.title,
+                    app_id = ?decoration.snapshot.app_id,
+                    stable_key = %stable_key,
+                    effect_rect = ?effect_rect,
+                    root_rect = ?decoration.layout.root.rect,
+                    output_geo = ?output_geo,
+                    blur_padding,
+                    capture_geo = ?capture_geo,
+                    actual_capture_geo = ?actual_capture_geo,
+                    capture_origin_physical = ?capture_origin_physical,
+                    sample_region = ?sample_region,
+                    output_size = ?output_size,
+                    local_rect = ?smithay::utils::Rectangle::<i32, Logical>::new(
+                        smithay::utils::Point::from((
+                            effect_rect.x - decoration.layout.root.rect.x,
+                            effect_rect.y - decoration.layout.root.rect.y,
+                        )),
+                        (effect_rect.width, effect_rect.height).into(),
+                    ),
+                    sample_rect = ?smithay::utils::Rectangle::<i32, Logical>::new(
+                        smithay::utils::Point::from((
+                            effect_rect.x - output_geo.loc.x,
+                            effect_rect.y - output_geo.loc.y,
+                        )),
+                        (effect_rect.width, effect_rect.height).into(),
+                    ),
+                    geometry = ?crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                        effect_rect,
+                        decoration.layout.root.rect,
+                        output_geo,
+                        scale,
+                    ),
+                    "backdrop debug: protocol window element"
+                );
+            }
             if std::env::var_os("SHOJI_GAP_SHADER_READBACK_DEBUG").is_some() {
                 crate::backend::shader_effect::log_gap_texture_region_readback(
                     renderer,
@@ -5830,12 +6047,26 @@ fn configured_background_effect_elements_for_window(
             }
             let local_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
+                    effect_rect.x - decoration.layout.root.rect.x,
+                    effect_rect.y - decoration.layout.root.rect.y,
+                )),
+                (effect_rect.width, effect_rect.height).into(),
+            );
+            let sample_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
                     effect_rect.x - output_geo.loc.x,
                     effect_rect.y - output_geo.loc.y,
                 )),
                 (effect_rect.width, effect_rect.height).into(),
             );
-            crate::backend::shader_effect::backdrop_shader_element(
+            let geometry =
+                crate::backend::visual::relative_physical_rect_from_root_global_origin_size(
+                    effect_rect,
+                    decoration.layout.root.rect,
+                    output_geo,
+                    scale,
+                );
+            crate::backend::shader_effect::backdrop_shader_element_with_geometry(
                 renderer,
                 window_decorations
                     .get(window)
@@ -5849,11 +6080,13 @@ fn configured_background_effect_elements_for_window(
                     .unwrap_or_default(),
                 texture,
                 local_rect,
-                local_rect,
-                local_rect,
+                geometry,
+                sample_rect,
+                sample_rect,
                 &effect_config.effect,
                 alpha,
                 scale.x as f32,
+                [0.0, 0.0],
                 None,
                 0,
                 format!("protocol-window:{}:{}", decoration.snapshot.id, stable_key),
@@ -5880,13 +6113,40 @@ fn window_scene_elements_for_capture(
     let Some(window_location) = space.element_location(window) else {
         return Ok(Vec::new());
     };
-    let physical_location =
+    let preliminary_physical_location =
         crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
             window_location,
             output_origin,
             capture_origin_physical,
             scale,
         );
+    let client_physical_geometry = window_decorations.get(window).and_then(|decoration| {
+        decoration.content_clip.map(|clip| {
+            let root_origin =
+                crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
+                    Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+                    output_origin,
+                    capture_origin_physical,
+                    scale,
+                );
+            let local_geometry = crate::backend::visual::relative_physical_rect_from_root_precise(
+                clip.rect_precise,
+                decoration.layout.root.rect,
+                smithay::utils::Rectangle::new(output_origin, (0, 0).into()),
+                scale,
+            );
+            smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((
+                    root_origin.x + local_geometry.loc.x,
+                    root_origin.y + local_geometry.loc.y,
+                )),
+                local_geometry.size,
+            )
+        })
+    });
+    let physical_location = client_physical_geometry
+        .map(|geometry| geometry.loc)
+        .unwrap_or(preliminary_physical_location);
     let visual_state = window_decorations
         .get(window)
         .map(|decoration| {
@@ -5981,21 +6241,58 @@ fn window_scene_elements_for_capture(
         }
         ordered_ui_elements.sort_by_key(|(order, _)| *order);
         elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
-        elements.extend(
-            transform_window_elements(
-                window_render::surface_elements(
-                    window,
-                    renderer,
-                    physical_location,
-                    scale,
-                    visual_state.opacity,
-                ),
-                visual_state,
-                TtyRenderElements::Window,
-                TtyRenderElements::TransformedWindow,
+        if let Some(content_clip) = decoration.content_clip {
+            let clipped = window_render::clipped_surface_elements(
+                window,
+                renderer,
+                physical_location,
+                client_physical_geometry,
+                output_origin,
+                scale,
+                scale,
+                visual_state.opacity,
+                Some(content_clip),
             )
-            .into_iter(),
-        );
+            .unwrap_or_default();
+            let mut clipped_elements = Vec::new();
+            let mut raw_elements = Vec::new();
+            for element in clipped {
+                match element {
+                    window_render::WindowClipElement::Clipped(element) => {
+                        clipped_elements.push(element);
+                    }
+                    window_render::WindowClipElement::Raw(element) => {
+                        raw_elements.push(element);
+                    }
+                }
+            }
+            elements.extend(transform_clipped_elements(clipped_elements, visual_state));
+            elements.extend(
+                transform_window_elements(
+                    raw_elements,
+                    visual_state,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
+        } else {
+            elements.extend(
+                transform_window_elements(
+                    window_render::surface_elements(
+                        window,
+                        renderer,
+                        physical_location,
+                        scale,
+                        visual_state.opacity,
+                    ),
+                    visual_state,
+                    TtyRenderElements::Window,
+                    TtyRenderElements::TransformedWindow,
+                )
+                .into_iter(),
+            );
+        }
     }
 
     elements.extend(
