@@ -438,9 +438,17 @@ impl KdeDecorationHandler for ShojiWM {
         &mut self,
         _surface: &WlSurface,
         decoration: &OrgKdeKwinServerDecoration,
-        _mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
+        mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
     ) {
-        decoration.mode(KdeDecorationMode::Server);
+        // Honor the client's requested mode. Previously we unconditionally replied with
+        // `Server`, which caused Firefox's WaylandProxy to spam `request_mode(Client)` at
+        // ~60k/sec: Firefox asked for Client, we disagreed with Server, Firefox retried,
+        // and the ping-pong saturated the wl_display dispatch loop (visible in `perf` as
+        // `OrgKdeKwinServerDecoration::parse_request` dominating compositor CPU). This
+        // matches niri's handler, which simply echoes back what the client requested.
+        if let Ok(mode) = mode.into_result() {
+            decoration.mode(mode);
+        }
     }
 }
 

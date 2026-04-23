@@ -1702,7 +1702,14 @@ impl ShojiWM {
             );
         }
         self.needs_redraw = true;
-        self.loop_signal.wakeup();
+        // Intentionally no `loop_signal.wakeup()` — this mirrors niri's `queue_redraw`
+        // (a pure state transition). All callers run inside event-loop dispatch
+        // callbacks (Wayland commits, input, DRM VBlank/timer, XWayland), so dispatch
+        // is already about to return and run the post-dispatch maintenance + render.
+        // Self-waking while `ssd::integration::refresh_window_decorations_for_output`
+        // calls `schedule_redraw()` mid-render spins the loop at ~10k iter/sec and —
+        // together with an unconditional `flush_clients()` — caused the Firefox CPU
+        // regression.
     }
 
     pub fn note_xdg_popup_created(&mut self, surface_id: u32) {

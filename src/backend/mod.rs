@@ -201,12 +201,14 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     let maintenance_debug = tty_maintenance_debug_enabled();
     let mut last_idle_maintenance_at = Instant::now();
     while state.is_running {
-        let dispatch_timeout = if state.needs_redraw {
-            Some(Duration::ZERO)
-        } else {
-            Some(Duration::from_millis(16))
-        };
-        if event_loop.dispatch(dispatch_timeout, &mut state).is_err() {
+        // Block until a real event arrives, matching niri's `event_loop.run(None, ...)`.
+        // Using `Some(Duration::ZERO)` when `needs_redraw` is set spun the loop because
+        // `refresh_window_decorations_for_output` (and other render-path code) calls
+        // `schedule_redraw()` while rendering; that kept `needs_redraw=true` every turn,
+        // and with an unconditional `flush_clients()` the spin became a 10k-iter/sec CPU
+        // spike under Firefox. The redraw state machine + VBlank/frame-callback throttling
+        // naturally rate-limit real work, so we don't need a non-blocking poll here.
+        if event_loop.dispatch(None, &mut state).is_err() {
             break;
         }
 
@@ -269,9 +271,14 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         }
         render_if_needed(&mut state, &event_loop.handle())?;
 
-        if rendered_this_iteration || ran_pre_render_maintenance {
-            let _ = state.display_handle.flush_clients();
-        }
+        // Always flush client output buffers, even on iterations where we skipped
+        // `space.refresh()` / popup cleanup. `flush_clients()` just writev()s each
+        // client's pending output; the Firefox CPU regression came from `space.refresh()`
+        // + `cleanup_popups()`, not from flushing. Skipping the flush delayed
+        // server→client messages (pointer events, frame callbacks, protocol replies) that
+        // don't themselves trigger `schedule_redraw`, which showed up as a small but
+        // perceptible lag when opening the noctalia shell right-click menu.
+        let _ = state.display_handle.flush_clients();
         if ran_pre_render_maintenance && !rendered_this_iteration && !state.needs_redraw {
             last_idle_maintenance_at = Instant::now();
         }
