@@ -522,6 +522,7 @@ impl ShojiWM {
             .handle()
             .insert_source(async_asset_rx, |event, _, state| match event {
                 ChannelEvent::Msg(result) => {
+                    let mut should_redraw = false;
                     match result {
                         AsyncAssetResult::TextReady {
                             spec_hash,
@@ -529,13 +530,16 @@ impl ShojiWM {
                             height,
                             raster_scale,
                             pixels,
-                        } => state.text_rasterizer.handle_async_ready(
-                            spec_hash,
-                            width,
-                            height,
-                            raster_scale,
-                            pixels,
-                        ),
+                        } => {
+                            state.text_rasterizer.handle_async_ready(
+                                spec_hash,
+                                width,
+                                height,
+                                raster_scale,
+                                pixels,
+                            );
+                            should_redraw = true;
+                        }
                         AsyncAssetResult::TextMissing { spec_hash } => {
                             state.text_rasterizer.handle_async_miss(spec_hash)
                         }
@@ -545,19 +549,24 @@ impl ShojiWM {
                             height,
                             raster_scale,
                             pixels,
-                        } => state.icon_rasterizer.handle_async_ready(
-                            spec_hash,
-                            width,
-                            height,
-                            raster_scale,
-                            pixels,
-                        ),
+                        } => {
+                            state.icon_rasterizer.handle_async_ready(
+                                spec_hash,
+                                width,
+                                height,
+                                raster_scale,
+                                pixels,
+                            );
+                            should_redraw = true;
+                        }
                         AsyncAssetResult::IconMissing { spec_hash } => {
                             state.icon_rasterizer.handle_async_miss(spec_hash)
                         }
                     }
-                    state.async_asset_dirty = true;
-                    state.schedule_redraw();
+                    if should_redraw {
+                        state.async_asset_dirty = true;
+                        state.schedule_redraw();
+                    }
                 }
                 ChannelEvent::Closed => {}
             })
@@ -1670,7 +1679,28 @@ impl ShojiWM {
         std::mem::take(&mut self.wayland_display_dispatched_request_count)
     }
 
+    #[track_caller]
     pub fn schedule_redraw(&mut self) {
+        if !self.needs_redraw
+            && std::env::var_os("SHOJI_REDRAW_REASON_DEBUG")
+                .is_some_and(|value| value != "0" && !value.is_empty())
+        {
+            let caller = std::panic::Location::caller();
+            info!(
+                caller_file = caller.file(),
+                caller_line = caller.line(),
+                caller_column = caller.column(),
+                tty_maintenance_pending = self.tty_maintenance_pending,
+                pending_decoration_damage_count = self.pending_decoration_damage.len(),
+                window_source_damage_count = self.window_source_damage.len(),
+                lower_layer_source_damage_count = self.lower_layer_source_damage.len(),
+                upper_layer_source_damage_count = self.upper_layer_source_damage.len(),
+                runtime_poll_dirty = self.runtime_poll_dirty,
+                transform_snapshot_window_ids_count = self.transform_snapshot_window_ids.len(),
+                closing_window_snapshots_count = self.closing_window_snapshots.len(),
+                "schedule_redraw requested"
+            );
+        }
         self.needs_redraw = true;
         self.loop_signal.wakeup();
     }
@@ -1912,6 +1942,11 @@ impl ShojiWM {
         let Some(root_surface) = window
             .toplevel()
             .map(|surface| surface.wl_surface().clone())
+            .or_else(|| {
+                window
+                    .x11_surface()
+                    .and_then(|surface| surface.wl_surface())
+            })
         else {
             return self
                 .logical_damage_rect_for_window(window)

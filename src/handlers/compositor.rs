@@ -52,6 +52,18 @@ fn browser_geometry_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn x11_browser_cpu_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_X11_BROWSER_CPU_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn is_chrome_like_app_id(app_id: Option<&str>) -> bool {
+    app_id.is_some_and(|app_id| {
+        let app_id = app_id.to_ascii_lowercase();
+        app_id == "google-chrome" || app_id.contains("chromium") || app_id.contains("chrome")
+    })
+}
+
 fn previous_transform_snapshot_source_damage_time(
     window_id: &str,
     now: Duration,
@@ -98,15 +110,58 @@ impl CompositorHandler for ShojiWM {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
+            let mapped_window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root))
-            {
+                .find(|w| {
+                    w.toplevel().is_some_and(|t| t.wl_surface() == &root)
+                        || w.x11_surface().and_then(|x11| x11.wl_surface()).as_ref() == Some(&root)
+                })
+                .cloned();
+            if let Some(window) = mapped_window.as_ref() {
                 pending_source_damage = Some((
                     window.clone(),
                     self.logical_source_damage_rects_for_surface(window, surface),
                 ));
+            }
+            if x11_browser_cpu_debug_enabled() {
+                if let Some(window) = mapped_window {
+                    let snapshot = self.snapshot_window(&window);
+                    if is_chrome_like_app_id(snapshot.app_id.as_deref()) {
+                        let (buffer_attached, damage_count, frame_callback_count) = with_states(
+                            surface,
+                            |states| {
+                                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                                let attrs = attrs.current();
+                                (
+                                    matches!(
+                                        attrs.buffer.as_ref(),
+                                        Some(
+                                            smithay::wayland::compositor::BufferAssignment::NewBuffer(
+                                                _
+                                            )
+                                        )
+                                    ),
+                                    attrs.damage.len(),
+                                    attrs.frame_callbacks.len(),
+                                )
+                            },
+                        );
+                        info!(
+                            window_id = %snapshot.id,
+                            title = %snapshot.title,
+                            app_id = ?snapshot.app_id,
+                            is_xwayland = snapshot.is_xwayland,
+                            surface_id = ?surface.id(),
+                            root_surface_id = ?root.id(),
+                            committed_surface_is_root = surface == &root,
+                            buffer_attached,
+                            damage_count,
+                            frame_callback_count,
+                            "x11 browser cpu: surface commit",
+                        );
+                    }
+                }
             }
         }
         on_commit_buffer_handler::<Self>(surface);

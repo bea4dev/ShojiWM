@@ -70,6 +70,7 @@ pub struct IconRasterizer {
     async_job_sender: Option<AsyncAssetJobSender>,
     async_buffers: HashMap<u64, TimedIconBuffer>,
     async_in_flight: HashSet<u64>,
+    async_missing: HashSet<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -100,6 +101,7 @@ impl IconRasterizer {
             async_job_sender,
             async_buffers: HashMap::new(),
             async_in_flight: HashSet::new(),
+            async_missing: HashSet::new(),
         }
     }
 
@@ -123,6 +125,9 @@ impl IconRasterizer {
         }
 
         if let Some(async_job_sender) = &self.async_job_sender {
+            if self.async_missing.contains(&spec_hash) {
+                return None;
+            }
             if self.async_in_flight.insert(spec_hash) {
                 let _ = async_job_sender.send(AsyncAssetJob::Icon {
                     spec_hash,
@@ -233,6 +238,7 @@ impl IconRasterizer {
         pixels: Vec<u8>,
     ) {
         self.async_in_flight.remove(&spec_hash);
+        self.async_missing.remove(&spec_hash);
         self.async_buffers.insert(
             spec_hash,
             TimedIconBuffer {
@@ -251,6 +257,7 @@ impl IconRasterizer {
 
     pub fn handle_async_miss(&mut self, spec_hash: u64) {
         self.async_in_flight.remove(&spec_hash);
+        self.async_missing.insert(spec_hash);
     }
 
     fn find_icon_path_cached(

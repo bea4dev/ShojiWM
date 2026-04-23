@@ -81,6 +81,7 @@ pub struct TextRasterizer {
     async_job_sender: Option<AsyncAssetJobSender>,
     async_buffers: HashMap<u64, TimedTextBuffer>,
     async_in_flight: HashSet<u64>,
+    async_missing: HashSet<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +104,7 @@ impl TextRasterizer {
             async_job_sender,
             async_buffers: HashMap::new(),
             async_in_flight: HashSet::new(),
+            async_missing: HashSet::new(),
         }
     }
 
@@ -128,6 +130,9 @@ impl TextRasterizer {
         }
 
         if let Some(async_job_sender) = &self.async_job_sender {
+            if self.async_missing.contains(&spec_hash) {
+                return None;
+            }
             if self.async_in_flight.insert(spec_hash) {
                 let _ = async_job_sender.send(AsyncAssetJob::Text {
                     spec_hash,
@@ -237,6 +242,7 @@ impl TextRasterizer {
         pixels: Vec<u8>,
     ) {
         self.async_in_flight.remove(&spec_hash);
+        self.async_missing.remove(&spec_hash);
         self.async_buffers.insert(
             spec_hash,
             TimedTextBuffer {
@@ -255,6 +261,7 @@ impl TextRasterizer {
 
     pub fn handle_async_miss(&mut self, spec_hash: u64) {
         self.async_in_flight.remove(&spec_hash);
+        self.async_missing.insert(spec_hash);
     }
 
     fn prune_async_buffers(&mut self) {

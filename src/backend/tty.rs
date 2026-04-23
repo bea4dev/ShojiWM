@@ -110,6 +110,41 @@ fn animation_gap_threshold_ms() -> f64 {
         .unwrap_or(80.0)
 }
 
+fn browser_cpu_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_BROWSER_CPU_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn browser_cpu_debug_allowed(output_name: &str) -> bool {
+    if !browser_cpu_debug_enabled() {
+        return false;
+    }
+    static STATE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = state.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    let should_log = guard.get(output_name).is_none_or(|previous| {
+        now.saturating_duration_since(*previous) >= Duration::from_millis(250)
+    });
+    if should_log {
+        guard.insert(output_name.to_string(), now);
+    }
+    should_log
+}
+
+fn output_has_visible_x11_chrome(state: &ShojiWM, output: &Output) -> bool {
+    state.space.elements_for_output(output).any(|window| {
+        window
+            .x11_surface()
+            .map(|x11| x11.class().to_ascii_lowercase())
+            .is_some_and(|class| {
+                class == "google-chrome" || class.contains("chromium") || class.contains("chrome")
+            })
+    })
+}
+
 fn record_animation_gap(label: &str, key: &str, now: Instant) -> Option<f64> {
     static STATE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
     let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -842,6 +877,7 @@ fn render_surface(
     let should_capture_blink = state.damage_blink_enabled;
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
     let output_geo = state.space.output_geometry(&output).unwrap();
+    let has_visible_x11_chrome = output_has_visible_x11_chrome(state, &output);
     let mut extra_damage = state.pending_decoration_damage.clone();
     if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() && !extra_damage.is_empty() {
         tracing::info!(
@@ -898,7 +934,6 @@ fn render_surface(
             .take()
             .unwrap_or(fallback_frame_time);
         surface.last_frame_callback_at = Some(frame_time);
-
         let mut cursor_elements: Vec<TtyRenderElements> = Vec::new();
         let mut frame_had_transform_snapshot_damage = false;
         let mut frame_transform_snapshot_window_count = 0usize;
@@ -2936,6 +2971,31 @@ fn render_surface(
         timing.result_is_empty = result.is_empty;
         timing.render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0;
         timing.total_cpu_elapsed_ms = total_cpu_elapsed.as_secs_f64() * 1000.0;
+        if has_visible_x11_chrome && browser_cpu_debug_allowed(output.name().as_str()) {
+            info!(
+                output = %output.name(),
+                result_is_empty = result.is_empty,
+                window_count,
+                render_element_count = timing.render_element_count,
+                decoration_refresh_elapsed_ms,
+                layer_effects_elapsed_ms,
+                upper_layers_elapsed_ms = timing.upper_layers_elapsed_ms,
+                closing_snapshots_elapsed_ms = timing.closing_snapshots_elapsed_ms,
+                window_loop_elapsed_ms = timing.window_loop_elapsed_ms,
+                lower_layers_elapsed_ms = timing.lower_layers_elapsed_ms,
+                damage_profile_elapsed_ms = timing.damage_profile_elapsed_ms,
+                render_elapsed_ms = timing.render_elapsed_ms,
+                total_cpu_elapsed_ms = timing.total_cpu_elapsed_ms,
+                snapshot_capture_elapsed_ms = timing.snapshot_capture_elapsed_ms,
+                frame_transform_snapshot_window_count,
+                frame_snapshot_damage_window_count,
+                frame_had_transform_snapshot_damage,
+                pending_decoration_damage_count = state.pending_decoration_damage.len(),
+                window_source_damage_count = state.window_source_damage.len(),
+                transform_snapshot_window_ids_count = state.transform_snapshot_window_ids.len(),
+                "browser cpu: tty frame summary"
+            );
+        }
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
         // Update primary-scanout metadata unconditionally — even for no-damage frames.
@@ -3003,7 +3063,10 @@ fn render_surface(
                         state
                             .window_decorations
                             .get(*w)
-                            .map(|d| state.transform_snapshot_window_ids.contains(&d.snapshot.id))
+                            .map(|d| {
+                                state.transform_snapshot_window_ids.contains(&d.snapshot.id)
+                                    && snapshot_transform_changed_ids.contains(&d.snapshot.id)
+                            })
                             .unwrap_or(false)
                     })
                     .cloned()
@@ -3034,23 +3097,11 @@ fn render_surface(
                 }
 
                 for window in snapshot_windows {
-                    // Restore primary scanout output for every window currently rendered through a
-                    // full-window snapshot.
-                    //
-                    // This is required not only for actively animating windows, but also for
-                    // stationary windows with a persistent non-identity transform such as
-                    // `scale=0.9`. Those windows are still visibly present on this output, and if
-                    // we keep their primary scanout as `None` they fall into Smithay's 1-second
-                    // frame-callback throttle path. In practice that causes client-side hover and
-                    // other high-frequency updates to look extremely choppy, with little or no
-                    // damage reaching the output until some unrelated event (for example moving
-                    // the window) produces a larger redraw.
-                    //
-                    // Firefox's previous high-CPU issue was not caused by "stationary snapshot
-                    // windows receiving primary scanout". It came from generic non-presented
-                    // surfaces (notably root surfaces with no render elements) repeatedly waking
-                    // the compositor. Restoring primary here is therefore the correct behaviour
-                    // for visible snapshot-backed windows.
+                    // Restore primary scanout output only for snapshot windows whose transform is
+                    // still actively changing this frame. Stationary snapshot windows remain
+                    // throttled so visible-idle clients such as X11 Chrome do not get refresh-rate
+                    // frame callbacks solely because the compositor is compositing an offscreen
+                    // texture for them.
                     let mut synthetic_states = RenderElementStates::default();
                     window.with_surfaces(|surface, _| {
                         synthetic_states.states.insert(
