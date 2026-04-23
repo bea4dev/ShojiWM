@@ -84,6 +84,41 @@ fn output_render_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn animation_timing_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ANIMATION_TIMING_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn animation_spike_threshold_ms() -> f64 {
+    std::env::var("SHOJI_ANIMATION_SPIKE_THRESHOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(12.0)
+}
+
+fn animation_gap_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ANIMATION_GAP_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn animation_gap_threshold_ms() -> f64 {
+    std::env::var("SHOJI_ANIMATION_GAP_THRESHOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(80.0)
+}
+
+fn record_animation_gap(label: &str, key: &str, now: Instant) -> Option<f64> {
+    static STATE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = state.lock().ok()?;
+    let map_key = format!("{label}:{key}");
+    let previous = guard.insert(map_key, now);
+    previous.map(|previous| now.saturating_duration_since(previous).as_secs_f64() * 1000.0)
+}
+
 fn clipped_transform_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIPPED_TRANSFORM_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -200,6 +235,41 @@ enum TtyRedrawState {
     Queued,
     WaitingForVBlank { redraw_needed: bool },
     WaitingForEstimatedVBlank { queued: bool, generation: u64 },
+}
+
+#[derive(Default)]
+struct TtyAnimationTimingMetrics {
+    closing_snapshot_count: usize,
+    transform_snapshot_window_count: usize,
+    snapshot_capture_count: usize,
+    render_element_count: usize,
+    result_is_empty: bool,
+    cursor_elapsed_ms: f64,
+    upper_layers_elapsed_ms: f64,
+    closing_snapshots_elapsed_ms: f64,
+    window_loop_elapsed_ms: f64,
+    snapshot_capture_elapsed_ms: f64,
+    lower_layers_elapsed_ms: f64,
+    damage_profile_elapsed_ms: f64,
+    render_elapsed_ms: f64,
+    total_cpu_elapsed_ms: f64,
+    max_window_elapsed_ms: f64,
+    max_window_id: Option<String>,
+}
+
+#[derive(Default)]
+struct TtyWindowTimingMetrics {
+    direct_surface_lookup_ms: f64,
+    decoration_phase_ms: f64,
+    backdrop_ms: f64,
+    background_ms: f64,
+    icon_ms: f64,
+    text_ms: f64,
+    client_phase_ms: f64,
+    popup_phase_ms: f64,
+    full_snapshot_scene_ms: f64,
+    full_snapshot_capture_ms: f64,
+    live_snapshot_refresh_ms: f64,
 }
 
 pub struct BackendData {
@@ -326,9 +396,39 @@ fn frame_finish(
         warn!(?node, ?crtc, "frame_finish without surface");
         return;
     };
+    let output_name = surface.output.name();
+    let gap_threshold_ms = animation_gap_threshold_ms();
+    if animation_gap_debug_enabled()
+        && let Some(gap_ms) =
+            record_animation_gap("tty-frame-finish", output_name.as_str(), Instant::now())
+        && gap_ms >= gap_threshold_ms
+    {
+        let queued_wait_ms = surface
+            .queued_at
+            .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
+        warn!(
+            output = %output_name,
+            gap_ms,
+            redraw_state = ?surface.redraw_state,
+            frame_pending = surface.frame_pending,
+            queued_wait_ms,
+            queued_cpu_duration_ms = surface.queued_cpu_duration.as_secs_f64() * 1000.0,
+            skipped_while_pending_count = surface.skipped_while_pending_count,
+            last_presented_at = ?surface.last_presented_at,
+            next_frame_target = ?surface.next_frame_target,
+            frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+            closing_snapshot_count = state.closing_window_snapshots.len(),
+            gap_threshold_ms,
+            "animation gap: tty frame_finish cadence gap"
+        );
+    }
 
     trace!(?node, ?crtc, "marking frame submitted");
     let submit_result = surface.drm_output.frame_submitted();
+    let present_sequence = metadata
+        .as_ref()
+        .map(|metadata| metadata.sequence)
+        .unwrap_or(0);
     let presentation_clock = metadata
         .as_ref()
         .and_then(|metadata| match metadata.time {
@@ -339,10 +439,7 @@ fn frame_finish(
     surface.next_frame_target = Some(presentation_clock + surface.frame_duration);
     if let Ok(user_data) = submit_result {
         let clock = presentation_clock;
-        let sequence = metadata
-            .as_ref()
-            .map(|metadata| metadata.sequence)
-            .unwrap_or(0);
+        let sequence = present_sequence;
         let flags = if metadata
             .as_ref()
             .is_some_and(|metadata| matches!(metadata.time, DrmEventTime::Monotonic(_)))
@@ -365,6 +462,22 @@ fn frame_finish(
     }
 
     surface.last_presented_at = Some(presentation_clock);
+    let queued_wait_ms = surface
+        .queued_at
+        .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
+    if animation_gap_debug_enabled()
+        && queued_wait_ms.is_some_and(|queued_wait_ms| queued_wait_ms >= gap_threshold_ms)
+    {
+        info!(
+            output = %surface.output.name(),
+            queued_wait_ms,
+            queued_cpu_duration_ms = surface.queued_cpu_duration.as_secs_f64() * 1000.0,
+            redraw_state = ?surface.redraw_state,
+            skipped_while_pending_count = surface.skipped_while_pending_count,
+            sequence = present_sequence,
+            "animation gap: tty frame_finish queue wait"
+        );
+    }
     if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
         if let Some(popup_debug) = state.popup_latency_debug.take() {
             tracing::info!(
@@ -406,6 +519,21 @@ pub fn render_if_needed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !state.needs_redraw {
         return Ok(());
+    }
+
+    let gap_threshold_ms = animation_gap_threshold_ms();
+    if animation_gap_debug_enabled()
+        && let Some(gap_ms) = record_animation_gap("tty-render-if-needed", "global", Instant::now())
+        && gap_ms >= gap_threshold_ms
+    {
+        warn!(
+            gap_ms,
+            closing_snapshot_count = state.closing_window_snapshots.len(),
+            window_count = state.space.elements().count(),
+            needs_redraw = state.needs_redraw,
+            gap_threshold_ms,
+            "animation gap: render_if_needed cadence gap"
+        );
     }
 
     if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
@@ -528,6 +656,7 @@ fn capture_scene_texture_for_effect(
 }
 
 fn queue_tty_redraws(state: &mut ShojiWM) {
+    let gap_threshold_ms = animation_gap_threshold_ms();
     for backend in state.tty_backends.values_mut() {
         for surface in backend.surfaces.values_mut() {
             let previous_state = surface.redraw_state;
@@ -541,6 +670,33 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
                 }
                 TtyRedrawState::WaitingForEstimatedVBlank { queued, .. } => {
                     *queued = true;
+                }
+            }
+            if animation_gap_debug_enabled() && previous_state != surface.redraw_state {
+                let queued_wait_ms = surface
+                    .queued_at
+                    .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
+                if queued_wait_ms.is_some_and(|gap_ms| gap_ms >= gap_threshold_ms)
+                    || matches!(
+                        (&previous_state, &surface.redraw_state),
+                        (
+                            TtyRedrawState::WaitingForVBlank { .. },
+                            TtyRedrawState::WaitingForVBlank {
+                                redraw_needed: true
+                            }
+                        )
+                    )
+                {
+                    warn!(
+                        output = %surface.output.name(),
+                        previous_state = ?previous_state,
+                        next_state = ?surface.redraw_state,
+                        frame_pending = surface.frame_pending,
+                        queued_wait_ms,
+                        skipped_while_pending_count = surface.skipped_while_pending_count,
+                        gap_threshold_ms,
+                        "animation gap: tty queue_redraw transition"
+                    );
                 }
             }
             if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some()
@@ -566,15 +722,55 @@ fn render_surface(
     crtc: crtc::Handle,
 ) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
     let frame_started_at = Instant::now();
+    let spike_threshold_ms = animation_spike_threshold_ms();
     let output = state
         .tty_backends
         .get(&node)
         .and_then(|backend| backend.surfaces.get(&crtc))
         .map(|surface| surface.output.clone())
         .unwrap();
+    let gap_threshold_ms = animation_gap_threshold_ms();
+    if animation_gap_debug_enabled()
+        && let Some(gap_ms) =
+            record_animation_gap("tty-render-surface", output.name().as_str(), Instant::now())
+        && gap_ms >= gap_threshold_ms
+    {
+        let redraw_state = state
+            .tty_backends
+            .get(&node)
+            .and_then(|backend| backend.surfaces.get(&crtc))
+            .map(|surface| surface.redraw_state)
+            .unwrap_or(TtyRedrawState::Idle);
+        let frame_pending = state
+            .tty_backends
+            .get(&node)
+            .and_then(|backend| backend.surfaces.get(&crtc))
+            .map(|surface| surface.frame_pending)
+            .unwrap_or(false);
+        warn!(
+            output = %output.name(),
+            gap_ms,
+            redraw_state = ?redraw_state,
+            frame_pending,
+            queued_wait_ms = state
+                .tty_backends
+                .get(&node)
+                .and_then(|backend| backend.surfaces.get(&crtc))
+                .and_then(|surface| surface.queued_at)
+                .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0),
+            closing_snapshot_count = state.closing_window_snapshots.len(),
+            gap_threshold_ms,
+            "animation gap: tty render_surface cadence gap"
+        );
+    }
 
+    let decoration_refresh_started_at = Instant::now();
     state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
+    let decoration_refresh_elapsed_ms =
+        decoration_refresh_started_at.elapsed().as_secs_f64() * 1000.0;
+    let layer_effects_started_at = Instant::now();
     state.refresh_layer_effects_for_output(output.name().as_str())?;
+    let layer_effects_elapsed_ms = layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
 
     let redraw_state = state
         .tty_backends
@@ -602,6 +798,26 @@ fn render_surface(
                     "transform snapshot tty skipped render_surface"
                 );
             }
+            if animation_gap_debug_enabled() {
+                let queued_wait_ms = surface
+                    .queued_at
+                    .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
+                if queued_wait_ms.is_some_and(|queued_wait_ms| queued_wait_ms >= gap_threshold_ms)
+                    || surface.frame_pending
+                {
+                    warn!(
+                        output = %output.name(),
+                        redraw_state = ?redraw_state,
+                        frame_pending = surface.frame_pending,
+                        queued_wait_ms,
+                        skipped_while_pending_count = surface.skipped_while_pending_count,
+                        frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                        last_presented_at = ?surface.last_presented_at,
+                        next_frame_target = ?surface.next_frame_target,
+                        "animation gap: tty render_surface skipped"
+                    );
+                }
+            }
         }
         return Ok(RenderSurfaceOutcome::Skipped);
     }
@@ -620,6 +836,8 @@ fn render_surface(
         .and_then(|surface| surface.next_frame_target)
         .unwrap_or(fallback_frame_time);
     state.pre_repaint(&output, frame_target.into());
+
+    let mut timing = TtyAnimationTimingMetrics::default();
 
     let should_capture_blink = state.damage_blink_enabled;
     let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
@@ -698,6 +916,7 @@ fn render_surface(
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        timing.closing_snapshot_count = closing_snapshots.len();
         let (_, _lower_layer_elements) =
             window_render::layer_elements_for_output(&mut backend.renderer, &output, scale, 1.0);
 
@@ -764,7 +983,8 @@ fn render_surface(
                     .map(TtyRenderElements::Cursor),
             );
         }
-        let _cursor_elapsed_ms = cursor_started_at.elapsed().as_secs_f64() * 1000.0;
+        let cursor_elapsed_ms = cursor_started_at.elapsed().as_secs_f64() * 1000.0;
+        timing.cursor_elapsed_ms = cursor_elapsed_ms;
 
         let mut scene_elements: Vec<TtyRenderElements> = Vec::new();
         let upper_layers_started_at = Instant::now();
@@ -783,18 +1003,20 @@ fn render_surface(
             &windows_top_to_bottom,
             &mut state.layer_backdrop_cache,
         )?);
-        let _upper_layers_elapsed_ms = upper_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        let upper_layers_elapsed_ms = upper_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        timing.upper_layers_elapsed_ms = upper_layers_elapsed_ms;
         let closing_snapshots_started_at = Instant::now();
         scene_elements.extend(
             closing_snapshot_elements(&mut backend.renderer, &closing_snapshots, output_geo, scale)
                 .into_iter(),
         );
-        let _closing_snapshots_elapsed_ms =
+        let closing_snapshots_elapsed_ms =
             closing_snapshots_started_at.elapsed().as_secs_f64() * 1000.0;
-        let mut _window_loop_elapsed_ms = 0.0f64;
+        timing.closing_snapshots_elapsed_ms = closing_snapshots_elapsed_ms;
+        let mut window_loop_elapsed_ms = 0.0f64;
         let mut max_window_elapsed_ms = 0.0f64;
-        let mut _max_window_id: Option<String> = None;
-        let mut _snapshot_capture_elapsed_ms = 0.0f64;
+        let mut max_window_id: Option<String> = None;
+        let mut snapshot_capture_elapsed_ms = 0.0f64;
         let mut snapshot_capture_count = 0usize;
         // Windows in snapshot mode (non-identity visual_transform) whose transform changed
         // since the previous frame — these are actively animating and need full-rate callbacks.
@@ -814,6 +1036,7 @@ fn render_surface(
         }
         for (_window_index, window) in windows_top_to_bottom.iter().enumerate() {
             let window_started_at = Instant::now();
+            let mut window_timing = TtyWindowTimingMetrics::default();
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
@@ -878,6 +1101,7 @@ fn render_surface(
             let physical_location = client_physical_geometry
                 .map(|geometry| geometry.loc)
                 .unwrap_or(preliminary_physical_location);
+            let direct_surface_lookup_started_at = Instant::now();
             let direct_surface_count = window_render::surface_elements(
                 window,
                 &mut backend.renderer,
@@ -886,6 +1110,8 @@ fn render_surface(
                 1.0,
             )
             .len();
+            window_timing.direct_surface_lookup_ms =
+                direct_surface_lookup_started_at.elapsed().as_secs_f64() * 1000.0;
             if direct_surface_count == 0 {
                 if close_debug {
                     tracing::info!(
@@ -1044,7 +1270,9 @@ fn render_surface(
             } else {
                 visual_state
             };
+            let decoration_phase_started_at = Instant::now();
             if decoration_ready {
+                let backdrop_started_at = Instant::now();
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     &mut backend.renderer,
                     space,
@@ -1095,6 +1323,8 @@ fn render_surface(
                         .map(|(order, element)| (order, element, true)),
                     );
                 }
+                window_timing.backdrop_ms = backdrop_started_at.elapsed().as_secs_f64() * 1000.0;
+                let background_started_at = Instant::now();
                 for (order, element, render_as_backdrop) in backdrop_items.drain(..) {
                     if let Some(root_origin) = root_origin {
                         let items = transform_backdrop_elements(
@@ -1247,7 +1477,10 @@ fn render_surface(
                         }
                     }
                 }
+                window_timing.background_ms =
+                    background_started_at.elapsed().as_secs_f64() * 1000.0;
 
+                let icon_started_at = Instant::now();
                 for (order, element) in decoration::ordered_icon_elements_for_window(
                     &mut backend.renderer,
                     space,
@@ -1332,7 +1565,9 @@ fn render_surface(
                         }
                     }
                 }
+                window_timing.icon_ms = icon_started_at.elapsed().as_secs_f64() * 1000.0;
 
+                let text_started_at = Instant::now();
                 for (order, element) in decoration::ordered_text_elements_for_window(
                     &mut backend.renderer,
                     space,
@@ -1417,6 +1652,7 @@ fn render_surface(
                         }
                     }
                 }
+                window_timing.text_ms = text_started_at.elapsed().as_secs_f64() * 1000.0;
 
                 ordered_ui_elements.sort_by_key(|(order, _)| *order);
                 ordered_backdrop_elements.sort_by_key(|(order, _)| *order);
@@ -1481,12 +1717,16 @@ fn render_surface(
                     );
                 }
             }
+            window_timing.decoration_phase_ms =
+                decoration_phase_started_at.elapsed().as_secs_f64() * 1000.0;
 
             let content_clip = window_decorations
                 .get(window)
                 .and_then(|decoration| decoration.content_clip);
 
+            let client_phase_started_at = Instant::now();
             let client_elements = if use_full_window_snapshot {
+                let full_snapshot_scene_started_at = Instant::now();
                 let mut snapshot_scene = Vec::new();
                 snapshot_scene.extend(
                     window_render::popup_elements(
@@ -1548,6 +1788,8 @@ fn render_surface(
                         &snapshot_scene,
                         scale,
                     );
+                window_timing.full_snapshot_scene_ms =
+                    full_snapshot_scene_started_at.elapsed().as_secs_f64() * 1000.0;
                 full_rect
                     .and_then(|full_rect| {
                         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
@@ -1610,7 +1852,8 @@ fn render_surface(
                                 "transform snapshot tty assembled current-frame scene"
                             );
                         }
-                        {
+                        let capture_started_at = Instant::now();
+                        let captured = {
                             let tracker = complete_window_snapshot_trackers
                                 .entry(window_id.clone())
                                 .or_insert_with(|| {
@@ -1629,10 +1872,10 @@ fn render_surface(
                                 tracker,
                                 &snapshot_scene,
                             )
-                        }
-                        .ok()
-                        .flatten()
-                        .map(|mut snapshot| {
+                        };
+                        window_timing.full_snapshot_capture_ms +=
+                            capture_started_at.elapsed().as_secs_f64() * 1000.0;
+                        captured.ok().flatten().map(|mut snapshot| {
                             if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                                 let commit = snapshot.damage.lock().unwrap().current_commit();
                                 tracing::info!(
@@ -2453,7 +2696,10 @@ fn render_surface(
                 }
                 transformed
             };
+            window_timing.client_phase_ms =
+                client_phase_started_at.elapsed().as_secs_f64() * 1000.0;
             if !use_full_window_snapshot {
+                let popup_phase_started_at = Instant::now();
                 let popup_elements = transform_window_elements(
                     window_render::popup_elements(
                         window,
@@ -2467,6 +2713,8 @@ fn render_surface(
                     TtyRenderElements::TransformedWindow,
                 );
                 scene_elements.extend(popup_elements.into_iter());
+                window_timing.popup_phase_ms =
+                    popup_phase_started_at.elapsed().as_secs_f64() * 1000.0;
             }
             if output_render_debug_enabled() {
                 let title = window_decorations
@@ -2555,17 +2803,48 @@ fn render_surface(
                         snapshot_dirty_window_ids.remove(&window_id);
                     }
                 }
-                _snapshot_capture_elapsed_ms +=
+                snapshot_capture_elapsed_ms +=
+                    snapshot_capture_started_at.elapsed().as_secs_f64() * 1000.0;
+                window_timing.live_snapshot_refresh_ms +=
                     snapshot_capture_started_at.elapsed().as_secs_f64() * 1000.0;
                 snapshot_capture_count = snapshot_capture_count.saturating_add(1);
             }
             let window_elapsed_ms = window_started_at.elapsed().as_secs_f64() * 1000.0;
-            _window_loop_elapsed_ms += window_elapsed_ms;
+            if animation_timing_debug_enabled() && window_elapsed_ms >= spike_threshold_ms {
+                warn!(
+                    output = %output.name(),
+                    window_id = %window_id,
+                    use_full_window_snapshot,
+                    direct_surface_count,
+                    direct_surface_lookup_ms = window_timing.direct_surface_lookup_ms,
+                    decoration_phase_ms = window_timing.decoration_phase_ms,
+                    backdrop_ms = window_timing.backdrop_ms,
+                    background_ms = window_timing.background_ms,
+                    icon_ms = window_timing.icon_ms,
+                    text_ms = window_timing.text_ms,
+                    client_phase_ms = window_timing.client_phase_ms,
+                    popup_phase_ms = window_timing.popup_phase_ms,
+                    full_snapshot_scene_ms = window_timing.full_snapshot_scene_ms,
+                    full_snapshot_capture_ms = window_timing.full_snapshot_capture_ms,
+                    live_snapshot_refresh_ms = window_timing.live_snapshot_refresh_ms,
+                    window_elapsed_ms,
+                    should_refresh_snapshot,
+                    window_has_snapshot_damage,
+                    "animation timing: tty window spike"
+                );
+            }
+            window_loop_elapsed_ms += window_elapsed_ms;
             if window_elapsed_ms > max_window_elapsed_ms {
                 max_window_elapsed_ms = window_elapsed_ms;
-                _max_window_id = Some(window_id);
+                max_window_id = Some(window_id);
             }
         }
+        timing.transform_snapshot_window_count = frame_transform_snapshot_window_count;
+        timing.snapshot_capture_count = snapshot_capture_count;
+        timing.window_loop_elapsed_ms = window_loop_elapsed_ms;
+        timing.snapshot_capture_elapsed_ms = snapshot_capture_elapsed_ms;
+        timing.max_window_elapsed_ms = max_window_elapsed_ms;
+        timing.max_window_id = max_window_id;
         let lower_layers_started_at = Instant::now();
         scene_elements.extend(lower_layer_scene_elements(
             &mut backend.renderer,
@@ -2577,7 +2856,8 @@ fn render_surface(
             state.lower_layer_scene_generation,
             &mut state.layer_backdrop_cache,
         )?);
-        let _lower_layers_elapsed_ms = lower_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        let lower_layers_elapsed_ms = lower_layers_started_at.elapsed().as_secs_f64() * 1000.0;
+        timing.lower_layers_elapsed_ms = lower_layers_elapsed_ms;
 
         let should_profile_damage = should_capture_blink;
         let damage_profile_started_at = Instant::now();
@@ -2592,7 +2872,8 @@ fn render_surface(
         } else {
             None
         };
-        let _damage_profile_elapsed_ms = damage_profile_started_at.elapsed().as_secs_f64() * 1000.0;
+        let damage_profile_elapsed_ms = damage_profile_started_at.elapsed().as_secs_f64() * 1000.0;
+        timing.damage_profile_elapsed_ms = damage_profile_elapsed_ms;
 
         let captured_blink_damage = if should_capture_blink {
             computed_damage
@@ -2611,8 +2892,6 @@ fn render_surface(
         let cursor_status_for_log = cursor_override
             .map(CursorImageStatus::Named)
             .unwrap_or_else(|| cursor_status.clone());
-        let _cursor_element_count = cursor_elements.len();
-        let _content_element_count = content_elements.len();
         let mut elements: Vec<TtyRenderElements> = Vec::new();
         elements.extend(
             damage_blink::elements_for_output(&blink_visible, output_geo, scale)
@@ -2621,6 +2900,7 @@ fn render_surface(
         );
         elements.extend(cursor_elements);
         elements.extend(content_elements);
+        timing.render_element_count = elements.len();
 
         trace!(
             ?node,
@@ -2653,6 +2933,9 @@ fn render_surface(
         }
         let render_elapsed = render_started_at.elapsed();
         let total_cpu_elapsed = frame_started_at.elapsed();
+        timing.result_is_empty = result.is_empty;
+        timing.render_elapsed_ms = render_elapsed.as_secs_f64() * 1000.0;
+        timing.total_cpu_elapsed_ms = total_cpu_elapsed.as_secs_f64() * 1000.0;
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
         // Update primary-scanout metadata unconditionally — even for no-damage frames.
@@ -2802,6 +3085,19 @@ fn render_surface(
             surface
                 .drm_output
                 .queue_frame(Some(output_presentation_feedback))?;
+            if animation_gap_debug_enabled() {
+                info!(
+                    output = %output.name(),
+                    redraw_state_before = ?surface.redraw_state,
+                    frame_pending_before = surface.frame_pending,
+                    frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                    next_frame_target = ?surface.next_frame_target,
+                    estimated_render_duration_ms =
+                        surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                    result_is_empty = result.is_empty,
+                    "animation gap: tty queue_frame submitted"
+                );
+            }
             surface.frame_pending = true;
             surface.queued_at = Some(Instant::now());
             surface.queued_cpu_duration = total_cpu_elapsed;
@@ -2855,6 +3151,16 @@ fn render_surface(
                 queued: false,
                 generation,
             };
+            if animation_gap_debug_enabled() {
+                info!(
+                    output = %output.name(),
+                    generation,
+                    frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                    frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                    next_frame_target = ?surface.next_frame_target,
+                    "animation gap: tty estimated-vblank armed"
+                );
+            }
             schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
         }
 
@@ -2863,6 +3169,69 @@ fn render_surface(
 
     if let Some(damage) = captured_blink_damage.as_deref() {
         state.record_damage_blink(&output, damage);
+    }
+
+    if animation_timing_debug_enabled()
+        && (timing.transform_snapshot_window_count > 0
+            || timing.closing_snapshot_count > 0
+            || decoration_refresh_elapsed_ms >= spike_threshold_ms
+            || layer_effects_elapsed_ms >= spike_threshold_ms
+            || timing.render_elapsed_ms >= spike_threshold_ms
+            || timing.total_cpu_elapsed_ms >= spike_threshold_ms)
+    {
+        if timing.total_cpu_elapsed_ms >= spike_threshold_ms
+            || timing.render_elapsed_ms >= spike_threshold_ms
+            || decoration_refresh_elapsed_ms >= spike_threshold_ms
+            || layer_effects_elapsed_ms >= spike_threshold_ms
+        {
+            warn!(
+                output = %output.name(),
+                decoration_refresh_elapsed_ms,
+                layer_effects_elapsed_ms,
+                cursor_elapsed_ms = timing.cursor_elapsed_ms,
+                upper_layers_elapsed_ms = timing.upper_layers_elapsed_ms,
+                closing_snapshots_elapsed_ms = timing.closing_snapshots_elapsed_ms,
+                window_loop_elapsed_ms = timing.window_loop_elapsed_ms,
+                snapshot_capture_elapsed_ms = timing.snapshot_capture_elapsed_ms,
+                lower_layers_elapsed_ms = timing.lower_layers_elapsed_ms,
+                damage_profile_elapsed_ms = timing.damage_profile_elapsed_ms,
+                render_elapsed_ms = timing.render_elapsed_ms,
+                total_cpu_elapsed_ms = timing.total_cpu_elapsed_ms,
+                render_element_count = timing.render_element_count,
+                transform_snapshot_window_count = timing.transform_snapshot_window_count,
+                closing_snapshot_count = timing.closing_snapshot_count,
+                snapshot_capture_count = timing.snapshot_capture_count,
+                result_is_empty = timing.result_is_empty,
+                max_window_elapsed_ms = timing.max_window_elapsed_ms,
+                max_window_id = timing.max_window_id.as_deref(),
+                spike_threshold_ms,
+                "animation timing: tty frame spike"
+            );
+        } else {
+            info!(
+                output = %output.name(),
+                decoration_refresh_elapsed_ms,
+                layer_effects_elapsed_ms,
+                cursor_elapsed_ms = timing.cursor_elapsed_ms,
+                upper_layers_elapsed_ms = timing.upper_layers_elapsed_ms,
+                closing_snapshots_elapsed_ms = timing.closing_snapshots_elapsed_ms,
+                window_loop_elapsed_ms = timing.window_loop_elapsed_ms,
+                snapshot_capture_elapsed_ms = timing.snapshot_capture_elapsed_ms,
+                lower_layers_elapsed_ms = timing.lower_layers_elapsed_ms,
+                damage_profile_elapsed_ms = timing.damage_profile_elapsed_ms,
+                render_elapsed_ms = timing.render_elapsed_ms,
+                total_cpu_elapsed_ms = timing.total_cpu_elapsed_ms,
+                render_element_count = timing.render_element_count,
+                transform_snapshot_window_count = timing.transform_snapshot_window_count,
+                closing_snapshot_count = timing.closing_snapshot_count,
+                snapshot_capture_count = timing.snapshot_capture_count,
+                result_is_empty = timing.result_is_empty,
+                max_window_elapsed_ms = timing.max_window_elapsed_ms,
+                max_window_id = timing.max_window_id.as_deref(),
+                spike_threshold_ms,
+                "animation timing: tty frame"
+            );
+        }
     }
 
     Ok(RenderSurfaceOutcome::Processed)
@@ -5993,6 +6362,14 @@ fn schedule_estimated_vblank_callback(
         _ => return,
     };
     if surface.frame_callback_timer_armed {
+        if animation_gap_debug_enabled() {
+            info!(
+                output = %surface.output.name(),
+                generation,
+                frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                "animation gap: tty estimated-vblank already armed"
+            );
+        }
         return;
     }
 
@@ -6033,6 +6410,16 @@ fn schedule_estimated_vblank_callback(
                 return TimeoutAction::Drop;
             };
             let callback_time = frame_time.saturating_add(delay);
+            if animation_gap_debug_enabled() {
+                info!(
+                    output = %output.name(),
+                    generation,
+                    sequence,
+                    should_redraw,
+                    callback_time_ms = callback_time.as_secs_f64() * 1000.0,
+                    "animation gap: tty estimated-vblank fired"
+                );
+            }
             if should_redraw {
                 if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                     tracing::info!(

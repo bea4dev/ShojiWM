@@ -29,6 +29,100 @@ fn clip_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIP_DEBUG").is_some()
 }
 
+fn animation_timing_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ANIMATION_TIMING_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn animation_spike_threshold_ms() -> f64 {
+    std::env::var("SHOJI_ANIMATION_SPIKE_THRESHOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(12.0)
+}
+
+fn animation_gap_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ANIMATION_GAP_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn log_animation_output_activity(
+    output_name: &str,
+    closing_active_count: usize,
+    animation_active_for_target: bool,
+) {
+    if !animation_gap_debug_enabled() {
+        return;
+    }
+
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static STATE: OnceLock<Mutex<HashMap<String, (bool, usize)>>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = state.lock() else {
+        return;
+    };
+    let previous = guard.insert(
+        output_name.to_string(),
+        (animation_active_for_target, closing_active_count),
+    );
+    if previous != Some((animation_active_for_target, closing_active_count)) {
+        info!(
+            output_name,
+            previous_animation_active = previous.map(|value| value.0),
+            animation_active_for_target,
+            previous_closing_active_count = previous.map(|value| value.1),
+            closing_active_count,
+            "animation gap: output activity transition"
+        );
+    }
+}
+
+fn log_animation_window_refresh_timing(
+    phase: &'static str,
+    snapshot: &WaylandWindowSnapshot,
+    elapsed_ms: f64,
+    evaluate_ms: f64,
+    layout_ms: f64,
+    clip_ms: f64,
+    order_ms: f64,
+    buffers_ms: f64,
+    shader_ms: f64,
+    text_ms: f64,
+    icon_ms: f64,
+    finalize_ms: f64,
+    dirty_node_count: usize,
+    tree_changed: Option<bool>,
+    layout_equivalent: Option<bool>,
+) {
+    if !animation_timing_debug_enabled() || elapsed_ms < animation_spike_threshold_ms() {
+        return;
+    }
+
+    warn!(
+        phase,
+        window_id = snapshot.id,
+        title = snapshot.title,
+        app_id = snapshot.app_id,
+        elapsed_ms,
+        evaluate_ms,
+        layout_ms,
+        clip_ms,
+        order_ms,
+        buffers_ms,
+        shader_ms,
+        text_ms,
+        icon_ms,
+        finalize_ms,
+        dirty_node_count,
+        tree_changed,
+        layout_equivalent,
+        "animation timing: decoration window spike"
+    );
+}
+
 #[derive(Debug, Clone)]
 pub struct WindowDecorationState {
     pub snapshot: WaylandWindowSnapshot,
@@ -479,17 +573,25 @@ impl ShojiWM {
         &mut self,
         output_name: &str,
     ) -> Result<(), DecorationEvaluationError> {
+        let refresh_started_at = Instant::now();
+        let snapshot_started_at = Instant::now();
         let snapshots = self.snapshot_layers();
+        let snapshot_elapsed_ms = snapshot_started_at.elapsed().as_secs_f64() * 1000.0;
         let output_layer_ids = snapshots
             .iter()
             .filter(|snapshot| snapshot.output_name == output_name)
             .map(|snapshot| snapshot.id.clone())
             .collect::<std::collections::HashSet<_>>();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let sync_started_at = Instant::now();
         self.sync_runtime_display_state();
+        let sync_elapsed_ms = sync_started_at.elapsed().as_secs_f64() * 1000.0;
+        let evaluate_started_at = Instant::now();
         let evaluation =
             self.decoration_evaluator
                 .evaluate_layer_effects(output_name, &snapshots, now_ms)?;
+        let evaluate_elapsed_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
+        let apply_started_at = Instant::now();
         self.consume_runtime_display_config(evaluation.display_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
         self.consume_runtime_process_config(evaluation.process_config.clone());
@@ -504,14 +606,38 @@ impl ShojiWM {
         } else {
             self.runtime_animation_outputs.remove(output_name);
         }
-        for layer_id in output_layer_ids {
-            self.configured_layer_effects.remove(&layer_id);
+        let output_layer_count = output_layer_ids.len();
+        for layer_id in &output_layer_ids {
+            self.configured_layer_effects.remove(layer_id);
         }
+        let effect_count = evaluation.effects.len();
+        let next_poll_in_ms = evaluation.next_poll_in_ms;
         for assignment in evaluation.effects {
             if let Some(effect) = assignment.effect {
                 self.configured_layer_effects
                     .insert(assignment.layer_id, effect);
             }
+        }
+        let apply_elapsed_ms = apply_started_at.elapsed().as_secs_f64() * 1000.0;
+        let elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        if animation_timing_debug_enabled()
+            && (elapsed_ms >= animation_spike_threshold_ms()
+                || evaluate_elapsed_ms >= animation_spike_threshold_ms())
+        {
+            warn!(
+                output_name,
+                layer_snapshot_count = snapshots.len(),
+                output_layer_count,
+                effect_count,
+                snapshot_elapsed_ms,
+                sync_elapsed_ms,
+                evaluate_elapsed_ms,
+                apply_elapsed_ms,
+                elapsed_ms,
+                next_poll_in_ms,
+                "animation timing: layer effects spike"
+            );
         }
 
         Ok(())
@@ -522,10 +648,13 @@ impl ShojiWM {
         target_output_name: Option<&str>,
     ) -> Result<(), DecorationEvaluationError> {
         let refresh_started_at = Instant::now();
+        let spike_threshold_ms = animation_spike_threshold_ms();
         let force_runtime_reevaluate = self.runtime_poll_dirty;
         let force_output_animation_reevaluate = target_output_name
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
+        let mut pending_window_actions = Vec::new();
+        let mut pending_finalize_close_damage = Vec::new();
         let mut pending_display_config_updates = Vec::new();
         let mut pending_key_binding_config_updates = Vec::new();
         let mut pending_process_config_updates = Vec::new();
@@ -535,8 +664,13 @@ impl ShojiWM {
         let window_count = windows.len();
         let mut rebuilt = 0usize;
         let mut relayout = 0usize;
+        let mut runtime_dirty_updates = 0usize;
+        let mut promoted_closing = 0usize;
+        let mut closing_runtime_updates = 0usize;
         let mut animation_active_for_target = false;
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let closing_active_count = self.closing_window_snapshots.len();
+        let removed_windows_started_at = Instant::now();
         let removed_windows = self
             .window_decorations
             .iter()
@@ -561,13 +695,18 @@ impl ShojiWM {
                 self.runtime_dirty_window_ids.remove(window_id);
                 self.snapshot_dirty_window_ids.remove(window_id);
                 self.pending_decoration_damage.push(*root_rect);
+            } else {
+                promoted_closing = promoted_closing.saturating_add(1);
             }
         }
         self.window_decorations
             .retain(|window, _| windows.contains(window));
         self.window_primary_output_names
             .retain(|window, _| windows.contains(window));
+        let removed_windows_elapsed_ms =
+            removed_windows_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let windows_pass_started_at = Instant::now();
         for window in windows {
             let primary_output_name = self.primary_output_name_for_window(&window);
             if let Some(target_output_name) = target_output_name {
@@ -608,6 +747,7 @@ impl ShojiWM {
                     transformed_root_rect(cached.layout.root.rect, cached.visual_transform)
                 });
                 let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                let evaluate_started_at = Instant::now();
                 let evaluation = match self.decoration_evaluator.evaluate_window(&snapshot, now_ms)
                 {
                     Ok(evaluation) => evaluation,
@@ -622,30 +762,44 @@ impl ShojiWM {
                         StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                     }
                 };
+                let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                 pending_display_config_updates.push(evaluation.display_config.clone());
                 pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                 pending_process_config_updates.push(evaluation.process_config.clone());
                 pending_process_actions.extend(evaluation.process_actions.clone());
                 let tree = DecorationTree::new(evaluation.node);
+                let layout_started_at = Instant::now();
                 let layout = tree
                     .layout_for_client_with_scale(client_rect, layout_scale)
                     .map_err(super::DecorationEvaluationError::Layout)?;
+                let layout_ms = layout_started_at.elapsed().as_secs_f64() * 1000.0;
                 push_damage_pair(
                     &mut self.pending_decoration_damage,
                     previous_root,
                     transformed_root_rect(layout.root.rect, evaluation.transform),
                 );
+                let clip_started_at = Instant::now();
                 let shared_edges = build_shared_edge_geometry_map(&layout);
                 let content_clip = content_clip_for_layout(&tree, &layout, &shared_edges);
+                let clip_ms = clip_started_at.elapsed().as_secs_f64() * 1000.0;
+                let order_started_at = Instant::now();
                 let order_map = build_render_order_map(&layout);
+                let order_ms = order_started_at.elapsed().as_secs_f64() * 1000.0;
+                let buffers_started_at = Instant::now();
                 let buffers = build_cached_buffers(&layout, &order_map);
+                let buffers_ms = buffers_started_at.elapsed().as_secs_f64() * 1000.0;
+                let shader_started_at = Instant::now();
                 let mut shader_buffers = build_shader_buffers(&layout, &order_map);
+                let shader_ms = shader_started_at.elapsed().as_secs_f64() * 1000.0;
+                let text_started_at = Instant::now();
                 let text_buffers = build_text_buffers(
                     &layout,
                     &order_map,
                     window_raster_scale,
                     &mut self.text_rasterizer,
                 );
+                let text_ms = text_started_at.elapsed().as_secs_f64() * 1000.0;
+                let icon_started_at = Instant::now();
                 let icon_buffers = build_icon_buffers(
                     &layout,
                     &order_map,
@@ -653,17 +807,38 @@ impl ShojiWM {
                     &snapshot,
                     &mut self.icon_rasterizer,
                 );
+                let icon_ms = icon_started_at.elapsed().as_secs_f64() * 1000.0;
+                let finalize_started_at = Instant::now();
                 if let Some(previous) = self.window_decorations.get(&window) {
                     freeze_manual_shader_buffers(&previous.shader_buffers, &mut shader_buffers);
                 }
                 self.suggested_window_offset = suggested_window_offset(&layout);
+                let finalize_ms = finalize_started_at.elapsed().as_secs_f64() * 1000.0;
                 rebuilt += 1;
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
                 debug!(
                     window_id = snapshot.id,
                     title = snapshot.title,
                     text_buffer_count = text_buffers.len(),
-                    elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+                    elapsed_ms,
                     "rebuilt window decoration tree"
+                );
+                log_animation_window_refresh_timing(
+                    "rebuild",
+                    &snapshot,
+                    elapsed_ms,
+                    evaluate_ms,
+                    layout_ms,
+                    clip_ms,
+                    order_ms,
+                    buffers_ms,
+                    shader_ms,
+                    text_ms,
+                    icon_ms,
+                    finalize_ms,
+                    0,
+                    None,
+                    None,
                 );
                 log_decoration_refresh("rebuild", &snapshot, client_rect, &layout, &buffers);
                 let caches = self
@@ -703,9 +878,11 @@ impl ShojiWM {
             } else if let Some(cached) = self.window_decorations.get_mut(&window) {
                 if cached.client_rect != client_rect {
                     let started_at = Instant::now();
+                    let finalize_ms = 0.0;
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
                     let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                    let evaluate_started_at = Instant::now();
                     let evaluation = match self
                         .decoration_evaluator
                         .evaluate_window(&snapshot, now_ms)
@@ -722,15 +899,18 @@ impl ShojiWM {
                             StaticDecorationEvaluator.evaluate_window(&snapshot, now_ms)?
                         }
                     };
+                    let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                     pending_display_config_updates.push(evaluation.display_config.clone());
                     pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     cached.tree = DecorationTree::new(evaluation.node);
+                    let layout_started_at = Instant::now();
                     cached.layout = cached
                         .tree
                         .layout_for_client_with_scale(client_rect, layout_scale)
                         .map_err(super::DecorationEvaluationError::Layout)?;
+                    let layout_ms = layout_started_at.elapsed().as_secs_f64() * 1000.0;
                     cached.layout_scale = layout_scale;
                     push_damage_pair(
                         &mut self.pending_decoration_damage,
@@ -740,18 +920,29 @@ impl ShojiWM {
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
                     cached.visual_transform = evaluation.transform;
+                    let clip_started_at = Instant::now();
                     let shared_edges = build_shared_edge_geometry_map(&cached.layout);
                     cached.content_clip =
                         content_clip_for_layout(&cached.tree, &cached.layout, &shared_edges);
+                    let clip_ms = clip_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let order_started_at = Instant::now();
                     let order_map = build_render_order_map(&cached.layout);
+                    let order_ms = order_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let buffers_started_at = Instant::now();
                     cached.buffers = build_cached_buffers(&cached.layout, &order_map);
+                    let buffers_ms = buffers_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let shader_started_at = Instant::now();
                     cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
+                    let shader_ms = shader_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let text_started_at = Instant::now();
                     cached.text_buffers = build_text_buffers(
                         &cached.layout,
                         &order_map,
                         window_raster_scale,
                         &mut self.text_rasterizer,
                     );
+                    let text_ms = text_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let icon_started_at = Instant::now();
                     cached.icon_buffers = build_icon_buffers(
                         &cached.layout,
                         &order_map,
@@ -759,14 +950,33 @@ impl ShojiWM {
                         &cached.snapshot,
                         &mut self.icon_rasterizer,
                     );
+                    let icon_ms = icon_started_at.elapsed().as_secs_f64() * 1000.0;
                     self.suggested_window_offset = suggested_window_offset(&cached.layout);
                     relayout += 1;
+                    let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
                     debug!(
                         window_id = cached.snapshot.id,
                         title = cached.snapshot.title,
                         text_buffer_count = cached.text_buffers.len(),
-                        elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+                        elapsed_ms,
                         "recomputed window decoration layout"
+                    );
+                    log_animation_window_refresh_timing(
+                        "relayout",
+                        &cached.snapshot,
+                        elapsed_ms,
+                        evaluate_ms,
+                        layout_ms,
+                        clip_ms,
+                        order_ms,
+                        buffers_ms,
+                        shader_ms,
+                        text_ms,
+                        icon_ms,
+                        finalize_ms,
+                        0,
+                        None,
+                        None,
                     );
                     log_decoration_refresh(
                         "relayout",
@@ -789,6 +999,7 @@ impl ShojiWM {
                     let previous_text_buffers = cached.text_buffers.clone();
                     let previous_icon_buffers = cached.icon_buffers.clone();
                     let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+                    let evaluate_started_at = Instant::now();
                     let evaluation = if runtime_state_changed {
                         match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
                             Ok(evaluation) => evaluation,
@@ -834,20 +1045,24 @@ impl ShojiWM {
                             }
                         }
                     };
+                    let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                     pending_display_config_updates.push(evaluation.display_config.clone());
                     pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
+                    let rebuild_started_at = Instant::now();
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
                     let dirty_node_ids = evaluation.dirty_node_ids;
                     let tree_changed = next_tree != cached.tree;
+                    let mut layout_equivalent_state = None;
                     cached.snapshot = snapshot;
 
                     if !tree_changed {
                         cached.visual_transform = next_transform;
                     } else {
                         let layout_equivalent = cached.tree.root.layout_equivalent(&next_tree.root);
+                        layout_equivalent_state = Some(layout_equivalent);
                         cached.tree = next_tree;
                         if layout_equivalent {
                             reapply_tree_preserving_layout(
@@ -968,6 +1183,8 @@ impl ShojiWM {
                         }
                         cached.visual_transform = next_transform;
                     }
+                    let rebuild_ms = rebuild_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let finalize_started_at = Instant::now();
                     let next_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
                     if previous_transform != cached.visual_transform || previous_root != next_root {
@@ -998,12 +1215,31 @@ impl ShojiWM {
                                 &cached.icon_buffers,
                             ));
                     }
+                    let finalize_ms = finalize_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
                     debug!(
                         window_id = cached.snapshot.id,
                         title = cached.snapshot.title,
                         text_buffer_count = cached.text_buffers.len(),
-                        elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
+                        elapsed_ms,
                         "recomputed window decoration tree from runtime dirty state"
+                    );
+                    log_animation_window_refresh_timing(
+                        "runtime-dirty",
+                        &cached.snapshot,
+                        elapsed_ms,
+                        evaluate_ms,
+                        rebuild_ms,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        finalize_ms,
+                        dirty_node_ids.len(),
+                        Some(tree_changed),
+                        layout_equivalent_state,
                     );
                     if force_async_asset_refresh {
                         let order_map = build_render_order_map(&cached.layout);
@@ -1028,6 +1264,7 @@ impl ShojiWM {
                         &cached.layout,
                         &cached.buffers,
                     );
+                    runtime_dirty_updates = runtime_dirty_updates.saturating_add(1);
                     self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                     animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
@@ -1049,7 +1286,9 @@ impl ShojiWM {
                 }
             }
         }
+        let windows_pass_elapsed_ms = windows_pass_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let closing_pass_started_at = Instant::now();
         let closing_dirty_ids = self
             .closing_window_snapshots
             .keys()
@@ -1266,11 +1505,20 @@ impl ShojiWM {
                         &mut self.icon_rasterizer,
                     );
                 }
+                if evaluation.next_poll_in_ms.is_none() && closing.transform.opacity <= 0.001 {
+                    pending_finalize_close_damage.push(next_root);
+                    pending_window_actions.push(crate::ssd::RuntimeWindowAction {
+                        window_id: window_id.clone(),
+                        action: crate::ssd::WaylandWindowAction::FinalizeClose,
+                    });
+                }
                 self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                 self.schedule_redraw();
+                closing_runtime_updates = closing_runtime_updates.saturating_add(1);
                 animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
             }
         }
+        let closing_pass_elapsed_ms = closing_pass_started_at.elapsed().as_secs_f64() * 1000.0;
 
         if let Some(output_name) = target_output_name {
             if animation_active_for_target {
@@ -1279,6 +1527,11 @@ impl ShojiWM {
             } else {
                 self.runtime_animation_outputs.remove(output_name);
             }
+            log_animation_output_activity(
+                output_name,
+                closing_active_count,
+                animation_active_for_target,
+            );
         }
 
         if force_async_asset_refresh {
@@ -1315,6 +1568,7 @@ impl ShojiWM {
             }
         }
 
+        let apply_updates_started_at = Instant::now();
         for update in pending_display_config_updates {
             self.consume_runtime_display_config(update);
         }
@@ -1324,15 +1578,82 @@ impl ShojiWM {
         for update in pending_process_config_updates {
             self.consume_runtime_process_config(update);
         }
+        if !pending_finalize_close_damage.is_empty() {
+            self.pending_decoration_damage
+                .extend(pending_finalize_close_damage);
+        }
+        if !pending_window_actions.is_empty() {
+            self.apply_runtime_window_actions(pending_window_actions);
+        }
         if !pending_process_actions.is_empty() {
             self.apply_runtime_process_actions(pending_process_actions);
+        }
+        let apply_updates_elapsed_ms = apply_updates_started_at.elapsed().as_secs_f64() * 1000.0;
+        let refresh_elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        if animation_timing_debug_enabled()
+            && (animation_active_for_target
+                || closing_active_count > 0
+                || promoted_closing > 0
+                || rebuilt > 0
+                || relayout > 0
+                || runtime_dirty_updates > 0
+                || closing_runtime_updates > 0
+                || refresh_elapsed_ms >= spike_threshold_ms)
+        {
+            let target_output = target_output_name.unwrap_or("<all>");
+            if refresh_elapsed_ms >= spike_threshold_ms {
+                warn!(
+                    target_output,
+                    window_count,
+                    closing_active_count,
+                    promoted_closing,
+                    rebuilt,
+                    relayout,
+                    runtime_dirty_updates,
+                    closing_runtime_updates,
+                    animation_active_for_target,
+                    force_runtime_reevaluate,
+                    force_output_animation_reevaluate,
+                    force_async_asset_refresh,
+                    removed_windows_elapsed_ms,
+                    windows_pass_elapsed_ms,
+                    closing_pass_elapsed_ms,
+                    apply_updates_elapsed_ms,
+                    elapsed_ms = refresh_elapsed_ms,
+                    spike_threshold_ms,
+                    "animation timing: decoration refresh spike"
+                );
+            } else {
+                info!(
+                    target_output,
+                    window_count,
+                    closing_active_count,
+                    promoted_closing,
+                    rebuilt,
+                    relayout,
+                    runtime_dirty_updates,
+                    closing_runtime_updates,
+                    animation_active_for_target,
+                    force_runtime_reevaluate,
+                    force_output_animation_reevaluate,
+                    force_async_asset_refresh,
+                    removed_windows_elapsed_ms,
+                    windows_pass_elapsed_ms,
+                    closing_pass_elapsed_ms,
+                    apply_updates_elapsed_ms,
+                    elapsed_ms = refresh_elapsed_ms,
+                    spike_threshold_ms,
+                    "animation timing: decoration refresh"
+                );
+            }
         }
 
         trace!(
             window_count,
             rebuilt,
             relayout,
-            elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms = refresh_elapsed_ms,
             "refresh_window_decorations finished"
         );
         self.runtime_poll_dirty = false;

@@ -1672,6 +1672,7 @@ impl ShojiWM {
 
     pub fn schedule_redraw(&mut self) {
         self.needs_redraw = true;
+        self.loop_signal.wakeup();
     }
 
     pub fn note_xdg_popup_created(&mut self, surface_id: u32) {

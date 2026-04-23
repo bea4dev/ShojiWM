@@ -1,5 +1,5 @@
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{
@@ -40,9 +40,31 @@ fn manual_invalidate_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn animation_timing_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_ANIMATION_TIMING_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn animation_spike_threshold_ms() -> f64 {
+    std::env::var("SHOJI_ANIMATION_SPIKE_THRESHOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(12.0)
+}
+
 fn clipped_transform_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIPPED_TRANSFORM_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+#[derive(Default)]
+struct WinitAnimationTimingMetrics {
+    render_element_count: usize,
+    transform_snapshot_window_count: usize,
+    closing_snapshot_count: usize,
+    scene_build_elapsed_ms: f64,
+    render_elapsed_ms: f64,
 }
 
 fn capture_scene_texture_for_effect(
@@ -179,18 +201,28 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    let redraw_started_at = Instant::now();
+                    let spike_threshold_ms = animation_spike_threshold_ms();
+                    let decorations_refresh_started_at = Instant::now();
                     if let Err(err) = state.refresh_window_decorations_for_output(Some(output.name().as_str())) {
                         warn!(error = ?err, "failed to refresh window decorations for winit");
                     }
+                    let decorations_refresh_elapsed_ms =
+                        decorations_refresh_started_at.elapsed().as_secs_f64() * 1000.0;
+                    let layer_effects_started_at = Instant::now();
                     if let Err(err) = state.refresh_layer_effects_for_output(output.name().as_str()) {
                         warn!(error = ?err, "failed to refresh layer effects for winit");
                     }
+                    let layer_effects_elapsed_ms =
+                        layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
 
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
 
                     let mut should_submit_frame = false;
+                    let mut timing = WinitAnimationTimingMetrics::default();
                     {
+                        let scene_build_started_at = Instant::now();
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
                         let output_geo = state.space.output_geometry(&output).unwrap();
                         let scale =
@@ -957,6 +989,12 @@ pub fn init_winit(
                             render_element_count = elements.len(),
                             "rendering winit frame"
                         );
+                        timing.render_element_count = elements.len();
+                        timing.transform_snapshot_window_count =
+                            state.transform_snapshot_window_ids.len();
+                        timing.closing_snapshot_count = state.closing_window_snapshots.len();
+                        timing.scene_build_elapsed_ms =
+                            scene_build_started_at.elapsed().as_secs_f64() * 1000.0;
 
                         if !elements.is_empty() {
                             let frame_target = state.clock.now()
@@ -966,6 +1004,7 @@ pub fn init_winit(
                                     .unwrap_or(Duration::ZERO);
                             state.pre_repaint(&output, frame_target);
 
+                            let render_started_at = Instant::now();
                             let render_output_result = damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
@@ -973,6 +1012,8 @@ pub fn init_winit(
                                 &elements,
                                 [0.1, 0.1, 0.1, 1.0],
                             );
+                            timing.render_elapsed_ms =
+                                render_started_at.elapsed().as_secs_f64() * 1000.0;
                             if let Ok(render_output_result) = render_output_result {
                                 if manual_invalidate_debug_enabled() {
                                     info!(
@@ -1013,9 +1054,12 @@ pub fn init_winit(
                             }
                         }
                     }
+                    let submit_started_at = Instant::now();
                     if should_submit_frame {
                         backend.submit(Some(&[damage])).unwrap();
                     }
+                    let submit_elapsed_ms =
+                        submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
                     state.space.refresh();
                     state.cleanup_popups_with_debug("winit-post-render");
@@ -1023,6 +1067,57 @@ pub fn init_winit(
                     state.clear_source_damage();
                     state.finish_damage_blink_frame();
                     let _ = state.display_handle.flush_clients();
+                    let total_redraw_elapsed_ms =
+                        redraw_started_at.elapsed().as_secs_f64() * 1000.0;
+
+                    if animation_timing_debug_enabled()
+                        && (timing.transform_snapshot_window_count > 0
+                            || timing.closing_snapshot_count > 0
+                            || decorations_refresh_elapsed_ms >= spike_threshold_ms
+                            || layer_effects_elapsed_ms >= spike_threshold_ms
+                            || timing.render_elapsed_ms >= spike_threshold_ms
+                            || total_redraw_elapsed_ms >= spike_threshold_ms)
+                    {
+                        if total_redraw_elapsed_ms >= spike_threshold_ms
+                            || timing.render_elapsed_ms >= spike_threshold_ms
+                            || decorations_refresh_elapsed_ms >= spike_threshold_ms
+                            || layer_effects_elapsed_ms >= spike_threshold_ms
+                        {
+                            warn!(
+                                output = %output.name(),
+                                decorations_refresh_elapsed_ms,
+                                layer_effects_elapsed_ms,
+                                scene_build_elapsed_ms = timing.scene_build_elapsed_ms,
+                                render_elapsed_ms = timing.render_elapsed_ms,
+                                submit_elapsed_ms,
+                                total_redraw_elapsed_ms,
+                                render_element_count = timing.render_element_count,
+                                transform_snapshot_window_count =
+                                    timing.transform_snapshot_window_count,
+                                closing_snapshot_count = timing.closing_snapshot_count,
+                                should_submit_frame,
+                                spike_threshold_ms,
+                                "animation timing: winit frame spike"
+                            );
+                        } else {
+                            info!(
+                                output = %output.name(),
+                                decorations_refresh_elapsed_ms,
+                                layer_effects_elapsed_ms,
+                                scene_build_elapsed_ms = timing.scene_build_elapsed_ms,
+                                render_elapsed_ms = timing.render_elapsed_ms,
+                                submit_elapsed_ms,
+                                total_redraw_elapsed_ms,
+                                render_element_count = timing.render_element_count,
+                                transform_snapshot_window_count =
+                                    timing.transform_snapshot_window_count,
+                                closing_snapshot_count = timing.closing_snapshot_count,
+                                should_submit_frame,
+                                spike_threshold_ms,
+                                "animation timing: winit frame"
+                            );
+                        }
+                    }
 
                     backend.window().request_redraw();
                 }

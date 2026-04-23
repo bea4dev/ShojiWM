@@ -142,6 +142,47 @@ impl XdgShellHandler for ShojiWM {
         surface.send_repositioned(token);
     }
 
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
+            })
+            .cloned()
+        else {
+            self.request_tty_maintenance("xdg-toplevel-destroyed");
+            self.schedule_redraw();
+            return;
+        };
+
+        let decoration = self.window_decorations.get(&window).cloned();
+        let window_id = decoration
+            .as_ref()
+            .map(|decoration| decoration.snapshot.id.clone());
+        if let (Some(window_id), Some(decoration)) = (window_id.as_deref(), decoration.as_ref()) {
+            let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+            if let Err(error) =
+                self.promote_window_to_closing_snapshot(window_id, decoration, now_ms)
+            {
+                warn!(
+                    window_id,
+                    title = decoration.snapshot.title,
+                    app_id = decoration.snapshot.app_id,
+                    ?error,
+                    "failed to promote destroyed xdg toplevel to closing snapshot"
+                );
+            }
+        }
+
+        self.space.unmap_elem(&window);
+        self.request_tty_maintenance("xdg-toplevel-destroyed");
+        self.schedule_redraw();
+    }
+
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let seat = Seat::from_resource(&seat).unwrap();
 
@@ -355,7 +396,8 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         // regular lookup path. We still need a pre-render refresh so the first click after the
         // popup appears targets the newly visible surface tree rather than the stale parent layer.
         state.request_tty_maintenance("xdg-popup-commit-untracked");
-        state.refresh_pointer_focus(std::time::Duration::from(state.clock.now()).as_millis() as u32);
+        state
+            .refresh_pointer_focus(std::time::Duration::from(state.clock.now()).as_millis() as u32);
         state.schedule_redraw();
     }
 }
