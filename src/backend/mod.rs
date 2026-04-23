@@ -198,8 +198,8 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_client();
 
-    let mut last_idle_maintenance_at = Instant::now();
     let maintenance_debug = tty_maintenance_debug_enabled();
+    let mut last_idle_maintenance_at = Instant::now();
     while state.is_running {
         let dispatch_timeout = if state.needs_redraw {
             Some(Duration::ZERO)
@@ -210,35 +210,32 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        // Gated post-dispatch maintenance.
+        //
+        // The wayland-display fd is registered with level-triggered polling; when a client
+        // (notably Firefox) leaves data buffered but `wl_event_loop_dispatch` reports zero fd
+        // events, the source keeps firing every iteration. Running `space.refresh()` /
+        // `cleanup_popups` / `flush_clients()` unconditionally on every spin turned that into
+        // a >10k-iterations/sec busy loop. We keep the niri-style per-commit `schedule_redraw()`
+        // discipline from `handlers::compositor` (so Firefox's non-presented root-surface
+        // commits no longer wake the compositor), and gate maintenance here on real signals.
+        //
+        // Popup-heavy clients such as noctalia's right-click menu stay responsive because their
+        // `xdg_popup` / `wl_subsurface` commits hit the `schedule_redraw()` branches in the
+        // shell handlers, and `state.needs_redraw` is included in the gate below.
         let event_source_wakes = state.take_event_source_wake_counts();
         let maintenance_pending = state.take_tty_maintenance_pending();
         let maintenance_reasons = state.take_tty_maintenance_reasons();
         let dispatched_wayland_requests = state.take_wayland_display_dispatched_request_count();
-        let allow_idle_maintenance = last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
+        let allow_idle_maintenance =
+            last_idle_maintenance_at.elapsed() >= Duration::from_secs(1);
+        let should_run_maintenance = maintenance_pending
+            || dispatched_wayland_requests > 0
+            || state.needs_redraw
+            || allow_idle_maintenance;
 
-        // Ordering matters here.
-        //
-        // The Firefox high-CPU regression came from treating generic `wayland-display` wakeups as
-        // a reason to run full TTY maintenance every loop iteration. A naive fix that merely
-        // suppressed maintenance then caused another bug: the first commit after an animation or
-        // other state transition would not become visible until some unrelated event (for example
-        // pointer motion) triggered another redraw.
-        //
-        // The stable arrangement is:
-        //
-        // 1. dispatch Wayland/input/runtime events
-        // 2. if maintenance is explicitly pending, run `space.refresh()/popups.cleanup()`
-        //    *before* rendering
-        // 3. render if a redraw is needed
-        // 4. flush clients only if maintenance or rendering actually ran
-        //
-        // This preserves the pre-render refresh that newly dispatched commits depend on, while
-        // avoiding the old self-amplifying "display wake => maintenance => flush => more display
-        // wake" loop that Firefox could trigger.
-        let should_run_maintenance = maintenance_pending || allow_idle_maintenance;
         if maintenance_debug
             && (should_run_maintenance
-                || state.needs_redraw
                 || !event_source_wakes.is_empty()
                 || dispatched_wayland_requests > 0)
         {

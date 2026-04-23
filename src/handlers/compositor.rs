@@ -88,23 +88,27 @@ impl CompositorHandler for ShojiWM {
 
     fn commit(&mut self, surface: &WlSurface) {
         trace!(surface = ?surface.id(), "wl_surface commit received");
-        // A committed surface can be observed from two different paths:
+        // Niri-style per-commit redraw gating.
         //
-        // 1. directly while dispatching Wayland client requests from the display fd
-        // 2. indirectly when Smithay replays a previously blocked commit after
-        //    `blocker_cleared()` (for example from commit-timing / FIFO barriers)
+        // Previously this handler ended with an unconditional `self.schedule_redraw()` and also
+        // called `self.request_tty_maintenance("surface-commit")` at the top. That combination
+        // drove the historical Firefox high-CPU loop: every subsurface / non-presented root
+        // surface commit woke a full redraw + pre-render maintenance pass, which flushed
+        // wayland traffic back to the client, which committed again, ...
         //
-        // The TTY backend needs `space.refresh()/popups.cleanup()` before the next render after
-        // either case. If we only request maintenance from the display-fd dispatch path, commits
-        // coming from blocker replay can schedule a redraw without scheduling the pre-render
-        // maintenance pass, which manifests as "the client updated, but the new contents do not
-        // become visible until some unrelated input event causes another refresh".
-        self.request_tty_maintenance("surface-commit");
+        // Instead we now follow niri's `queue_redraw(&output)` discipline: only schedule a
+        // redraw when the commit actually affects something that is rendered (a mapped
+        // toplevel / X11 window via `pending_source_damage`, a popup via `xdg_shell::handle_commit`,
+        // or a layer surface via `layer_shell::handle_commit`). Maintenance (`space.refresh()` /
+        // popup cleanup / `flush_clients`) still runs every event-loop iteration — that part is
+        // handled in `backend::run_tty_udev` and does not depend on per-commit requests — so
+        // popup-heavy clients like the noctalia shell right-click menu still appear immediately.
         self.scene_generation = self.scene_generation.wrapping_add(1);
         let mut pending_source_damage: Option<(
             smithay::desktop::Window,
             Vec<crate::ssd::LogicalRect>,
         )> = None;
+        let mut cursor_surface_committed = false;
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -123,6 +127,15 @@ impl CompositorHandler for ShojiWM {
                     window.clone(),
                     self.logical_source_damage_rects_for_surface(window, surface),
                 ));
+            } else if matches!(
+                &self.cursor_status,
+                smithay::input::pointer::CursorImageStatus::Surface(cursor_surface)
+                    if cursor_surface == &root
+            ) {
+                // A cursor-role surface updated. This path is not reached through layer-shell
+                // / xdg-shell / mapped-window tracking, so we must schedule the redraw here
+                // (niri does the equivalent via its own cursor-surface branch).
+                cursor_surface_committed = true;
             }
             if x11_browser_cpu_debug_enabled() {
                 if let Some(window) = mapped_window {
@@ -267,19 +280,28 @@ impl CompositorHandler for ShojiWM {
             if let Some(top) = window.toplevel() {
                 debug!(surface = ?top.wl_surface().id(), "toplevel commit matched mapped window");
             }
+            // This commit touched a mapped toplevel / X11 window. Queue a redraw — this is the
+            // per-commit scheduling equivalent of niri's `queue_redraw(&output)`. Commits that
+            // do *not* correspond to a mapped rendered surface intentionally fall through
+            // without waking the renderer, which breaks the Firefox "non-presented root
+            // surface wakes the compositor" loop.
+            self.schedule_redraw();
         }
 
+        // `xdg_shell::handle_commit` schedules its own redraw for popup commits (both the
+        // tracked `PopupKind::Xdg` path and the "untracked xdg_popup role" fallback), so we
+        // don't need to force one here. Likewise `layer_shell::handle_commit` calls
+        // `schedule_redraw` whenever it recognises the commit as targeting a mapped layer
+        // surface. Commits that are neither mapped-window / popup / layer (e.g. bare root
+        // surfaces without any render element, orphan subsurfaces) deliberately produce no
+        // redraw request.
         xdg_shell::handle_commit(self, surface);
-        if self
-            .find_popup_with_debug(surface, "compositor-post-commit")
-            .is_some()
-        {
-            self.request_tty_maintenance("xdg-popup-commit");
-        }
         layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
 
-        self.schedule_redraw();
+        if cursor_surface_committed {
+            self.schedule_redraw();
+        }
     }
 }
 
