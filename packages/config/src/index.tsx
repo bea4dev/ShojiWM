@@ -196,38 +196,39 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
 const CloseButton = ({ window }: { window: WaylandWindow }) => {
     const [hover, setHover] = useState(false);
 
-    const background = hover(hover => hover ? "#F08080" : "#F0808000");
+    const background = hover(hover => hover ? "#F08080" : "#F0808080");
 
     var icon: DecorationRenderable | null = null;
-    if (!hover()) {
+    if (hover()) {
         icon = (
             <Image
                 src="./assets/x.svg"
                 style={{
-                    width: 12,
-                    height: 12,
-                    transform: { translateX: 1, translateY: 0 }
+                    width: 16,
+                    height: 16,
+                    position: "absolute",
+                    zIndex: 1,
+                    pointerEvents: "none"
                 }}
             />
         );
     }
 
     return (
-        <Button
-            onHoverChange={setHover}
-            style={{
-                width: 16,
-                height: 16,
-                borderRadius: 8,
-                background: background,
-                border: { px: 1, color: "#f5f7fa" },
-                alignItems: "center",
-                justifyContent: "center",
-            }}
-            onClick={window.close}
-        >
+        <Box style={{ position: "relative" }}>
+            <Button
+                onHoverChange={setHover}
+                style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: 8,
+                    background: background,
+                    border: { px: 1, color: "#f5f7fa" },
+                }}
+                onClick={window.close}
+            />
             {icon}
-        </Button>
+        </Box>
     )
 };
 
