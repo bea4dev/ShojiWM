@@ -30,7 +30,7 @@ use crate::backend::visual::{
     PreciseLogicalRect, relative_physical_rect_from_root_precise,
     relative_physical_rect_from_root_snapped_edges,
 };
-use crate::ssd::{LogicalRect, WindowDecorationState, WindowIconSnapshot};
+use crate::ssd::{ImageFit, LogicalRect, WindowDecorationState, WindowIconSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
@@ -59,6 +59,10 @@ pub struct IconSpec {
     pub rect_precise: Option<PreciseLogicalRect>,
     pub icon: Option<WindowIconSnapshot>,
     pub app_id: Option<String>,
+    /// When set, the rasterizer reads bytes from this absolute file path
+    /// instead of performing app-icon theme lookup. Used by the `Image` node.
+    pub asset_path: Option<String>,
+    pub image_fit: Option<ImageFit>,
     pub raster_scale: i32,
 }
 
@@ -186,7 +190,28 @@ impl IconRasterizer {
             height: target_height,
         };
 
-        let rgba = if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
+        let rgba = if let Some(asset_path) = spec.asset_path.as_deref() {
+            let extension = std::path::Path::new(asset_path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.to_ascii_lowercase());
+            let Some(bytes) = fs::read(asset_path).ok() else {
+                self.cache.insert(key, None);
+                return None;
+            };
+            let fit = spec.image_fit.unwrap_or(ImageFit::Contain);
+            let Some(rgba) = decode_image_asset(
+                &bytes,
+                extension.as_deref(),
+                target_width,
+                target_height,
+                fit,
+            ) else {
+                self.cache.insert(key, None);
+                return None;
+            };
+            rgba
+        } else if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
             decode_png_and_scale(bytes, target_width, target_height)?
         } else {
             let names = icon_candidate_names(spec);
@@ -318,6 +343,13 @@ pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
         .hash(&mut hasher);
     spec.raster_scale.hash(&mut hasher);
     spec.app_id.hash(&mut hasher);
+    spec.asset_path.hash(&mut hasher);
+    match spec.image_fit {
+        Some(ImageFit::Contain) => 1u8.hash(&mut hasher),
+        Some(ImageFit::Cover) => 2u8.hash(&mut hasher),
+        Some(ImageFit::Fill) => 3u8.hash(&mut hasher),
+        None => 0u8.hash(&mut hasher),
+    }
     if let Some(icon) = &spec.icon {
         icon.name.hash(&mut hasher);
         icon.bytes
@@ -539,6 +571,12 @@ fn memory_icon_element(
 }
 
 fn icon_source_key(spec: &IconSpec) -> Option<String> {
+    if let Some(path) = spec.asset_path.as_ref() {
+        return Some(format!(
+            "asset:{path}:fit:{}",
+            image_fit_cache_key(spec.image_fit)
+        ));
+    }
     if let Some(icon) = spec.icon.as_ref() {
         if let Some(name) = icon.name.as_ref() {
             return Some(format!("name:{name}"));
@@ -754,6 +792,11 @@ fn decode_icon_and_scale(
     }
 }
 
+// Clean raster resampler for RGBA8 buffers. Uses tiny_skia's bilinear pixmap
+// blit on the way up, and box-filter averaging on the way down so that
+// large-to-small downscales avoid aliasing. The old implementation used
+// nearest-neighbor with `floor()` which produced blocky, misaligned output at
+// non-integer ratios.
 fn scale_rgba(
     rgba: &[u8],
     source_width: i32,
@@ -764,25 +807,291 @@ fn scale_rgba(
     if source_width == target_width && source_height == target_height {
         return rgba.to_vec();
     }
-
-    let mut scaled = vec![0u8; (target_width * target_height * 4) as usize];
-
-    for y in 0..target_height {
-        for x in 0..target_width {
-            let source_x = ((x as f32 / target_width as f32) * source_width as f32).floor() as i32;
-            let source_y =
-                ((y as f32 / target_height as f32) * source_height as f32).floor() as i32;
-            let source_x = source_x.clamp(0, source_width - 1);
-            let source_y = source_y.clamp(0, source_height - 1);
-
-            let source_index = ((source_y * source_width + source_x) * 4) as usize;
-            let target_index = ((y * target_width + x) * 4) as usize;
-            scaled[target_index..target_index + 4]
-                .copy_from_slice(&rgba[source_index..source_index + 4]);
-        }
+    if source_width <= 0 || source_height <= 0 || target_width <= 0 || target_height <= 0 {
+        return vec![0; (target_width.max(0) * target_height.max(0) * 4) as usize];
     }
 
-    scaled
+    // For heavy downscales, first box-average down to at most 2x the target on
+    // each axis. This kills the high-frequency aliasing that a single
+    // bilinear pass leaves behind.
+    let mut working = rgba.to_vec();
+    let mut working_w = source_width;
+    let mut working_h = source_height;
+    while working_w >= target_width * 2 && working_h >= target_height * 2 {
+        let next_w = working_w / 2;
+        let next_h = working_h / 2;
+        working = box_downscale_2x(&working, working_w, working_h);
+        working_w = next_w;
+        working_h = next_h;
+    }
+
+    if working_w == target_width && working_h == target_height {
+        return working;
+    }
+
+    bilinear_resample(&working, working_w, working_h, target_width, target_height)
+}
+
+// 2x2 box filter: averages each 2x2 RGBA block. Exact integer math to avoid
+// float precision drift across iterative halvings.
+fn box_downscale_2x(rgba: &[u8], width: i32, height: i32) -> Vec<u8> {
+    let out_w = width / 2;
+    let out_h = height / 2;
+    let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let sx = x * 2;
+            let sy = y * 2;
+            let mut sum = [0u32; 4];
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let idx = (((sy + dy) * width + (sx + dx)) * 4) as usize;
+                    sum[0] += rgba[idx] as u32;
+                    sum[1] += rgba[idx + 1] as u32;
+                    sum[2] += rgba[idx + 2] as u32;
+                    sum[3] += rgba[idx + 3] as u32;
+                }
+            }
+            let out_idx = ((y * out_w + x) * 4) as usize;
+            out[out_idx] = (sum[0] / 4) as u8;
+            out[out_idx + 1] = (sum[1] / 4) as u8;
+            out[out_idx + 2] = (sum[2] / 4) as u8;
+            out[out_idx + 3] = (sum[3] / 4) as u8;
+        }
+    }
+    out
+}
+
+// Straightforward bilinear resample. Samples at the center of each target
+// pixel mapped into source space, which aligns pixel grids correctly and
+// avoids the half-texel misalignment produced by naive `i / target * source`
+// floor sampling.
+fn bilinear_resample(
+    rgba: &[u8],
+    source_width: i32,
+    source_height: i32,
+    target_width: i32,
+    target_height: i32,
+) -> Vec<u8> {
+    let mut out = vec![0u8; (target_width * target_height * 4) as usize];
+    let sx_scale = source_width as f32 / target_width as f32;
+    let sy_scale = source_height as f32 / target_height as f32;
+    let max_x = (source_width - 1).max(0) as f32;
+    let max_y = (source_height - 1).max(0) as f32;
+
+    for y in 0..target_height {
+        let fy = ((y as f32 + 0.5) * sy_scale - 0.5).clamp(0.0, max_y);
+        let y0 = fy.floor() as i32;
+        let y1 = (y0 + 1).min(source_height - 1);
+        let ty = fy - y0 as f32;
+
+        for x in 0..target_width {
+            let fx = ((x as f32 + 0.5) * sx_scale - 0.5).clamp(0.0, max_x);
+            let x0 = fx.floor() as i32;
+            let x1 = (x0 + 1).min(source_width - 1);
+            let tx = fx - x0 as f32;
+
+            let i00 = ((y0 * source_width + x0) * 4) as usize;
+            let i01 = ((y0 * source_width + x1) * 4) as usize;
+            let i10 = ((y1 * source_width + x0) * 4) as usize;
+            let i11 = ((y1 * source_width + x1) * 4) as usize;
+
+            let out_idx = ((y * target_width + x) * 4) as usize;
+            for channel in 0..4 {
+                let v00 = rgba[i00 + channel] as f32;
+                let v01 = rgba[i01 + channel] as f32;
+                let v10 = rgba[i10 + channel] as f32;
+                let v11 = rgba[i11 + channel] as f32;
+                let top = v00 * (1.0 - tx) + v01 * tx;
+                let bot = v10 * (1.0 - tx) + v11 * tx;
+                out[out_idx + channel] =
+                    (top * (1.0 - ty) + bot * ty).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+fn decode_image_asset(
+    bytes: &[u8],
+    extension: Option<&str>,
+    target_width: i32,
+    target_height: i32,
+    fit: ImageFit,
+) -> Option<Vec<u8>> {
+    // Resolve native source dimensions so we can apply `fit` without
+    // double-rasterizing for SVG.
+    let (raw_rgba, source_width, source_height) = match extension {
+        Some("svg") => {
+            let options = usvg::Options::default();
+            let tree = usvg::Tree::from_data(bytes, &options).ok()?;
+            let size = tree.size();
+            let source_width = size.width().max(1.0);
+            let source_height = size.height().max(1.0);
+            // Compute the content rect inside the target frame according to
+            // `fit`. SVG is a vector source so we pick the final placement
+            // first, then rasterize directly at that pixel size - this keeps
+            // the result crisp even at fractional output scales.
+            let (dst_w, dst_h, offset_x, offset_y) = fit_content_box(
+                source_width,
+                source_height,
+                target_width,
+                target_height,
+                fit,
+            );
+            if dst_w <= 0 || dst_h <= 0 {
+                return None;
+            }
+            let mut pixmap = tiny_skia::Pixmap::new(target_width as u32, target_height as u32)?;
+            let sx = dst_w as f32 / source_width;
+            let sy = dst_h as f32 / source_height;
+            let transform =
+                tiny_skia::Transform::from_scale(sx, sy).post_translate(offset_x, offset_y);
+            resvg::render(&tree, transform, &mut pixmap.as_mut());
+            return Some(pixmap.data().to_vec());
+        }
+        Some("png") | None => decode_png_raw(bytes)?,
+        Some(_) => decode_png_raw(bytes)?,
+    };
+
+    // Raster source: place inside the target frame per `fit`, then resample.
+    let (dst_w, dst_h, offset_x, offset_y) = fit_content_box(
+        source_width as f32,
+        source_height as f32,
+        target_width,
+        target_height,
+        fit,
+    );
+    if dst_w <= 0 || dst_h <= 0 {
+        return None;
+    }
+
+    let resampled = scale_rgba(&raw_rgba, source_width, source_height, dst_w, dst_h);
+    if dst_w == target_width && dst_h == target_height {
+        return Some(resampled);
+    }
+
+    let mut framed = vec![0u8; (target_width * target_height * 4) as usize];
+    let ox = offset_x.round() as i32;
+    let oy = offset_y.round() as i32;
+    for row in 0..dst_h {
+        let dst_y = oy + row;
+        if dst_y < 0 || dst_y >= target_height {
+            continue;
+        }
+        let dst_x = ox.max(0);
+        let src_x = (dst_x - ox).max(0);
+        let copy_width = (dst_w - src_x).min(target_width - dst_x);
+        if copy_width <= 0 {
+            continue;
+        }
+
+        let src_start = ((row * dst_w + src_x) * 4) as usize;
+        let src_end = src_start + (copy_width * 4) as usize;
+        let dst_start = ((dst_y * target_width + dst_x) * 4) as usize;
+        framed[dst_start..dst_start + (copy_width * 4) as usize]
+            .copy_from_slice(&resampled[src_start..src_end]);
+    }
+    Some(framed)
+}
+
+// Decode a PNG to RGBA at native resolution.
+fn decode_png_raw(bytes: &[u8]) -> Option<(Vec<u8>, i32, i32)> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    let source = &buffer[..info.buffer_size()];
+    let rgba = match info.color_type {
+        ColorType::Rgba => source.to_vec(),
+        ColorType::Rgb => source
+            .chunks_exact(3)
+            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
+            .collect(),
+        ColorType::GrayscaleAlpha => source
+            .chunks_exact(2)
+            .flat_map(|chunk| [chunk[0], chunk[0], chunk[0], chunk[1]])
+            .collect(),
+        ColorType::Grayscale => source
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect(),
+        _ => return None,
+    };
+    Some((rgba, info.width as i32, info.height as i32))
+}
+
+// Compute the destination box for a source of `src_w x src_h` laid out inside
+// a `frame_w x frame_h` target according to `fit`. Returns (width, height,
+// offset_x, offset_y) in target-pixel coordinates.
+fn fit_content_box(
+    src_w: f32,
+    src_h: f32,
+    frame_w: i32,
+    frame_h: i32,
+    fit: ImageFit,
+) -> (i32, i32, f32, f32) {
+    match fit {
+        ImageFit::Fill => (frame_w, frame_h, 0.0, 0.0),
+        ImageFit::Contain | ImageFit::Cover => {
+            if src_w <= 0.0 || src_h <= 0.0 || frame_w <= 0 || frame_h <= 0 {
+                return (0, 0, 0.0, 0.0);
+            }
+            let scale_x = frame_w as f32 / src_w;
+            let scale_y = frame_h as f32 / src_h;
+            let scale = if matches!(fit, ImageFit::Contain) {
+                scale_x.min(scale_y)
+            } else {
+                scale_x.max(scale_y)
+            };
+            let dst_w = (src_w * scale).round().max(1.0) as i32;
+            let dst_h = (src_h * scale).round().max(1.0) as i32;
+            let offset_x = (frame_w - dst_w) as f32 / 2.0;
+            let offset_y = (frame_h - dst_h) as f32 / 2.0;
+            (dst_w, dst_h, offset_x, offset_y)
+        }
+    }
+}
+
+fn image_fit_cache_key(fit: Option<ImageFit>) -> &'static str {
+    match fit {
+        Some(ImageFit::Contain) => "contain",
+        Some(ImageFit::Cover) => "cover",
+        Some(ImageFit::Fill) => "fill",
+        None => "none",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asset_cache_key_includes_image_fit() {
+        let base = IconSpec {
+            rect: LogicalRect::new(0, 0, 16, 16),
+            rect_precise: None,
+            icon: None,
+            app_id: None,
+            asset_path: Some("/tmp/icon.svg".into()),
+            image_fit: Some(ImageFit::Contain),
+            raster_scale: 1,
+        };
+        let mut cover = base.clone();
+        cover.image_fit = Some(ImageFit::Cover);
+
+        assert_ne!(icon_source_key(&base), icon_source_key(&cover));
+    }
+
+    #[test]
+    fn cover_fit_can_overflow_frame_for_clipping() {
+        let (width, height, offset_x, offset_y) =
+            fit_content_box(32.0, 16.0, 10, 10, ImageFit::Cover);
+
+        assert_eq!((width, height), (20, 10));
+        assert_eq!(offset_x, -5.0);
+        assert_eq!(offset_y, 0.0);
+    }
 }
 
 fn rgba_to_argb8888(rgba: &[u8]) -> Vec<u8> {

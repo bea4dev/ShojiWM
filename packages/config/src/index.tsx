@@ -3,6 +3,7 @@ import {
     Box,
     Button,
     ClientWindow,
+    Image,
     ShaderEffect,
     Label,
     WINDOW_MANAGER,
@@ -114,9 +115,6 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
-    const [closeHovered, setCloseHovered] = useState(false);
-    const [closeActive, setCloseActive] = useState(false);
-
     const scale = window.animation.signal(focusAnimation);
     const openVariable = window.animation.signal(openAnimation);
     const opacity = openVariable;
@@ -132,15 +130,6 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const borderColor = window.isFocused(focused => focused ? "#d7ba7d" : "#4f5666");
     const titlebarBackground = window.isFocused(focused => focused ? "#1f243080" : "#2a2f3a80");
     const titleColor = window.isFocused(focused => focused ? "#f5f7fa" : "#c9d1d9");
-    const closeBackground = computed(() => {
-        if (closeActive()) {
-            return "#d63b3b";
-        }
-        if (closeHovered()) {
-            return "#b32626";
-        }
-        return "#8a1c1c";
-    });
 
     const titlebarStyle: SSDStyle = {
         height: 30,
@@ -155,7 +144,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
             dualKawaseBlur({ radius: 4, passes: 2 }),
-            shaderStage(loadShader("./liquid-glass.frag"), {
+            shaderStage(loadShader("./src/liquid-glass.frag"), {
                 uniforms: {
                     inset_px: 0.0,
                     border_radius_px: 10.0,
@@ -174,7 +163,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         <WindowBorder
             style={{
                 border: { px: 2, color: borderColor },
-                borderRadius: 20,
+                borderRadius: 10,
                 background: "#10131900",
                 padding: 0,
                 paddingX: 0,
@@ -195,23 +184,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                             }}
                         />
                         <Box style={{ flexGrow: 1 }} />
-                        <TestComponent2 />
-                        <TestComponent />
-                        <Button
-                            onHoverChange={setCloseHovered}
-                            onActiveChange={setCloseActive}
-                            style={{
-                                width: 18,
-                                height: 18,
-                                borderRadius: 9,
-                                background: closeBackground,
-                                border: window.isFocused(focused => ({
-                                    px: focused ? 1 : 0,
-                                    color: "#f5f7fa",
-                                })),
-                            }}
-                            onClick={window.close}
-                        />
+                        <CloseButton window={window} />
                     </ShaderEffect>
                     <ClientWindow />
                 </Box>
@@ -220,78 +193,42 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     );
 };
 
-const TestComponent2 = () => {
-    const [state, setState] = useState(0);
+const CloseButton = ({ window }: { window: WaylandWindow }) => {
+    const [hover, setHover] = useState(false);
 
-    return (
-        <Box
-            style={{
-                position: "relative",
-                alignItems: "center",
-                paddingLeft: 12,
-                paddingRight: 12,
-            }}
-            direction="row"
-        >
-            <Label
-                text={state(state => state.toString())}
+    const background = hover(hover => hover ? "#F08080" : "#F0808000");
+
+    var icon: DecorationRenderable | null = null;
+    if (!hover()) {
+        icon = (
+            <Image
+                src="./assets/x.svg"
                 style={{
-                    marginLeft: 32,
-                    color: "#ffffff",
+                    width: 12,
+                    height: 12,
+                    transform: { translateX: 1, translateY: 0 }
                 }}
             />
-            <Box
-                style={{
-                    position: "absolute",
-                    width: 96,
-                    height: 18,
-                    borderRadius: 2,
-                    background: "#000000",
-                    zIndex: 5,
-                    pointerEvents: "none",
-                    opacity: 0.5,
-                }}
-            />
-            <Button
-                onClick={() => { setState(state() + 1) }}
-                style={{
-                    position: "absolute",
-                    width: 18,
-                    height: 18,
-                    borderRadius: 9,
-                    background: "#ff5f57",
-                    zIndex: 10,
-                    pointerEvents: "auto",
-                    opacity: 0.5,
-                    transform: { translateY: 2 }
-                }}
-            />
-        </Box>
-    );
-}
-
-const TestComponent = () => {
-    const [state, setState] = useState(0);
-
-    if (state() > 10) {
-        return null;
+        );
     }
 
     return (
-        <Box direction="horizontal" style={{ gap: 6 }}>
-            <Label text={state(state => state.toString())} style={{ fontFamily: "Noto Sans CJK JP" }} />
-            <Button
-                onClick={() => { setState(state() + 1); }}
-                style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: 9,
-                    border: { px: 2, color: "#FFFFFF" },
-                    background: "#000000",
-                }}
-            />
-        </Box>
-    );
+        <Button
+            onHoverChange={setHover}
+            style={{
+                width: 16,
+                height: 16,
+                borderRadius: 8,
+                background: background,
+                border: { px: 1, color: "#f5f7fa" },
+                alignItems: "center",
+                justifyContent: "center",
+            }}
+            onClick={window.close}
+        >
+            {icon}
+        </Button>
+    )
 };
 
 export { WINDOW_MANAGER };

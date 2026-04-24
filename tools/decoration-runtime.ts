@@ -1,7 +1,19 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Socket, createConnection } from "node:net";
 import { format } from "node:util";
+import { existsSync } from "node:fs";
+
+function findConfigRoot(entryPath: string): string {
+  let dir = dirname(resolve(entryPath));
+  while (dir !== dirname(dir)) {
+    if (existsSync(`${dir}/package.json`)) {
+      return dir;
+    }
+    dir = dirname(dir);
+  }
+  return dirname(resolve(entryPath));
+}
 
 import {
   advanceAnimationFrame,
@@ -20,8 +32,8 @@ import {
   dropWindowDependencies,
   enterLayerDependencyScope,
   isSignal,
+  installAssetResolverBridge,
   installProcessResolverBridge,
-  installShaderResolverBridge,
   installRuntimeHooks,
   invokeKeyBinding,
   takePendingDisplayConfig,
@@ -395,7 +407,7 @@ async function main() {
   });
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
-  installShaderResolverBridge(resolve(configPath));
+  installAssetResolverBridge(findConfigRoot(configPath));
   installProcessResolverBridge(resolve(configPath));
   beginKeyBindingRegistration();
   beginProcessConfigRegistration();

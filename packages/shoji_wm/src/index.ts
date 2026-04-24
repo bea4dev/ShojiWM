@@ -1,5 +1,6 @@
 import type {
   AppIconProps,
+  ImageProps,
   Component,
   ComponentProps,
   DecorationInteractionSnapshot,
@@ -98,6 +99,8 @@ import {
   takePendingProcessConfig,
 } from "./process";
 import { createElementNode } from "./runtime";
+import { computed as createComputedSignal, isSignal as isReadonlySignal } from "./signals";
+import { resolveAssetPath } from "./shader";
 import { serializeDecorationTree } from "./serialize";
 export {
   advanceAnimationFrame,
@@ -122,8 +125,10 @@ export {
   dualKawaseBlur,
   get,
   imageSource,
+  installAssetResolverBridge,
   installShaderResolverBridge,
   loadShader,
+  resolveAssetPath,
   noise,
   save,
   shaderInput,
@@ -240,6 +245,8 @@ export type {
   AppIconProps,
   BoxProps,
   ButtonProps,
+  ImageFit,
+  ImageProps,
   Component,
   DecorationInteractionSnapshot,
   DecorationFunction,
@@ -329,6 +336,18 @@ export const Box = defineIntrinsicComponent<BoxProps>("Box");
 export const Label = defineIntrinsicComponent<LabelProps>("Label");
 export const Button = defineIntrinsicComponent<ButtonProps>("Button");
 export const AppIcon = defineIntrinsicComponent<AppIconProps>("AppIcon");
+
+const ImageIntrinsic = defineIntrinsicComponent<ImageProps>("Image");
+export function Image(props: ImageProps) {
+  const src = props.src;
+  const resolved =
+    typeof src === "string"
+      ? resolveAssetPath(src)
+      : isReadonlySignal(src)
+        ? createComputedSignal(() => resolveAssetPath(src()))
+        : src;
+  return ImageIntrinsic({ ...props, src: resolved });
+}
 export const ShaderEffect = defineIntrinsicComponent<ShaderEffectProps>("ShaderEffect");
 export const ClientWindow = defineIntrinsicComponent<ClientWindowProps>("Window");
 export const Window = ClientWindow;

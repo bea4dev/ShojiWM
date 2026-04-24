@@ -20,7 +20,7 @@ import type {
   EffectInvalidationPolicyHandle,
 } from "./types";
 
-let shaderBaseDir = "/";
+let assetBaseDir = "/";
 
 export interface CompileEffectOptions {
   input: EffectInputHandle;
@@ -35,18 +35,25 @@ export interface CompileEffectOptions {
   >;
 }
 
-export function installShaderResolverBridge(configPath: string): void {
-  shaderBaseDir = dirnamePath(resolvePath(shaderBaseDir, configPath));
+// Base directory for relative asset paths (shaders, images, fonts). Callers
+// pass the already-resolved config package root - typically the directory
+// containing the nearest ancestor package.json of the entry config file.
+export function installAssetResolverBridge(configRoot: string): void {
+  assetBaseDir = normalizePath(isAbsolutePath(configRoot) ? configRoot : resolvePath("/", configRoot));
 }
 
-function resolveShaderPath(path: string): string {
-  return isAbsolutePath(path) ? path : resolvePath(shaderBaseDir, path);
+export function installShaderResolverBridge(configPath: string): void {
+  assetBaseDir = dirnamePath(resolvePath(assetBaseDir, configPath));
+}
+
+export function resolveAssetPath(path: string): string {
+  return isAbsolutePath(path) ? path : resolvePath(assetBaseDir, path);
 }
 
 export function loadShader(path: string): ShaderModuleHandle {
   return {
     kind: "shader-module",
-    path: resolveShaderPath(path),
+    path: resolveAssetPath(path),
   };
 }
 
@@ -61,7 +68,7 @@ export function xrayBackdropSource(): XrayBackdropSourceHandle {
 export function imageSource(path: string): ImageSourceHandle {
   return {
     kind: "image-source",
-    path: resolveShaderPath(path),
+    path: resolveAssetPath(path),
   };
 }
 

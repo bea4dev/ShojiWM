@@ -117,6 +117,7 @@ export type DecorationNodeType =
   | "Label"
   | "Button"
   | "AppIcon"
+  | "Image"
   | "ShaderEffect"
   | "Window"
   | "WindowBorder"
@@ -473,6 +474,15 @@ export interface ButtonProps extends ComponentProps {
 export interface AppIconProps extends ComponentProps {
   icon?: MaybeSignal<WindowIcon | undefined>;
   style?: SSDStyle;
+  id?: string;
+}
+
+export type ImageFit = "contain" | "cover" | "fill";
+
+export interface ImageProps extends ComponentProps {
+  src: MaybeSignal<string>;
+  style?: SSDStyle;
+  fit?: MaybeSignal<ImageFit>;
   id?: string;
 }
 

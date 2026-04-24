@@ -1,10 +1,11 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 
 import {
   createComponentStateStore,
   createReactiveWindow,
-  installShaderResolverBridge,
+  installAssetResolverBridge,
   serializeDecorationTree,
   withComponentRenderRoot,
   type DecorationSerializationContext,
@@ -46,7 +47,7 @@ async function main() {
     : DEFAULT_SNAPSHOT;
 
   const moduleUrl = pathToFileURL(resolve(configPath)).href;
-  installShaderResolverBridge(resolve(configPath));
+  installAssetResolverBridge(findConfigRoot(configPath));
   const loaded = await import(moduleUrl);
   const decoration = resolveDecoration(loaded);
 
@@ -103,6 +104,17 @@ function resolveDecoration(
   }
 
   return maybeDecoration;
+}
+
+function findConfigRoot(entryPath: string): string {
+  let dir = dirname(resolve(entryPath));
+  while (dir !== dirname(dir)) {
+    if (existsSync(`${dir}/package.json`)) {
+      return dir;
+    }
+    dir = dirname(dir);
+  }
+  return dirname(resolve(entryPath));
 }
 
 main().catch((error) => {

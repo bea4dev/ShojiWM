@@ -2362,6 +2362,11 @@ fn collect_render_orders(
             *order += 1;
             return;
         }
+        super::DecorationNodeKind::Image(_) => {
+            map.insert(format!("{path}:icon"), *order);
+            *order += 1;
+            return;
+        }
         super::DecorationNodeKind::WindowSlot => return,
         _ => {}
     }
@@ -2564,6 +2569,7 @@ fn collect_cached_buffers(
     match &node.kind {
         super::DecorationNodeKind::Label(_)
         | super::DecorationNodeKind::AppIcon
+        | super::DecorationNodeKind::Image(_)
         | super::DecorationNodeKind::WindowSlot => {}
         _ => {
             if include_node {
@@ -2901,8 +2907,10 @@ fn collect_icon_buffers(
         return;
     }
 
-    let super::DecorationNodeKind::AppIcon = &node.kind else {
-        return;
+    let (asset_path, image_fit) = match &node.kind {
+        super::DecorationNodeKind::AppIcon => (None, None),
+        super::DecorationNodeKind::Image(image) => (Some(image.src.clone()), Some(image.fit)),
+        _ => return,
     };
     let shared_geometry = node
         .stable_id
@@ -2919,6 +2927,8 @@ fn collect_icon_buffers(
         ),
         icon: snapshot.icon.clone(),
         app_id: snapshot.app_id.clone(),
+        asset_path,
+        image_fit,
         raster_scale,
     };
 
@@ -3011,6 +3021,7 @@ fn node_kind_name(kind: &super::DecorationNodeKind) -> &'static str {
         super::DecorationNodeKind::Label(_) => "label",
         super::DecorationNodeKind::Button(_) => "button",
         super::DecorationNodeKind::AppIcon => "app-icon",
+        super::DecorationNodeKind::Image(_) => "image",
         super::DecorationNodeKind::ShaderEffect(_) => "shader-effect",
         super::DecorationNodeKind::WindowBorder => "window-border",
         super::DecorationNodeKind::WindowSlot => "window-slot",

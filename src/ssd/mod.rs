@@ -389,6 +389,11 @@ pub enum DecorationRenderPrimitive {
     AppIcon {
         rect: LogicalRect,
     },
+    Image {
+        rect: LogicalRect,
+        src: String,
+        fit: ImageFit,
+    },
     ShaderEffect {
         rect: LogicalRect,
         shader: CompiledEffect,
@@ -534,10 +539,30 @@ pub enum DecorationNodeKind {
     Label(LabelNode),
     Button(ButtonNode),
     AppIcon,
+    Image(ImageNode),
     ShaderEffect(ShaderEffectNode),
     WindowBorder,
     /// Reserved anchor where the client surface is placed.
     WindowSlot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFit {
+    Contain,
+    Cover,
+    Fill,
+}
+
+impl Default for ImageFit {
+    fn default() -> Self {
+        ImageFit::Contain
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageNode {
+    pub src: String,
+    pub fit: ImageFit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1257,6 +1282,19 @@ fn layout_node_resolved(
             scale,
             child_containing_block,
         )?,
+        // Buttons act as flex containers for their child icon / label so that
+        // explicit child `width` / `height` are honored. Without this, all
+        // non-absolute children collapse into the parent's content rect via
+        // the fallback arm below.
+        DecorationNodeKind::Button(_) => layout_box_children(
+            node,
+            content_rect,
+            LayoutDirection::Column,
+            effective_clip,
+            window_slot_size,
+            scale,
+            child_containing_block,
+        )?,
         _ if node.children.is_empty() => Vec::new(),
         _ => node
             .children
@@ -1467,7 +1505,34 @@ fn layout_box_children(
         }
     }
 
-    let mut cursor = direction.main_origin_resolved(content_rect);
+    let allocated_main_sum = allocated
+        .iter()
+        .copied()
+        .fold(ResolvedLayoutValue::ZERO, |sum, value| sum + value);
+    let flow_child_count = flow_children.len();
+    let remaining_after_allocation = ResolvedLayoutValue::from_raw(
+        (main_available.raw() - total_gap.raw() - allocated_main_sum.raw()).max(0),
+    );
+    let justify_content = node.style.justify_content.unwrap_or(JustifyContent::Start);
+    let (main_offset, gap_extra, gap_extra_remainder) = match justify_content {
+        JustifyContent::Center => (
+            ResolvedLayoutValue::from_raw(remaining_after_allocation.raw() / 2),
+            ResolvedLayoutValue::ZERO,
+            0,
+        ),
+        JustifyContent::End => (remaining_after_allocation, ResolvedLayoutValue::ZERO, 0),
+        JustifyContent::SpaceBetween if flow_child_count > 1 => {
+            let gap_count = (flow_child_count - 1) as i32;
+            (
+                ResolvedLayoutValue::ZERO,
+                ResolvedLayoutValue::from_raw(remaining_after_allocation.raw() / gap_count),
+                remaining_after_allocation.raw() % gap_count,
+            )
+        }
+        _ => (ResolvedLayoutValue::ZERO, ResolvedLayoutValue::ZERO, 0),
+    };
+
+    let mut cursor = direction.main_origin_resolved(content_rect) + main_offset;
     let mut children = vec![None; node.children.len()];
     let layout_debug_enabled = std::env::var_os("SHOJI_GAP_LAYOUT_CHILD_DEBUG").is_some();
     let direction_name = match direction {
@@ -1476,7 +1541,11 @@ fn layout_box_children(
     };
     let parent_stable_id = node.stable_id.as_deref().unwrap_or("<none>");
 
-    for ((index, child), main_size) in flow_children.into_iter().zip(allocated.into_iter()) {
+    for (flow_position, ((index, child), main_size)) in flow_children
+        .into_iter()
+        .zip(allocated.into_iter())
+        .enumerate()
+    {
         let margin = child.style.resolved_margin(scale);
         let margin_main_start = direction.main_start_margin_resolved(margin);
         let margin_main_end = direction.main_end_margin_resolved(margin);
@@ -1542,6 +1611,7 @@ fn layout_box_children(
                 DecorationNodeKind::Label(_) => "label",
                 DecorationNodeKind::Button(_) => "button",
                 DecorationNodeKind::AppIcon => "app-icon",
+                DecorationNodeKind::Image(_) => "image",
                 DecorationNodeKind::ShaderEffect(_) => "shader-effect",
                 DecorationNodeKind::WindowBorder => "window-border",
                 DecorationNodeKind::WindowSlot => "window-slot",
@@ -1583,7 +1653,13 @@ fn layout_box_children(
             scale,
             containing_block,
         )?);
-        cursor = cursor + main_size + gap;
+        let distributed_gap_remainder = (flow_position as i32).min(gap_extra_remainder.max(0));
+        let next_distributed_gap_remainder =
+            ((flow_position + 1) as i32).min(gap_extra_remainder.max(0));
+        let gap_remainder_step = ResolvedLayoutValue::from_raw(
+            next_distributed_gap_remainder - distributed_gap_remainder,
+        );
+        cursor = cursor + main_size + gap + gap_extra + gap_remainder_step;
     }
 
     for (index, child) in node.children.iter().enumerate() {
@@ -2253,6 +2329,9 @@ fn kind_layout_equivalent(left: &DecorationNodeKind, right: &DecorationNodeKind)
         }
         (DecorationNodeKind::Button(_), DecorationNodeKind::Button(_)) => true,
         (DecorationNodeKind::AppIcon, DecorationNodeKind::AppIcon) => true,
+        (DecorationNodeKind::Image(left), DecorationNodeKind::Image(right)) => {
+            left.src == right.src && left.fit == right.fit
+        }
         (DecorationNodeKind::ShaderEffect(left), DecorationNodeKind::ShaderEffect(right)) => {
             left.direction == right.direction
         }
@@ -2539,6 +2618,11 @@ fn collect_render_primitives(
         DecorationNodeKind::AppIcon => {
             primitives.push(DecorationRenderPrimitive::AppIcon { rect: node.rect })
         }
+        DecorationNodeKind::Image(image) => primitives.push(DecorationRenderPrimitive::Image {
+            rect: node.rect,
+            src: image.src.clone(),
+            fit: image.fit,
+        }),
         DecorationNodeKind::ShaderEffect(effect) => {
             primitives.push(DecorationRenderPrimitive::ShaderEffect {
                 rect: node.rect,
@@ -3043,6 +3127,123 @@ mod tests {
 
         assert_eq!(*spacer_rect, LogicalRect::new(104, 0, 84, 30));
         assert_eq!(*right_rect, LogicalRect::new(192, 0, 20, 30));
+    }
+
+    #[test]
+    fn button_lays_out_image_child_with_explicit_size() {
+        let image = DecorationNode::new(DecorationNodeKind::Image(ImageNode {
+            src: "/tmp/icon.svg".into(),
+            fit: ImageFit::Contain,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(4),
+            height: Some(4),
+            ..Default::default()
+        });
+        let button = DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+            action: WindowAction::Close,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(16),
+            height: Some(16),
+            ..Default::default()
+        })
+        .with_children(vec![image]);
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_children(vec![
+            button,
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 20))
+            .expect("layout should succeed");
+
+        let image_rect = layout.root.children[0].children[0].rect;
+        assert_eq!(image_rect.width, 4);
+        assert_eq!(image_rect.height, 4);
+    }
+
+    #[test]
+    fn button_can_center_image_child_on_both_axes() {
+        let image = DecorationNode::new(DecorationNodeKind::Image(ImageNode {
+            src: "/tmp/icon.svg".into(),
+            fit: ImageFit::Contain,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(4),
+            height: Some(4),
+            ..Default::default()
+        });
+        let button = DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+            action: WindowAction::Close,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(16),
+            height: Some(16),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        })
+        .with_children(vec![image]);
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_children(vec![
+            button,
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 20))
+            .expect("layout should succeed");
+
+        assert_eq!(
+            layout.root.children[0].children[0].rect,
+            LogicalRect::new(6, 6, 4, 4)
+        );
+    }
+
+    #[test]
+    fn row_box_applies_justify_content_space_between() {
+        let child = || {
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Row,
+            }))
+            .with_style(DecorationStyle {
+                width: Some(10),
+                height: Some(10),
+                ..Default::default()
+            })
+        };
+        let toolbar = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(100),
+            height: Some(10),
+            justify_content: Some(JustifyContent::SpaceBetween),
+            ..Default::default()
+        })
+        .with_children(vec![child(), child(), child()]);
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![
+            toolbar,
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 100))
+            .expect("layout should succeed");
+        let toolbar = &layout.root.children[0];
+
+        assert_eq!(toolbar.children[0].rect.x, 0);
+        assert_eq!(toolbar.children[1].rect.x, 45);
+        assert_eq!(toolbar.children[2].rect.x, 90);
     }
 
     #[test]

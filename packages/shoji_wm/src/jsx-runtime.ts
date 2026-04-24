@@ -3,6 +3,7 @@ import type {
   Component,
   ComponentProps,
   ClientWindowProps,
+  ImageProps,
   ShaderEffectProps,
   DecorationChild,
   DecorationRenderable,
@@ -58,6 +59,7 @@ export namespace JSX {
     Label: ComponentProps;
     Button: ComponentProps;
     AppIcon: ComponentProps;
+    Image: ImageProps;
     ShaderEffect: ShaderEffectProps;
     ClientWindow: ClientWindowProps;
     Window: ComponentProps;

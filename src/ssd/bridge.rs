@@ -4,7 +4,7 @@ use super::{
     AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
     ButtonNode, Color, CompiledEffect, DecorationInteractionHandlers, DecorationNode,
     DecorationNodeKind, DecorationStateChangeHandler, DecorationStyle, Edges, EffectInput,
-    EffectInvalidationPolicy, EffectStage, JustifyContent, LabelNode, LayoutDirection,
+    EffectInvalidationPolicy, EffectStage, ImageNode, JustifyContent, LabelNode, LayoutDirection,
     NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents, PositionOffsets,
     ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue, StylePosition, WindowAction,
 };
@@ -35,6 +35,8 @@ pub struct WireProps {
     pub text: Option<String>,
     pub icon: Option<serde_json::Value>,
     pub shader: Option<WireCompiledEffect>,
+    pub src: Option<String>,
+    pub fit: Option<String>,
     pub id: Option<String>,
     pub style: WireStyle,
     pub on_click: Option<WireOnClick>,
@@ -286,6 +288,8 @@ pub enum DecorationBridgeError {
     InvalidPointerEvents(String),
     #[error("invalid color string: {0}")]
     InvalidColor(String),
+    #[error("invalid image fit value: {0}")]
+    InvalidImageFit(String),
 }
 
 pub fn decode_tree_json(input: &str) -> Result<DecorationNode, DecorationBridgeError> {
@@ -313,6 +317,10 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .try_into()?,
             }),
             "AppIcon" => DecorationNodeKind::AppIcon,
+            "Image" => DecorationNodeKind::Image(ImageNode {
+                src: value.props.src.clone().unwrap_or_default(),
+                fit: parse_image_fit(value.props.fit.as_deref())?,
+            }),
             "ShaderEffect" => DecorationNodeKind::ShaderEffect(ShaderEffectNode {
                 direction: parse_direction(value.props.direction.or(value.props.split))?,
                 shader: value
@@ -693,6 +701,15 @@ fn parse_node_transform(input: WireNodeTransform) -> NodeTransform {
     }
 }
 
+fn parse_image_fit(input: Option<&str>) -> Result<crate::ssd::ImageFit, DecorationBridgeError> {
+    match input.unwrap_or("contain") {
+        "contain" => Ok(crate::ssd::ImageFit::Contain),
+        "cover" => Ok(crate::ssd::ImageFit::Cover),
+        "fill" => Ok(crate::ssd::ImageFit::Fill),
+        other => Err(DecorationBridgeError::InvalidImageFit(other.to_string())),
+    }
+}
+
 fn parse_direction(input: Option<String>) -> Result<LayoutDirection, DecorationBridgeError> {
     match input.as_deref().unwrap_or("column") {
         "row" | "horizontal" => Ok(LayoutDirection::Row),
@@ -941,6 +958,35 @@ mod tests {
                 .map(|handler| handler.handler_for(false)),
             Some("active-false")
         );
+    }
+
+    #[test]
+    fn decode_image_node_props() {
+        let json = r##"
+        {
+          "kind": "Image",
+          "nodeId": "root.Image[0]",
+          "props": {
+            "src": "/tmp/icon.svg",
+            "fit": "cover",
+            "style": { "width": 12, "height": 8 }
+          },
+          "children": []
+        }
+        "##;
+
+        let tree = decode_tree_json(json).expect("json should decode");
+
+        assert_eq!(tree.stable_id.as_deref(), Some("root.Image[0]"));
+        assert_eq!(tree.style.width, Some(12));
+        assert_eq!(tree.style.height, Some(8));
+        assert!(matches!(
+            tree.kind,
+            DecorationNodeKind::Image(ImageNode {
+                src,
+                fit: crate::ssd::ImageFit::Cover,
+            }) if src == "/tmp/icon.svg"
+        ));
     }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
