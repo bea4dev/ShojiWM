@@ -13,12 +13,13 @@ use crate::{
     backend::shader_effect::{ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement},
     backend::text,
     backend::visual::{
-        RectSnapMode, precise_logical_rect_in_element_space, relative_physical_rect_from_root,
+        precise_logical_rect_in_element_space, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, relative_physical_rect_from_root_snapped_edges,
         snapped_logical_radius, snapped_logical_rect_for_element,
         snapped_logical_rect_from_relative_physical, snapped_precise_logical_rect_in_element_space,
+        RectSnapMode,
     },
-    ssd::{LogicalRect, WindowDecorationState},
+    ssd::{ComputedDecorationNode, LogicalRect, StylePosition, WindowDecorationState},
 };
 
 smithay::render_elements! {
@@ -311,6 +312,59 @@ fn is_descendant_owner(owner: &str, parent: &str) -> bool {
         && owner.as_bytes().get(parent.len()) == Some(&b'.')
 }
 
+fn owner_is_absolute_border_fit_descendant(
+    node: &ComputedDecorationNode,
+    border_owner_id: Option<&str>,
+    owner_id: &str,
+    inside_border: bool,
+    under_absolute: bool,
+) -> bool {
+    let is_border_owner = node
+        .stable_id
+        .as_deref()
+        .zip(border_owner_id)
+        .is_some_and(|(node_id, border_id)| node_id == border_id);
+    let inside_border = inside_border || is_border_owner;
+    let under_absolute = under_absolute
+        || (inside_border
+            && !is_border_owner
+            && matches!(node.style.position, Some(StylePosition::Absolute)));
+
+    if node
+        .stable_id
+        .as_deref()
+        .is_some_and(|node_id| node_id == owner_id)
+    {
+        return under_absolute;
+    }
+
+    node.children.iter().any(|child| {
+        owner_is_absolute_border_fit_descendant(
+            child,
+            border_owner_id,
+            owner_id,
+            inside_border,
+            under_absolute,
+        )
+    })
+}
+
+fn skip_border_fit_anchor_owner(
+    decoration: &crate::ssd::WindowDecorationState,
+    border_owner_id: Option<&str>,
+    owner_id: Option<&str>,
+) -> bool {
+    owner_id.is_some_and(|owner_id| {
+        owner_is_absolute_border_fit_descendant(
+            &decoration.layout.root,
+            border_owner_id,
+            owner_id,
+            false,
+            false,
+        )
+    })
+}
+
 fn bordered_node_anchor_union_geometry(
     decoration: &crate::ssd::WindowDecorationState,
     border_stable_key: &str,
@@ -331,6 +385,13 @@ fn bordered_node_anchor_union_geometry(
                 .zip(buffer.owner_node_id.as_deref())
                 .is_some_and(|(parent, owner)| is_descendant_owner(owner, parent));
         if !is_descendant {
+            continue;
+        }
+        if skip_border_fit_anchor_owner(
+            decoration,
+            border_owner_id,
+            buffer.owner_node_id.as_deref(),
+        ) {
             continue;
         }
         let rect = buffer
@@ -364,6 +425,13 @@ fn bordered_node_anchor_union_geometry(
         if !is_descendant {
             continue;
         }
+        if skip_border_fit_anchor_owner(
+            decoration,
+            border_owner_id,
+            buffer.owner_node_id.as_deref(),
+        ) {
+            continue;
+        }
         let rect = buffer
             .rect_precise
             .map(|rect| {
@@ -392,6 +460,13 @@ fn bordered_node_anchor_union_geometry(
         if !is_descendant {
             continue;
         }
+        if skip_border_fit_anchor_owner(
+            decoration,
+            border_owner_id,
+            buffer.owner_node_id.as_deref(),
+        ) {
+            continue;
+        }
         let rect = buffer
             .rect_precise
             .map(|rect| {
@@ -418,6 +493,13 @@ fn bordered_node_anchor_union_geometry(
             .zip(buffer.owner_node_id.as_deref())
             .is_some_and(|(parent, owner)| is_descendant_owner(owner, parent));
         if !is_descendant {
+            continue;
+        }
+        if skip_border_fit_anchor_owner(
+            decoration,
+            border_owner_id,
+            buffer.owner_node_id.as_deref(),
+        ) {
             continue;
         }
         let rect = buffer
@@ -1598,6 +1680,28 @@ fn rounded_rect_element(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssd::{BoxNode, DecorationNodeKind, DecorationStyle};
+
+    fn computed_node(
+        stable_id: &str,
+        kind: DecorationNodeKind,
+        style: DecorationStyle,
+        children: Vec<ComputedDecorationNode>,
+    ) -> ComputedDecorationNode {
+        ComputedDecorationNode {
+            stable_id: Some(stable_id.to_string()),
+            kind,
+            style,
+            rect: LogicalRect::new(0, 0, 10, 10),
+            resolved_rect: Default::default(),
+            resolved_content_rect: Default::default(),
+            resolved_border_width: Default::default(),
+            resolved_border_radius: Default::default(),
+            effective_clip: None,
+            resolved_effective_clip: None,
+            children,
+        }
+    }
 
     #[test]
     fn square_clip_covering_local_rect_is_treated_as_noop() {
@@ -1659,6 +1763,66 @@ mod tests {
         assert_eq!(clip.rect.width, 1891.0);
         assert_eq!(clip.rect.height, 1208.0);
         assert_eq!(clip.radius, 18.0);
+    }
+
+    #[test]
+    fn border_fit_anchor_skips_only_absolute_descendant_owners() {
+        let flow_child = computed_node(
+            "root.flow",
+            DecorationNodeKind::Box(BoxNode::default()),
+            DecorationStyle::default(),
+            Vec::new(),
+        );
+        let absolute_leaf = computed_node(
+            "root.absolute.leaf",
+            DecorationNodeKind::Box(BoxNode::default()),
+            DecorationStyle::default(),
+            Vec::new(),
+        );
+        let absolute_child = computed_node(
+            "root.absolute",
+            DecorationNodeKind::Box(BoxNode::default()),
+            DecorationStyle {
+                position: Some(StylePosition::Absolute),
+                ..Default::default()
+            },
+            vec![absolute_leaf],
+        );
+        let root = computed_node(
+            "root",
+            DecorationNodeKind::WindowBorder,
+            DecorationStyle::default(),
+            vec![flow_child, absolute_child],
+        );
+
+        assert!(!owner_is_absolute_border_fit_descendant(
+            &root,
+            Some("root"),
+            "root",
+            false,
+            false,
+        ));
+        assert!(!owner_is_absolute_border_fit_descendant(
+            &root,
+            Some("root"),
+            "root.flow",
+            false,
+            false,
+        ));
+        assert!(owner_is_absolute_border_fit_descendant(
+            &root,
+            Some("root"),
+            "root.absolute",
+            false,
+            false,
+        ));
+        assert!(owner_is_absolute_border_fit_descendant(
+            &root,
+            Some("root"),
+            "root.absolute.leaf",
+            false,
+            false,
+        ));
     }
 }
 

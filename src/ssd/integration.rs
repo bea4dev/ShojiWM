@@ -29,6 +29,11 @@ fn clip_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIP_DEBUG").is_some()
 }
 
+fn handler_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_SSD_HANDLER_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
 fn animation_timing_debug_enabled() -> bool {
     std::env::var_os("SHOJI_ANIMATION_TIMING_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -379,6 +384,23 @@ impl ShojiWM {
                     &mut self.icon_rasterizer,
                 );
                 self.suggested_window_offset = suggested_window_offset(&decoration.layout);
+                if handler_debug_enabled() {
+                    log_decoration_refresh(
+                        "runtime-handler",
+                        &decoration.snapshot,
+                        decoration.client_rect,
+                        &decoration.layout,
+                        &decoration.buffers,
+                    );
+                }
+            } else if handler_debug_enabled() {
+                warn!(
+                    window_id = decoration.snapshot.id,
+                    title = decoration.snapshot.title,
+                    client_rect = %format_rect(decoration.client_rect),
+                    layout_scale = decoration.layout_scale,
+                    "runtime handler decoration relayout failed"
+                );
             }
         }
 
@@ -1905,7 +1927,7 @@ impl DecorationTree {
         let slot = initial
             .window_slot_rect()
             .ok_or(super::DecorationLayoutError::MissingComputedWindowSlot)?;
-        let initial_bounds = initial.bounds_rect();
+        let initial_bounds = initial.root.rect;
 
         let extra_left = slot.x - initial_bounds.x;
         let extra_top = slot.y - initial_bounds.y;
@@ -3867,7 +3889,7 @@ mod tests {
     use super::*;
     use crate::ssd::{
         BorderStyle, BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
-        LayoutDirection,
+        LayoutDirection, StylePosition,
     };
 
     #[test]
@@ -3906,6 +3928,95 @@ mod tests {
             layout.window_slot_rect(),
             Some(LogicalRect::new(50, 100, 800, 600))
         );
+    }
+
+    #[test]
+    fn layout_for_client_does_not_expand_root_for_absolute_titlebar_overflow() {
+        let titlebar_overlay = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            position: Some(StylePosition::Relative),
+            padding: Edges {
+                left: 12,
+                right: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_style(
+                DecorationStyle {
+                    width: Some(10),
+                    height: Some(18),
+                    margin: Edges {
+                        left: 32,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_style(
+                DecorationStyle {
+                    position: Some(StylePosition::Absolute),
+                    width: Some(96),
+                    height: Some(18),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    ..Default::default()
+                })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        height: Some(30),
+                        padding: Edges {
+                            left: 8,
+                            right: 8,
+                            ..Default::default()
+                        },
+                        gap: Some(8),
+                        ..Default::default()
+                    })
+                    .with_children(vec![
+                        DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                            .with_style(DecorationStyle {
+                                flex_grow: Some(1.0),
+                                ..Default::default()
+                            }),
+                        titlebar_overlay,
+                    ]),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
+        );
+
+        let client_rect = LogicalRect::new(50, 100, 200, 120);
+        let layout = tree
+            .layout_for_client(client_rect)
+            .expect("layout should succeed");
+
+        assert_eq!(layout.window_slot_rect(), Some(client_rect));
+        assert_eq!(layout.root.rect.x, client_rect.x - 2);
+        assert_eq!(
+            layout.root.rect.x + layout.root.rect.width,
+            client_rect.x + client_rect.width + 2
+        );
+        assert!(layout.bounds_rect().width > layout.root.rect.width);
     }
 
     #[test]

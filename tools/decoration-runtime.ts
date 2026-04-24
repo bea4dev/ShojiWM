@@ -1053,6 +1053,18 @@ function invokeHandler(
   const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
   const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
+  if (process.env.SHOJI_SSD_HANDLER_DEBUG) {
+    console.debug(
+      "runtime handler decoration result",
+      JSON.stringify({
+        windowId,
+        handlerId,
+        dirtyNodeIds,
+        nodeCount: countSerializedNodes(reevaluated.serialized),
+        topLevel: summarizeSerializedChildren(reevaluated.serialized),
+      }),
+    );
+  }
 
   return {
     invoked: true,
@@ -1062,6 +1074,37 @@ function invokeHandler(
     dirtyWindowNodeIds: { [windowId]: dirtyNodeIds },
     actions,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+  };
+}
+
+function countSerializedNodes(node: unknown): number {
+  if (!node || typeof node !== "object") {
+    return 0;
+  }
+  const record = node as { children?: unknown[] };
+  return 1 + (record.children ?? []).reduce((sum, child) => sum + countSerializedNodes(child), 0);
+}
+
+function summarizeSerializedChildren(node: unknown): unknown {
+  if (!node || typeof node !== "object") {
+    return null;
+  }
+  const record = node as { kind?: string; nodeId?: string; children?: unknown[] };
+  return {
+    kind: record.kind,
+    nodeId: record.nodeId,
+    childCount: record.children?.length ?? 0,
+    children: (record.children ?? []).map((child) => {
+      if (!child || typeof child !== "object") {
+        return { primitive: typeof child };
+      }
+      const childRecord = child as { kind?: string; nodeId?: string; children?: unknown[] };
+      return {
+        kind: childRecord.kind,
+        nodeId: childRecord.nodeId,
+        childCount: childRecord.children?.length ?? 0,
+      };
+    }),
   };
 }
 

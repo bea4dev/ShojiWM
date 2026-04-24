@@ -265,30 +265,56 @@ impl ComputedDecorationNode {
         }
     }
 
-    pub(crate) fn resolved_children_union_rect(&self) -> Option<ResolvedLogicalRect> {
-        let mut children = self.children.iter();
-        let first = children.next()?;
-        let mut union = first.resolved_bounds_rect();
+    pub(crate) fn resolved_layout_bounds_rect(&self) -> ResolvedLogicalRect {
+        let mut min_x = self.resolved_rect.x;
+        let mut min_y = self.resolved_rect.y;
+        let mut max_x = self.resolved_rect.x + self.resolved_rect.width;
+        let mut max_y = self.resolved_rect.y + self.resolved_rect.height;
 
-        for child in children {
-            let child_bounds = child.resolved_bounds_rect();
-            let min_x = union.x.min(child_bounds.x);
-            let min_y = union.y.min(child_bounds.y);
-            let max_x = (union.x + union.width).max(child_bounds.x + child_bounds.width);
-            let max_y = (union.y + union.height).max(child_bounds.y + child_bounds.height);
-            union = ResolvedLogicalRect {
-                x: min_x,
-                y: min_y,
-                width: ResolvedLayoutValue::from_raw((max_x.raw() - min_x.raw()).max(0)),
-                height: ResolvedLayoutValue::from_raw((max_y.raw() - min_y.raw()).max(0)),
-            };
+        let mut has_flow_child = false;
+        let inset = ResolvedLayoutEdges {
+            top: self.resolved_content_rect.y - self.resolved_rect.y,
+            left: self.resolved_content_rect.x - self.resolved_rect.x,
+            right: (self.resolved_rect.x + self.resolved_rect.width)
+                - (self.resolved_content_rect.x + self.resolved_content_rect.width),
+            bottom: (self.resolved_rect.y + self.resolved_rect.height)
+                - (self.resolved_content_rect.y + self.resolved_content_rect.height),
+        };
+        let mut child_min_x = ResolvedLayoutValue::from_raw(i32::MAX);
+        let mut child_min_y = ResolvedLayoutValue::from_raw(i32::MAX);
+        let mut child_max_x = ResolvedLayoutValue::from_raw(i32::MIN);
+        let mut child_max_y = ResolvedLayoutValue::from_raw(i32::MIN);
+
+        for child in self
+            .children
+            .iter()
+            .filter(|child| !child.style.is_absolute_positioned())
+        {
+            has_flow_child = true;
+            let child_bounds = child.resolved_layout_bounds_rect();
+            child_min_x = child_min_x.min(child_bounds.x);
+            child_min_y = child_min_y.min(child_bounds.y);
+            child_max_x = child_max_x.max(child_bounds.x + child_bounds.width);
+            child_max_y = child_max_y.max(child_bounds.y + child_bounds.height);
         }
 
-        Some(union)
+        if has_flow_child {
+            min_x = min_x.min(child_min_x - inset.left);
+            min_y = min_y.min(child_min_y - inset.top);
+            max_x = max_x.max(child_max_x + inset.right);
+            max_y = max_y.max(child_max_y + inset.bottom);
+        }
+
+        ResolvedLogicalRect {
+            x: min_x,
+            y: min_y,
+            width: ResolvedLayoutValue::from_raw((max_x.raw() - min_x.raw()).max(0)),
+            height: ResolvedLayoutValue::from_raw((max_y.raw() - min_y.raw()).max(0)),
+        }
     }
 
     pub(crate) fn sync_root_bounds(&mut self, scale: f64) {
-        self.resolved_rect = self.resolved_bounds_rect();
+        self.resolved_rect = self.resolved_layout_bounds_rect();
         self.rect = self.resolved_rect.round_to_logical_rect();
         self.resolved_content_rect = self
             .resolved_rect
