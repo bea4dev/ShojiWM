@@ -45,22 +45,31 @@ fn compute_sample_uv_compensation(
     let absolute_misalignment = Vector2::new(misalignment.x.abs(), misalignment.y.abs());
     let compensation_min = 0.5;
     let compensation_max = 2.0;
-    // Compensate when sampled texels and projected pixels differ by at least
-    // half a pixel on an axis, but only for tiny mismatches that look like
-    // raster-grid rounding drift (for example 1919 -> 1920). Large differences
-    // indicate intentional scaling and must not be compensated.
+    // Activate snap in both directions for small raster-grid rounding drift
+    // (|misalignment| in [0.5, 2.0] px). Larger differences indicate
+    // intentional scaling and must stay on bilinear.
     let snap_x = (absolute_misalignment.x >= compensation_min
         && absolute_misalignment.x <= compensation_max) as i32 as f32;
     let snap_y = (absolute_misalignment.y >= compensation_min
         && absolute_misalignment.y <= compensation_max) as i32 as f32;
-    let effective_misalignment = Vector2::new(
+    // Use SIGNED (projected - sampled), not absolute, so that the adjustment
+    // goes the right way on each side:
+    //   * projected > sampled (e.g. 1919 tx -> 1920 px): extend adjusted_uv_br
+    //     past uv_br. Snap + clamp-to-edge repeats the last texel to fill the
+    //     extra output column, closing the 1 px edge gap.
+    //   * projected < sampled (e.g. 1000 tx -> 999 px): shrink adjusted_uv_br
+    //     below uv_br. Each output pixel N then lands squarely on texel N and
+    //     the extra source texel simply falls off the right edge — cleanly,
+    //     without the middle-column drop that absolute misalignment caused
+    //     and without the bilinear softness that skipping snap caused.
+    let signed_effective = Vector2::new(
         if snap_x > 0.5 {
-            absolute_misalignment.x
+            projected_pixels.x - sampled_pixels.x
         } else {
             0.0
         },
         if snap_y > 0.5 {
-            absolute_misalignment.y
+            projected_pixels.y - sampled_pixels.y
         } else {
             0.0
         },
@@ -68,7 +77,7 @@ fn compute_sample_uv_compensation(
     let safe_projected_pixels =
         Vector2::new(projected_pixels.x.max(1.0), projected_pixels.y.max(1.0));
     let adjusted_uv_br = uv_br
-        + effective_misalignment
+        + signed_effective
             .div_element_wise(safe_projected_pixels)
             .mul_element_wise(uv_range);
     let enabled = snap_x > 0.5 || snap_y > 0.5;
@@ -816,6 +825,11 @@ mod tests {
 
     #[test]
     fn shrinks_sampling_when_projection_is_one_pixel_shorter() {
+        // projected_y < sampled_y by 1 px. Snap should activate and
+        // adjusted_uv_br[1] should be BELOW uv_br[1] so that each output row
+        // N lands cleanly on texel N (and the extra source texel falls off
+        // the right edge). Expanding instead would make nearest-neighbor drop
+        // a row in the middle — the kitty resize artifact.
         let compensation = compute_sample_uv_compensation(
             Vector2::new(0.0, 0.0),
             Vector2::new(1230.0, 796.0),
@@ -825,12 +839,16 @@ mod tests {
         );
 
         assert!(compensation.enabled);
+        assert_eq!(compensation.snap_axes, [0.0, 1.0]);
         assert_eq!(compensation.adjusted_uv_br[0], compensation.uv_br[0]);
-        assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+        assert!(compensation.adjusted_uv_br[1] < compensation.uv_br[1]);
     }
 
     #[test]
-    fn shrinks_sampling_for_fractional_projection_mismatch() {
+    fn shrinks_sampling_for_fractional_projection_undershoot() {
+        // projected_x slightly > sampled_x (0.2539, below min 0.5): no snap.
+        // projected_y < sampled_y by 0.7441: snap activates, adjusted_uv_br[1]
+        // shrinks so nearest-neighbor maps 1:1 instead of dropping a row.
         let compensation = compute_sample_uv_compensation(
             Vector2::new(0.0, 0.0),
             Vector2::new(1890.0, 1063.0),
@@ -840,8 +858,9 @@ mod tests {
         );
 
         assert!(compensation.enabled);
+        assert_eq!(compensation.snap_axes, [0.0, 1.0]);
         assert_eq!(compensation.adjusted_uv_br[0], compensation.uv_br[0]);
-        assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+        assert!(compensation.adjusted_uv_br[1] < compensation.uv_br[1]);
     }
 
     #[test]
