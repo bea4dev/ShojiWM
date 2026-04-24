@@ -1,11 +1,9 @@
 import {
     AppIcon,
-    applyInteractionStyle,
     Box,
     Button,
     ClientWindow,
     ShaderEffect,
-    getInteractionState,
     Label,
     WINDOW_MANAGER,
     WindowBorder,
@@ -18,6 +16,7 @@ import {
     seconds,
     cubicBezier,
     useState,
+    computed,
     shaderInput,
     shaderStage,
     loadShader,
@@ -115,7 +114,8 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
 });
 
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
-    const closeState = getInteractionState(window, "window.close");
+    const [closeHovered, setCloseHovered] = useState(false);
+    const [closeActive, setCloseActive] = useState(false);
 
     const scale = window.animation.signal(focusAnimation);
     const openVariable = window.animation.signal(openAnimation);
@@ -132,6 +132,15 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const borderColor = window.isFocused(focused => focused ? "#d7ba7d" : "#4f5666");
     const titlebarBackground = window.isFocused(focused => focused ? "#1f243080" : "#2a2f3a80");
     const titleColor = window.isFocused(focused => focused ? "#f5f7fa" : "#c9d1d9");
+    const closeBackground = computed(() => {
+        if (closeActive()) {
+            return "#d63b3b";
+        }
+        if (closeHovered()) {
+            return "#b32626";
+        }
+        return "#8a1c1c";
+    });
 
     const titlebarStyle: SSDStyle = {
         height: 30,
@@ -189,21 +198,18 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                         <TestComponent2 />
                         <TestComponent />
                         <Button
-                            id="window.close"
-                            style={applyInteractionStyle(
-                                {
-                                    width: 18,
-                                    height: 18,
-                                    borderRadius: 9,
-                                    background: "#8a1c1c",
-                                },
-                                {
-                                    hovered: { background: "#b32626" },
-                                    active: { background: "#d63b3b" },
-                                    focused: { border: { px: 1, color: "#f5f7fa" } },
-                                },
-                                closeState,
-                            )}
+                            onHoverChange={setCloseHovered}
+                            onActiveChange={setCloseActive}
+                            style={{
+                                width: 18,
+                                height: 18,
+                                borderRadius: 9,
+                                background: closeBackground,
+                                border: window.isFocused(focused => ({
+                                    px: focused ? 1 : 0,
+                                    color: "#f5f7fa",
+                                })),
+                            }}
                             onClick={window.close}
                         />
                     </ShaderEffect>

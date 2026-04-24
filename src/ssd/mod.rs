@@ -17,27 +17,27 @@ mod window_model;
 
 use smithay::utils::Logical;
 
-use crate::backend::text::{measure_label_intrinsic, LabelSpec};
+use crate::backend::text::{LabelSpec, measure_label_intrinsic};
 
 pub use bridge::{
-    decode_tree_json, DecorationBridgeError, WireCompiledEffect, WireDecorationChild,
-    WireDecorationNode, WireProps, WireStyle, WireWindowAction,
+    DecorationBridgeError, WireCompiledEffect, WireDecorationChild, WireDecorationNode, WireProps,
+    WireStyle, WireWindowAction, decode_tree_json,
 };
 pub use evaluator::{
-    evaluate_dynamic_decoration, DecorationEvaluationError, DecorationEvaluationResult,
-    DecorationEvaluator, DecorationHandlerInvocation, DecorationKeyBindingInvocation,
-    DecorationSchedulerTick, LayerEffectEvaluationResult, NodeDecorationEvaluator,
-    RuntimeLayerEffectAssignment, RuntimeWindowAction, StaticDecorationEvaluator,
+    DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
+    DecorationHandlerInvocation, DecorationKeyBindingInvocation, DecorationSchedulerTick,
+    LayerEffectEvaluationResult, NodeDecorationEvaluator, RuntimeLayerEffectAssignment,
+    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
 };
 pub use interaction::DecorationInteractionSnapshot;
 pub use window_model::{
-    layer_runtime_id, LayerKindSnapshot, LayerPositionSnapshot, OutputModeSnapshot,
-    OutputPositionSnapshot, TransformOrigin, WaylandLayerSnapshot, WaylandOutputSnapshot,
-    WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot, WindowPositionSnapshot,
-    WindowTransform,
+    LayerKindSnapshot, LayerPositionSnapshot, OutputModeSnapshot, OutputPositionSnapshot,
+    TransformOrigin, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction,
+    WaylandWindowSnapshot, WindowIconSnapshot, WindowPositionSnapshot, WindowTransform,
+    layer_runtime_id,
 };
 
 /// Top-level decoration tree.
@@ -154,11 +154,19 @@ impl ComputedDecorationTree {
 
         DecorationHitTestResult::Outside
     }
+
+    pub fn interaction_target_at(
+        &self,
+        point: LogicalPoint,
+    ) -> Option<DecorationInteractionTarget> {
+        find_interaction_target(&self.root, point)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedDecorationNode {
     pub stable_id: Option<String>,
+    pub interaction: DecorationInteractionHandlers,
     pub kind: DecorationNodeKind,
     pub style: DecorationStyle,
     pub rect: LogicalRect,
@@ -333,6 +341,7 @@ impl ComputedDecorationNode {
     fn to_decoration_node(&self) -> DecorationNode {
         DecorationNode {
             stable_id: self.stable_id.clone(),
+            interaction: self.interaction.clone(),
             kind: self.kind.clone(),
             style: self.style.clone(),
             children: self.children.iter().map(Self::to_decoration_node).collect(),
@@ -398,6 +407,40 @@ pub enum DecorationHitTestResult {
     ClientArea,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DecorationInteractionHandlers {
+    pub hover_change: Option<DecorationStateChangeHandler>,
+    pub active_change: Option<DecorationStateChangeHandler>,
+}
+
+impl DecorationInteractionHandlers {
+    fn has_any(&self) -> bool {
+        self.hover_change.is_some() || self.active_change.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorationStateChangeHandler {
+    pub true_handler: String,
+    pub false_handler: String,
+}
+
+impl DecorationStateChangeHandler {
+    pub fn handler_for(&self, state: bool) -> &str {
+        if state {
+            &self.true_handler
+        } else {
+            &self.false_handler
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorationInteractionTarget {
+    pub node_id: String,
+    pub handlers: DecorationInteractionHandlers,
+}
+
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ResizeEdges: u32 {
@@ -440,6 +483,7 @@ fn validate_node(
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecorationNode {
     pub stable_id: Option<String>,
+    pub interaction: DecorationInteractionHandlers,
     pub kind: DecorationNodeKind,
     pub style: DecorationStyle,
     pub children: Vec<DecorationNode>,
@@ -449,6 +493,7 @@ impl DecorationNode {
     pub fn new(kind: DecorationNodeKind) -> Self {
         Self {
             stable_id: None,
+            interaction: DecorationInteractionHandlers::default(),
             kind,
             style: DecorationStyle::default(),
             children: Vec::new(),
@@ -1241,6 +1286,7 @@ fn layout_node_resolved(
 
     let mut computed = ComputedDecorationNode {
         stable_id: node.stable_id.clone(),
+        interaction: node.interaction.clone(),
         kind: node.kind.clone(),
         style: node.style.clone(),
         rect: resolved_rect.round_to_logical_rect(),
@@ -1264,6 +1310,7 @@ pub(super) fn reapply_tree_preserving_layout(
     scale: f64,
 ) {
     computed.stable_id = node.stable_id.clone();
+    computed.interaction = node.interaction.clone();
     computed.kind = node.kind.clone();
     computed.style = node.style.clone();
     let content_rect = computed
@@ -2617,6 +2664,37 @@ fn find_button_action(node: &ComputedDecorationNode, point: LogicalPoint) -> Opt
     }
 }
 
+fn find_interaction_target(
+    node: &ComputedDecorationNode,
+    point: LogicalPoint,
+) -> Option<DecorationInteractionTarget> {
+    if node.style.visible == Some(false) || !node.style.pointer_events_enabled() {
+        return None;
+    }
+    if node
+        .effective_clip
+        .is_some_and(|clip| !clip.rect.contains(point))
+    {
+        return None;
+    }
+
+    for child in paint_ordered_children(node) {
+        if let Some(target) = find_interaction_target(child, point) {
+            return Some(target);
+        }
+    }
+
+    if node.rect.contains(point) && node.interaction.has_any() {
+        let node_id = node.stable_id.clone()?;
+        return Some(DecorationInteractionTarget {
+            node_id,
+            handlers: node.interaction.clone(),
+        });
+    }
+
+    None
+}
+
 fn hit_test_resize_edges(
     rect: LogicalRect,
     border_width: i32,
@@ -2864,18 +2942,18 @@ mod tests {
             }),
             ..Default::default()
         })
-        .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowBorder)
-            .with_style(DecorationStyle {
-                border: Some(BorderStyle {
-                    width: 2,
-                    color: Color::WHITE,
-                }),
-                border_radius: Some(20),
-                ..Default::default()
-            })
-            .with_children(vec![DecorationNode::new(
-                DecorationNodeKind::WindowSlot,
-            )])]);
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::WindowBorder)
+                .with_style(DecorationStyle {
+                    border: Some(BorderStyle {
+                        width: 2,
+                        color: Color::WHITE,
+                    }),
+                    border_radius: Some(20),
+                    ..Default::default()
+                })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        ]);
 
         let layout = DecorationTree::new(root)
             .layout(LogicalRect::new(0, 0, 200, 100))
@@ -2992,12 +3070,12 @@ mod tests {
                 background: Some(Color::BLACK),
                 ..Default::default()
             })
-            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
-                BoxNode {
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
                     direction: LayoutDirection::Column,
-                },
-            ))
-            .with_children(vec![titlebar])]);
+                }))
+                .with_children(vec![titlebar]),
+            ]);
 
         let root = DecorationNode::new(DecorationNodeKind::ShaderEffect(ShaderEffectNode {
             direction: LayoutDirection::Column,
@@ -3356,6 +3434,64 @@ mod tests {
     }
 
     #[test]
+    fn interaction_target_uses_topmost_paint_ordered_node() {
+        let mut lower = DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+            action: WindowAction::Maximize,
+        }))
+        .with_style(DecorationStyle {
+            width: Some(100),
+            height: Some(20),
+            z_index: Some(1),
+            ..Default::default()
+        });
+        lower.stable_id = Some("lower".into());
+        lower.interaction.hover_change = Some(DecorationStateChangeHandler {
+            true_handler: "lower-hover-true".into(),
+            false_handler: "lower-hover-false".into(),
+        });
+
+        let mut upper = DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+            action: WindowAction::Close,
+        }))
+        .with_style(DecorationStyle {
+            position: Some(StylePosition::Absolute),
+            z_index: Some(10),
+            width: Some(100),
+            height: Some(20),
+            ..Default::default()
+        });
+        upper.stable_id = Some("upper".into());
+        upper.interaction.hover_change = Some(DecorationStateChangeHandler {
+            true_handler: "upper-hover-true".into(),
+            false_handler: "upper-hover-false".into(),
+        });
+
+        let root =
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_children(vec![
+                lower,
+                upper,
+                DecorationNode::new(DecorationNodeKind::WindowSlot),
+            ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 40))
+            .expect("layout should succeed");
+        let target = layout
+            .interaction_target_at(LogicalPoint::new(5, 5))
+            .expect("interaction target should exist");
+
+        assert_eq!(target.node_id, "upper");
+        assert_eq!(
+            target
+                .handlers
+                .hover_change
+                .as_ref()
+                .map(|handler| handler.handler_for(true)),
+            Some("upper-hover-true")
+        );
+    }
+
+    #[test]
     fn pointer_events_none_skips_button_hit_test() {
         let root =
             DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_children(vec![
@@ -3478,15 +3614,15 @@ mod tests {
                 }),
                 ..Default::default()
             })
-            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
-                BoxNode {
-                    direction: LayoutDirection::Column,
-                },
-            ))
             .with_children(vec![
-                title,
-                DecorationNode::new(DecorationNodeKind::WindowSlot),
-            ])]);
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Column,
+                }))
+                .with_children(vec![
+                    title,
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]),
+            ]);
 
         let layout = DecorationTree::new(root)
             .layout(LogicalRect::new(0, 0, 100, 40))
@@ -3606,9 +3742,11 @@ mod tests {
             .expect("layout should succeed");
 
         let primitives = layout.render_primitives();
-        assert!(primitives
-            .iter()
-            .all(|primitive| !matches!(primitive, DecorationRenderPrimitive::FillRect { .. })));
+        assert!(
+            primitives
+                .iter()
+                .all(|primitive| !matches!(primitive, DecorationRenderPrimitive::FillRect { .. }))
+        );
         assert!(primitives.iter().any(|primitive| matches!(
             primitive,
             DecorationRenderPrimitive::WindowSlot { rect } if *rect == LogicalRect::new(0, 0, 10, 10)
@@ -3787,29 +3925,29 @@ mod tests {
                 },
                 ..Default::default()
             })
-            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
-                BoxNode {
-                    direction: LayoutDirection::Row,
-                },
-            ))
-            .with_style(DecorationStyle {
-                gap: Some(3),
-                ..Default::default()
-            })
             .with_children(vec![
-                DecorationNode::new(DecorationNodeKind::Label(LabelNode { text: "A".into() }))
-                    .with_style(DecorationStyle {
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Row,
+                }))
+                .with_style(DecorationStyle {
+                    gap: Some(3),
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Label(LabelNode { text: "A".into() }))
+                        .with_style(DecorationStyle {
+                            width: Some(11),
+                            height: Some(20),
+                            ..Default::default()
+                        }),
+                    DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
                         width: Some(11),
                         height: Some(20),
                         ..Default::default()
                     }),
-                DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
-                    width: Some(11),
-                    height: Some(20),
-                    ..Default::default()
-                }),
-                DecorationNode::new(DecorationNodeKind::WindowSlot),
-            ])]);
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]),
+            ]);
 
         let layout = DecorationTree::new(root)
             .layout_for_client_with_scale(LogicalRect::new(50, 40, 200, 120), 1.6)
@@ -3880,28 +4018,28 @@ mod tests {
                 border_radius: Some(20),
                 ..Default::default()
             })
-            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
-                BoxNode {
-                    direction: LayoutDirection::Row,
-                },
-            ))
             .with_children(vec![
                 DecorationNode::new(DecorationNodeKind::Box(BoxNode {
                     direction: LayoutDirection::Row,
                 }))
-                .with_style(DecorationStyle {
-                    width: Some(2),
-                    ..Default::default()
-                }),
-                anchor_column,
-                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                    direction: LayoutDirection::Row,
-                }))
-                .with_style(DecorationStyle {
-                    width: Some(2),
-                    ..Default::default()
-                }),
-            ])]);
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        width: Some(2),
+                        ..Default::default()
+                    }),
+                    anchor_column,
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        width: Some(2),
+                        ..Default::default()
+                    }),
+                ]),
+            ]);
 
         let layout = DecorationTree::new(root)
             .layout_for_client_with_scale(LogicalRect::new(82, 39, 1512, 906), 1.25)

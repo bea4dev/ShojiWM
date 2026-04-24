@@ -2,8 +2,9 @@ use serde::Deserialize;
 
 use super::{
     AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
-    ButtonNode, Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
-    EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LabelNode, LayoutDirection,
+    ButtonNode, Color, CompiledEffect, DecorationInteractionHandlers, DecorationNode,
+    DecorationNodeKind, DecorationStateChangeHandler, DecorationStyle, Edges, EffectInput,
+    EffectInvalidationPolicy, EffectStage, JustifyContent, LabelNode, LayoutDirection,
     NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents, PositionOffsets,
     ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue, StylePosition, WindowAction,
 };
@@ -37,6 +38,8 @@ pub struct WireProps {
     pub id: Option<String>,
     pub style: WireStyle,
     pub on_click: Option<WireOnClick>,
+    pub on_hover_change: Option<WireStateChangeHandler>,
+    pub on_active_change: Option<WireStateChangeHandler>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -339,6 +342,18 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
 
         Ok(DecorationNode {
             stable_id: value.node_id,
+            interaction: DecorationInteractionHandlers {
+                hover_change: value
+                    .props
+                    .on_hover_change
+                    .map(TryInto::try_into)
+                    .transpose()?,
+                active_change: value
+                    .props
+                    .on_active_change
+                    .map(TryInto::try_into)
+                    .transpose()?,
+            },
             kind,
             style,
             children,
@@ -886,6 +901,47 @@ mod tests {
         let err = decode_tree_json(json).expect_err("primitive children are unsupported");
         assert_eq!(err, DecorationBridgeError::UnsupportedPrimitiveChild);
     }
+
+    #[test]
+    fn decode_interaction_change_handlers() {
+        let json = r##"
+        {
+          "kind": "Button",
+          "nodeId": "root.Button[0]",
+          "props": {
+            "onHoverChange": {
+              "kind": "runtime-state-handler",
+              "trueId": "hover-true",
+              "falseId": "hover-false"
+            },
+            "onActiveChange": {
+              "kind": "runtime-state-handler",
+              "trueId": "active-true",
+              "falseId": "active-false"
+            }
+          },
+          "children": []
+        }
+        "##;
+
+        let tree = decode_tree_json(json).expect("json should decode");
+
+        assert_eq!(tree.stable_id.as_deref(), Some("root.Button[0]"));
+        assert_eq!(
+            tree.interaction
+                .hover_change
+                .as_ref()
+                .map(|handler| handler.handler_for(true)),
+            Some("hover-true")
+        );
+        assert_eq!(
+            tree.interaction
+                .active_change
+                .as_ref()
+                .map(|handler| handler.handler_for(false)),
+            Some("active-false")
+        );
+    }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -898,4 +954,27 @@ pub enum WireOnClick {
 pub struct WireRuntimeHandler {
     pub kind: String,
     pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireStateChangeHandler {
+    pub kind: String,
+    pub true_id: String,
+    pub false_id: String,
+}
+
+impl TryFrom<WireStateChangeHandler> for DecorationStateChangeHandler {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireStateChangeHandler) -> Result<Self, Self::Error> {
+        if value.kind != "runtime-state-handler" {
+            return Err(DecorationBridgeError::UnsupportedNodeKind(value.kind));
+        }
+
+        Ok(Self {
+            true_handler: value.true_id,
+            false_handler: value.false_id,
+        })
+    }
 }

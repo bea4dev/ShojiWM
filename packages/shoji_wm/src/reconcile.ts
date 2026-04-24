@@ -122,20 +122,26 @@ export function createDecorationEvaluationCache(
   let serialized: SerializableDecorationChild;
   let transform: WindowTransform;
   let nextHandlerId = 1;
-  let clickHandlers = new Map<string, () => void>();
+  let runtimeHandlers = new Map<string, () => void>();
   const handlerIdsByKey = new Map<string, string>();
 
   const serializationContext: DecorationSerializationContext = {
     registerClickHandler(key, handler) {
       const handlerId = handlerIdsByKey.get(key) ?? `click-${nextHandlerId++}`;
       handlerIdsByKey.set(key, handlerId);
-      clickHandlers.set(handlerId, handler);
+      runtimeHandlers.set(handlerId, handler);
+      return handlerId;
+    },
+    registerInteractionHandler(key, handler) {
+      const handlerId = handlerIdsByKey.get(key) ?? `interaction-${nextHandlerId++}`;
+      handlerIdsByKey.set(key, handlerId);
+      runtimeHandlers.set(handlerId, handler);
       return handlerId;
     },
   };
 
   const evaluateCurrentTree = (): DecorationEvaluationResult => {
-    clickHandlers = new Map();
+    runtimeHandlers = new Map();
     enterWindowDependencyScope(currentSnapshot.id);
     try {
       tree = normalizeRootDecoration(
@@ -223,7 +229,7 @@ export function createDecorationEvaluationCache(
       return evaluateCurrentTree();
     },
     invokeHandler(handlerId) {
-      const handler = clickHandlers.get(handlerId);
+      const handler = runtimeHandlers.get(handlerId);
       if (!handler) {
         return false;
       }

@@ -3,6 +3,7 @@ use smithay::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
+    desktop::Window,
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, CursorIcon, MotionEvent},
@@ -22,7 +23,7 @@ use crate::{
         DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges,
         RuntimeWindowAction, WindowAction,
     },
-    state::ShojiWM,
+    state::{ShojiWM, TrackedDecorationInteractionTarget},
 };
 
 enum KeyboardAction {
@@ -171,6 +172,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
 
+                self.update_decoration_hover_target(pos);
                 self.update_decoration_cursor_icon(pos);
                 self.schedule_redraw();
             }
@@ -199,6 +201,7 @@ impl ShojiWM {
                     },
                 );
                 pointer.frame(self);
+                self.update_decoration_hover_target(pos);
                 self.update_decoration_cursor_icon(pos);
                 self.schedule_redraw();
             }
@@ -225,6 +228,9 @@ impl ShojiWM {
                         pointer.current_location(),
                         "process-input-event",
                     );
+                }
+                if button == 272 && button_state == ButtonState::Released {
+                    self.release_decoration_active_target();
                 }
 
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
@@ -331,6 +337,10 @@ impl ShojiWM {
                     }
                     let layer_under_pointer = self.pointer_contents.layer.clone();
                     let _ = self.refresh_window_decorations();
+                    self.update_decoration_hover_target(pointer.current_location());
+                    if button == 272 {
+                        self.press_decoration_active_target(pointer.current_location());
+                    }
 
                     if layer_under_pointer.is_none()
                         && let Some((window, hit)) =
@@ -742,6 +752,145 @@ impl ShojiWM {
             Some(surface) => self.surface_is_over_window_non_popup_tree(surface, window),
             None => true,
         }
+    }
+
+    fn tracked_decoration_interaction_target_under(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<TrackedDecorationInteractionTarget> {
+        let pointer_contents = self.pointer_contents_at(pos);
+        if pointer_contents.layer.is_some() {
+            return None;
+        }
+
+        let (window, target) = self.decoration_interaction_target_under(pos)?;
+        self.pointer_allows_window_interaction(
+            pointer_contents
+                .surface
+                .as_ref()
+                .map(|(surface, _)| surface),
+            &window,
+        )
+        .then(|| TrackedDecorationInteractionTarget {
+            window_id: self.snapshot_window(&window).id,
+            window,
+            target,
+        })
+    }
+
+    fn update_decoration_hover_target(
+        &mut self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        let next = self
+            .tracked_decoration_interaction_target_under(pos)
+            .filter(|target| target.target.handlers.hover_change.is_some());
+        if self
+            .decoration_hover_target
+            .as_ref()
+            .zip(next.as_ref())
+            .is_some_and(|(current, next)| current.same_node(next))
+        {
+            return;
+        }
+
+        if let Some(previous) = self.decoration_hover_target.take()
+            && let Some(handler) = previous.target.handlers.hover_change.as_ref()
+        {
+            self.invoke_decoration_runtime_handler(
+                &previous.window,
+                &previous.window_id,
+                handler.handler_for(false),
+            );
+        }
+
+        if let Some(next_target) = next {
+            if let Some(handler) = next_target.target.handlers.hover_change.as_ref() {
+                self.invoke_decoration_runtime_handler(
+                    &next_target.window,
+                    &next_target.window_id,
+                    handler.handler_for(true),
+                );
+            }
+            self.decoration_hover_target = Some(next_target);
+        }
+    }
+
+    fn press_decoration_active_target(
+        &mut self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        let next = self
+            .tracked_decoration_interaction_target_under(pos)
+            .filter(|target| target.target.handlers.active_change.is_some());
+        if self
+            .decoration_active_target
+            .as_ref()
+            .zip(next.as_ref())
+            .is_some_and(|(current, next)| current.same_node(next))
+        {
+            return;
+        }
+
+        self.release_decoration_active_target();
+
+        if let Some(next_target) = next {
+            if let Some(handler) = next_target.target.handlers.active_change.as_ref() {
+                self.invoke_decoration_runtime_handler(
+                    &next_target.window,
+                    &next_target.window_id,
+                    handler.handler_for(true),
+                );
+            }
+            self.decoration_active_target = Some(next_target);
+        }
+    }
+
+    fn release_decoration_active_target(&mut self) {
+        if let Some(previous) = self.decoration_active_target.take()
+            && let Some(handler) = previous.target.handlers.active_change.as_ref()
+        {
+            self.invoke_decoration_runtime_handler(
+                &previous.window,
+                &previous.window_id,
+                handler.handler_for(false),
+            );
+        }
+    }
+
+    fn invoke_decoration_runtime_handler(
+        &mut self,
+        window: &Window,
+        window_id: &str,
+        handler_id: &str,
+    ) -> bool {
+        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+        self.sync_runtime_display_state();
+        let Ok(invocation) = self
+            .decoration_evaluator
+            .invoke_handler(window_id, handler_id, now_ms)
+        else {
+            return false;
+        };
+
+        self.consume_runtime_display_config(invocation.display_config.clone());
+        self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
+        self.consume_runtime_process_config(invocation.process_config.clone());
+        if !invocation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(invocation.process_actions.clone());
+        }
+        self.apply_runtime_handler_invocation(window, &invocation);
+
+        let invoked = invocation.invoked;
+        if invoked {
+            self.runtime_dirty_window_ids
+                .extend(invocation.dirty_window_ids.into_iter());
+            self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+            self.apply_runtime_window_actions(invocation.actions);
+            self.schedule_redraw();
+        }
+
+        invoked
     }
 
     fn update_decoration_cursor_icon(

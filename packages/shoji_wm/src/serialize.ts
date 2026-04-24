@@ -20,6 +20,7 @@ export class DecorationSerializationError extends Error {
 
 export interface DecorationSerializationContext {
   registerClickHandler(key: string, handler: () => void): string;
+  registerInteractionHandler(key: string, handler: () => void): string;
 }
 
 export function serializeDecorationTree(
@@ -109,6 +110,16 @@ function serializeProps(
       continue;
     }
 
+    if (key === "onHoverChange" || key === "onActiveChange") {
+      serialized[key] = serializeInteractionChangeHandler(
+        value,
+        context,
+        typeof props.id === "string" ? `${path}#${props.id}.${key}` : `${path}.${key}`,
+        key,
+      );
+      continue;
+    }
+
     if (isSignal(value)) {
       serialized[key] = serializeValue(value);
       continue;
@@ -124,6 +135,36 @@ function serializeProps(
   }
 
   return serialized;
+}
+
+function serializeInteractionChangeHandler(
+  value: unknown,
+  context: DecorationSerializationContext | undefined,
+  handlerKey: string,
+  propName: string,
+): unknown {
+  if (typeof value === "function") {
+    if (!context) {
+      throw new DecorationSerializationError(
+        `${propName} function handlers require a serialization context`,
+      );
+    }
+
+    const handler = value as (state: boolean) => void;
+    return {
+      kind: "runtime-state-handler",
+      trueId: context.registerInteractionHandler(`${handlerKey}.true`, () => handler(true)),
+      falseId: context.registerInteractionHandler(`${handlerKey}.false`, () => handler(false)),
+    };
+  }
+
+  if (value == null) {
+    return undefined;
+  }
+
+  throw new DecorationSerializationError(
+    `${propName} must be a function handler`,
+  );
 }
 
 function serializeOnClick(

@@ -78,6 +78,9 @@ async function main() {
     registerClickHandler(key) {
       return `${key}-eval-${nextHandlerId++}`;
     },
+    registerInteractionHandler(key) {
+      return `${key}-eval-${nextHandlerId++}`;
+    },
   };
   const serialized = serializeDecorationTree(tree, context);
 

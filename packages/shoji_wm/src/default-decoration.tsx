@@ -1,14 +1,14 @@
 import {
   AppIcon,
-  applyInteractionStyle,
   Box,
   Button,
   ClientWindow,
-  getInteractionState,
   Label,
   WindowBorder,
+  computed,
   type SSDStyle,
   type WaylandWindow,
+  useState,
   windowAction,
 } from "./index";
 
@@ -16,11 +16,21 @@ const TITLEBAR_HEIGHT = 30;
 
 export const defaultWindowDecoration = (window: WaylandWindow) => {
   const isFocused = window.isFocused();
-  const closeState = getInteractionState(window, "window.close");
+  const [closeHovered, setCloseHovered] = useState(false);
+  const [closeActive, setCloseActive] = useState(false);
 
   const borderColor = isFocused ? "#d7ba7d" : "#4f5666";
   const titlebarBackground = isFocused ? "#1f2430" : "#2a2f3a";
   const titleColor = isFocused ? "#f5f7fa" : "#c9d1d9";
+  const closeBackground = computed(() => {
+    if (closeActive()) {
+      return "#d63b3b";
+    }
+    if (closeHovered()) {
+      return "#b32626";
+    }
+    return "#8a1c1c";
+  });
 
   const titlebarStyle: SSDStyle = {
     height: TITLEBAR_HEIGHT,
@@ -51,21 +61,18 @@ export const defaultWindowDecoration = (window: WaylandWindow) => {
           />
           <Box style={{ flexGrow: 1 }} />
           <Button
-            id="window.close"
-            style={applyInteractionStyle(
-              {
-                width: 18,
-                height: 18,
-                borderRadius: 9,
-                background: "#8a1c1c",
-              },
-              {
-                hovered: { background: "#b32626" },
-                active: { background: "#d63b3b" },
-                focused: { border: { px: 1, color: "#f5f7fa" } },
-              },
-              closeState,
-            )}
+            onHoverChange={setCloseHovered}
+            onActiveChange={setCloseActive}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 9,
+              background: closeBackground,
+              border: window.isFocused((focused) => ({
+                px: focused ? 1 : 0,
+                color: "#f5f7fa",
+              })),
+            }}
             onClick={windowAction("close")}
           />
         </Box>

@@ -94,11 +94,7 @@ export interface DecorationInteractionSnapshot {
   activeIds: string[];
 }
 
-export interface InteractionState {
-  hovered: MaybeSignal<boolean>;
-  active: MaybeSignal<boolean>;
-  focused: MaybeSignal<boolean>;
-}
+export type InteractionChangeHandler = (state: boolean) => void;
 
 export interface DecorationElementNode {
   kind: "element";
@@ -128,6 +124,8 @@ export type DecorationNodeType =
 
 export interface ComponentProps {
   children?: DecorationRenderable | DecorationRenderable[];
+  onHoverChange?: InteractionChangeHandler;
+  onActiveChange?: InteractionChangeHandler;
 }
 
 export type Component<TProps extends ComponentProps = ComponentProps> = (
@@ -451,12 +449,6 @@ export interface SSDStyle {
   fontFamily?: MaybeSignal<FontFamily>;
   textAlign?: MaybeSignal<"start" | "center" | "end">;
   lineHeight?: MaybeSignal<number>;
-}
-
-export interface InteractionStyleVariants {
-  hovered?: SSDStyle;
-  active?: SSDStyle;
-  focused?: SSDStyle;
 }
 
 export interface BoxProps extends ComponentProps {

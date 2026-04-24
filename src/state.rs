@@ -81,9 +81,9 @@ use crate::runtime_process::{
 };
 use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
-    DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, NodeDecorationEvaluator,
-    OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot, WaylandWindowSnapshot,
-    WindowDecorationState, WindowPositionSnapshot,
+    DecorationInteractionTarget, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect,
+    NodeDecorationEvaluator, OutputModeSnapshot, OutputPositionSnapshot, WaylandOutputSnapshot,
+    WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot,
 };
 use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
 use crate::{
@@ -127,6 +127,19 @@ pub struct RightClickDebugState {
 pub struct PointerContents {
     pub surface: Option<(WlSurface, Point<f64, Logical>)>,
     pub layer: Option<LayerSurface>,
+}
+
+#[derive(Clone)]
+pub struct TrackedDecorationInteractionTarget {
+    pub window: Window,
+    pub window_id: String,
+    pub target: DecorationInteractionTarget,
+}
+
+impl TrackedDecorationInteractionTarget {
+    pub fn same_node(&self, other: &Self) -> bool {
+        self.window_id == other.window_id && self.target.node_id == other.target.node_id
+    }
 }
 
 #[derive(Clone)]
@@ -221,6 +234,8 @@ pub struct ShojiWM {
     pub configured_layer_effects: HashMap<String, BackgroundEffectConfig>,
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
     pub pointer_contents: PointerContents,
+    pub decoration_hover_target: Option<TrackedDecorationInteractionTarget>,
+    pub decoration_active_target: Option<TrackedDecorationInteractionTarget>,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub window_keyboard_focus: Option<WlSurface>,
     pub mapped_on_demand_layer_surfaces: HashSet<u32>,
@@ -648,6 +663,8 @@ impl ShojiWM {
             configured_layer_effects: HashMap::new(),
             layer_backdrop_cache: HashMap::new(),
             pointer_contents: PointerContents::default(),
+            decoration_hover_target: None,
+            decoration_active_target: None,
             layer_shell_on_demand_focus: None,
             window_keyboard_focus: None,
             mapped_on_demand_layer_surfaces: Default::default(),

@@ -17,8 +17,6 @@ import type {
   AutomaticEffectInvalidationPolicyHandle,
   BoxProps,
   ButtonProps,
-  InteractionState,
-  InteractionStyleVariants,
   LabelProps,
   MaybeSignal,
   SSDStyle,
@@ -101,7 +99,6 @@ import {
 } from "./process";
 import { createElementNode } from "./runtime";
 import { serializeDecorationTree } from "./serialize";
-import { computed, read, isSignal } from "./signals";
 export {
   advanceAnimationFrame,
   hasActiveAnimations,
@@ -258,8 +255,6 @@ export type {
   AutomaticEffectInvalidationPolicyHandle,
   LabelProps,
   MaybeSignal,
-  InteractionState,
-  InteractionStyleVariants,
   SSDStyle,
   BackdropSourceHandle,
   XrayBackdropSourceHandle,
@@ -360,74 +355,6 @@ export function windowAction(
     kind: "window-action",
     action,
   };
-}
-
-export function getInteractionState(
-  window: WaylandWindow,
-  id: string,
-): InteractionState {
-  return {
-    hovered: window.interaction((interaction) => interaction.hoveredIds.includes(id)),
-    active: window.interaction((interaction) => interaction.activeIds.includes(id)),
-    focused: window.isFocused,
-  };
-}
-
-export function applyInteractionStyle(
-  base: SSDStyle | undefined,
-  variants: InteractionStyleVariants | undefined,
-  state: InteractionState,
-): SSDStyle | undefined {
-  if (!base && !variants) {
-    return undefined;
-  }
-
-  const hasReactiveState =
-    isSignal(state.focused) || isSignal(state.hovered) || isSignal(state.active);
-
-  if (!hasReactiveState) {
-    let style: SSDStyle = { ...(base ?? {}) };
-
-    if (read(state.focused) && variants?.focused) {
-      style = { ...style, ...variants.focused };
-    }
-    if (read(state.hovered) && variants?.hovered) {
-      style = { ...style, ...variants.hovered };
-    }
-    if (read(state.active) && variants?.active) {
-      style = { ...style, ...variants.active };
-    }
-
-    return style;
-  }
-
-  const keys = new Set<string>([
-    ...Object.keys(base ?? {}),
-    ...Object.keys(variants?.focused ?? {}),
-    ...Object.keys(variants?.hovered ?? {}),
-    ...Object.keys(variants?.active ?? {}),
-  ]);
-  const style: SSDStyle = {};
-
-  for (const key of keys) {
-    (style as Record<string, unknown>)[key] = computed(() => {
-      let merged: SSDStyle = { ...(base ?? {}) };
-
-      if (read(state.focused) && variants?.focused) {
-        merged = { ...merged, ...variants.focused };
-      }
-      if (read(state.hovered) && variants?.hovered) {
-        merged = { ...merged, ...variants.hovered };
-      }
-      if (read(state.active) && variants?.active) {
-        merged = { ...merged, ...variants.active };
-      }
-
-      return (merged as Record<string, unknown>)[key];
-    });
-  }
-
-  return style;
 }
 
 function defineIntrinsicComponent<TProps extends ComponentProps>(

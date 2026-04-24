@@ -13,11 +13,10 @@ use crate::{
     backend::shader_effect::{ShaderEffectError, ShaderEffectSpec, StableShaderEffectElement},
     backend::text,
     backend::visual::{
-        precise_logical_rect_in_element_space, relative_physical_rect_from_root,
+        RectSnapMode, precise_logical_rect_in_element_space, relative_physical_rect_from_root,
         relative_physical_rect_from_root_precise, relative_physical_rect_from_root_snapped_edges,
         snapped_logical_radius, snapped_logical_rect_for_element,
         snapped_logical_rect_from_relative_physical, snapped_precise_logical_rect_in_element_space,
-        RectSnapMode,
     },
     ssd::{ComputedDecorationNode, LogicalRect, StylePosition, WindowDecorationState},
 };
@@ -1690,6 +1689,7 @@ mod tests {
     ) -> ComputedDecorationNode {
         ComputedDecorationNode {
             stable_id: Some(stable_id.to_string()),
+            interaction: Default::default(),
             kind,
             style,
             rect: LogicalRect::new(0, 0, 10, 10),
