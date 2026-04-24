@@ -18,11 +18,11 @@ use crate::backend::{
 use crate::state::ShojiWM;
 
 use super::{
-    ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluationResult,
-    DecorationEvaluator, DecorationHandlerInvocation, DecorationHitTestResult,
-    DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult, LogicalPoint,
-    LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandWindowSnapshot,
-    WindowTransform, reapply_tree_preserving_layout,
+    reapply_tree_preserving_layout, ComputedDecorationTree, DecorationEvaluationError,
+    DecorationEvaluationResult, DecorationEvaluator, DecorationHandlerInvocation,
+    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
+    LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot,
+    WaylandWindowSnapshot, WindowTransform,
 };
 
 fn clip_debug_enabled() -> bool {
@@ -354,7 +354,10 @@ impl ShojiWM {
 
         if let Some(node) = invocation.node.clone() {
             decoration.tree = crate::ssd::DecorationTree::new(node);
-            if let Ok(layout) = decoration.tree.layout_for_client(decoration.client_rect) {
+            if let Ok(layout) = decoration
+                .tree
+                .layout_for_client_with_scale(decoration.client_rect, decoration.layout_scale)
+            {
                 decoration.layout = layout;
                 let shared_edges = build_shared_edge_geometry_map(&decoration.layout);
                 decoration.content_clip =
@@ -2275,6 +2278,21 @@ fn merge_icon_buffers(
     merged
 }
 
+fn paint_ordered_children(
+    node: &super::ComputedDecorationNode,
+) -> Vec<(usize, &super::ComputedDecorationNode)> {
+    let mut children = node.children.iter().enumerate().collect::<Vec<_>>();
+    children.sort_by(|(left_index, left), (right_index, right)| {
+        right
+            .style
+            .z_index
+            .unwrap_or(0)
+            .cmp(&left.style.z_index.unwrap_or(0))
+            .then_with(|| right_index.cmp(left_index))
+    });
+    children
+}
+
 fn collect_render_orders(
     node: &super::ComputedDecorationNode,
     path: String,
@@ -2300,7 +2318,7 @@ fn collect_render_orders(
         _ => {}
     }
 
-    for (index, child) in node.children.iter().rev().enumerate() {
+    for (index, child) in paint_ordered_children(node) {
         collect_render_orders(child, format!("{path}/child-{index}"), order, map);
     }
 
@@ -2682,7 +2700,7 @@ fn collect_cached_buffers(
                 }
             }
 
-            for (index, child) in node.children.iter().rev().enumerate() {
+            for (index, child) in paint_ordered_children(node) {
                 collect_cached_buffers(
                     child,
                     format!("{path}/child-{index}"),
@@ -2718,7 +2736,7 @@ fn collect_text_buffers(
         return;
     }
 
-    for (index, child) in node.children.iter().rev().enumerate() {
+    for (index, child) in paint_ordered_children(node) {
         collect_text_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -2812,7 +2830,7 @@ fn collect_icon_buffers(
         return;
     }
 
-    for (index, child) in node.children.iter().rev().enumerate() {
+    for (index, child) in paint_ordered_children(node) {
         collect_icon_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -3202,15 +3220,22 @@ impl SharedEdgeBuilder {
         let mut previous_sibling = None;
         let mut children = Vec::with_capacity(node.children.len());
         for child in &node.children {
-            let child_context = SharedEdgeBuildContext {
-                parent: Some(refs),
-                previous_sibling,
+            let is_absolute = matches!(child.style.position, Some(super::StylePosition::Absolute));
+            let child_context = if is_absolute {
+                SharedEdgeBuildContext::default()
+            } else {
+                SharedEdgeBuildContext {
+                    parent: Some(refs),
+                    previous_sibling,
+                }
             };
             let child_node = self.build_node(child, child_context);
-            previous_sibling = Some(SharedEdgeNodeRefs {
-                rect: child_node.rect,
-                content: child_node.content_rect,
-            });
+            if !is_absolute {
+                previous_sibling = Some(SharedEdgeNodeRefs {
+                    rect: child_node.rect,
+                    content: child_node.content_rect,
+                });
+            }
             children.push(child_node);
         }
 
@@ -3856,21 +3881,21 @@ mod tests {
                     }),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
+                        direction: LayoutDirection::Row,
                     }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    .with_style(DecorationStyle {
+                        height: Some(30),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree
@@ -3895,21 +3920,21 @@ mod tests {
                     border_radius: Some(18),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
+                        direction: LayoutDirection::Row,
                     }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    .with_style(DecorationStyle {
+                        height: Some(30),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree
@@ -3968,25 +3993,25 @@ mod tests {
                     border_radius: Some(18),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
+                .with_style(DecorationStyle {
+                    padding: Edges::all(5),
+                    ..Default::default()
+                })
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
+                        direction: LayoutDirection::Row,
                     }))
                     .with_style(DecorationStyle {
-                        padding: Edges::all(5),
+                        height: Some(30),
                         ..Default::default()
-                    })
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree
@@ -4036,12 +4061,12 @@ mod tests {
                     }),
                     ..Default::default()
                 })
-                .with_children(vec![
-                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
                         direction: LayoutDirection::Column,
-                    }))
-                    .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
-                ]),
+                    },
+                ))
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)])]),
         );
 
         let layout = tree
@@ -4070,21 +4095,21 @@ mod tests {
                     }),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
+                        direction: LayoutDirection::Row,
                     }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(30),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    .with_style(DecorationStyle {
+                        height: Some(30),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree
@@ -4114,21 +4139,21 @@ mod tests {
                     }),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Row,
+                    },
+                ))
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Row,
+                        direction: LayoutDirection::Column,
                     }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Column,
-                        }))
-                        .with_style(DecorationStyle {
-                            width: Some(120),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    .with_style(DecorationStyle {
+                        width: Some(120),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree
@@ -4155,21 +4180,21 @@ mod tests {
                     }),
                     ..Default::default()
                 })
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(
+                    BoxNode {
+                        direction: LayoutDirection::Column,
+                    },
+                ))
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                        direction: LayoutDirection::Column,
+                        direction: LayoutDirection::Row,
                     }))
-                    .with_children(vec![
-                        DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                            direction: LayoutDirection::Row,
-                        }))
-                        .with_style(DecorationStyle {
-                            height: Some(48),
-                            ..Default::default()
-                        }),
-                        DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    ]),
-                ]),
+                    .with_style(DecorationStyle {
+                        height: Some(48),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ])]),
         );
 
         let layout = tree

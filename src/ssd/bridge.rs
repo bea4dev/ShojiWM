@@ -4,8 +4,8 @@ use super::{
     AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
     ButtonNode, Color, CompiledEffect, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
     EffectInput, EffectInvalidationPolicy, EffectStage, JustifyContent, LabelNode, LayoutDirection,
-    NoiseKind, NoiseStage, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
-    WindowAction,
+    NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents, PositionOffsets,
+    ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue, StylePosition, WindowAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -182,6 +182,16 @@ pub struct WireStyle {
     pub margin_right: Option<i32>,
     pub margin_bottom: Option<i32>,
     pub margin_left: Option<i32>,
+    pub position: Option<String>,
+    pub z_index: Option<i32>,
+    pub inset: Option<i32>,
+    pub top: Option<i32>,
+    pub right: Option<i32>,
+    pub bottom: Option<i32>,
+    pub left: Option<i32>,
+    pub overflow: Option<String>,
+    pub pointer_events: Option<String>,
+    pub transform: Option<WireNodeTransform>,
     pub align_items: Option<String>,
     pub justify_content: Option<String>,
     pub background: Option<String>,
@@ -201,6 +211,16 @@ pub struct WireStyle {
     pub font_family: Option<WireFontFamily>,
     pub text_align: Option<String>,
     pub line_height: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WireNodeTransform {
+    pub translate_x: Option<f32>,
+    pub translate_y: Option<f32>,
+    pub scale: Option<f32>,
+    pub scale_x: Option<f32>,
+    pub scale_y: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -255,6 +275,12 @@ pub enum DecorationBridgeError {
     InvalidJustifyContent(String),
     #[error("invalid borderFit value: {0}")]
     InvalidBorderFit(String),
+    #[error("invalid position value: {0}")]
+    InvalidPosition(String),
+    #[error("invalid overflow value: {0}")]
+    InvalidOverflow(String),
+    #[error("invalid pointerEvents value: {0}")]
+    InvalidPointerEvents(String),
     #[error("invalid color string: {0}")]
     InvalidColor(String),
 }
@@ -553,6 +579,18 @@ impl TryFrom<WireStyle> for DecorationStyle {
                 value.margin_bottom,
                 value.margin_left,
             ),
+            position: value.position.map(parse_position).transpose()?,
+            z_index: value.z_index,
+            inset: position_offsets_from_parts(
+                value.inset,
+                value.top,
+                value.right,
+                value.bottom,
+                value.left,
+            ),
+            overflow: value.overflow.map(parse_overflow).transpose()?,
+            pointer_events: value.pointer_events.map(parse_pointer_events).transpose()?,
+            transform: value.transform.map(parse_node_transform),
             gap: value.gap,
             justify_content: value
                 .justify_content
@@ -606,6 +644,40 @@ fn parse_border_fit(input: String) -> Result<BorderFit, DecorationBridgeError> {
     }
 }
 
+fn parse_position(input: String) -> Result<StylePosition, DecorationBridgeError> {
+    match input.as_str() {
+        "relative" => Ok(StylePosition::Relative),
+        "absolute" => Ok(StylePosition::Absolute),
+        other => Err(DecorationBridgeError::InvalidPosition(other.into())),
+    }
+}
+
+fn parse_overflow(input: String) -> Result<Overflow, DecorationBridgeError> {
+    match input.as_str() {
+        "visible" => Ok(Overflow::Visible),
+        "hidden" => Ok(Overflow::Hidden),
+        other => Err(DecorationBridgeError::InvalidOverflow(other.into())),
+    }
+}
+
+fn parse_pointer_events(input: String) -> Result<PointerEvents, DecorationBridgeError> {
+    match input.as_str() {
+        "auto" => Ok(PointerEvents::Auto),
+        "none" => Ok(PointerEvents::None),
+        other => Err(DecorationBridgeError::InvalidPointerEvents(other.into())),
+    }
+}
+
+fn parse_node_transform(input: WireNodeTransform) -> NodeTransform {
+    let scale = input.scale.unwrap_or(1.0);
+    NodeTransform {
+        translate_x: input.translate_x.unwrap_or(0.0),
+        translate_y: input.translate_y.unwrap_or(0.0),
+        scale_x: input.scale_x.unwrap_or(scale),
+        scale_y: input.scale_y.unwrap_or(scale),
+    }
+}
+
 fn parse_direction(input: Option<String>) -> Result<LayoutDirection, DecorationBridgeError> {
     match input.as_deref().unwrap_or("column") {
         "row" | "horizontal" => Ok(LayoutDirection::Row),
@@ -651,6 +723,21 @@ fn parse_border(input: WireBorderValue) -> Result<BorderStyle, DecorationBridgeE
         width: input.px,
         color: parse_color(&input.color)?,
     })
+}
+
+fn position_offsets_from_parts(
+    inset: Option<i32>,
+    top: Option<i32>,
+    right: Option<i32>,
+    bottom: Option<i32>,
+    left: Option<i32>,
+) -> PositionOffsets {
+    PositionOffsets {
+        top: top.or(inset),
+        right: right.or(inset),
+        bottom: bottom.or(inset),
+        left: left.or(inset),
+    }
 }
 
 fn edges_from_parts(

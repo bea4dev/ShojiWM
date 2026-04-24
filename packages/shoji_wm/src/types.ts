@@ -386,6 +386,18 @@ export interface BorderValue {
   color: MaybeSignal<string>;
 }
 
+export type SSDPosition = "relative" | "absolute";
+export type SSDOverflow = "visible" | "hidden";
+export type SSDPointerEvents = "auto" | "none";
+
+export interface SSDTransform {
+  translateX?: MaybeSignal<number>;
+  translateY?: MaybeSignal<number>;
+  scale?: MaybeSignal<number>;
+  scaleX?: MaybeSignal<number>;
+  scaleY?: MaybeSignal<number>;
+}
+
 export interface SSDStyle {
   width?: MaybeSignal<number | string>;
   height?: MaybeSignal<number | string>;
@@ -410,6 +422,16 @@ export interface SSDStyle {
   marginRight?: MaybeSignal<number>;
   marginBottom?: MaybeSignal<number>;
   marginLeft?: MaybeSignal<number>;
+  position?: MaybeSignal<SSDPosition>;
+  zIndex?: MaybeSignal<number>;
+  inset?: MaybeSignal<number>;
+  top?: MaybeSignal<number>;
+  right?: MaybeSignal<number>;
+  bottom?: MaybeSignal<number>;
+  left?: MaybeSignal<number>;
+  overflow?: MaybeSignal<SSDOverflow>;
+  pointerEvents?: MaybeSignal<SSDPointerEvents>;
+  transform?: MaybeSignal<SSDTransform>;
   alignItems?: MaybeSignal<AlignItems>;
   justifyContent?: MaybeSignal<JustifyContent>;
   background?: MaybeSignal<string>;

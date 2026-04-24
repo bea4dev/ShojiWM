@@ -186,6 +186,7 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                             }}
                         />
                         <Box style={{ flexGrow: 1 }} />
+                        <TestComponent2 />
                         <TestComponent />
                         <Button
                             id="window.close"
@@ -212,6 +213,56 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         </WindowBorder>
     );
 };
+
+const TestComponent2 = () => {
+    const [state, setState] = useState(0);
+
+    return (
+        <Box
+            style={{
+                position: "relative",
+                alignItems: "center",
+                paddingLeft: 12,
+                paddingRight: 12,
+            }}
+            direction="row"
+        >
+            <Label
+                text={state(state => state.toString())}
+                style={{
+                    marginLeft: 32,
+                    color: "#ffffff",
+                }}
+            />
+            <Box
+                style={{
+                    position: "absolute",
+                    width: 96,
+                    height: 18,
+                    borderRadius: 2,
+                    background: "#000000",
+                    zIndex: 5,
+                    pointerEvents: "none",
+                    opacity: 0.5,
+                }}
+            />
+            <Button
+                onClick={() => { setState(state() + 1) }}
+                style={{
+                    position: "absolute",
+                    width: 18,
+                    height: 18,
+                    borderRadius: 9,
+                    background: "#ff5f57",
+                    zIndex: 10,
+                    pointerEvents: "auto",
+                    opacity: 0.5,
+                    transform: { translateY: 2 }
+                }}
+            />
+        </Box>
+    );
+}
 
 const TestComponent = () => {
     const [state, setState] = useState(0);
