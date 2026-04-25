@@ -181,9 +181,11 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
                                 fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
                                 fontSize: 13,
                                 fontWeight: 600,
+                                flexGrow: 1,
+                                flexShrink: 1,
+                                minWidth: 0,
                             }}
                         />
-                        <Box style={{ flexGrow: 1 }} />
                         <CloseButton window={window} />
                     </ShaderEffect>
                     <ClientWindow />
