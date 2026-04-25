@@ -217,7 +217,7 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => {
     }
 
     return (
-        <Box style={{ position: "relative" }}>
+        <Box style={{ position: "relative", flexShrink: 0 }}>
             <Button
                 onHoverChange={setHover}
                 style={{
