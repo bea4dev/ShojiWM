@@ -300,10 +300,31 @@ impl ComputedDecorationNode {
         {
             has_flow_child = true;
             let child_bounds = child.resolved_layout_bounds_rect();
-            child_min_x = child_min_x.min(child_bounds.x);
-            child_min_y = child_min_y.min(child_bounds.y);
-            child_max_x = child_max_x.max(child_bounds.x + child_bounds.width);
-            child_max_y = child_max_y.max(child_bounds.y + child_bounds.height);
+            let (layout_min_x, layout_min_y, layout_max_x, layout_max_y) =
+                match self.layout_direction_for_bounds() {
+                    Some(LayoutDirection::Row) => (
+                        child_bounds.x,
+                        child.resolved_rect.y,
+                        child_bounds.x + child_bounds.width,
+                        child.resolved_rect.y + child.resolved_rect.height,
+                    ),
+                    Some(LayoutDirection::Column) => (
+                        child.resolved_rect.x,
+                        child_bounds.y,
+                        child.resolved_rect.x + child.resolved_rect.width,
+                        child_bounds.y + child_bounds.height,
+                    ),
+                    None => (
+                        child_bounds.x,
+                        child_bounds.y,
+                        child_bounds.x + child_bounds.width,
+                        child_bounds.y + child_bounds.height,
+                    ),
+                };
+            child_min_x = child_min_x.min(layout_min_x);
+            child_min_y = child_min_y.min(layout_min_y);
+            child_max_x = child_max_x.max(layout_max_x);
+            child_max_y = child_max_y.max(layout_max_y);
         }
 
         if has_flow_child {
@@ -336,6 +357,15 @@ impl ComputedDecorationNode {
         self.effective_clip = self
             .resolved_effective_clip
             .map(ResolvedDecorationClip::round_to_logical_clip);
+    }
+
+    fn layout_direction_for_bounds(&self) -> Option<LayoutDirection> {
+        match &self.kind {
+            DecorationNodeKind::Box(layout) => Some(layout.direction),
+            DecorationNodeKind::ShaderEffect(effect) => Some(effect.direction),
+            DecorationNodeKind::Button(_) => Some(LayoutDirection::Column),
+            _ => None,
+        }
     }
 
     fn to_decoration_node(&self) -> DecorationNode {
@@ -4352,5 +4382,97 @@ mod tests {
 
         assert_eq!(button.resolved_rect.width.to_f32(), 18.125);
         assert_eq!(button.resolved_rect.height.to_f32(), 18.125);
+    }
+
+    #[test]
+    fn titlebar_label_shrink_keeps_window_slot_aligned_at_small_width() {
+        let close_button = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            position: Some(StylePosition::Relative),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+                action: WindowAction::Close,
+            }))
+            .with_style(DecorationStyle {
+                width: Some(16),
+                height: Some(16),
+                ..Default::default()
+            }),
+        ]);
+        let titlebar = DecorationNode::new(DecorationNodeKind::ShaderEffect(ShaderEffectNode {
+            shader: CompiledEffect {
+                input: EffectInput::Backdrop,
+                invalidate: EffectInvalidationPolicy::Always,
+                pipeline: Vec::new(),
+            },
+            direction: LayoutDirection::Row,
+        }))
+        .with_style(DecorationStyle {
+            height: Some(30),
+            padding: Edges {
+                left: 8,
+                right: 8,
+                ..Default::default()
+            },
+            gap: Some(8),
+            align_items: Some(AlignItems::Center),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+                width: Some(16),
+                height: Some(16),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::Label(LabelNode {
+                text: "A very long title that should shrink before the chrome breaks".into(),
+            }))
+            .with_style(DecorationStyle {
+                flex_grow: Some(1.0),
+                flex_shrink: Some(1.0),
+                min_width: Some(0),
+                ..Default::default()
+            }),
+            close_button,
+        ]);
+        let root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                border_radius: Some(10),
+                ..Default::default()
+            })
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Row,
+                }))
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Column,
+                    }))
+                    .with_children(vec![
+                        titlebar,
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                    ]),
+                ]),
+            ]);
+
+        let client_rect = LogicalRect::new(100, 80, 80, 60);
+        let layout = DecorationTree::new(root)
+            .layout_for_client_with_scale(client_rect, 1.25)
+            .expect("layout should succeed");
+        let slot = layout
+            .window_slot_rect()
+            .expect("window slot should be present");
+
+        assert_eq!(slot, client_rect);
+        assert_eq!(layout.root.rect.x, client_rect.x - 2);
+        assert_eq!(layout.root.rect.width, client_rect.width + 5);
     }
 }

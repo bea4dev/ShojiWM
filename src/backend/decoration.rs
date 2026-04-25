@@ -305,6 +305,15 @@ fn union_physical_rect(
     }
 }
 
+fn clamp_anchor_hole_to_declared_hole(
+    anchor: Rectangle<i32, Physical>,
+    declared_hole: Option<Rectangle<i32, Physical>>,
+) -> Rectangle<i32, Physical> {
+    declared_hole
+        .and_then(|declared_hole| anchor.intersection(declared_hole))
+        .unwrap_or(anchor)
+}
+
 fn is_descendant_owner(owner: &str, parent: &str) -> bool {
     owner.len() > parent.len()
         && owner.starts_with(parent)
@@ -1029,7 +1038,8 @@ fn rounded_rect_element(
                 scale,
             )
         })
-        .flatten();
+        .flatten()
+        .map(|anchor| clamp_anchor_hole_to_declared_hole(anchor, hole_geometry));
     let border_anchor_hole_precise = border_anchor_hole_geometry.map(|hole_geometry| {
         let outer_width_px = geometry.size.w.max(1) as f32;
         let outer_height_px = geometry.size.h.max(1) as f32;
@@ -1763,6 +1773,25 @@ mod tests {
         assert_eq!(clip.rect.width, 1891.0);
         assert_eq!(clip.rect.height, 1208.0);
         assert_eq!(clip.radius, 18.0);
+    }
+
+    #[test]
+    fn border_anchor_hole_is_clamped_to_declared_inner_hole() {
+        let declared_hole =
+            Rectangle::<i32, Physical>::new(Point::from((3, 3)), (100, 80).into());
+        let overflowing_anchor =
+            Rectangle::<i32, Physical>::new(Point::from((3, 3)), (130, 80).into());
+        let contained_anchor =
+            Rectangle::<i32, Physical>::new(Point::from((10, 12)), (40, 20).into());
+
+        assert_eq!(
+            clamp_anchor_hole_to_declared_hole(overflowing_anchor, Some(declared_hole)),
+            declared_hole
+        );
+        assert_eq!(
+            clamp_anchor_hole_to_declared_hole(contained_anchor, Some(declared_hole)),
+            contained_anchor
+        );
     }
 
     #[test]
