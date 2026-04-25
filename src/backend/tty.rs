@@ -6242,12 +6242,17 @@ fn window_scene_elements_for_capture(
         ordered_ui_elements.sort_by_key(|(order, _)| *order);
         elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
         if let Some(content_clip) = decoration.content_clip {
+            // Surface elements are positioned in capture-local physical coordinates here.
+            // The clipped-surface shader converts that geometry back to logical space via
+            // `output_origin`, so use the capture rect origin rather than the real output
+            // origin. Otherwise only the WindowSlot/client mask is evaluated in the wrong
+            // coordinate space while SSD elements still appear correctly.
             let clipped = window_render::clipped_surface_elements(
                 window,
                 renderer,
                 physical_location,
                 client_physical_geometry,
-                output_origin,
+                capture_geo.loc,
                 scale,
                 scale,
                 visual_state.opacity,
