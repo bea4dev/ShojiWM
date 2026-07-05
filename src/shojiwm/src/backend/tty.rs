@@ -12865,12 +12865,11 @@ fn connector_disconnected(
             // The kernel only frees property blobs when the DRM fd closes,
             // and this device stays open across hotplugs — destroy explicitly
             // so replug cycles don't leak blobs.
-            let _ = backend
-                .drm_output_manager
-                .device()
-                .destroy_property_blob(
-                    blob
-                );
+            crate::color::drm_metadata::destroy_metadata_blob(
+                backend.drm_output_manager
+                    .device(),
+                blob,
+            );
         }
     }
     let output = surface.output;
