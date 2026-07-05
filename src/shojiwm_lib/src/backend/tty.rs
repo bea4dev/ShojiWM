@@ -1698,7 +1698,11 @@ pub fn device_added(
         allocator,
         exporter,
         Some(gbm),
-        [Format::Argb8888],
+        [
+            Format::Abgr2101010,
+            Format::Argb2101010,
+            Format::Argb8888
+        ],
         render_formats,
     );
 
