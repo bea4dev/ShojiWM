@@ -12854,6 +12854,25 @@ fn connector_disconnected(
     let Some(surface) = backend.surfaces.remove(&crtc) else {
         return;
     };
+    if let Some(
+        color_state
+    ) = state.output_color.remove(
+        &output_name
+    ) {
+        if let Some(
+            blob
+        ) = color_state.hdr_metadata_blob {
+            // The kernel only frees property blobs when the DRM fd closes,
+            // and this device stays open across hotplugs — destroy explicitly
+            // so replug cycles don't leak blobs.
+            let _ = backend
+                .drm_output_manager
+                .device()
+                .destroy_property_blob(
+                    blob
+                );
+        }
+    }
     let output = surface.output;
     state.space.unmap_output(&output);
     state.remove_output_global(&output);
