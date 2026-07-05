@@ -357,3 +357,147 @@ pub fn destroy_metadata_blob(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Base EDID block + one CTA-861 extension carrying an HDR static
+    /// metadata data block (extended tag 0x06).
+    fn edid_with_hdr_block(
+        eotfs: u8,
+        max: u8,
+        favg: u8,
+        min: u8
+    ) -> Vec<u8> {
+        let mut edid = vec![0u8; 256];
+        // one extension block
+        edid[126] = 1;
+        let ext = 128;
+        // CTA-861 tag
+        edid[ext] = 0x02;
+        // DTDs start at byte 12; data blocks in 4..12
+        edid[ext + 2] = 12;
+        // extended tag block, length 6
+        edid[ext + 4] = (0x07 << 5) | 6;
+        // HDR static metadata
+        edid[ext + 5] = 0x06;
+        edid[ext + 6] = eotfs;
+        // static metadata type 1
+        edid[ext + 7] = 0x01;
+        edid[ext + 8] = max;
+        edid[ext + 9] = favg;
+        edid[ext + 10] = min;
+        edid
+    }
+
+    #[test]
+    fn parses_hdr_static_metadata() {
+        // EOTF bits: SDR (0) + ST 2084 (2). Code 96 = 50 * 2^3 = 400 cd/m².
+        let edid = edid_with_hdr_block(
+            0b0000_0101,
+            96,
+            64,
+            255);
+        let hdr = parse_edid_hdr(
+            &edid
+        ).expect(
+            "HDR block should parse"
+        );
+        assert!(
+            hdr.supports_pq
+        );
+        assert!(
+            !hdr.supports_hlg
+        );
+        assert_eq!(
+            hdr.max_luminance,
+            Some(
+                400.0
+            )
+        );
+        assert_eq!(
+            hdr.max_frame_avg_luminance,
+            Some(
+                200.0
+            )
+        );
+        // min code 255 => max * 1.0² / 100.
+        assert_eq!(
+            hdr.min_luminance,
+            Some(
+                4.0
+            )
+        );
+    }
+
+    #[test]
+    fn ignores_edid_without_hdr_block() {
+        // Plain base block, no extensions.
+        let edid = vec![0u8; 128];
+        assert_eq!(
+            parse_edid_hdr(
+                &edid
+            ),
+            None
+        );
+        // CTA extension present but empty data block collection.
+        let mut edid = vec![0u8; 256];
+        edid[126] = 1;
+        edid[128] = 0x02;
+        edid[130] = 4;
+        assert_eq!(
+            parse_edid_hdr(
+                &edid
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn zero_luminance_codes_mean_unknown() {
+        let edid = edid_with_hdr_block(
+            0b0000_0100,
+            0,
+            0,
+            0,
+        );
+        let hdr = parse_edid_hdr(
+            &edid
+        ).expect(
+            "HDR block should parse",
+        );
+        assert!(
+            hdr.supports_pq,
+        );
+        assert_eq!(
+            hdr.max_luminance,
+            None,
+        );
+        assert_eq!(
+            hdr.min_luminance,
+            None,
+        );
+    }
+
+    #[test]
+    fn hdr_metadata_blob_matches_kernel_layout() {
+        // The kernel copies sizeof(struct hdr_output_metadata) bytes; a
+        // layout drift would corrupt the infoframe silently.
+        assert_eq!(
+            std::mem::size_of::<HdrMetadataInfoframe>(),
+            26,
+        );
+        assert_eq!(
+            std::mem::size_of::<HdrOutputMetadata>(),
+            32,
+        );
+        assert_eq!(
+            std::mem::offset_of!(
+                HdrOutputMetadata,
+                hdmi_metadata_type1,
+            ),
+            4,
+        );
+    }
+}
