@@ -3,6 +3,7 @@
 //! protocol (`protocols/color_management.rs`), the DRM signaling layer
 //! (`drm_metadata`), and — in a later phase — the render pipeline.
 
+pub mod colorimetry;
 pub mod drm_metadata;
 pub mod primaries;
 
