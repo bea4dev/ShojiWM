@@ -290,6 +290,7 @@ pub struct ShojiWM {
     pub output_power_manager_state: crate::protocols::output_power::OutputPowerManagerState,
     /// Outputs whose panel is switched off (DPMS), by name; see [`crate::output_power`].
     pub powered_off_outputs: HashMap<String, crate::output_power::PoweredOffOutput>,
+    pub color_management_state: crate::protocols::color_management::ColorManagementState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
@@ -403,6 +404,8 @@ pub struct ShojiWM {
     pub runtime_scheduler_last_frame_tick_at: Option<Instant>,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_globals: HashMap<String, GlobalId>,
+    /// Per-output color mode/signal state, keyed by output name (tty only).
+    pub output_color: HashMap<String, crate::color::OutputColorState>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1647,6 +1650,7 @@ impl ShojiWM {
             tearing_control_state,
             output_power_manager_state,
             powered_off_outputs: HashMap::new(),
+            color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
             ext_workspace_manager_state,
@@ -1721,6 +1725,7 @@ impl ShojiWM {
             runtime_scheduler_kick_interval_ms: None,
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
+            output_color: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
