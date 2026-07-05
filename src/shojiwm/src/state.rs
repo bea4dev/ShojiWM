@@ -1394,6 +1394,8 @@ impl ShojiWM {
             crate::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(&dh, |_| true);
         let tearing_control_state =
             crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&dh);
+        let color_management_state =
+            crate::protocols::color_management::ColorManagementState::new::<Self>(&dh);
         let foreign_toplevel_list_state =
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let wlr_foreign_toplevel_manager_state =
