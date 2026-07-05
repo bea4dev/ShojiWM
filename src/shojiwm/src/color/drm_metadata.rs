@@ -336,3 +336,22 @@ pub fn reset_hdr_connector_state(
         }
     }
 }
+
+/// Free an HDR_OUTPUT_METADATA blob created by [`apply_hdr_connector_state`].
+/// Best-effort: the kernel reclaims blobs at fd close anyway.
+pub fn destroy_metadata_blob(
+    device: &impl ControlDevice,
+    blob: u64
+) {
+    if let Err(
+        error
+    ) = device.destroy_property_blob(
+        blob
+    ) {
+        warn!(
+            ?error,
+            blob,
+            "failed to destroy HDR metadata blob"
+        );
+    }
+}
