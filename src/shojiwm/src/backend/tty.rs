@@ -12623,6 +12623,71 @@ fn connector_connected(
     }
 
     let mode = select_output_mode(&connector, &state.display_config.default_mode);
+
+    // Resolve the output's color pipeline before the DRM surface exists so
+    // the connector properties (max bpc / Colorspace / HDR_OUTPUT_METADATA)
+    // are already part of the connector state when initialize_output performs
+    // the first atomic commit on this CRTC.
+    let color_state = {
+        let backend = state.tty_backends
+            .get(&node)
+            .unwrap();
+        let device = backend.drm_output_manager.device();
+        let edid_hdr = crate::color::drm_metadata::read_edid_hdr(
+            device,
+            &connector
+        );
+        let color_mode = crate::color::resolve_output_mode(
+            &output_name,
+            edid_hdr.as_ref()
+        );
+        let hdr_metadata_blob = match color_mode {
+            crate::color::OutputColorMode::Hdr10 { .. } => {
+                match crate::color::drm_metadata::apply_hdr_connector_state(
+                    device,
+                    &connector,
+                    &color_mode,
+                ) {
+                    Ok(blob) => blob,
+                    Err(error) => {
+                        warn!(
+                            output = %output_name,
+                            ?error,
+                            "failed to apply HDR connector state; falling back to SDR signaling"
+                        );
+                        None
+                    }
+                }
+            }
+            crate::color::OutputColorMode::Sdr => {
+                // Clear leftovers from a previous session so the sink drops
+                // out of HDR mode.
+                crate::color::drm_metadata::reset_hdr_connector_state(
+                    device,
+                    &connector
+                );
+                None
+            }
+        };
+        crate::color::OutputColorState::new(
+            color_mode,
+            edid_hdr,
+            hdr_metadata_blob
+        )
+    };
+    info!(
+        output = %output_name,
+        mode = ?color_state.mode,
+        edid_hdr = ?color_state.edid_hdr,
+        "resolved output color mode"
+    );
+    state
+        .output_color
+        .insert(
+            output_name.clone(),
+            color_state
+        );
+
     let available_modes = connector
         .modes()
         .iter()

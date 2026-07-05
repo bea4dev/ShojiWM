@@ -1007,7 +1007,33 @@ impl crate::protocols::screencopy::ScreencopyHandler for ShojiWM {
     }
 }
 
+impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
+    fn output_image_description(
+        &mut self,
+        wl_output: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) -> crate::color::ImageDescription {
+        Output::from_resource(wl_output)
+            .and_then(|output| {
+                self.output_color
+                    .get(output.name().as_str())
+                    .map(|state| state.description)
+            })
+            .unwrap_or(crate::color::ImageDescription::SRGB)
+    }
+
+    fn surface_preferred_description(
+        &mut self,
+        _surface: &WlSurface,
+    ) -> crate::color::ImageDescription {
+        // The compositor composites in sRGB, so sRGB content is what we
+        // prefer from every client regardless of the output's signal mode.
+        // Revisit when the fp16 linear blend space (phase 3) lands.
+        crate::color::ImageDescription::SRGB
+    }
+}
+
 crate::delegate_screencopy!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
+crate::delegate_color_management!(ShojiWM);
 crate::delegate_wlr_foreign_toplevel!(ShojiWM);
 crate::workspace_manager::delegate_ext_workspace_manager!(ShojiWM);
