@@ -209,7 +209,8 @@ pub fn apply_hdr_connector_state(
         .ok_or_else(|| io::Error::other("connector has no Colorspace property"))?;
     let bt2020_value = match colorspace_info.value_type() {
         property::ValueType::Enum(values) => values
-            .enums()
+            .values()
+            .1
             .iter()
             .find(|entry| entry
                 .name()
@@ -311,7 +312,8 @@ pub fn reset_hdr_connector_state(
     ) {
         let default_value = match info.value_type() {
             property::ValueType::Enum(values) => values
-                .enums()
+                .values()
+                .1
                 .iter()
                 .find(|entry| entry.name()
                     .to_str() == Ok("Default"))
