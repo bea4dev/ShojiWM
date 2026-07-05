@@ -281,6 +281,7 @@ pub struct ShojiWM {
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
     pub tearing_control_state: crate::protocols::tearing_control::TearingControlManagerState,
+    pub color_management_state: crate::protocols::color_management::ColorManagementState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
@@ -380,6 +381,8 @@ pub struct ShojiWM {
     pub runtime_scheduler_kick_interval_ms: Option<u64>,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_globals: HashMap<String, GlobalId>,
+    /// Per-output color mode/signal state, keyed by output name (tty only).
+    pub output_color: HashMap<String, crate::color::OutputColorState>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1640,6 +1643,7 @@ impl ShojiWM {
             fractional_scale_manager_state,
             screencopy_state,
             tearing_control_state,
+            color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
             ext_workspace_manager_state,
@@ -1710,6 +1714,7 @@ impl ShojiWM {
             runtime_scheduler_kick_interval_ms: None,
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
+            output_color: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
