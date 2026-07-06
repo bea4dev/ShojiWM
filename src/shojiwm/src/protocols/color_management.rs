@@ -831,7 +831,7 @@ where
     D: ColorManagementDispatch,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         description_obj: &WpImageDescriptionV1,
         request: wp_image_description_v1::Request,
