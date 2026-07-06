@@ -295,7 +295,13 @@ fn protocol_tf(tf: TransferCharacteristics) -> TransferFunction {
     }
 }
 
-fn send_information(info: &WpImageDescriptionInfoV1, description: &ImageDescription) {
+/// Send the full information event burst, ending with the `done` destructor
+/// event. Only call this *outside* the dispatch that created `info` — see
+/// [`ColorManagementHandler::defer_image_description_info`].
+pub fn send_information(
+    info: &WpImageDescriptionInfoV1,
+    description: &ImageDescription
+) {
     let chroma = description.primaries.chromaticities();
     let (r_x, r_y) = chroma.red.to_protocol();
     let (g_x, g_y) = chroma.green.to_protocol();
