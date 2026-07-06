@@ -843,10 +843,17 @@ where
             wp_image_description_v1::Request::GetInformation { information } => {
                 let info = data_init.init(information, ());
                 match &data.description {
-                    Some(description) => send_information(
-                        &info,
-                        description
-                    ),
+                    // The info burst ends with the `done` destructor event;
+                    // it must not be sent from inside this dispatch (which
+                    // created `info`) or wayland-backend writes the new
+                    // object's data through a freed pointer afterwards.
+                    Some(description) => {
+                        state
+                            .defer_image_description_info(
+                                info,
+                                *description,
+                            );
+                    }
                     None => {
                         description_obj.post_error(
                             wp_image_description_v1::Error::NoInformation,
