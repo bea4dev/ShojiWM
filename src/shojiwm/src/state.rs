@@ -360,6 +360,8 @@ pub struct ShojiWM {
     pub runtime_output_globals: HashMap<String, GlobalId>,
     /// Per-output color mode/signal state, keyed by output name (tty only).
     pub output_color: HashMap<String, crate::color::OutputColorState>,
+    /// Per-output fp16 composite + PQ encode state for HDR10 outputs.
+    pub hdr_pipelines: HashMap<String, crate::backend::hdr_pipeline::HdrPipeline>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
