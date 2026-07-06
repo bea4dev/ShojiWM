@@ -2854,6 +2854,7 @@ impl ShojiWM {
                 smithay::wayland::image_copy_capture::CaptureFailureReason::Unknown,
             );
             self.output_capture_mirrors.remove(&name);
+            self.hdr_pipelines.remove(&name);
             self.runtime_animation_outputs.remove(&name);
             self.layer_effect_evaluation_cache.remove(&name);
             self.popup_effect_evaluation_cache.remove(&name);

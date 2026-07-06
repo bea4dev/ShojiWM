@@ -12984,6 +12984,7 @@ fn connector_disconnected(
     // instance. Keep it across hot-unplug so a reconnected connector receives its mode, scale,
     // and position immediately. The TS runtime suppresses unchanged configuration payloads, so
     // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
+    state.hdr_pipelines.remove(&output_name);
     state.runtime_animation_outputs.remove(&output_name);
     state.damage_blink_visible.remove(&output_name);
     state.damage_blink_pending.remove(&output_name);
