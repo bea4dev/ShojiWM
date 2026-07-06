@@ -2983,6 +2983,7 @@ fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
         TtyRenderElements::RelocatedBackdrop(_) => "RelocatedBackdrop",
         TtyRenderElements::TransformedBackdrop(_) => "TransformedBackdrop",
         TtyRenderElements::Cursor(_) => "Cursor",
+        TtyRenderElements::HdrEncode(_) => "HdrEncode",
         _ => "Generic",
     }
 }
