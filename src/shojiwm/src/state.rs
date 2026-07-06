@@ -1657,6 +1657,7 @@ impl ShojiWM {
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
             output_color: Default::default(),
+            hdr_pipelines: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
