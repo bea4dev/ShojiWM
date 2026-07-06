@@ -1030,6 +1030,24 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
         // Revisit when the fp16 linear blend space (phase 3) lands.
         crate::color::ImageDescription::SRGB
     }
+
+    fn defer_image_description_info(
+        &mut self,
+        info: smithay::reexports::wayland_protocols::wp::color_management::v1::server::wp_image_description_info_v1::WpImageDescriptionInfoV1,
+        description: crate::color::ImageDescription,
+    ) {
+        // Idle callbacks run after the current wayland dispatch completes,
+        // so the `done` destructor event cannot destroy the info object
+        // inside the dispatch that created it (wayland-backend would then
+        // write the object's data through a freed pointer; issue #1). If
+        // the client is gone by the time this runs, the sends are no-ops.
+        self.loop_handle.insert_idle(move |_state| {
+            crate::protocols::color_management::send_information(
+                &info,
+                &description,
+            );
+        });
+    }
 }
 
 crate::delegate_screencopy!(ShojiWM);
