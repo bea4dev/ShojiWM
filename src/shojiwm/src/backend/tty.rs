@@ -5032,6 +5032,21 @@ fn render_surface(
                         .drm_output
                         .render_frame(renderer, &profiled_elements, frame_clear_color, frame_flags)
                         .map(|result| {
+                            // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                            // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                            // so smithay cannot attach a fence to the atomic commit. When
+                            // needs_sync() is true the page flip would be submitted before
+                            // the GPU finishes rendering, causing the display to scan out a
+                            // partially-rendered buffer and producing visible microstutter
+                            // during scroll/animation. Block on the swapchain sync point
+                            // manually before queue_frame commits the flip.
+                            if result.needs_sync() {
+                                if let PrimaryPlaneElement::Swapchain(ref element) =
+                                    result.primary_element
+                                {
+                                    let _ = element.sync.wait();
+                                }
+                            }
                             let primary_scanout =
                                 matches!(result.primary_element, PrimaryPlaneElement::Element(_));
                             let primary_plane_kind = match &result.primary_element {
@@ -5052,6 +5067,21 @@ fn render_surface(
                         .drm_output
                         .render_frame(renderer, &elements, frame_clear_color, frame_flags)
                         .map(|result| {
+                            // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                            // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                            // so smithay cannot attach a fence to the atomic commit. When
+                            // needs_sync() is true the page flip would be submitted before
+                            // the GPU finishes rendering, causing the display to scan out a
+                            // partially-rendered buffer and producing visible microstutter
+                            // during scroll/animation. Block on the swapchain sync point
+                            // manually before queue_frame commits the flip.
+                            if result.needs_sync() {
+                                if let PrimaryPlaneElement::Swapchain(ref element) =
+                                    result.primary_element
+                                {
+                                    let _ = element.sync.wait();
+                                }
+                            }
                             let primary_scanout =
                                 matches!(result.primary_element, PrimaryPlaneElement::Element(_));
                             let primary_plane_kind = match &result.primary_element {
