@@ -1032,6 +1032,9 @@ pub struct BackendData {
         DrmDeviceFd,
     >,
     pub renderer: GlesRenderer,
+    /// This GPU can render into fp16 targets (probed once at device_added);
+    /// gates HDR10 output modes, which need the fp16 intermediate.
+    pub supports_fp16: bool,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     /// Per-CRTC (window start, count) of recent surface rebuilds after failed
     /// atomic commit tests. Bounds the recovery path: a configuration the
