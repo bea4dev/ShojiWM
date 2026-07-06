@@ -91,6 +91,20 @@ pub trait ColorManagementHandler {
     fn output_image_description(&mut self, output: &WlOutput) -> ImageDescription;
     /// The description the compositor prefers for this surface's content.
     fn surface_preferred_description(&mut self, surface: &WlSurface) -> ImageDescription;
+    /// Deliver [`send_information`] for `info` *after* the current dispatch
+    /// completes (e.g. from a calloop idle callback).
+    ///
+    /// This MUST NOT send synchronously: `done` is a destructor event, and
+    /// wayland-backend (up to at least 0.3.15) stores a newly created
+    /// object's data through a raw pointer *after* the request handler
+    /// returns, without checking that the object is still alive. Destroying
+    /// the info object inside the dispatch that created it is therefore a
+    /// write-after-free that corrupts the heap.
+    fn defer_image_description_info(
+        &mut self,
+        info: WpImageDescriptionInfoV1,
+        description: ImageDescription,
+    );
 }
 
 /// Aggregate dispatch bound so each impl below doesn't repeat nine clauses.
