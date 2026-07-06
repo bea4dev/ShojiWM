@@ -6050,6 +6050,77 @@ fn render_surface(
             elements.extend(content_for_capture);
         }
 
+        // HDR10 outputs composite the full element list (cursor and overlays
+        // included — anything drawn outside the encode pass would end up
+        // sRGB-encoded inside a PQ signal) into the fp16 intermediate, and
+        // the DRM pass renders a single PQ-encode element instead.
+        let mut hdr_encode_active = false;
+        if matches!(
+            state
+                .output_color
+                .get(
+                output
+                .name()
+                .as_str()
+            )
+                .map(
+                |color| color.mode
+            ),
+            Some(crate::color::OutputColorMode::Hdr10 { .. })
+        ) {
+            let output_name = output
+                .name();
+            let mut pipeline = state.hdr_pipelines
+                .remove(
+                    &output_name
+                );
+            match crate::backend::hdr_pipeline::render_hdr_pipeline(
+                &mut backend.renderer,
+                &mut pipeline,
+                &output,
+                &elements,
+                CLEAR_COLOR,
+            ) {
+                Ok(
+                    Some(
+                        encode_element
+                    )
+                ) => {
+                    elements = vec![TtyRenderElements::HdrEncode(encode_element)];
+                    hdr_encode_active = true;
+                }
+                Ok(
+                    None
+                ) => {}
+                Err(
+                    err
+                ) => {
+                    // Fall through with the raw element list: the frame shows
+                    // washed-out colors on the PQ signal but stays visible.
+                    warn!(
+                        output = %output_name,
+                        ?err,
+                        "HDR encode pipeline failed; rendering unencoded frame"
+                    );
+                }
+            }
+            if let Some(
+                pipeline
+            ) = pipeline {
+                state.hdr_pipelines
+                    .insert(
+                        output_name,
+                        pipeline,
+                    );
+            }
+        } else {
+            state.hdr_pipelines
+                .remove(
+                    output.name()
+                        .as_str()
+                );
+        }
+
         let fullscreen_scanout_candidate = if fullscreen_overlay_visible {
             None
         } else {
@@ -12652,10 +12723,22 @@ fn connector_connected(
             device,
             &connector
         );
-        let color_mode = crate::color::resolve_output_mode(
-            &output_name,
-            edid_hdr.as_ref()
-        );
+        let color_mode = if backend.supports_fp16 {
+            crate::color::resolve_output_mode(
+                &output_name,
+                edid_hdr.as_ref()
+            )
+        } else {
+            // The PQ encode pass composites through an fp16 intermediate;
+            // without renderable fp16 targets HDR10 cannot be driven.
+            if crate::color::hdr_experiment_enabled() {
+                warn!(
+                    output = %output_name,
+                    "HDR requested but GPU lacks fp16 render targets; staying SDR"
+                );
+            }
+            crate::color::OutputColorMode::Sdr
+        };
         let hdr_metadata_blob = match color_mode {
             crate::color::OutputColorMode::Hdr10 { .. } => {
                 match crate::color::drm_metadata::apply_hdr_connector_state(
