@@ -172,9 +172,11 @@ impl OutputColorState {
                 max_fall: None,
             },
         };
-        // Blending stays sRGB until the fp16 linear pipeline (phase 3)
-        // lands: an HDR-signaled output therefore shows incorrect
-        // (washed-out) colors and is only useful for hardware bring-up.
+        // Blending still happens on sRGB-encoded values; the HDR path
+        // (backend/hdr_pipeline.rs) composites into an fp16 intermediate
+        // and PQ-encodes as a final pass, so HDR outputs display correctly.
+        // BlendSpace::LinearBt2020 activates once per-element
+        // linearization lands.
         Self {
             mode,
             blend_space: BlendSpace::Srgb,
