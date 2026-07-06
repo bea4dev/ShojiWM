@@ -28,7 +28,6 @@ use smithay::{
         utils::{CommitCounter, OpaqueRegions},
     },
     output::Output,
-    reexports::drm::control::ModeTypeFlags,
     utils::{Buffer, Physical, Rectangle, Scale, Size, Transform, user_data::UserDataMap},
 };
 use tracing::{info, warn};
@@ -164,13 +163,6 @@ pub struct HdrPipeline {
     /// rendered at least once without errors.
     contents_valid: bool,
 }
-
-// ModeTypeFlags is only imported to keep rustc from flagging the drm
-// reexport when the probe is compiled out in future cfg work; silence it.
-#[allow(dead_code)]
-fn _keep_mode_type_flags(
-    _flags: ModeTypeFlags
-) {}
 
 /// Composite `elements` into the fp16 intermediate and return the single
 /// PQ-encode element the DRM pass should render instead of the raw list.
