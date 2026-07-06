@@ -6194,6 +6194,11 @@ fn render_surface(
         if should_tear {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
         }
+        if hdr_encode_active {
+            // Nothing may bypass the encode pass: direct scanout or plane
+            // promotion would put sRGB pixels straight into the PQ signal.
+            frame_flags = FrameFlags::empty();
+        }
         // Keep every real damage frame asynchronous for the whole tearing period. In
         // particular, a visible software-cursor update must not fall back to a synced flip:
         // alternating async game frames with vblank-bound cursor frames produces visibly uneven
