@@ -13243,6 +13243,162 @@ pub fn tty_output_available_modes(
     None
 }
 
+/// Re-resolve every connected output's color mode against the current
+/// runtime display config (`hdr: true` opt-in). Outputs connect before the
+/// TypeScript config evaluates — both at session startup and on hotplug —
+/// so this is where a config-side HDR request actually takes effect. It is
+/// a live switch: the connector properties persist across smithay's
+/// commits (legacy SET_PROPERTY), and the render path re-reads
+/// `output_color` every frame to engage or drop the PQ encode pass.
+pub fn refresh_tty_output_color_modes(
+    state: &mut crate::state::ShojiWM
+) {
+    let mut changed = false;
+    for backend in state.tty_backends
+        .values() {
+        let connectors = backend
+            .drm_scanner
+            .crtcs()
+            .map(
+                |(info, crtc)| (
+                    info
+                        .clone(),
+                    crtc,
+                )
+            ).collect::<Vec<_>>();
+        for (connector, crtc) in connectors {
+            if !backend.surfaces.contains_key(
+                &crtc
+            ) {
+                continue;
+            }
+            let output_name = format!(
+                "{}-{}",
+                connector
+                    .interface()
+                    .as_str(),
+                connector
+                    .interface_id(),
+            );
+            let Some(current) = state.output_color
+                .get(
+                    &output_name
+                )
+                .copied() else {
+                continue;
+            };
+            let hdr_requested = state
+                .runtime_output_configs
+                .get(
+                    &output_name
+                )
+                .and_then(|config| config.hdr)
+                .unwrap_or(false)
+                || crate::color::hdr_output_requested_via_env(&output_name);
+            let desired_mode = if backend.supports_fp16 {
+                crate::color::resolve_output_mode(
+                    &output_name,
+                    hdr_requested,
+                    current.edid_hdr
+                        .as_ref(),
+                )
+            } else {
+                crate::color::OutputColorMode::Sdr
+            };
+            if desired_mode == current.mode {
+                continue;
+            }
+
+            let device = backend.drm_output_manager.device();
+            if let Some(blob) = current.hdr_metadata_blob {
+                crate::color::drm_metadata::destroy_metadata_blob(
+                    device,
+                    blob,
+                );
+            }
+            let (
+                mode,
+                hdr_metadata_blob
+            ) = match desired_mode {
+                crate::color::OutputColorMode::Hdr10 { .. } => {
+                    match crate::color::drm_metadata::apply_hdr_connector_state(
+                        device,
+                        &connector,
+                        &desired_mode,
+                    ) {
+                        Ok(blob) => (
+                            desired_mode,
+                            blob,
+                        ),
+                        Err(error) => {
+                            warn!(
+                                output = %output_name,
+                                ?error,
+                                "failed to apply HDR connector state; staying SDR"
+                            );
+                            crate::color::drm_metadata::reset_hdr_connector_state(
+                                device,
+                                &connector,
+                            );
+                            (
+                                crate::color::OutputColorMode::Sdr,
+                                None,
+                            )
+                        }
+                    }
+                }
+                crate::color::OutputColorMode::Sdr => {
+                    crate::color::drm_metadata::reset_hdr_connector_state(
+                        device,
+                        &connector,
+                    );
+                    (
+                        crate::color::OutputColorMode::Sdr,
+                        None,
+                    )
+                }
+            };
+            if mode == current.mode {
+                continue;
+            }
+            info!(
+                output = %output_name,
+                ?mode,
+                "output color mode changed by runtime display config"
+            );
+            state.output_color
+                .insert(
+                    output_name,
+                    crate::color::OutputColorState::new(
+                        mode,
+                        current.edid_hdr,
+                        hdr_metadata_blob
+                    ),
+                );
+            changed = true;
+        }
+    }
+    if changed {
+        // Force a full repaint on every output so the first frame after the
+        // switch is (de)PQ-encoded; the render path picks the pipeline from
+        // `output_color` per frame.
+        for output in state.space.outputs() {
+            if let Some(geometry) = state.space.output_geometry(output) {
+                state.pending_decoration_damage
+                    .push(
+                        LogicalRect::new(
+                            geometry.loc.x,
+                            geometry.loc.y,
+                            geometry.size.w,
+                            geometry.size.h,
+                        )
+                    );
+            }
+        }
+        state.schedule_redraw();
+    }
+}
+
 pub fn tty_connected_outputs(state: &crate::state::ShojiWM) -> Vec<Output> {
     let mut outputs = Vec::new();
     for backend in state.tty_backends.values() {
