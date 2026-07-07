@@ -187,15 +187,40 @@ impl OutputColorState {
     }
 }
 
-/// Experimental gate: `SHOJI_HDR_OUTPUTS=DP-1,DP-2` (or `all`) opts
-/// connectors into HDR10 signaling and widens the protocol advertisement
-/// to PQ/BT.2020. Off by default because the render pipeline still
-/// composites in sRGB.
-pub fn hdr_experiment_enabled() -> bool {
-    std::env::var("SHOJI_HDR_OUTPUTS").is_ok_and(|value| !value.trim().is_empty())
+/// True while the runtime display config opts any output into HDR
+/// (`hdr: true`). Kept in an atomic because the protocol layer's
+/// capability checks run per-request without access to compositor state.
+static SESSION_HDR_CONFIGURED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Called whenever a runtime display config update lands, with "does any
+/// output request HDR". Widens/narrows the protocol advertisement for
+/// clients that bind afterwards.
+pub fn set_session_hdr_configured(enabled: bool) {
+    SESSION_HDR_CONFIGURED
+        .store(
+            enabled,
+            std::sync::atomic::Ordering::Relaxed
+        );
 }
 
-fn hdr_output_requested(output_name: &str) -> bool {
+/// HDR gate for the protocol advertisement (PQ/BT.2020 capabilities):
+/// open when the runtime display config opts an output in, or via the
+/// `SHOJI_HDR_OUTPUTS=DP-1,DP-2` (or `all`) env override. Off by default
+/// because the render pipeline still composites in sRGB.
+pub fn hdr_experiment_enabled() -> bool {
+    SESSION_HDR_CONFIGURED
+        .load(
+            std::sync::atomic::Ordering::Relaxed
+        )
+        || std::env::var("SHOJI_HDR_OUTPUTS").is_ok_and(|value| !value.trim().is_empty())
+}
+
+/// Env-override opt-in for one output, independent of the runtime display
+/// config (useful for `cargo run` sessions without a config).
+pub fn hdr_output_requested_via_env(
+    output_name: &str
+) -> bool {
     std::env::var("SHOJI_HDR_OUTPUTS").is_ok_and(|value| {
         value
             .split(',')
@@ -205,12 +230,15 @@ fn hdr_output_requested(output_name: &str) -> bool {
 }
 
 /// Decide how to drive a connector: HDR10 only when the user opted the
-/// output in *and* its EDID advertises ST 2084 support.
+/// output in (runtime display config `hdr: true` or the env override,
+/// resolved by the caller into `hdr_requested`) *and* its EDID advertises
+/// ST 2084 support.
 pub fn resolve_output_mode(
     output_name: &str,
+    hdr_requested: bool,
     edid_hdr: Option<&EdidHdrMetadata>,
 ) -> OutputColorMode {
-    if !hdr_output_requested(output_name) {
+    if !hdr_requested {
         return OutputColorMode::Sdr;
     }
     let Some(edid) = edid_hdr else {
