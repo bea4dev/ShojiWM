@@ -1186,6 +1186,14 @@ export interface OutputExtendConfigEntry {
    * （多くのパネルでは `"unknown"`）のままになります。
    */
   subpixel?: OutputSubpixel;
+  /**
+   * Drive this output as HDR10 (PQ/BT.2020 signaling) when its EDID
+   * advertises ST 2084 support; ignored otherwise. Experimental: SDR
+   * content is composited in sRGB and PQ-encoded as a final pass.
+   * この出力の EDID が ST 2084 対応を示す場合、HDR10(PQ/BT.2020)で
+   * 駆動します。実験的機能です。
+   */
+  hdr?: boolean;
 }
 
 export interface OutputDisabledConfigEntry {
