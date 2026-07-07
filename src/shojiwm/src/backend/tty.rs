@@ -13386,7 +13386,7 @@ pub fn refresh_tty_output_color_modes(
             if let Some(geometry) = state.space.output_geometry(output) {
                 state.pending_decoration_damage
                     .push(
-                        LogicalRect::new(
+                        crate::ssd::LogicalRect::new(
                             geometry.loc.x,
                             geometry.loc.y,
                             geometry.size.w,
