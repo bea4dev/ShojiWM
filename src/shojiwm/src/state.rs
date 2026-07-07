@@ -2723,6 +2723,15 @@ impl ShojiWM {
                 }
             }
         }
+        // The HDR opt-in lives in this config: widen/narrow the protocol
+        // advertisement and re-resolve connected outputs, which connect
+        // before the TypeScript config evaluates.
+        crate::color::set_session_hdr_configured(
+            self.runtime_output_configs
+                .values()
+                .any(|config| config.hdr == Some(true)),
+        );
+        crate::backend::tty::refresh_tty_output_color_modes(self);
         self.apply_runtime_display_configuration();
         self.notify_runtime_outputs_changed();
     }
