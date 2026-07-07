@@ -12719,6 +12719,16 @@ fn connector_connected(
     // the connector properties (max bpc / Colorspace / HDR_OUTPUT_METADATA)
     // are already part of the connector state when initialize_output performs
     // the first atomic commit on this CRTC.
+    // Note: at startup and on hotplug the connector connects before the
+    // TypeScript config evaluates, so a config-side `hdr: true` usually
+    // isn't visible here yet — refresh_tty_output_color_modes re-resolves
+    // once the display config update lands.
+    let hdr_requested = state
+        .runtime_output_configs
+        .get(&output_name)
+        .and_then(|config| config.hdr)
+        .unwrap_or(false)
+        || crate::color::hdr_output_requested_via_env(&output_name);
     let color_state = {
         let backend = state.tty_backends
             .get(&node)
@@ -12731,12 +12741,13 @@ fn connector_connected(
         let color_mode = if backend.supports_fp16 {
             crate::color::resolve_output_mode(
                 &output_name,
+                hdr_requested,
                 edid_hdr.as_ref()
             )
         } else {
             // The PQ encode pass composites through an fp16 intermediate;
             // without renderable fp16 targets HDR10 cannot be driven.
-            if crate::color::hdr_experiment_enabled() {
+            if hdr_requested {
                 warn!(
                     output = %output_name,
                     "HDR requested but GPU lacks fp16 render targets; staying SDR"
