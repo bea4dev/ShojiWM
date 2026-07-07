@@ -37,6 +37,7 @@ pub struct RuntimeOutputConfig {
     /// `wl_output.geometry`. Unset keeps what the kernel reported for the
     /// connector, which is `unknown` for most panels.
     pub subpixel: Option<RuntimeOutputSubpixel>,
+    pub hdr: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
