@@ -109,6 +109,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     scale: config.scale,
     subpixel: config.subpixel,
     transform: config.transform,
+    hdr: config.hdr,
   };
 }
 
