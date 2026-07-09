@@ -1079,6 +1079,8 @@ export interface OutputStateSnapshot {
   /** Currently applied transform. / 現在適用されている transform。 */
   transform?: OutputTransform;
   availableModes: OutputMode[];
+  /** EDID advertises HDR (CTA-861 static metadata block). */
+  hdrSupported?: boolean;
 }
 
 export interface OutputInfo extends OutputStateSnapshot {
