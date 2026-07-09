@@ -2792,6 +2792,12 @@ impl ShojiWM {
                         available_modes,
                         subpixel: physical.subpixel.into(),
                         detected_subpixel: detected_subpixel(&output).into(),
+                        hdr_supported: self
+                            .output_color
+                            .get(
+                                &name,
+                            )
+                            .is_some_and(|color| color.edid_hdr.is_some()),
                     },
                 )
             })

@@ -1199,6 +1199,8 @@ export interface OutputStateSnapshot {
    */
   detectedSubpixel?: OutputSubpixel;
   availableModes: OutputMode[];
+  /** EDID advertises HDR (CTA-861 static metadata block). */
+  hdrSupported?: boolean;
 }
 
 export interface OutputInfo extends OutputStateSnapshot {
