@@ -544,6 +544,9 @@ pub struct WaylandOutputSnapshot {
     /// Subpixel layout the kernel reported for the connector: what `subpixel`
     /// falls back to when the display config names none.
     pub detected_subpixel: OutputSubpixelSnapshot,
+    /// EDID advertises HDR (CTA-861 static metadata). Can
+    /// be used to check display capabilities.
+    pub hdr_supported: bool,
 }
 
 /// A panel's physical subpixel layout, spelled as the display config accepts it.

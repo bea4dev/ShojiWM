@@ -41,6 +41,7 @@ function cloneOutputState(
         subpixel: snapshot.subpixel,
         detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
+        hdrSupported: snapshot.hdrSupported,
       },
     ]),
   );
@@ -73,6 +74,7 @@ function normalizeOutputState(
         subpixel: snapshot.subpixel ?? "unknown",
         detectedSubpixel: snapshot.detectedSubpixel ?? "unknown",
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
+        hdrSupported: snapshot.hdrSupported,
       },
     ]),
   );
