@@ -24,7 +24,11 @@ import {
   type WindowResizeRect,
 } from "shoji_wm";
 import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
-import { playRectAnimation, stopRectAnimation } from "./window-animation";
+import {
+  playRectAnimation,
+  stopRectAnimation,
+  type RectAnimationOptions,
+} from "./window-animation";
 
 export type SnapZone =
   | "maximize"
@@ -197,6 +201,15 @@ interface LayoutOptions {
   cancelRectAnimations?: boolean;
 }
 
+/**
+ * Tiling layout mode for a workspace. Hyprland-inspired `dwindle` and `master`
+ * join the original `scrolling` row layout; `scrolling` is the default so
+ * existing behavior is preserved.
+ */
+export type TileLayout = "scrolling" | "dwindle" | "master";
+
+const TILE_LAYOUT_ORDER: TileLayout[] = ["scrolling", "dwindle", "master"];
+
 interface HybridWindowManagerSnapshot {
   currentMonitor: string;
   activeWorkspaceByMonitor: [string, number][];
@@ -209,6 +222,7 @@ interface WorkspaceSnapshot {
   isTiled: boolean;
   activeWindowId: string | null;
   scrollOffset: number;
+  tileLayout: TileLayout;
   windows: WorkspaceWindowSnapshot[];
 }
 
@@ -241,6 +255,7 @@ export interface WorkspacesViewWorkspace {
   index: number;
   windowCount: number;
   isTiled: boolean;
+  tileLayout: TileLayout;
   active: boolean;
   windows: WorkspacesViewWindow[];
 }
@@ -1165,6 +1180,39 @@ export class HybridWindowManager {
     });
   }
 
+  /**
+   * Switch the current workspace's tiling layout. The retile (and any broadcast)
+   * is driven by the caller in index.tsx via scheduleWorkspaceBroadcast so the
+   * bar and IPC clients stay in sync.
+   */
+  public setTileLayout(layout: TileLayout): void {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const workspace = this.getCurrentWorkspace();
+      if (!workspace) {
+        return;
+      }
+      workspace.setTileLayout(layout);
+      this.applyWorkspaceStackPolicy(workspace);
+    });
+  }
+
+  /** scrolling -> dwindle -> master -> scrolling. */
+  public cycleTileLayout(): void {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const workspace = this.getCurrentWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const current = workspace.getTileLayout();
+      const nextIndex =
+        (TILE_LAYOUT_ORDER.indexOf(current) + 1) % TILE_LAYOUT_ORDER.length;
+      workspace.setTileLayout(
+        TILE_LAYOUT_ORDER[nextIndex] ?? TILE_LAYOUT_ORDER[0],
+      );
+      this.applyWorkspaceStackPolicy(workspace);
+    });
+  }
+
   public moveFocusedWindowToWorkspace(direction: -1 | 1) {
     withManagedWindowOnlySSDRebuildSuppressed(() => {
       this.syncWorkspaces();
@@ -1365,6 +1413,7 @@ export class HybridWindowManager {
         index: workspace.index,
         windowCount: workspace.windowCount(),
         isTiled: workspace.isTiled,
+        tileLayout: workspace.getTileLayout(),
         active,
         windows,
       });
@@ -1385,6 +1434,7 @@ export class HybridWindowManager {
             index: active,
             windowCount: 0,
             isTiled: false,
+            tileLayout: "scrolling",
             active: true,
             windows: [],
           });
@@ -2895,6 +2945,9 @@ export class Workspace {
   private scrollOffset = 0;
   private kineticScrollPoll: PollHandle | null = null;
   private kineticScrollToken = 0;
+  // Current tiling layout. Persists across tile on/off toggles (setTiled only
+  // flips isTiled, never this field) and across hot-reload (see snapshot/restore).
+  private tileLayout: TileLayout = "scrolling";
   public monitor: string;
   public isTiled = false;
 
@@ -3384,7 +3437,47 @@ export class Workspace {
     if (!this.isTiled) {
       return;
     }
+    switch (this.tileLayout) {
+      case "dwindle":
+        this.applyDwindleLayout(options);
+        return;
+      case "master":
+        this.applyMasterLayout(options);
+        return;
+      default:
+        this.applyScrollingLayout(options);
+        return;
+    }
+  }
 
+  public getTileLayout(): TileLayout {
+    return this.tileLayout;
+  }
+
+  public setTileLayout(layout: TileLayout) {
+    if (this.tileLayout === layout) {
+      return;
+    }
+    this.tileLayout = layout;
+    if (this.isTiled) {
+      this.applyLayout();
+    }
+  }
+
+  /**
+   * Shared layout setup: resolves animation options, handles the empty-tiles
+   * short-circuit, and selects a fallback active window when the current one is
+   * no longer present. Returns null when the layout should bail out early (no
+   * tileable windows); otherwise the resolved context the chosen layout method
+   * uses to place tiles.
+   */
+  private resolveLayoutContext(options: LayoutOptions): {
+    tileable: WaylandWindow[];
+    animate: boolean;
+    suppressSSDRebuild: boolean;
+    canSuppress: boolean;
+    animationOptions: RectAnimationOptions | undefined;
+  } | null {
     const tileable = this.tileableWindows();
     const animate = options.animate ?? true;
     const suppressSSDRebuild = options.suppressSSDRebuild ?? true;
@@ -3405,7 +3498,7 @@ export class Workspace {
         floatingWindowIds: this.floatingWindows().map((window) => window.id),
       });
       this.applyFloatingLayout(animationOptions, animate);
-      return;
+      return null;
     }
 
     if (
@@ -3416,6 +3509,54 @@ export class Workspace {
         this.activeWindowId = tileable.at(-1)?.id ?? null;
       }
     }
+
+    return { tileable, animate, suppressSSDRebuild, canSuppress, animationOptions };
+  }
+
+  /**
+   * Place a single tile, honoring the drag-slot reservation (the dragged window
+   * keeps its live pointer rect; we just record the reserved slot for preview)
+   * and the animate/set toggle. `appliedRects` records every window's target rect
+   * for the hot-reload debug log, including the dragged one.
+   */
+  private applyTileRect(
+    window: WaylandWindow,
+    rect: ManagedWindowRect,
+    appliedRects: Record<string, ManagedWindowRect>,
+    animate: boolean,
+    animationOptions: RectAnimationOptions | undefined,
+    cancelRectAnimations: boolean,
+  ): void {
+    appliedRects[window.id] = rect;
+    if (window.id === this.draggingWindowId) {
+      this.lastDraggingSlotRect = rect;
+      return;
+    }
+    if (animate) {
+      playRectAnimation(
+        window,
+        WINDOW_STATE_RECT,
+        rect,
+        WINDOW_MANAGEMENT_EASING,
+        TILE_ANIMATION_DURATION,
+        animationOptions,
+      );
+    } else {
+      if (cancelRectAnimations) {
+        stopRectAnimation(window, WINDOW_STATE_RECT);
+      }
+      window.state[WINDOW_STATE_RECT].set(rect);
+    }
+  }
+
+  /** Original horizontal scrolling row layout — the default. */
+  private applyScrollingLayout(options: LayoutOptions = {}) {
+    const context = this.resolveLayoutContext(options);
+    if (!context) {
+      return;
+    }
+    const { tileable, animate, suppressSSDRebuild, canSuppress, animationOptions } =
+      context;
 
     this.clampScrollOffset(tileable.length);
 
@@ -3438,38 +3579,221 @@ export class Workspace {
               width: tileWidth,
               height: tileHeight,
             };
-      appliedRects[window.id] = rect;
-      if (window.id === this.draggingWindowId) {
-        this.lastDraggingSlotRect = rect;
-      }
-      if (window.id !== this.draggingWindowId) {
-        if (animate) {
-          playRectAnimation(
-            window,
-            WINDOW_STATE_RECT,
-            rect,
-            WINDOW_MANAGEMENT_EASING,
-            TILE_ANIMATION_DURATION,
-            animationOptions,
-          );
-        } else {
-          if (options.cancelRectAnimations !== false) {
-            stopRectAnimation(window, WINDOW_STATE_RECT);
-          }
-          window.state[WINDOW_STATE_RECT].set(rect);
-        }
-      }
+      this.applyTileRect(
+        window,
+        rect,
+        appliedRects,
+        animate,
+        animationOptions,
+        options.cancelRectAnimations !== false,
+      );
       nextX += tileWidth + (index === tileable.length - 1 ? 0 : TILE_GAP);
     });
 
     hotReloadDebug("workspace-apply-layout", {
       monitor: this.monitor,
       index: this.index,
+      layout: "scrolling",
       animate,
       suppressSSDRebuild,
       canSuppress,
       activeWindowId: this.activeWindowId,
       scrollOffset: this.scrollOffset,
+      tileableWindowIds: tileable.map((window) => window.id),
+      floatingWindowIds: this.floatingWindows().map((window) => window.id),
+      appliedRects,
+    });
+    this.applyFloatingLayout(animationOptions, animate);
+  }
+
+  /**
+   * Hyprland-style dwindle: a binary tree of tiles. Each level halves its
+   * assigned rect, alternating the split axis by depth (depth 0 = horizontal
+   * left/right split, depth 1 = vertical top/bottom, depth 2 = horizontal, …)
+   * until a subtree holds a single window. The window list is split into two
+   * halves so the first half fills the first child and the rest the second —
+   * deterministic for a given window order, so focus cycling (which reorders
+   * tileableWindows) visibly reshuffles the tree.
+   */
+  private applyDwindleLayout(options: LayoutOptions = {}) {
+    const context = this.resolveLayoutContext(options);
+    if (!context) {
+      return;
+    }
+    const { tileable, animate, suppressSSDRebuild, canSuppress, animationOptions } =
+      context;
+
+    const viewportRect = this.tileViewportRect();
+    const appliedRects: Record<string, ManagedWindowRect> = {};
+    this.lastDraggingSlotRect = null;
+
+    interface DwindleRect {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+    const build = (windows: WaylandWindow[], rect: DwindleRect, depth: number) => {
+      if (windows.length === 0) {
+        return;
+      }
+      if (windows.length === 1) {
+        const window = windows[0];
+        const rectToApply: ManagedWindowRect = window.state[
+          WINDOW_STATE_MAXIMIZED
+        ]()
+          ? this.maximizedTileRect(window, rect.x)
+          : { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        this.applyTileRect(
+          window,
+          rectToApply,
+          appliedRects,
+          animate,
+          animationOptions,
+          options.cancelRectAnimations !== false,
+        );
+        return;
+      }
+
+      // Bias the split toward the first half so a single new window always
+      // lands in its own child rather than disturbing an already-balanced pair.
+      const splitIndex = Math.ceil(windows.length / 2);
+      const left = windows.slice(0, splitIndex);
+      const right = windows.slice(splitIndex);
+      const horizontal = depth % 2 === 0;
+      const gap = TILE_GAP;
+      if (horizontal) {
+        const half = (rect.width - gap) / 2;
+        build(left, { x: rect.x, y: rect.y, width: half, height: rect.height }, depth + 1);
+        build(
+          right,
+          { x: rect.x + half + gap, y: rect.y, width: half, height: rect.height },
+          depth + 1,
+        );
+      } else {
+        const half = (rect.height - gap) / 2;
+        build(
+          left,
+          { x: rect.x, y: rect.y, width: rect.width, height: half },
+          depth + 1,
+        );
+        build(
+          right,
+          {
+            x: rect.x,
+            y: rect.y + half + gap,
+            width: rect.width,
+            height: half,
+          },
+          depth + 1,
+        );
+      }
+    };
+
+    build(
+      tileable,
+      {
+        x: read(viewportRect.x),
+        y: read(viewportRect.y),
+        width: read(viewportRect.width),
+        height: read(viewportRect.height),
+      },
+      0,
+    );
+
+    hotReloadDebug("workspace-apply-layout", {
+      monitor: this.monitor,
+      index: this.index,
+      layout: "dwindle",
+      animate,
+      suppressSSDRebuild,
+      canSuppress,
+      activeWindowId: this.activeWindowId,
+      tileableWindowIds: tileable.map((window) => window.id),
+      floatingWindowIds: this.floatingWindows().map((window) => window.id),
+      appliedRects,
+    });
+    this.applyFloatingLayout(animationOptions, animate);
+  }
+
+  /**
+   * Hyprland-style master: one master window on the left half, the remaining
+   * windows ("slaves") stacked vertically in the right half. With a single
+   * window it fills the whole area. The master is the first tileable window;
+   * focus cycling (which reorders tileableWindows) therefore rotates which
+   * window holds the master slot.
+   */
+  private applyMasterLayout(options: LayoutOptions = {}) {
+    const context = this.resolveLayoutContext(options);
+    if (!context) {
+      return;
+    }
+    const { tileable, animate, suppressSSDRebuild, canSuppress, animationOptions } =
+      context;
+
+    const viewportRect = this.tileViewportRect();
+    const x = read(viewportRect.x);
+    const y = read(viewportRect.y);
+    const width = read(viewportRect.width);
+    const height = read(viewportRect.height);
+    const appliedRects: Record<string, ManagedWindowRect> = {};
+    this.lastDraggingSlotRect = null;
+
+    const cancelRectAnimations = options.cancelRectAnimations !== false;
+    const assignRect = (window: WaylandWindow, rect: ManagedWindowRect) => {
+      this.applyTileRect(
+        window,
+        rect,
+        appliedRects,
+        animate,
+        animationOptions,
+        cancelRectAnimations,
+      );
+    };
+
+    if (tileable.length === 1) {
+      const window = tileable[0];
+      assignRect(
+        window,
+        window.state[WINDOW_STATE_MAXIMIZED]()
+          ? this.maximizedTileRect(window, x)
+          : { x, y, width, height },
+      );
+    } else {
+      const master = tileable[0];
+      const slaves = tileable.slice(1);
+      const masterWidth = (width - TILE_GAP) / 2;
+      const slaveX = x + masterWidth + TILE_GAP;
+      const slaveWidth = masterWidth;
+      const slaveCount = slaves.length;
+      const slaveHeight = (height - (slaveCount - 1) * TILE_GAP) / slaveCount;
+
+      assignRect(
+        master,
+        master.state[WINDOW_STATE_MAXIMIZED]()
+          ? this.maximizedTileRect(master, x)
+          : { x, y, width: masterWidth, height },
+      );
+
+      slaves.forEach((window, index) => {
+        const slaveY = y + index * (slaveHeight + TILE_GAP);
+        assignRect(
+          window,
+          window.state[WINDOW_STATE_MAXIMIZED]()
+            ? this.maximizedTileRect(window, slaveX)
+            : { x: slaveX, y: slaveY, width: slaveWidth, height: slaveHeight },
+        );
+      });
+    }
+
+    hotReloadDebug("workspace-apply-layout", {
+      monitor: this.monitor,
+      index: this.index,
+      layout: "master",
+      animate,
+      suppressSSDRebuild,
+      canSuppress,
+      activeWindowId: this.activeWindowId,
       tileableWindowIds: tileable.map((window) => window.id),
       floatingWindowIds: this.floatingWindows().map((window) => window.id),
       appliedRects,
@@ -3918,6 +4242,7 @@ export class Workspace {
       isTiled: this.isTiled,
       activeWindowId: this.activeWindowId,
       scrollOffset: this.scrollOffset,
+      tileLayout: this.tileLayout,
       windows: this.windows.map((window) => this.snapshotWindow(window)),
     };
   }
@@ -3926,6 +4251,7 @@ export class Workspace {
     this.isTiled = snapshot.isTiled;
     this.activeWindowId = snapshot.activeWindowId;
     this.scrollOffset = snapshot.scrollOffset;
+    this.tileLayout = snapshot.tileLayout ?? "scrolling";
     this.tileWidthByWindowId.clear();
     this.restoredWindowStateById.clear();
     for (const window of snapshot.windows) {
