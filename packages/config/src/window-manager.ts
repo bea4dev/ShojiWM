@@ -906,6 +906,7 @@ export class HybridWindowManager {
             window,
             nextRect,
             event.currentPointer.x,
+            event.currentPointer.y,
           );
           this.emitSnapPreview(
             targetWorkspace.monitor,
@@ -1007,6 +1008,7 @@ export class HybridWindowManager {
       window,
       event.currentRect,
       event.currentPointer.x,
+      event.currentPointer.y,
     );
     this.emitSnapPreview(
       targetWorkspace.monitor,
@@ -3171,9 +3173,17 @@ export class Workspace {
       return false;
     }
 
-    const nextIndex = currentIndex + direction;
-    if (nextIndex < 0 || nextIndex >= tileable.length) {
-      return false;
+    let nextIndex: number;
+    if (this.wrapsTileFocus()) {
+      if (tileable.length < 2) {
+        return false;
+      }
+      nextIndex = (currentIndex + direction + tileable.length) % tileable.length;
+    } else {
+      nextIndex = currentIndex + direction;
+      if (nextIndex < 0 || nextIndex >= tileable.length) {
+        return false;
+      }
     }
 
     this.stopKineticScroll();
@@ -3896,6 +3906,7 @@ export class Workspace {
     window: WaylandWindow,
     rect: ManagedWindowRect,
     pointerX: number,
+    pointerY: number,
   ) {
     if (this.draggingWindowId !== window.id) {
       this.beginTileDrag(window, rect);
@@ -3903,7 +3914,7 @@ export class Workspace {
     this.activeWindowId = window.id;
     this.moveTileWindowToIndex(
       window,
-      this.tileInsertionIndexForPointer(window, pointerX),
+      this.tileInsertionIndexForPointer(window, pointerX, pointerY),
     );
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(rect);
@@ -4189,7 +4200,9 @@ export class Workspace {
       activeIndex >= 0
         ? activeIndex
         : (fallbackIndex ?? (direction < 0 ? tileable.length : -1));
-    const nextIndex = clamp(currentIndex + direction, 0, tileable.length - 1);
+    const nextIndex = this.wrapsTileFocus()
+      ? (currentIndex + direction + tileable.length) % tileable.length
+      : clamp(currentIndex + direction, 0, tileable.length - 1);
     this.activeWindowId = tileable[nextIndex].id;
     this.scrollToWindow(tileable[nextIndex]);
     this.applyLayout();
@@ -4336,14 +4349,58 @@ export class Workspace {
   private tileInsertionIndexForPointer(
     window: WaylandWindow,
     pointerX: number,
+    pointerY: number,
   ): number {
     const tileable = this.tileableWindows().filter(
       (current) => current.id !== window.id,
     );
     const viewportRect = this.tileViewportRect();
-    const contentX = pointerX - read(viewportRect.x) + this.scrollOffset;
-    let left = 0;
+    const vx = read(viewportRect.x);
+    const vy = read(viewportRect.y);
+    const vw = read(viewportRect.width);
+    const vh = read(viewportRect.height);
+    const layout = this.getTileLayout();
 
+    if (layout === "master") {
+      // Master occupies the left half; slaves (plus a trailing "new slave"
+      // slot) divide the right half evenly. Left half -> master (index 0).
+      if (pointerX < vx + vw / 2) {
+        return 0;
+      }
+      const existingSlaves = tileable.length - 1;
+      const slots = existingSlaves + 1;
+      const slotHeight = vh / slots;
+      const slotIndex = Math.min(
+        slots - 1,
+        Math.max(0, Math.floor((pointerY - vy) / slotHeight)),
+      );
+      if (slotIndex < existingSlaves) {
+        return slotIndex + 1;
+      }
+      return tileable.length;
+    }
+
+    if (layout === "dwindle") {
+      // Find which leaf region the pointer is over; drop before that tile, or
+      // append at the end if it lands outside every existing leaf.
+      const rects = this.dwindleRects(tileable, vx, vy, vw, vh);
+      for (let index = 0; index < rects.length; index++) {
+        const rect = rects[index];
+        if (
+          pointerX >= rect.x &&
+          pointerX < rect.x + rect.width &&
+          pointerY >= rect.y &&
+          pointerY < rect.y + rect.height
+        ) {
+          return index;
+        }
+      }
+      return tileable.length;
+    }
+
+    // scrolling layout: original horizontal-row insertion math.
+    const contentX = pointerX - vx + this.scrollOffset;
+    let left = 0;
     for (let index = 0; index < tileable.length; index++) {
       const width = this.tileWidthForWindow(tileable[index], viewportRect);
       if (contentX < left + width / 2) {
@@ -4351,8 +4408,80 @@ export class Workspace {
       }
       left += width + TILE_GAP;
     }
-
     return tileable.length;
+  }
+
+  /**
+   * Compute the dwindle layout's leaf rects for a window list, in array order,
+   * mirroring `applyDwindleLayout`'s tree build (depth alternates the split
+   * axis; the list is split so the first half fills the first child). Used
+   * only for pointer hit-testing during a drag, so maximized-window overrides
+   * are intentionally ignored.
+   */
+  private dwindleRects(
+    windows: WaylandWindow[],
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): { x: number; y: number; width: number; height: number }[] {
+    const rects: { x: number; y: number; width: number; height: number }[] = [];
+    const build = (
+      group: WaylandWindow[],
+      rect: { x: number; y: number; width: number; height: number },
+      depth: number,
+    ) => {
+      if (group.length === 0) {
+        return;
+      }
+      if (group.length === 1) {
+        rects.push({ ...rect });
+        return;
+      }
+      const splitIndex = Math.ceil(group.length / 2);
+      const left = group.slice(0, splitIndex);
+      const right = group.slice(splitIndex);
+      const horizontal = depth % 2 === 0;
+      const gap = TILE_GAP;
+      if (horizontal) {
+        const half = (rect.width - gap) / 2;
+        build(left, { x: rect.x, y: rect.y, width: half, height: rect.height }, depth + 1);
+        build(
+          right,
+          { x: rect.x + half + gap, y: rect.y, width: half, height: rect.height },
+          depth + 1,
+        );
+      } else {
+        const half = (rect.height - gap) / 2;
+        build(
+          left,
+          { x: rect.x, y: rect.y, width: rect.width, height: half },
+          depth + 1,
+        );
+        build(
+          right,
+          {
+            x: rect.x,
+            y: rect.y + half + gap,
+            width: rect.width,
+            height: half,
+          },
+          depth + 1,
+        );
+      }
+    };
+    build(windows, { x, y, width, height }, 0);
+    return rects;
+  }
+
+  /**
+   * Whether focus/move should wrap around instead of clamping at the edges.
+   * Dwindle and master are spatial layouts where wrapping makes sense; the
+   * scrolling row is inherently linear so clamping is correct there.
+   */
+  private wrapsTileFocus(): boolean {
+    const layout = this.getTileLayout();
+    return layout === "dwindle" || layout === "master";
   }
 
   private moveTileWindowToIndex(window: WaylandWindow, tileIndex: number) {
