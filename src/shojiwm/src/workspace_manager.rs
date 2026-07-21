@@ -104,8 +104,16 @@ impl ExtWorkspaceGroupHandle {
         };
 
         resource.capabilities(ExtWorkspaceGroupCapability::empty());
-        let (entered_outputs, output_resources) =
-            send_group_outputs(&resource, dh, &outputs, all_outputs);
+        let mut entered_outputs = Vec::new();
+        let mut output_resources = Vec::new();
+        refresh_group_outputs(
+            &resource,
+            dh,
+            &outputs,
+            all_outputs,
+            &mut output_resources,
+            &mut entered_outputs,
+        );
 
         let mut entered_workspaces = Vec::new();
         for workspace_id in &workspace_ids {
@@ -137,57 +145,72 @@ impl ExtWorkspaceGroupHandle {
     fn update(
         &self,
         group: &RuntimeWorkspaceGroupConfig,
+        dh: &DisplayHandle,
+        all_outputs: &[Output],
         workspaces: &[ExtWorkspaceHandle],
     ) -> bool {
-        let resources = {
+        let (config_changed, resources) = {
             let mut inner = self.inner.lock().unwrap();
             let next_workspaces: Vec<String> = group
                 .workspaces
                 .iter()
                 .map(|workspace| workspace.id.clone())
                 .collect();
-            if inner.outputs == group.outputs && inner.workspaces == next_workspaces {
-                return false;
-            }
-            inner.outputs = group.outputs.clone();
-            inner.workspaces = next_workspaces;
+            let config_changed = if inner.outputs == group.outputs
+                && inner.workspaces == next_workspaces
+            {
+                false
+            } else {
+                inner.outputs = group.outputs.clone();
+                inner.workspaces = next_workspaces;
+                true
+            };
             retain_live_group_instances(&mut inner);
-            inner
+            let resources = inner
                 .instances
                 .iter()
                 .filter_map(|instance| {
                     instance.resource.upgrade().ok().map(|resource| {
-                        (
-                            resource,
-                            instance.output_resources.clone(),
-                            instance.entered_outputs.clone(),
-                            instance.entered_workspaces.clone(),
-                        )
+                        (resource, instance.entered_workspaces.clone())
                     })
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (config_changed, resources)
         };
 
-        let (desired_outputs, desired_workspaces) = {
-            let inner = self.inner.lock().unwrap();
-            (inner.outputs.clone(), inner.workspaces.clone())
-        };
-
-        for (resource, output_resources, mut entered_outputs, mut entered_workspaces) in resources {
-            update_group_outputs(
-                &resource,
-                &desired_outputs,
-                &output_resources,
-                &mut entered_outputs,
-            );
-            update_group_workspaces(
+        let outputs_changed = self.refresh_outputs(dh, all_outputs);
+        let desired_workspaces = self.inner.lock().unwrap().workspaces.clone();
+        let mut workspaces_changed = false;
+        for (resource, mut entered_workspaces) in resources {
+            workspaces_changed |= update_group_workspaces(
                 &resource,
                 &desired_workspaces,
                 workspaces,
                 &mut entered_workspaces,
             );
         }
-        true
+        config_changed || outputs_changed || workspaces_changed
+    }
+
+    fn refresh_outputs(&self, dh: &DisplayHandle, all_outputs: &[Output]) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let desired_outputs = inner.outputs.clone();
+        retain_live_group_instances(&mut inner);
+        let mut changed = false;
+        for instance in &mut inner.instances {
+            let Ok(resource) = instance.resource.upgrade() else {
+                continue;
+            };
+            changed |= refresh_group_outputs(
+                &resource,
+                dh,
+                &desired_outputs,
+                all_outputs,
+                &mut instance.output_resources,
+                &mut instance.entered_outputs,
+            );
+        }
+        changed
     }
 
     fn remove(&self, workspaces: &[ExtWorkspaceHandle]) {
@@ -391,64 +414,61 @@ fn live_workspace_instances(inner: &ExtWorkspaceInner) -> Vec<ExtWorkspaceHandle
         .collect()
 }
 
-fn send_group_outputs(
+fn refresh_group_outputs(
     resource: &ExtWorkspaceGroupHandleV1,
     dh: &DisplayHandle,
     desired_names: &[String],
     all_outputs: &[Output],
-) -> (Vec<String>, Vec<ExtWorkspaceOutputResource>) {
-    let mut entered = Vec::new();
-    let mut output_resources = Vec::new();
+    output_resources: &mut Vec<ExtWorkspaceOutputResource>,
+    entered_outputs: &mut Vec<String>,
+) -> bool {
     let Some(client) = dh.get_client(resource.id()).ok() else {
-        return (entered, output_resources);
+        return false;
     };
+    let mut next_output_resources = Vec::new();
     for output in all_outputs {
         let name = output.name();
         let Some(wl_output) = output.client_outputs(&client).next() else {
             continue;
         };
-        output_resources.push(ExtWorkspaceOutputResource {
+        next_output_resources.push(ExtWorkspaceOutputResource {
             name: name.clone(),
             resource: wl_output.downgrade(),
         });
-        if desired_names.iter().any(|desired| desired == &name) {
-            resource.output_enter(&wl_output);
-            entered.push(name);
-        }
     }
-    (entered, output_resources)
-}
 
-fn update_group_outputs(
-    resource: &ExtWorkspaceGroupHandleV1,
-    desired_names: &[String],
-    output_resources: &[ExtWorkspaceOutputResource],
-    entered_outputs: &mut Vec<String>,
-) -> bool {
     let mut changed = false;
-    for entered_name in entered_outputs.clone() {
-        if desired_names.iter().any(|name| name == &entered_name) {
-            continue;
+    entered_outputs.retain(|entered_name| {
+        let desired = desired_names.iter().any(|name| name == entered_name);
+        let previous = cached_output_resource(output_resources, entered_name);
+        let next = cached_output_resource(&next_output_resources, entered_name);
+        let same_resource = previous
+            .as_ref()
+            .zip(next.as_ref())
+            .is_some_and(|(previous, next)| previous == next);
+        if desired && same_resource {
+            return true;
         }
-        let Some(output) = cached_output_resource(output_resources, &entered_name) else {
-            continue;
-        };
-        resource.output_leave(&output);
+        if let Some(previous) = previous {
+            resource.output_leave(&previous);
+        }
         changed = true;
-    }
+        false
+    });
+
     for name in desired_names {
         if entered_outputs.iter().any(|entered| entered == name) {
             continue;
         }
-        let Some(output) = cached_output_resource(output_resources, name) else {
+        let Some(output) = cached_output_resource(&next_output_resources, name) else {
             continue;
         };
         resource.output_enter(&output);
+        entered_outputs.push(name.clone());
         changed = true;
     }
-    if changed {
-        *entered_outputs = desired_names.to_vec();
-    }
+
+    *output_resources = next_output_resources;
     changed
 }
 
@@ -587,7 +607,7 @@ impl ExtWorkspaceManagerState {
             .collect::<Vec<_>>();
         for group in &update.groups {
             if let Some(handle) = self.groups.get(&group.id) {
-                handle.update(group, &all_workspaces);
+                handle.update(group, dh, all_outputs, &all_workspaces);
             }
         }
 
@@ -616,6 +636,16 @@ impl ExtWorkspaceManagerState {
         }
 
         self.send_done();
+    }
+
+    pub fn refresh_outputs(&mut self, dh: &DisplayHandle, all_outputs: &[Output]) {
+        let mut changed = false;
+        for group in self.groups.values() {
+            changed |= group.refresh_outputs(dh, all_outputs);
+        }
+        if changed {
+            self.send_done();
+        }
     }
 
     fn announce_workspace<D>(&self, handle: &ExtWorkspaceHandle, dh: &DisplayHandle)

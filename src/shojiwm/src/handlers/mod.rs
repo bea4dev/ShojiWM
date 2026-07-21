@@ -836,7 +836,17 @@ impl DataControlHandler for ShojiWM {
 // Wl Output & Xdg Output
 //
 
-impl OutputHandler for ShojiWM {}
+impl OutputHandler for ShojiWM {
+    fn output_bound(&mut self, _output: Output, _wl_output: WlOutput) {
+        // ext-workspace may be bound before wl_output. Refresh group/output
+        // associations whenever a client creates a wl_output resource so that
+        // the matching group receives output_enter regardless of bind order.
+        let dh = self.display_handle.clone();
+        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        self.ext_workspace_manager_state
+            .refresh_outputs(&dh, &outputs);
+    }
+}
 
 //
 // wlr-screencopy
