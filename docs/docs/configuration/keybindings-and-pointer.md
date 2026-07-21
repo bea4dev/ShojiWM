@@ -7,7 +7,7 @@ sidebar_position: 5
 ## Keyboard shortcuts
 
 `COMPOSITOR.key.bind(id, shortcut, handler, options?)` registers a
-compositor-level keyboard shortcut.
+compositor-level keyboard or mouse-wheel shortcut.
 
 ```ts
 COMPOSITOR.key.bind('terminal', 'Super+T', () => {
@@ -29,6 +29,10 @@ Combine modifiers and a key with `+`:
 - **Modifiers:** `Super`, `Ctrl`, `Shift`, `Alt`
 - **Keys:** letters (`T`, `Q`), arrows (`Left`, `Right`, `Up`, `Down`),
   function keys (`F`), etc.
+- **Mouse wheel:** `WheelScrollUp`, `WheelScrollDown`, `WheelScrollLeft`,
+  `WheelScrollRight`. Wheel shortcuts fire on discrete mouse-wheel events;
+  touchpad scrolling remains continuous and is forwarded normally. Wheel
+  shortcuts use the default `on: "press"` phase.
 
 ```ts
 COMPOSITOR.key.bind('close', 'Super+Q', () => focused?.close());
@@ -36,6 +40,8 @@ COMPOSITOR.key.bind('move-tile-left', 'Super+Shift+Left', () => moveTile(-1));
 COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
   COMPOSITOR.process.spawn({command: 'hyprshot -m region --raw | swappy -f -'});
 });
+COMPOSITOR.key.bind('focus-left', 'Super+WheelScrollUp', () => focusTile(-1));
+COMPOSITOR.key.bind('focus-right', 'Super+WheelScrollDown', () => focusTile(1));
 ```
 
 ### Tap bindings (`on: "release"`)
