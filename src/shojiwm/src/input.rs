@@ -1409,6 +1409,48 @@ impl ShojiWM {
                     let _ = self.display_handle.flush_clients();
                     return;
                 }
+
+                // Mouse-wheel shortcuts use the same configurable runtime
+                // binding path as keyboard shortcuts. Touchpad/finger scrolling
+                // remains continuous and is always forwarded to the client.
+                if source == AxisSource::Wheel
+                    && (horizontal_amount != 0.0 || vertical_amount != 0.0)
+                {
+                    self.tap_interrupted = true;
+                    use crate::runtime_key_binding::RuntimeWheelDirection;
+                    let vertical_direction = if vertical_amount < 0.0 {
+                        Some(RuntimeWheelDirection::Up)
+                    } else if vertical_amount > 0.0 {
+                        Some(RuntimeWheelDirection::Down)
+                    } else {
+                        None
+                    };
+                    let horizontal_direction = if horizontal_amount < 0.0 {
+                        Some(RuntimeWheelDirection::Left)
+                    } else if horizontal_amount > 0.0 {
+                        Some(RuntimeWheelDirection::Right)
+                    } else {
+                        None
+                    };
+                    let binding_id = [vertical_direction, horizontal_direction]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|direction| {
+                            self.runtime_key_bindings
+                                .iter()
+                                .find(|binding| {
+                                    binding.matches_wheel(
+                                        direction,
+                                        &self.current_keyboard_modifiers,
+                                    )
+                                })
+                                .map(|binding| binding.id.clone())
+                        });
+                    if let Some(binding_id) = binding_id {
+                        self.run_runtime_key_binding(&binding_id);
+                        return;
+                    }
+                }
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
