@@ -10,6 +10,7 @@
 //! Rendering, hit-testing and TS bridging are implemented in later milestones.
 
 mod bridge;
+mod embedded_runtime;
 mod evaluator;
 mod integration;
 mod interaction;
@@ -28,10 +29,10 @@ pub use evaluator::{
     DecorationEvaluator, DecorationHandlerInvocation, DecorationKeyBindingInvocation,
     DecorationPointerMoveAsyncInvocation, DecorationRuntimeAsyncInvocation,
     DecorationSchedulerTick, DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
-    DecorationWindowStateRequestInvocation, LayerEffectEvaluationResult, NodeDecorationEvaluator,
-    PopupEffectEvaluationResult, RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment,
-    RuntimePopupEffectAssignment, RuntimeWindowAction, StaticDecorationEvaluator,
-    evaluate_dynamic_decoration,
+    DecorationWindowStateRequestInvocation, EmbeddedDecorationEvaluator,
+    LayerEffectEvaluationResult, PopupEffectEvaluationResult, RuntimeEventConfigUpdate,
+    RuntimeLayerEffectAssignment, RuntimePopupEffectAssignment, RuntimeWindowAction,
+    StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, EffectEvaluationCacheEntry,
@@ -3179,8 +3180,7 @@ fn node_clips_children(node: &DecorationNode) -> bool {
     // separately when the client-surface clip is derived, because it is a leaf
     // placement marker rather than an SSD container.
     node.style.clips_children()
-        || (node.style.border.is_some()
-            && !matches!(node.style.overflow, Some(Overflow::Visible)))
+        || (node.style.border.is_some() && !matches!(node.style.overflow, Some(Overflow::Visible)))
 }
 
 fn intersect_decoration_clips(

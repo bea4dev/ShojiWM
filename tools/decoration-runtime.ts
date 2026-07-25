@@ -1,23 +1,118 @@
-import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { Socket, createConnection } from "node:net";
-import { format } from "node:util";
-import { existsSync } from "node:fs";
+interface EmbeddedRuntimeBridge {
+  readRequest(): Promise<string | null>;
+  writeResponse(response: string): void;
+  log(level: "debug" | "info" | "warn" | "error", message: string): void;
+}
+
+interface EmbeddedRuntimeBridgeConstructor {
+  new (bridgeId: number): EmbeddedRuntimeBridge;
+}
+
+const runtimeGlobal = globalThis as typeof globalThis & {
+  ShojiRuntimeBridge?: EmbeddedRuntimeBridgeConstructor;
+  __SHOJI_EMBEDDED_RUNTIME__?: boolean;
+  Deno?: {
+    cwd(): string;
+    env: {
+      get(key: string): string | undefined;
+      set(key: string, value: string): void;
+      delete(key: string): void;
+    };
+    statSync(path: string): unknown;
+    inspect?(value: unknown): string;
+  };
+  process?: {
+    cwd?(): string;
+    env?: Record<string, string | undefined>;
+  };
+  __SHOJI_PATH_EXISTS__?: (path: string) => boolean;
+};
+
+function runtimeCwd(): string {
+  return runtimeGlobal.Deno?.cwd() ?? runtimeGlobal.process?.cwd?.() ?? "/";
+}
+
+function normalizePath(path: string): string {
+  const absolute = path.startsWith("/") ? path : `${runtimeCwd()}/${path}`;
+  const parts: string[] = [];
+  for (const part of absolute.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
+function resolvePath(...paths: string[]): string {
+  return normalizePath(paths.filter(Boolean).join("/"));
+}
+
+function dirnamePath(path: string): string {
+  const normalized = normalizePath(path);
+  const slash = normalized.lastIndexOf("/");
+  return slash <= 0 ? "/" : normalized.slice(0, slash);
+}
+
+function pathToFileUrl(path: string): string {
+  const url = new URL("file:///");
+  url.pathname = normalizePath(path);
+  return url.href;
+}
+
+function pathExists(path: string): boolean {
+  if (runtimeGlobal.__SHOJI_PATH_EXISTS__) {
+    return runtimeGlobal.__SHOJI_PATH_EXISTS__(path);
+  }
+  try {
+    if (!runtimeGlobal.Deno?.statSync) return false;
+    runtimeGlobal.Deno.statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runtimeEnv(key: string): string | undefined {
+  return runtimeGlobal.Deno?.env?.get(key) ?? runtimeGlobal.process?.env?.[key];
+}
+
+function formatRuntimeLog(args: unknown[]): string {
+  return args
+    .map((value) => {
+      if (typeof value === "string") return value;
+      if (value instanceof Error) return value.stack ?? value.message;
+      if (runtimeGlobal.Deno?.inspect) {
+        return runtimeGlobal.Deno.inspect(value);
+      }
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })
+    .join(" ");
+}
 
 function findConfigRoot(entryPath: string): string {
-  let dir = dirname(resolve(entryPath));
-  while (dir !== dirname(dir)) {
-    if (existsSync(`${dir}/package.json`)) {
+  let dir = dirnamePath(resolvePath(entryPath));
+  while (dir !== dirnamePath(dir)) {
+    if (pathExists(`${dir}/package.json`)) {
       return dir;
     }
-    dir = dirname(dir);
+    dir = dirnamePath(dir);
   }
-  return dirname(resolve(entryPath));
+  return dirnamePath(resolvePath(entryPath));
 }
 
 function findPreloadPath(configPath: string): string | null {
-  const candidate = resolve(dirname(resolve(configPath)), "preload.ts");
-  return existsSync(candidate) ? candidate : null;
+  const candidate = resolvePath(
+    dirnamePath(resolvePath(configPath)),
+    "preload.ts",
+  );
+  return pathExists(candidate) ? candidate : null;
 }
 
 import {
@@ -116,13 +211,13 @@ import {
   type ManagedWindowScheduleAnimationOptions,
   type ManagedWindowState,
   type WindowTransform,
-} from "shoji_wm";
+} from "../packages/shoji_wm/src/index.ts";
 
 function debugSSD(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_SSD_SUPPRESSION_DEBUG) {
+  if (!runtimeEnv("SHOJI_SSD_SUPPRESSION_DEBUG")) {
     return;
   }
   console.info(`ssd-suppression ${message}`, JSON.stringify(details));
@@ -132,7 +227,7 @@ function debugLabel(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_LABEL_DEBUG) {
+  if (!runtimeEnv("SHOJI_LABEL_DEBUG")) {
     return;
   }
   console.info(`label-debug ${message}`, JSON.stringify(details));
@@ -142,7 +237,7 @@ function debugHotReload(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_HOT_RELOAD_DEBUG) {
+  if (!runtimeEnv("SHOJI_HOT_RELOAD_DEBUG")) {
     return;
   }
   console.info(`hot-reload-runtime ${message}`, JSON.stringify(details));
@@ -930,7 +1025,10 @@ function applyRuntimeEnvironment(
     return;
   }
   for (const [key, value] of Object.entries(environment)) {
-    process.env[key] = value;
+    runtimeGlobal.Deno?.env?.set(key, value);
+    if (runtimeGlobal.process?.env) {
+      runtimeGlobal.process.env[key] = value;
+    }
   }
 }
 
@@ -999,16 +1097,12 @@ interface RuntimePoll {
   dirtyMode: PollDirtyMode;
 }
 
-function installRuntimeConsoleBridge() {
-  const original = { ...console };
+function installRuntimeConsoleBridge(embeddedBridge: EmbeddedRuntimeBridge) {
   const emit = (
     level: "debug" | "info" | "warn" | "error",
     args: unknown[],
   ) => {
-    const message = format(...args);
-    process.stderr.write(
-      `__SHOJI_RUNTIME_LOG__${JSON.stringify({ level, message })}\n`,
-    );
+    embeddedBridge.log(level, formatRuntimeLog(args));
   };
 
   console.debug = (...args: unknown[]) => emit("debug", args);
@@ -1016,8 +1110,6 @@ function installRuntimeConsoleBridge() {
   console.info = (...args: unknown[]) => emit("info", args);
   console.warn = (...args: unknown[]) => emit("warn", args);
   console.error = (...args: unknown[]) => emit("error", args);
-
-  return original;
 }
 
 function hasRuntimeTimestamp(
@@ -1040,7 +1132,7 @@ function beginRuntimeTurn(nowMs: number): void {
 }
 
 // --- Diagnostic counters (SHOJI_RUNTIME_STATS=1) -----------------------------
-const statsEnabled = process.env.SHOJI_RUNTIME_STATS === "1";
+const statsEnabled = runtimeEnv("SHOJI_RUNTIME_STATS") === "1";
 const stats = {
   evaluate: 0,
   schedulerTick: 0,
@@ -1074,18 +1166,11 @@ function startStatsLogger(): void {
       stats[key] = 0;
     }
     console.error("[stats/1s]", JSON.stringify(snapshot));
-  }, 1000).unref();
+  }, 1000);
 }
 
-async function main() {
-  const configPath = process.argv[2];
-  const socketPath = process.argv[3];
-  if (!configPath) {
-    throw new Error(
-      "usage: tsx tools/composition-runtime.ts <config-path> [socket-path]",
-    );
-  }
-  installRuntimeConsoleBridge();
+async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
+  installRuntimeConsoleBridge(embeddedBridge);
   startStatsLogger();
 
   installSchedulerBridge({
@@ -1114,14 +1199,14 @@ async function main() {
     },
   });
 
-  const resolvedConfigPath = resolve(configPath);
-  const moduleUrl = pathToFileURL(resolvedConfigPath).href;
+  const resolvedConfigPath = resolvePath(configPath);
+  const moduleUrl = pathToFileUrl(resolvedConfigPath);
   installAssetResolverBridge(findConfigRoot(configPath));
   installProcessResolverBridge(resolvedConfigPath);
 
   const preloadPath = findPreloadPath(resolvedConfigPath);
   if (preloadPath) {
-    await import(pathToFileURL(preloadPath).href);
+    await import(pathToFileUrl(preloadPath));
   }
 
   let loadedConfig: Record<string, unknown> | null = null;
@@ -1160,16 +1245,12 @@ async function main() {
     };
   }
 
-  const socket = socketPath ? await connectSocket(socketPath) : null;
-  const input = socket ?? process.stdin;
-  const output = socket ?? process.stdout;
-
-  for await (const payload of readFramedMessages(input)) {
+  for await (const payload of readEmbeddedMessages(embeddedBridge)) {
     let request: RuntimeRequest;
     try {
-      request = JSON.parse(payload.toString("utf8")) as RuntimeRequest;
+      request = JSON.parse(payload) as RuntimeRequest;
     } catch (error) {
-      await writeResponse(output, {
+      await writeResponse(embeddedBridge, {
         requestId: -1,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -1247,7 +1328,7 @@ async function main() {
         }
       }
       if (request.kind === "drainPreload") {
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "drainPreload",
@@ -1282,7 +1363,7 @@ async function main() {
           ),
           processActions,
         });
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "lifecycleEnable",
@@ -1316,7 +1397,7 @@ async function main() {
         const eventConfig = pendingEventConfigPayload(runtimeConfig.events);
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "invokeHandler",
@@ -1356,7 +1437,7 @@ async function main() {
             animationEntriesByWindowId,
           ),
         });
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "lifecycleDisable",
@@ -1410,7 +1491,7 @@ async function main() {
               actions: evaluationActions.map(summarizeWindowAction),
             });
           }
-          await writeResponse(output, {
+          await writeResponse(embeddedBridge, {
             requestId: request.requestId,
             ok: true,
             kind: request.kind,
@@ -1450,7 +1531,7 @@ async function main() {
             request.snapshot,
             request.context,
           );
-          await writeResponse(output, {
+          await writeResponse(embeddedBridge, {
             requestId: request.requestId,
             ok: true,
             kind: "windowDecorationPolicy",
@@ -1467,7 +1548,7 @@ async function main() {
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
             const debugConfig = takePendingDebugConfig();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "schedulerTick",
@@ -1495,7 +1576,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowClosed",
@@ -1514,7 +1595,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "startClose",
@@ -1551,7 +1632,7 @@ async function main() {
                 actions: cachedActions.map(summarizeWindowAction),
               });
             }
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "evaluateCached",
@@ -1572,7 +1653,7 @@ async function main() {
               processActions,
             });
           } else if (request.kind === "getEffectConfig") {
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "getEffectConfig",
@@ -1592,7 +1673,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "evaluateLayerEffects",
@@ -1618,7 +1699,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "evaluatePopupEffects",
@@ -1641,7 +1722,7 @@ async function main() {
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
             const debugConfig = takePendingDebugConfig();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "invokeKeyBinding",
@@ -1666,7 +1747,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowResize",
@@ -1691,7 +1772,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMove",
@@ -1719,7 +1800,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMaximizeRequest",
@@ -1747,7 +1828,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMinimizeRequest",
@@ -1775,7 +1856,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowFullscreenRequest",
@@ -1803,7 +1884,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowActivateRequest",
@@ -1825,7 +1906,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "pointerMoveAsync",
@@ -1847,7 +1928,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "gestureSwipeAsync",
@@ -1872,7 +1953,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "invokeHandler",
@@ -1889,7 +1970,7 @@ async function main() {
         }
       }
     } catch (error) {
-      await writeResponse(output, {
+      await writeResponse(embeddedBridge, {
         requestId: request.requestId,
         ok: false,
         kind: request.kind,
@@ -3390,7 +3471,7 @@ function invokeHandler(
     entry.cache.reevaluateManagedWindow();
   }
   const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
-  if (process.env.SHOJI_SSD_HANDLER_DEBUG) {
+  if (runtimeEnv("SHOJI_SSD_HANDLER_DEBUG")) {
     console.debug(
       "runtime handler composition result",
       JSON.stringify({
@@ -3559,16 +3640,8 @@ function resolveEffectConfig(
   };
 }
 
-async function connectSocket(socketPath: string): Promise<Socket> {
-  return await new Promise((resolveSocket, reject) => {
-    const socket = createConnection(socketPath);
-    socket.once("connect", () => resolveSocket(socket));
-    socket.once("error", reject);
-  });
-}
-
 function writeResponse(
-  output: NodeJS.WritableStream,
+  output: EmbeddedRuntimeBridge,
   response:
     | EvaluateSuccess
     | SchedulerTickSuccess
@@ -3596,61 +3669,29 @@ function writeResponse(
     ...(envUpdates ? { envUpdates } : {}),
     ...(cursorConfig ? { cursorConfig } : {}),
   };
-  const payload = Buffer.from(JSON.stringify(responseWithRuntimeUpdates), "utf8");
-  if (payload.length > 0xffff_ffff) {
-    throw new Error("runtime response too large");
-  }
-  const header = Buffer.allocUnsafe(4);
-  header.writeUInt32LE(payload.length, 0);
-
-  return new Promise((resolveWrite, rejectWrite) => {
-    const onError = (error: Error) => {
-      cleanup();
-      rejectWrite(error);
-    };
-    const cleanup = () => {
-      output.off("error", onError);
-    };
-
-    output.on("error", onError);
-    output.write(header);
-    output.write(payload, (error) => {
-      cleanup();
-      if (error) {
-        rejectWrite(error);
-      } else {
-        resolveWrite();
-      }
-    });
-  });
+  output.writeResponse(JSON.stringify(responseWithRuntimeUpdates));
+  return Promise.resolve();
 }
 
-async function* readFramedMessages(
-  input: NodeJS.ReadableStream,
-): AsyncGenerator<Buffer> {
-  let buffered = Buffer.alloc(0);
-
-  for await (const chunk of input) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    buffered = Buffer.concat([buffered, bytes]);
-
-    while (buffered.length >= 4) {
-      const frameLength = buffered.readUInt32LE(0);
-      if (buffered.length < 4 + frameLength) {
-        break;
-      }
-
-      yield buffered.subarray(4, 4 + frameLength);
-      buffered = buffered.subarray(4 + frameLength);
+async function* readEmbeddedMessages(
+  bridge: EmbeddedRuntimeBridge,
+): AsyncGenerator<string> {
+  while (true) {
+    const request = await bridge.readRequest();
+    if (request === null) {
+      return;
     }
-  }
-
-  if (buffered.length !== 0) {
-    throw new Error("incomplete framed runtime message at EOF");
+    yield request;
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+export async function runEmbeddedRuntime(
+  configPath: string,
+  bridgeId: number,
+): Promise<void> {
+  const Bridge = runtimeGlobal.ShojiRuntimeBridge;
+  if (!Bridge) {
+    throw new Error("embedded ShojiWM runtime bridge is unavailable");
+  }
+  await main(configPath, new Bridge(bridgeId));
+}

@@ -1,6 +1,6 @@
 // Generic bidirectional IPC transport for ShojiWM.
 //
-// The TS configuration runtime is a long-lived Node.js process, so it can host
+// The embedded TS configuration runtime hosts
 // a Unix-domain socket that external clients (a bar, a launcher, ...) connect
 // to. The wire format is newline-delimited JSON:
 //
@@ -17,41 +17,85 @@
 // This module is intentionally feature-agnostic: workspace/window specifics are
 // wired up by the configuration package on top of this transport.
 //
-// The reference below pulls the minimal node:net/node:fs ambient declarations
-// (the monorepo has no @types/node) into every program that imports this file.
-/// <reference path="./node-compat.d.ts" />
+interface DenoUnixConnection {
+  read(buffer: Uint8Array): Promise<number | null>;
+  write(buffer: Uint8Array): Promise<number>;
+  close(): void;
+}
 
-import { createServer, type Server, type Socket } from "node:net";
-import { existsSync, unlinkSync } from "node:fs";
+interface DenoUnixListener extends AsyncIterable<DenoUnixConnection> {
+  close(): void;
+}
+
+interface DenoRuntime {
+  env: {
+    get(key: string): string | undefined;
+  };
+  kill(pid: number, signal: string): void;
+  listen(options: { transport: "unix"; path: string }): DenoUnixListener;
+  removeSync?(path: string): void;
+}
+
+const denoRuntime = (globalThis as typeof globalThis & { Deno?: DenoRuntime })
+  .Deno;
+
+function removeUnixSocket(path: string): void {
+  const nativeRemove = (
+    globalThis as typeof globalThis & {
+      __SHOJI_REMOVE_UNIX_SOCKET__?: (path: string) => boolean;
+    }
+  ).__SHOJI_REMOVE_UNIX_SOCKET__;
+  if (nativeRemove) {
+    nativeRemove(path);
+    return;
+  }
+  denoRuntime?.removeSync?.(path);
+}
+
+function environmentValue(key: string): string | undefined {
+  return (
+    denoRuntime?.env.get(key) ??
+    (
+      globalThis as {
+        process?: { env?: Record<string, string | undefined> };
+      }
+    ).process?.env?.[key]
+  );
+}
 
 // SHOJI_RUNTIME_WAKE_PID: PID of the parent Rust compositor process. After an
 // IPC handler mutates state, we send `SIGUSR1` to that PID so the compositor's
 // signalfd source picks up the wake and runs an immediate scheduler tick.
-// Signal-based wakes are used (instead of an inherited fd) because `tsx`
-// internally re-spawns `node` and does not propagate arbitrary inherited fds,
-// so any pipe/socketpair end becomes unusable in the child runtime.
+// Signal-based wakes keep external IPC independent from the internal
+// compositor/runtime request channel.
 const wakePid: number | null = (() => {
-  const env =
-    (globalThis as { process?: { env?: Record<string, string | undefined> } })
-      .process?.env ?? {};
-  const raw = env.SHOJI_RUNTIME_WAKE_PID;
+  const raw = environmentValue("SHOJI_RUNTIME_WAKE_PID");
   if (!raw) return null;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 })();
 
-const procRef = globalThis as {
-  process?: {
-    kill?: (pid: number, signal: string) => boolean;
-  };
-};
-
 export function wakeRust(): void {
+  const nativeWake = (
+    globalThis as typeof globalThis & {
+      __SHOJI_WAKE_COMPOSITOR__?: () => void;
+    }
+  ).__SHOJI_WAKE_COMPOSITOR__;
+  if (nativeWake) {
+    nativeWake();
+    return;
+  }
   if (wakePid === null) return;
-  const kill = procRef.process?.kill;
-  if (!kill) return;
   try {
-    kill(wakePid, "SIGUSR1");
+    if (denoRuntime) {
+      denoRuntime.kill(wakePid, "SIGUSR1");
+      return;
+    }
+    (
+      globalThis as {
+        process?: { kill?: (pid: number, signal: string) => boolean };
+      }
+    ).process?.kill?.(wakePid, "SIGUSR1");
   } catch {
     // The compositor process has gone away; nothing to wake.
   }
@@ -132,11 +176,8 @@ export interface IpcServer {
  * 外部クライアントも同じパスを使用します。
  */
 export function defaultSocketPath(): string {
-  const env =
-    (globalThis as { process?: { env?: Record<string, string | undefined> } })
-      .process?.env ?? {};
-  const runtimeDir = env.XDG_RUNTIME_DIR ?? "/tmp";
-  const display = env.WAYLAND_DISPLAY ?? "wayland-0";
+  const runtimeDir = environmentValue("XDG_RUNTIME_DIR") ?? "/tmp";
+  const display = environmentValue("WAYLAND_DISPLAY") ?? "wayland-0";
   return `${runtimeDir}/shojiwm-${display}.sock`;
 }
 
@@ -203,27 +244,61 @@ export function defaultSocketPath(): string {
 export function createIpcServer(
   socketPath: string = defaultSocketPath(),
 ): IpcServer {
-  // Clear a stale socket left behind by a previous run so `listen` succeeds.
-  if (existsSync(socketPath)) {
-    try {
-      unlinkSync(socketPath);
-    } catch {
-      // best effort
-    }
+  if (!denoRuntime) {
+    throw new Error("ShojiWM IPC requires the embedded Deno runtime");
+  }
+
+  try {
+    removeUnixSocket(socketPath);
+  } catch {
+    // No stale socket exists.
   }
 
   const handlers = new Map<string, IpcHandler>();
-  const sockets = new Set<Socket>();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const listener = denoRuntime.listen({ transport: "unix", path: socketPath });
+  let closed = false;
 
-  const writeFrame = (socket: Socket, message: unknown): void => {
-    try {
-      socket.write(`${JSON.stringify(message)}\n`);
-    } catch {
-      sockets.delete(socket);
+  interface ClientState {
+    connection: DenoUnixConnection;
+    writeChain: Promise<void>;
+  }
+
+  const clients = new Set<ClientState>();
+
+  const writeAll = async (
+    connection: DenoUnixConnection,
+    bytes: Uint8Array,
+  ): Promise<void> => {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = await connection.write(bytes.subarray(offset));
+      if (written <= 0) {
+        throw new Error("ShojiWM IPC connection stopped accepting writes");
+      }
+      offset += written;
     }
   };
 
-  const dispatch = async (socket: Socket, line: string): Promise<void> => {
+  const writeFrame = (client: ClientState, message: unknown): void => {
+    const frame = encoder.encode(`${JSON.stringify(message)}\n`);
+    client.writeChain = client.writeChain
+      .then(() => writeAll(client.connection, frame))
+      .catch(() => {
+        clients.delete(client);
+        try {
+          client.connection.close();
+        } catch {
+          // Connection is already closed.
+        }
+      });
+  };
+
+  const dispatch = async (
+    clientState: ClientState,
+    line: string,
+  ): Promise<void> => {
     let request: IpcRequestMessage;
     try {
       request = JSON.parse(line) as IpcRequestMessage;
@@ -233,12 +308,12 @@ export function createIpcServer(
 
     const handler = handlers.get(request.method);
     const client: IpcClient = {
-      send: (event, payload) => writeFrame(socket, { event, payload }),
+      send: (event, payload) => writeFrame(clientState, { event, payload }),
     };
 
     if (!handler) {
       if (request.id != null) {
-        writeFrame(socket, {
+        writeFrame(clientState, {
           id: request.id,
           error: `unknown method: ${request.method}`,
         });
@@ -249,11 +324,11 @@ export function createIpcServer(
     try {
       const result = await handler(request.params, client);
       if (request.id != null) {
-        writeFrame(socket, { id: request.id, result });
+        writeFrame(clientState, { id: request.id, result });
       }
     } catch (error) {
       if (request.id != null) {
-        writeFrame(socket, { id: request.id, error: String(error) });
+        writeFrame(clientState, { id: request.id, error: String(error) });
       }
     } finally {
       // Most handlers mutate config-side state (HYBRID_WINDOW_MANAGER, etc.)
@@ -263,65 +338,91 @@ export function createIpcServer(
     }
   };
 
-  const server: Server = createServer((socket) => {
-    socket.setEncoding("utf8");
-    sockets.add(socket);
-
+  const serveClient = async (client: ClientState): Promise<void> => {
+    const bytes = new Uint8Array(16 * 1024);
     let buffer = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      let newlineIndex = buffer.indexOf("\n");
-      while (newlineIndex >= 0) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf("\n");
-        if (line.length > 0) {
-          void dispatch(socket, line);
+    try {
+      while (!closed) {
+        const read = await client.connection.read(bytes);
+        if (read === null) break;
+        buffer += decoder.decode(bytes.subarray(0, read), { stream: true });
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf("\n");
+          if (line.length > 0) {
+            void dispatch(client, line);
+          }
         }
       }
-    });
-    socket.on("error", () => sockets.delete(socket));
-    socket.on("close", () => sockets.delete(socket));
-  });
+    } catch (error) {
+      if (!closed) {
+        console.error("[shoji-ipc] client error:", String(error));
+      }
+    } finally {
+      clients.delete(client);
+      try {
+        client.connection.close();
+      } catch {
+        // Connection is already closed.
+      }
+    }
+  };
 
-  server.on("error", (error) => {
-    console.error("[shoji-ipc] server error:", String(error));
-  });
-  server.listen(socketPath);
+  void (async () => {
+    try {
+      for await (const connection of listener) {
+        if (closed) {
+          connection.close();
+          break;
+        }
+        const client: ClientState = {
+          connection,
+          writeChain: Promise.resolve(),
+        };
+        clients.add(client);
+        void serveClient(client);
+      }
+    } catch (error) {
+      if (!closed) {
+        console.error("[shoji-ipc] server error:", String(error));
+      }
+    }
+  })();
 
   return {
     handle(method, handler) {
       handlers.set(method, handler);
     },
     broadcast(event, payload) {
-      const frame = `${JSON.stringify({ event, payload })}\n`;
-      for (const socket of [...sockets]) {
-        try {
-          socket.write(frame);
-        } catch {
-          sockets.delete(socket);
-        }
+      for (const client of [...clients]) {
+        writeFrame(client, { event, payload });
       }
     },
     clientCount() {
-      return sockets.size;
+      return clients.size;
     },
     close() {
-      for (const socket of [...sockets]) {
+      if (closed) return;
+      closed = true;
+      try {
+        listener.close();
+      } catch {
+        // Listener is already closed.
+      }
+      for (const client of [...clients]) {
         try {
-          socket.destroy();
+          client.connection.close();
         } catch {
-          // best effort
+          // Connection is already closed.
         }
       }
-      sockets.clear();
-      server.close();
-      if (existsSync(socketPath)) {
-        try {
-          unlinkSync(socketPath);
-        } catch {
-          // best effort
-        }
+      clients.clear();
+      try {
+        removeUnixSocket(socketPath);
+      } catch {
+        // Socket path is already gone.
       }
     },
   };

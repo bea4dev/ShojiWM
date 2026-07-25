@@ -109,9 +109,10 @@ use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationHandlerInvocation,
     DecorationInteractionSnapshot, DecorationInteractionTarget,
     DecorationPointerMoveAsyncInvocation, DecorationRuntimeAsyncInvocation,
-    DecorationRuntimeEvaluator, LogicalPoint, LogicalRect, ManagedWindowAnimationSnapshot,
-    NodeDecorationEvaluator, OutputModeSnapshot, OutputPositionSnapshot, RuntimeEventConfigUpdate,
-    WaylandOutputSnapshot, WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot,
+    DecorationRuntimeEvaluator, EmbeddedDecorationEvaluator, LogicalPoint, LogicalRect,
+    ManagedWindowAnimationSnapshot, OutputModeSnapshot, OutputPositionSnapshot,
+    RuntimeEventConfigUpdate, WaylandOutputSnapshot, WaylandWindowSnapshot, WindowDecorationState,
+    WindowPositionSnapshot,
 };
 use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
 use crate::{
@@ -1029,8 +1030,7 @@ impl ShojiWM {
         let loop_signal = event_loop.get_signal();
         let loop_handle = event_loop.handle();
         let runtime_paths = crate::install_paths::decoration_runtime_paths();
-        let evaluator = NodeDecorationEvaluator::for_paths(
-            runtime_paths.tsx_program,
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
             runtime_paths.script_path,
             runtime_paths.config_path,
         )
@@ -1042,7 +1042,7 @@ impl ShojiWM {
                 Some(crate::config_error::ConfigErrorReport::initial_load(error))
             }
         };
-        let decoration_evaluator = DecorationRuntimeEvaluator::Node(evaluator);
+        let decoration_evaluator = DecorationRuntimeEvaluator::Embedded(evaluator);
         let (runtime_async_event_tx, runtime_async_event_rx) = channel();
         decoration_evaluator.set_async_event_sender(runtime_async_event_tx);
         let runtime_async_loop_handle = event_loop.handle();
@@ -1065,10 +1065,8 @@ impl ShojiWM {
             })
             .expect("Failed to init runtime async event source.");
 
-        // Register a SIGUSR1 source so the Node runtime can wake the event
-        // loop after handling an IPC request. tsx forks a child node and does
-        // not pass arbitrary inherited fds through, so signals (carried by
-        // PID) are the only reliable way to cross the wrapper.
+        // Register a SIGUSR1 source so the embedded runtime can wake the event
+        // loop after handling an IPC request.
         Self::register_runtime_wake_signal(event_loop);
 
         let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
@@ -1936,7 +1934,7 @@ impl ShojiWM {
     }
 
     pub fn reload_decoration_runtime(&mut self) {
-        let Some(current) = self.decoration_evaluator.as_node() else {
+        let Some(current) = self.decoration_evaluator.as_embedded() else {
             self.config_error_report = Some(crate::config_error::ConfigErrorReport::hot_reload(
                 "hot reload is only available for the TypeScript runtime",
             ));
@@ -1984,7 +1982,7 @@ impl ShojiWM {
             }
         }
 
-        self.decoration_evaluator = DecorationRuntimeEvaluator::Node(next);
+        self.decoration_evaluator = DecorationRuntimeEvaluator::Embedded(next);
         self.mark_all_window_decoration_policies_reloaded();
         self.config_error_report = None;
         self.runtime_poll_dirty = true;
@@ -2006,7 +2004,7 @@ impl ShojiWM {
 
     pub fn enable_initial_decoration_runtime(&mut self) {
         self.sync_runtime_display_state();
-        let lifecycle_result = match self.decoration_evaluator.as_node() {
+        let lifecycle_result = match self.decoration_evaluator.as_embedded() {
             Some(evaluator) => evaluator.lifecycle_enable("initial", None),
             None => return,
         };
@@ -2023,7 +2021,7 @@ impl ShojiWM {
             }
         }
 
-        let background_effect_result = match self.decoration_evaluator.as_node() {
+        let background_effect_result = match self.decoration_evaluator.as_embedded() {
             Some(evaluator) => evaluator.background_effect_config(),
             None => return,
         };
@@ -3750,10 +3748,7 @@ impl ShojiWM {
         window: &Window,
         decoration: &WindowDecorationState,
     ) -> LogicalRect {
-        let root = transformed_root_rect(
-            decoration.layout.root.rect,
-            decoration.visual_transform,
-        );
+        let root = transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
         if decoration
             .content_clip
             .is_some_and(|clip| clip.clips_surface)

@@ -18,7 +18,6 @@ ShojiWM は1つのスクリプト `dist/install.sh` でソースからインス�
 
 - 動作する Wayland / DRM 環境を備えた Linux システム
 - 最近の Rust ツールチェーン（`cargo`）
-- Node.js 18 以降（`npm` を含む）
 - 以下のネイティブライブラリ（および開発用ヘッダー）。ShojiWM がリンクします。
   - `libwayland`
   - `libxkbcommon`
@@ -42,6 +41,7 @@ sudo apt install libwayland-dev libxkbcommon-dev libudev-dev libinput-dev \
 # Arch Linux
 sudo pacman -S wayland libxkbcommon systemd-libs libinput mesa seatd xorg-xwayland
 ```
+
 :::
 
 :::note[xwayland-satellite は必須です]
@@ -68,6 +68,7 @@ git clone -b shojiwm https://github.com/bea4dev/xwayland-satellite.git
 cd xwayland-satellite
 cargo install --path ./
 ```
+
 :::
 
 ## インストール
@@ -81,8 +82,9 @@ cd ShojiWM
 システムディレクトリへのコピーが必要になると、スクリプトが `sudo` を要求します。
 スクリプトは次のことを行います。
 
-- コンポジターと xdg-desktop-portal バックエンドを**ビルド**し（`cargo`）、TypeScript
-  ランタイムの依存関係をインストールします（`npm ci`）。
+- コンポジターと xdg-desktop-portal バックエンドを `cargo` で**ビルド**します。
+- RustyScript を通して Deno/V8 TypeScript エンジンをコンポジターへ埋め込みます。
+  実行時に Node.js は必要ありません。
 - コンポジターを `/usr/bin/shoji_wm` に、ランタイムを `/usr/lib/shojiwm` に
   インストールします。
 - `~/.config/shojiwm` に**デフォルトのユーザー設定**を作成します（既存の設定はそのまま
@@ -94,11 +96,11 @@ cd ShojiWM
 
 ### インストールオプション
 
-| フラグ | 効果 |
-| --- | --- |
-| `--no-build` | `cargo` / `npm` のビルドをスキップし、既存のバイナリを使う |
+| フラグ        | 効果                                                |
+| ------------- | --------------------------------------------------- |
+| `--no-build`  | `cargo` のビルドをスキップし、既存のバイナリを使う  |
 | `--no-portal` | xdg-desktop-portal バックエンドをインストールしない |
-| `--no-config` | ユーザー設定の作成・更新を行わない |
+| `--no-config` | ユーザー設定の作成・更新を行わない                  |
 
 `./dist/install.sh --help` でこの一覧を表示できます。
 
@@ -170,8 +172,9 @@ activation 時に指定ユーザーの ShojiWM TypeScript 設定ディレクト�
 - `package.json`
 - `tsconfig.json`
 
-これらの同期は重要です。TypeScript runtime は TSX/JSX 変換に `tsconfig.json` を使い、
-型と runtime import の解決に `shoji_wm` package link を使います。
+これらは、エディターの診断や単独での TypeScript 型チェックをインストール済みの
+ShojiWM と同期させるために使われます。コンポジター本体は、埋め込み RustyScript
+ランタイムで config の解決と変換を行います。
 
 NixOS module に config directory を管理させたくない場合は `initConfig` を省略し、
 編集可能な TypeScript 設定を手動で初期化します。
@@ -190,9 +193,11 @@ ShojiWM のソースツリーで次を実行します。
 
 ```bash
 nix develop
-npm ci
 cargo run --release -p shoji_wm -- --dev
 ```
+
+リポジトリの TypeScript 型チェックやドキュメント開発ツールを使う場合に限り、
+別途 `npm ci` を実行してください。
 
 `--dev` では現在と同じくリポジトリ内のファイルを直接使います。
 
@@ -200,7 +205,6 @@ cargo run --release -p shoji_wm -- --dev
 ./tools/decoration-runtime.ts
 ./packages/config/src/index.tsx
 ./packages/shoji_wm
-./node_modules/.bin/tsx
 ```
 
 つまり、Nix はネイティブ依存を揃えるために使い、TS 設定や runtime の編集は今まで通り

@@ -132,16 +132,6 @@ fn apply_runtime_overrides(args: &CliArgs) {
     if let Some(glamor) = args.xwayland_satellite_glamor.as_deref() {
         unsafe { std::env::set_var("SHOJI_XWAYLAND_SATELLITE_GLAMOR", glamor) };
     }
-    if !args.decoration_runtime_node_args.is_empty() {
-        let cli_options = args.decoration_runtime_node_args.join(" ");
-        let merged = match std::env::var("SHOJI_DECORATION_RUNTIME_NODE_OPTIONS") {
-            Ok(existing) if !existing.trim().is_empty() => {
-                format!("{} {}", existing.trim(), cli_options)
-            }
-            _ => cli_options,
-        };
-        unsafe { std::env::set_var("SHOJI_DECORATION_RUNTIME_NODE_OPTIONS", merged) };
-    }
 }
 
 fn sanitize_inherited_compositor_environment() {
@@ -171,11 +161,9 @@ struct CliArgs {
     tty_outputs: Vec<String>,
     xwayland_satellite_path: Option<String>,
     xwayland_satellite_glamor: Option<String>,
-    decoration_runtime_node_args: Vec<String>,
     dev: bool,
     config_path: Option<PathBuf>,
     runtime_dir: Option<PathBuf>,
-    tsx_program: Option<PathBuf>,
     decoration_runtime: Option<PathBuf>,
 }
 
@@ -190,8 +178,6 @@ impl CliArgs {
         let env_xwayland_satellite_glamor = std::env::var("SHOJI_XWAYLAND_SATELLITE_GLAMOR").ok();
 
         let tty_outputs = parse_tty_outputs(&args);
-        let decoration_runtime_node_args =
-            parse_repeated_option_values(&args, "--decoration-runtime-node-arg");
         let xwayland_satellite_path =
             parse_option_value(&args, "--xwayland-satellite-path").or(env_xwayland_satellite_path);
         let xwayland_satellite_glamor = parse_option_value(&args, "--xwayland-satellite-glamor")
@@ -199,7 +185,6 @@ impl CliArgs {
             .filter(|value| matches!(value.as_str(), "gl" | "es" | "none"));
         let config_path = parse_option_value(&args, "--config").map(PathBuf::from);
         let runtime_dir = parse_option_value(&args, "--runtime-dir").map(PathBuf::from);
-        let tsx_program = parse_option_value(&args, "--tsx").map(PathBuf::from);
         let decoration_runtime =
             parse_option_value(&args, "--decoration-runtime").map(PathBuf::from);
 
@@ -210,11 +195,9 @@ impl CliArgs {
             tty_outputs,
             xwayland_satellite_path,
             xwayland_satellite_glamor,
-            decoration_runtime_node_args,
             dev: args.iter().any(|arg| arg == "--dev"),
             config_path,
             runtime_dir,
-            tsx_program,
             decoration_runtime,
         }
     }
@@ -225,7 +208,6 @@ fn init_runtime_paths(args: &CliArgs) {
         dev: args.dev,
         config_path: args.config_path.clone(),
         runtime_dir: args.runtime_dir.clone(),
-        tsx_program: args.tsx_program.clone(),
         decoration_runtime: args.decoration_runtime.clone(),
     });
 }
@@ -273,26 +255,6 @@ fn parse_option_value(args: &[String], option: &str) -> Option<String> {
         index += 1;
     }
     None
-}
-
-fn parse_repeated_option_values(args: &[String], option: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        if let Some(value) = arg.strip_prefix(&format!("{option}=")) {
-            if !value.is_empty() {
-                values.push(value.to_string());
-            }
-        } else if arg == option {
-            if let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) {
-                values.push(value.clone());
-                index += 1;
-            }
-        }
-        index += 1;
-    }
-    values
 }
 
 fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {

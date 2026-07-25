@@ -148,14 +148,27 @@ let nextSuppressionId = 1;
 const ssdRebuildSuppressionStack: ActiveSSDRebuildSuppression[] = [];
 let managedWindowOnlyFastPathInvalidated = false;
 
+function runtimeEnvironmentValue(key: string): string | undefined {
+  const denoValue = (
+    globalThis as typeof globalThis & {
+      Deno?: { env: { get(key: string): string | undefined } };
+    }
+  ).Deno?.env?.get(key);
+  return (
+    denoValue ??
+    (
+      globalThis as {
+        process?: { env?: Record<string, string | undefined> };
+      }
+    ).process?.env?.[key]
+  );
+}
+
 function debugSSD(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  if (!env?.SHOJI_SSD_SUPPRESSION_DEBUG) {
+  if (!runtimeEnvironmentValue("SHOJI_SSD_SUPPRESSION_DEBUG")) {
     return;
   }
   console.info(`ssd-suppression ${message}`, JSON.stringify(details));
@@ -170,18 +183,14 @@ function debugSSD(
  * call site so the offending writer can be located.
  */
 const UNKNOWN_SIGNAL_DEBUG_ENABLED = (() => {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  const value = env?.SHOJI_SIGNAL_UNKNOWN_DEBUG;
+  const value = runtimeEnvironmentValue("SHOJI_SIGNAL_UNKNOWN_DEBUG");
   return value !== undefined && value !== "" && value !== "0";
 })();
 
 const UNKNOWN_SIGNAL_STACK_DEPTH = (() => {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  const raw = Number(env?.SHOJI_SIGNAL_UNKNOWN_DEBUG_FRAMES ?? "6");
+  const raw = Number(
+    runtimeEnvironmentValue("SHOJI_SIGNAL_UNKNOWN_DEBUG_FRAMES") ?? "6",
+  );
   return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 32) : 6;
 })();
 
@@ -300,8 +309,7 @@ export function withSSDRebuildSuppressed<T>(
 }
 
 function activeSSDRebuildSuppression():
-  | ActiveSSDRebuildSuppression
-  | undefined {
+  ActiveSSDRebuildSuppression | undefined {
   return ssdRebuildSuppressionStack.at(-1);
 }
 

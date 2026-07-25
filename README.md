@@ -10,8 +10,9 @@
 </div>
 
 ## Documents
- - [English](https://bea4dev.github.io/ShojiWM/)
- - [日本語](https://bea4dev.github.io/ShojiWM/ja/)
+
+- [English](https://bea4dev.github.io/ShojiWM/)
+- [日本語](https://bea4dev.github.io/ShojiWM/ja/)
 
 ## Quick Start
 
@@ -20,7 +21,6 @@ support is also available:
 
 ```bash
 nix develop
-npm ci
 cargo run --release -p shoji_wm -- --dev
 ```
 
@@ -98,14 +98,13 @@ and [Hyprland](https://github.com/hyprwm/Hyprland).
 
 **Legend:** ✅ Yes / built-in &nbsp;·&nbsp; 🟡 Partial / limited &nbsp;·&nbsp; ❌ No
 
-| Capability | Niri | Hyprland | ShojiWM |
-| --- | :---: | :---: | :---: |
-| Server-side decoration (SSD) customization via a standard API | ❌ | ❌ | ✅ |
-| Build your own window-management strategy in TypeScript | ❌ | 🟡 <sup>1</sup> | ✅ |
-| Powerful custom shader pipeline API | 🟡 <sup>2</sup> | 🟡 <sup>3</sup> | ✅ |
-| Linux gaming support, including tearing | 🟡 <sup>4</sup> | ✅ | ✅ |
-| First-class xwayland-satellite support | ✅ | ❌ | ✅ |
-
+| Capability                                                    |      Niri       |    Hyprland     | ShojiWM |
+| ------------------------------------------------------------- | :-------------: | :-------------: | :-----: |
+| Server-side decoration (SSD) customization via a standard API |       ❌        |       ❌        |   ✅    |
+| Build your own window-management strategy in TypeScript       |       ❌        | 🟡 <sup>1</sup> |   ✅    |
+| Powerful custom shader pipeline API                           | 🟡 <sup>2</sup> | 🟡 <sup>3</sup> |   ✅    |
+| Linux gaming support, including tearing                       | 🟡 <sup>4</sup> |       ✅        |   ✅    |
+| First-class xwayland-satellite support                        |       ✅        |       ❌        |   ✅    |
 
 <sup>1</sup> Hyprland 0.55+ adds custom layouts and event scripting via Lua (not TypeScript); core WM behavior remains built-in.
 

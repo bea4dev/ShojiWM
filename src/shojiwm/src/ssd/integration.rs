@@ -467,7 +467,7 @@ impl WindowDecorationState {
 #[derive(Debug, Clone)]
 pub enum DecorationRuntimeEvaluator {
     Static(super::StaticDecorationEvaluator),
-    Node(super::NodeDecorationEvaluator),
+    Embedded(super::EmbeddedDecorationEvaluator),
 }
 
 #[derive(Debug, Clone)]
@@ -508,7 +508,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(evaluator) => evaluator.evaluate_window(window, now_ms),
-            Self::Node(evaluator) => evaluator.evaluate_window(window, now_ms),
+            Self::Embedded(evaluator) => evaluator.evaluate_window(window, now_ms),
         }
     }
 
@@ -519,7 +519,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(evaluator) => evaluator.evaluate_window_preview(window, now_ms),
-            Self::Node(evaluator) => evaluator.evaluate_window_preview(window, now_ms),
+            Self::Embedded(evaluator) => evaluator.evaluate_window_preview(window, now_ms),
         }
     }
 
@@ -530,7 +530,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::WindowDecorationDecisionSnapshot, DecorationEvaluationError> {
         match self {
             Self::Static(evaluator) => evaluator.window_decoration_policy(window, context),
-            Self::Node(evaluator) => evaluator.window_decoration_policy(window, context),
+            Self::Embedded(evaluator) => evaluator.window_decoration_policy(window, context),
         }
     }
 
@@ -540,7 +540,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<DecorationSchedulerTick, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(DecorationSchedulerTick::default()),
-            Self::Node(evaluator) => evaluator.scheduler_tick(now_ms),
+            Self::Embedded(evaluator) => evaluator.scheduler_tick(now_ms),
         }
     }
 
@@ -555,7 +555,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
             Self::Static(_) => Err(DecorationEvaluationError::RuntimeProtocol(
                 "cached window evaluation unsupported for static evaluator".into(),
             )),
-            Self::Node(evaluator) => {
+            Self::Embedded(evaluator) => {
                 evaluator.evaluate_cached_window(window_id, window, now_ms, force_full_reevaluation)
             }
         }
@@ -564,7 +564,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     fn window_closed(&self, window_id: &str) -> Result<(), DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(()),
-            Self::Node(evaluator) => evaluator.window_closed(window_id),
+            Self::Embedded(evaluator) => evaluator.window_closed(window_id),
         }
     }
 
@@ -576,7 +576,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
-            Self::Node(evaluator) => evaluator.invoke_handler(window_id, handler_id, now_ms),
+            Self::Embedded(evaluator) => evaluator.invoke_handler(window_id, handler_id, now_ms),
         }
     }
 
@@ -587,7 +587,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationKeyBindingInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationKeyBindingInvocation::default()),
-            Self::Node(evaluator) => evaluator.invoke_key_binding(binding_id, now_ms),
+            Self::Embedded(evaluator) => evaluator.invoke_key_binding(binding_id, now_ms),
         }
     }
 
@@ -598,7 +598,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
-            Self::Node(evaluator) => evaluator.workspace_activate(event, now_ms),
+            Self::Embedded(evaluator) => evaluator.workspace_activate(event, now_ms),
         }
     }
 
@@ -610,7 +610,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowResizeInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowResizeInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_resize(window_id, event, now_ms),
+            Self::Embedded(evaluator) => evaluator.window_resize(window_id, event, now_ms),
         }
     }
 
@@ -622,7 +622,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowMoveInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowMoveInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_move(window_id, event, now_ms),
+            Self::Embedded(evaluator) => evaluator.window_move(window_id, event, now_ms),
         }
     }
 
@@ -634,7 +634,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowStateRequestInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowStateRequestInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_maximize_request(snapshot, event, now_ms),
+            Self::Embedded(evaluator) => evaluator.window_maximize_request(snapshot, event, now_ms),
         }
     }
 
@@ -646,7 +646,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowStateRequestInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowStateRequestInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_minimize_request(snapshot, event, now_ms),
+            Self::Embedded(evaluator) => evaluator.window_minimize_request(snapshot, event, now_ms),
         }
     }
 
@@ -658,7 +658,9 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowStateRequestInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowStateRequestInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_fullscreen_request(snapshot, event, now_ms),
+            Self::Embedded(evaluator) => {
+                evaluator.window_fullscreen_request(snapshot, event, now_ms)
+            }
         }
     }
 
@@ -670,18 +672,18 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationWindowStateRequestInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationWindowStateRequestInvocation::default()),
-            Self::Node(evaluator) => evaluator.window_activate_request(snapshot, event, now_ms),
+            Self::Embedded(evaluator) => evaluator.window_activate_request(snapshot, event, now_ms),
         }
     }
 
     fn pointer_move_async(&self, event: super::PointerMoveEventSnapshot, now_ms: u64) {
-        if let Self::Node(evaluator) = self {
+        if let Self::Embedded(evaluator) = self {
             evaluator.pointer_move_async(event, now_ms);
         }
     }
 
     fn gesture_swipe_async(&self, event: super::GestureSwipeEventSnapshot, now_ms: u64) {
-        if let Self::Node(evaluator) = self {
+        if let Self::Embedded(evaluator) = self {
             evaluator.gesture_swipe_async(event, now_ms);
         }
     }
@@ -693,7 +695,7 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
-            Self::Node(evaluator) => evaluator.start_close(window_id, now_ms),
+            Self::Embedded(evaluator) => evaluator.start_close(window_id, now_ms),
         }
     }
 
@@ -705,7 +707,9 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<LayerEffectEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(LayerEffectEvaluationResult::default()),
-            Self::Node(evaluator) => evaluator.evaluate_layer_effects(output_name, layers, now_ms),
+            Self::Embedded(evaluator) => {
+                evaluator.evaluate_layer_effects(output_name, layers, now_ms)
+            }
         }
     }
 
@@ -717,7 +721,9 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
     ) -> Result<PopupEffectEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Ok(PopupEffectEvaluationResult::default()),
-            Self::Node(evaluator) => evaluator.evaluate_popup_effects(output_name, popups, now_ms),
+            Self::Embedded(evaluator) => {
+                evaluator.evaluate_popup_effects(output_name, popups, now_ms)
+            }
         }
     }
 }
@@ -727,7 +733,7 @@ impl DecorationRuntimeEvaluator {
         &self,
         display_state: std::collections::BTreeMap<String, super::WaylandOutputSnapshot>,
     ) {
-        if let Self::Node(evaluator) = self {
+        if let Self::Embedded(evaluator) = self {
             evaluator.set_display_state(display_state);
         }
     }
@@ -739,7 +745,7 @@ impl DecorationRuntimeEvaluator {
             crate::runtime_input::RuntimeInputDeviceSnapshot,
         >,
     ) {
-        if let Self::Node(evaluator) = self {
+        if let Self::Embedded(evaluator) = self {
             evaluator.set_input_state(input_state);
         }
     }
@@ -750,14 +756,14 @@ impl DecorationRuntimeEvaluator {
             super::DecorationRuntimeAsyncInvocation,
         >,
     ) {
-        if let Self::Node(evaluator) = self {
+        if let Self::Embedded(evaluator) = self {
             evaluator.set_async_event_sender(sender);
         }
     }
 
-    pub fn as_node(&self) -> Option<&super::NodeDecorationEvaluator> {
+    pub fn as_embedded(&self) -> Option<&super::EmbeddedDecorationEvaluator> {
         match self {
-            Self::Node(evaluator) => Some(evaluator),
+            Self::Embedded(evaluator) => Some(evaluator),
             Self::Static(_) => None,
         }
     }
@@ -5531,8 +5537,7 @@ fn normal_border_inner_rect_precise(
 fn node_child_mask_resolved(
     node: &super::ComputedDecorationNode,
 ) -> Option<crate::ssd::ResolvedDecorationClip> {
-    fit_children_inner_clip_resolved(node)
-        .or(node.resolved_effective_clip)
+    fit_children_inner_clip_resolved(node).or(node.resolved_effective_clip)
 }
 
 fn slot_content_clip_for_node(
@@ -5614,9 +5619,9 @@ fn slot_content_clip_for_node(
         });
     }
 
-    node.children.iter().find_map(|child| {
-        slot_content_clip_for_node(child, next_border, next_mask, shared_edges)
-    })
+    node.children
+        .iter()
+        .find_map(|child| slot_content_clip_for_node(child, next_border, next_mask, shared_edges))
 }
 
 impl DecorationTree {
