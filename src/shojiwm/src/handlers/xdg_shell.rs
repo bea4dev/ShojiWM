@@ -82,6 +82,7 @@ fn mark_toplevel_metadata_dirty(
 
     state.runtime_dirty_window_ids.insert(snapshot.id.clone());
     state.runtime_managed_only_window_ids.remove(&snapshot.id);
+    state.runtime_node_only_window_ids.remove(&snapshot.id);
     state.runtime_poll_dirty = true;
     state.request_tty_maintenance(reason);
     state.schedule_redraw();

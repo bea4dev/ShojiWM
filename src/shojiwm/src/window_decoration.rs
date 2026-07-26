@@ -326,6 +326,7 @@ impl ShojiWM {
         if !changed && !first_configure {
             // The effective mode may be unchanged while the client's request
             // changed. Publish that context to the reactive TS snapshot too.
+            self.runtime_node_only_window_ids.remove(&snapshot.id);
             self.runtime_dirty_window_ids.insert(snapshot.id);
             self.runtime_poll_dirty = true;
             self.request_tty_maintenance("window-decoration-context");
@@ -342,6 +343,7 @@ impl ShojiWM {
             configured_mode = ?decision.mode,
             "applied window decoration policy"
         );
+        self.runtime_node_only_window_ids.remove(&snapshot.id);
         self.runtime_dirty_window_ids.insert(snapshot.id);
         self.runtime_poll_dirty = true;
         self.request_tty_maintenance("window-decoration-policy");
@@ -424,6 +426,7 @@ impl ShojiWM {
                 .filter(|toplevel| toplevel.wl_surface() == surface)
                 .map(|_| self.snapshot_window(window).id)
         }) {
+            self.runtime_node_only_window_ids.remove(&window_id);
             self.runtime_dirty_window_ids.insert(window_id);
         }
         self.runtime_poll_dirty = true;

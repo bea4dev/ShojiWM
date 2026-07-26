@@ -321,12 +321,15 @@ pub struct ShojiWM {
     pub damage_blink_enabled: bool,
     pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
     pub damage_blink_pending: HashMap<String, Vec<LogicalRect>>,
+    pub damage_blink_capture_suppression: HashMap<String, u8>,
     pub runtime_poll_dirty: bool,
     pub runtime_dirty_window_ids: std::collections::HashSet<String>,
     pub runtime_managed_only_window_ids: std::collections::HashSet<String>,
+    pub runtime_node_only_window_ids: std::collections::HashSet<String>,
     pub runtime_scheduler_enabled: bool,
     pub runtime_scheduler_kick_generation: u64,
     pub runtime_scheduler_kick_active: bool,
+    pub runtime_scheduler_kick_interval_ms: Option<u64>,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_globals: HashMap<String, GlobalId>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
@@ -1212,12 +1215,15 @@ impl ShojiWM {
             damage_blink_enabled,
             damage_blink_visible: HashMap::new(),
             damage_blink_pending: HashMap::new(),
+            damage_blink_capture_suppression: HashMap::new(),
             runtime_poll_dirty: false,
             runtime_dirty_window_ids: Default::default(),
             runtime_managed_only_window_ids: Default::default(),
+            runtime_node_only_window_ids: Default::default(),
             runtime_scheduler_enabled: false,
             runtime_scheduler_kick_generation: 0,
             runtime_scheduler_kick_active: false,
+            runtime_scheduler_kick_interval_ms: None,
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
             managed_window_animations: Default::default(),
@@ -1757,16 +1763,34 @@ impl ShojiWM {
             if runtime_dirty_debug_enabled() {
                 info!(
                     dirty_window_ids = ?tick.dirty_window_ids,
+                    runtime_dirty = tick.runtime_dirty,
                     dirty_managed_window_ids = ?tick.dirty_managed_window_ids,
                     dirty_window_node_ids = ?tick.dirty_window_node_ids,
+                    dirty_layer_ids = ?tick.dirty_layer_ids,
                     next_poll_in_ms = ?tick.next_poll_in_ms,
                     "runtime dirty debug: scheduler tick dirty"
                 );
             }
-            self.runtime_poll_dirty = true;
-            self.layer_effect_evaluation_cache.clear();
-            self.popup_effect_evaluation_cache.clear();
+            if tick.runtime_dirty || !tick.dirty_window_ids.is_empty() {
+                self.runtime_poll_dirty = true;
+            }
+            if tick.runtime_dirty {
+                self.layer_effect_evaluation_cache.clear();
+                self.popup_effect_evaluation_cache.clear();
+            } else if !tick.dirty_layer_ids.is_empty() {
+                // Layer signatures are indexed per output rather than per
+                // layer. Invalidate that domain only; window animation must
+                // not force layer/popup effect evaluation every frame.
+                self.layer_effect_evaluation_cache.clear();
+            }
+            let node_only_window_ids = tick
+                .dirty_window_node_ids
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
             self.mark_runtime_dirty_windows(tick.dirty_window_ids, tick.dirty_managed_window_ids);
+            self.runtime_node_only_window_ids
+                .extend(node_only_window_ids);
             self.request_tty_maintenance("runtime-scheduler-dirty");
             self.schedule_redraw();
         }
@@ -1810,24 +1834,27 @@ impl ShojiWM {
             Timer::from_duration(Duration::from_millis(initial_interval_ms)),
             move |_, _, state| {
                 state.record_event_source_wake("runtime-scheduler-kick");
-                if state.runtime_scheduler_kick_generation != generation
-                    || !state.runtime_scheduler_enabled
-                {
-                    if state.runtime_scheduler_kick_generation == generation {
-                        state.runtime_scheduler_kick_active = false;
-                    }
+                if state.runtime_scheduler_kick_generation != generation {
                     return TimeoutAction::Drop;
                 }
 
-                let next_interval_ms = state.tick_runtime_scheduler();
+                // An event-specific runtime response may temporarily report no next poll even
+                // while another composition signal remains animated. Do not trust that cached
+                // Rust-side bit to terminate this timer: the persistent scheduler timer parks
+                // itself for 250 ms while a kick is active, so dropping both creates a visible
+                // hand-off gap when pointer motion stops. One forced runtime tick establishes
+                // the authoritative global animation state before deciding whether to stop.
+                let next_interval_ms = state.tick_runtime_scheduler_with(true);
                 if state.runtime_scheduler_kick_generation != generation
                     || !state.runtime_scheduler_enabled
                 {
                     if state.runtime_scheduler_kick_generation == generation {
                         state.runtime_scheduler_kick_active = false;
+                        state.runtime_scheduler_kick_interval_ms = None;
                     }
                     TimeoutAction::Drop
                 } else {
+                    state.runtime_scheduler_kick_interval_ms = Some(next_interval_ms);
                     TimeoutAction::ToDuration(Duration::from_millis(next_interval_ms))
                 }
             },
@@ -1836,8 +1863,11 @@ impl ShojiWM {
         match insert_result {
             Ok(_) => {
                 self.runtime_scheduler_kick_active = true;
+                self.runtime_scheduler_kick_interval_ms = Some(initial_interval_ms);
             }
             Err(error) => {
+                self.runtime_scheduler_kick_active = false;
+                self.runtime_scheduler_kick_interval_ms = None;
                 debug!(?error, "failed to schedule runtime scheduler kick");
             }
         }
@@ -1991,6 +2021,7 @@ impl ShojiWM {
             .elements()
             .map(|window| self.snapshot_window(window).id)
             .collect::<Vec<_>>();
+        self.runtime_node_only_window_ids.clear();
         self.runtime_dirty_window_ids.extend(live_window_ids);
         self.configured_layer_effects.clear();
         self.configured_popup_effects.clear();
@@ -2337,6 +2368,7 @@ impl ShojiWM {
             self.session_lock_surfaces.remove(&name);
             self.damage_blink_visible.remove(&name);
             self.damage_blink_pending.remove(&name);
+            self.damage_blink_capture_suppression.remove(&name);
         }
 
         for output in outputs {
@@ -2632,6 +2664,7 @@ impl ShojiWM {
             } else {
                 self.runtime_managed_only_window_ids.remove(&window_id);
             }
+            self.runtime_node_only_window_ids.remove(&window_id);
             self.runtime_dirty_window_ids.insert(window_id);
         }
     }
@@ -2670,7 +2703,18 @@ impl ShojiWM {
 
         if invocation.next_poll_in_ms.is_some() {
             self.runtime_scheduler_enabled = true;
-            self.schedule_runtime_scheduler_kick(loop_handle, invocation.next_poll_in_ms);
+            // Pointer motion already coalesces to the latest event. Do not also restart the
+            // animation timer for every completed motion request: repeatedly replacing its
+            // generation makes animation progress depend on pointer traffic and leaves a short
+            // gap while the final async response hands control back to the timer.
+            let requested_interval = self.runtime_scheduler_interval_ms(invocation.next_poll_in_ms);
+            let existing_is_fast_enough = self.runtime_scheduler_kick_active
+                && self
+                    .runtime_scheduler_kick_interval_ms
+                    .is_some_and(|interval| interval <= requested_interval);
+            if !existing_is_fast_enough {
+                self.schedule_runtime_scheduler_kick(loop_handle, invocation.next_poll_in_ms);
+            }
         }
     }
 
@@ -3920,6 +3964,15 @@ impl ShojiWM {
             return;
         }
 
+        let output_name = output.name().to_string();
+        if let Some(remaining) = self.damage_blink_capture_suppression.get_mut(&output_name) {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                self.damage_blink_capture_suppression.remove(&output_name);
+            }
+            return;
+        }
+
         let Some(output_geo) = self.space.output_geometry(output) else {
             return;
         };
@@ -3939,7 +3992,7 @@ impl ShojiWM {
             .collect::<Vec<_>>();
 
         self.damage_blink_pending
-            .entry(output.name().to_string())
+            .entry(output_name)
             .or_default()
             .extend(rects);
     }
@@ -3948,9 +4001,16 @@ impl ShojiWM {
         if !self.damage_blink_enabled {
             self.damage_blink_visible.clear();
             self.damage_blink_pending.clear();
+            self.damage_blink_capture_suppression.clear();
             return;
         }
 
+        let newly_visible_outputs = self
+            .damage_blink_pending
+            .iter()
+            .filter(|(_, rects)| !rects.is_empty())
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
         let previous_visible = self
             .damage_blink_visible
             .values()
@@ -3973,6 +4033,12 @@ impl ShojiWM {
 
         self.pending_decoration_damage.extend(previous_visible);
         self.pending_decoration_damage.extend(next_visible);
+        for output_name in newly_visible_outputs {
+            // The next render draws the debug overlay and the render after that erases it.
+            // Neither operation is source damage, so do not feed those two frames back into
+            // the diagnostic stream.
+            self.damage_blink_capture_suppression.insert(output_name, 2);
+        }
 
         if had_visible || has_visible {
             self.schedule_redraw();
@@ -3986,6 +4052,7 @@ impl ShojiWM {
         if !self.damage_blink_enabled {
             self.damage_blink_visible.clear();
             self.damage_blink_pending.clear();
+            self.damage_blink_capture_suppression.clear();
             return;
         }
 
@@ -4012,6 +4079,8 @@ impl ShojiWM {
             if has_visible {
                 self.damage_blink_visible
                     .insert(output_name.to_string(), next_visible);
+                self.damage_blink_capture_suppression
+                    .insert(output_name.to_string(), 2);
             }
 
             scheduled |= had_visible || has_visible;

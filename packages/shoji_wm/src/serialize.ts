@@ -8,7 +8,9 @@ import type {
 import { isSignal } from "./signals";
 import {
   enterWindowNodeDependencyScope,
+  enterWindowShaderUniformDependencyScope,
   leaveWindowNodeDependencyScope,
+  leaveWindowShaderUniformDependencyScope,
 } from "./runtime-hooks";
 
 function labelDebugEnabled(): boolean {
@@ -47,7 +49,18 @@ export class CompositionSerializationError extends Error {
 export interface CompositionSerializationContext {
   registerClickHandler(key: string, handler: () => void): string;
   registerInteractionHandler(key: string, handler: () => void): string;
+  registerShaderUniformBinding(binding: ShaderUniformBinding): void;
 }
+
+export interface ShaderUniformBinding {
+  key: string;
+  nodeId: string;
+  stageIndex: number;
+  name: string;
+  read(): number[] | null;
+}
+
+const SHADER_INPUT_STAGE_INDEX = 0xffff_ffff;
 
 export function serializeCompositionTree(
   node: CompositionChild,
@@ -147,6 +160,11 @@ function serializeProps(
       continue;
     }
 
+    if (kind === "ShaderEffect" && key === "shader") {
+      serialized[key] = serializeShaderEffect(value, context, path);
+      continue;
+    }
+
     if (isSignal(value)) {
       serialized[key] = serializeValue(value);
       continue;
@@ -166,6 +184,144 @@ function serializeProps(
   }
 
   return serialized;
+}
+
+function serializeShaderEffect(
+  value: unknown,
+  context: CompositionSerializationContext | undefined,
+  nodeId: string,
+): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return serializeValue(value);
+  }
+
+  const effect = value as Record<string, unknown>;
+  const serialized: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(effect)) {
+    if (nested === undefined) {
+      continue;
+    }
+    if (key === "input") {
+      serialized.input = serializeShaderInput(nested, context, nodeId);
+      continue;
+    }
+    if (key !== "pipeline" || !Array.isArray(nested)) {
+      serialized[key] = serializeValue(nested);
+      continue;
+    }
+    serialized.pipeline = nested.map((stage, stageIndex) =>
+      serializeEffectStage(stage, context, nodeId, stageIndex)
+    );
+  }
+  return serialized;
+}
+
+function serializeShaderInput(
+  value: unknown,
+  context: CompositionSerializationContext | undefined,
+  nodeId: string,
+): unknown {
+  return serializeShaderUniformContainer(
+    value,
+    context,
+    nodeId,
+    SHADER_INPUT_STAGE_INDEX,
+    "shader-input",
+  );
+}
+
+function serializeEffectStage(
+  value: unknown,
+  context: CompositionSerializationContext | undefined,
+  nodeId: string,
+  stageIndex: number,
+): unknown {
+  return serializeShaderUniformContainer(
+    value,
+    context,
+    nodeId,
+    stageIndex,
+    "shader-stage",
+  );
+}
+
+function serializeShaderUniformContainer(
+  value: unknown,
+  context: CompositionSerializationContext | undefined,
+  nodeId: string,
+  stageIndex: number,
+  expectedKind: "shader-input" | "shader-stage",
+): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return serializeValue(value);
+  }
+
+  const stage = value as Record<string, unknown>;
+  if (stage.kind !== expectedKind) {
+    return serializeValue(value);
+  }
+
+  const serialized: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(stage)) {
+    if (nested === undefined) {
+      continue;
+    }
+    if (
+      key !== "uniforms" ||
+      typeof nested !== "object" ||
+      nested === null ||
+      Array.isArray(nested)
+    ) {
+      serialized[key] = serializeValue(nested);
+      continue;
+    }
+
+    const uniforms: Record<string, unknown> = {};
+    for (const [name, uniform] of Object.entries(
+      nested as Record<string, unknown>,
+    )) {
+      const bindingKey = shaderUniformBindingKey(nodeId, stageIndex, name);
+      context?.registerShaderUniformBinding({
+        key: bindingKey,
+        nodeId,
+        stageIndex,
+        name,
+        read: () => readNumericShaderUniform(uniform),
+      });
+      enterWindowShaderUniformDependencyScope(bindingKey, nodeId);
+      try {
+        uniforms[name] = serializeValue(uniform);
+      } finally {
+        leaveWindowShaderUniformDependencyScope();
+      }
+    }
+    serialized.uniforms = uniforms;
+  }
+  return serialized;
+}
+
+function shaderUniformBindingKey(
+  nodeId: string,
+  stageIndex: number,
+  name: string,
+): string {
+  return `${nodeId}\u0000${stageIndex}\u0000${name}`;
+}
+
+function readNumericShaderUniform(value: unknown): number[] | null {
+  const entries = Array.isArray(value) ? value : [value];
+  if (entries.length < 1 || entries.length > 4) {
+    return null;
+  }
+  const values: number[] = [];
+  for (const entry of entries) {
+    const resolved = isSignal(entry) ? entry.peek() : entry;
+    if (typeof resolved !== "number" || !Number.isFinite(resolved)) {
+      return null;
+    }
+    values.push(resolved);
+  }
+  return values;
 }
 
 function serializeInteractionChangeHandler(

@@ -315,6 +315,28 @@ export function hasActiveAnimations(): boolean {
   return activeAnimationEntries.size > 0;
 }
 
+/**
+ * Returns whether a specific controller store owns a running animation.
+ *
+ * The runtime uses this to keep window and layer repaint domains independent:
+ * a window animation must not make every layer or popup effect look animated.
+ */
+export function hasActiveAnimationsInStore(
+  entries: ReadonlyMap<symbol, unknown>,
+): boolean {
+  for (const value of entries.values()) {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "timeline" in value &&
+      value.timeline !== undefined
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function clampUnit(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;

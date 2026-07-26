@@ -1,8 +1,85 @@
 interface EmbeddedRuntimeBridge {
-  readRequest(): Promise<string | null>;
+  readRequest(): Promise<EmbeddedRuntimeRequest | null>;
   writeResponse(response: string): void;
+  writeCompositionUpdate(
+    requestId: number,
+    update: NativeCompositionUpdate,
+  ): void;
+  beginCompositionPatches(requestId: number, windowId: string): void;
+  writeCompositionShaderUniformPatch(
+    requestId: number,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
+  registerCompositionShaderUniformSlot(
+    slotId: number,
+    windowId: string,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+  ): void;
+  clearCompositionShaderUniformSlots(windowId: string): void;
+  beginCompositionShaderUniformSlotPatches(
+    requestId: number,
+    slotId: number,
+  ): void;
+  writeCompositionShaderUniformSlotPatch(
+    requestId: number,
+    slotId: number,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
+  beginSchedulerResponse(
+    requestId: number,
+    dirty: boolean,
+    runtimeDirty: boolean,
+    nextPollInMs: number,
+  ): void;
+  addSchedulerDirtyWindow(windowId: string, managedOnly: boolean): void;
+  addSchedulerDirtyWindowNode(windowId: string, nodeId: string): void;
+  addSchedulerDirtyLayer(layerId: string): void;
+  addSchedulerDirtyLayerNode(layerId: string, nodeId: string): void;
+  beginCachedResponse(payload: Uint8Array): void;
+  addCachedDirtyNode(nodeId: string): void;
+  addCachedVisibleOutput(outputName: string): void;
+  setCachedWorkspaceString(workspace: string): void;
+  setCachedWorkspaceNumber(workspace: number): void;
+  finishNativeResponse(): void;
   log(level: "debug" | "info" | "warn" | "error", message: string): void;
 }
+
+interface EmbeddedRuntimeRequest {
+  json(): string | null;
+  composition(): RuntimeRequest | null;
+  scheduler(): SchedulerTickRequest | null;
+  fastKind(): number;
+  fastRequestId(): number;
+  fastWindowId(): string;
+  fastForceFullReevaluation(): boolean;
+  fastNowMs(): number;
+  finishFast(): void;
+}
+
+type NativeCompositionUpdate =
+  | {
+      kind: "full";
+      windowId: string;
+      tree: unknown;
+    }
+  | {
+      kind: "patches";
+      windowId: string;
+      patches: Array<{ nodeId: string; node: unknown }>;
+    };
 
 interface EmbeddedRuntimeBridgeConstructor {
   new (bridgeId: number): EmbeddedRuntimeBridge;
@@ -132,6 +209,7 @@ import {
   drainPendingProcessActions,
   drainPendingEnvUpdates,
   hasActiveAnimations,
+  hasActiveAnimationsInStore,
   type CompiledEffectHandle,
   type LayerEffectAssignment,
   type PopupEffectAssignment,
@@ -167,6 +245,7 @@ import {
   takeDirtyLayerNodeIds,
   takeManagedWindowOnlyDirty,
   takeDirtyWindowNodeIds,
+  takeDirtyWindowShaderUniformBindingKeys,
   type CompositorEventController,
   installSchedulerBridge,
   isManagedWindowOnlyDirty,
@@ -212,6 +291,7 @@ import {
   type ManagedWindowState,
   type WindowTransform,
 } from "../packages/shoji_wm/src/index.ts";
+import { peekDirtyWindowNodeIds } from "../packages/shoji_wm/src/runtime-hooks.ts";
 
 function debugSSD(
   message: string,
@@ -343,7 +423,7 @@ interface SchedulerTickRequest {
   requestId: number;
   kind: "schedulerTick";
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -371,7 +451,7 @@ interface EvaluateCachedRequest {
   snapshot?: WaylandWindowSnapshot;
   forceFullReevaluation?: boolean;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -604,9 +684,11 @@ interface SchedulerTickSuccess {
   ok: true;
   kind: "schedulerTick";
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerIds?: string[];
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
@@ -1050,6 +1132,9 @@ const animationEntriesByLayerId = new Map<string, Map<symbol, unknown>>();
 const polls = new Map<number, RuntimePoll>();
 const dirtyWindowIds = new Set<string>();
 const dirtyLayerIds = new Set<string>();
+const lastNativeCompositionByWindowId = new Map<string, unknown>();
+const shaderUniformSlotIdsByWindow = new Map<string, Map<string, number>>();
+let nextShaderUniformSlotId = 1;
 let runtimeDirty = false;
 let immediateDirtyPoll: PollHandle | null = null;
 let nextPollId = 1;
@@ -1245,19 +1330,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
     };
   }
 
-  for await (const payload of readEmbeddedMessages(embeddedBridge)) {
-    let request: RuntimeRequest;
-    try {
-      request = JSON.parse(payload) as RuntimeRequest;
-    } catch (error) {
-      await writeResponse(embeddedBridge, {
-        requestId: -1,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      continue;
-    }
-
+  for await (const request of readEmbeddedMessages(embeddedBridge)) {
     try {
       if ("displayState" in request) {
         updateOutputState(request.displayState);
@@ -1491,11 +1564,26 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               actions: evaluationActions.map(summarizeWindowAction),
             });
           }
+          embeddedBridge.writeCompositionUpdate(request.requestId, {
+            kind: "full",
+            windowId: request.snapshot.id,
+            tree: result.serialized,
+          });
+          lastNativeCompositionByWindowId.set(
+            request.snapshot.id,
+            result.serialized,
+          );
+          if (cached) {
+            syncCompositionShaderUniformSlots(
+              embeddedBridge,
+              request.snapshot.id,
+              cached,
+            );
+          }
           await writeResponse(embeddedBridge, {
             requestId: request.requestId,
             ok: true,
             kind: request.kind,
-            serialized: result.serialized,
             transform:
               cached?.lastTransform ?? result.transform ?? identityTransform(),
             managedWindow:
@@ -1505,7 +1593,9 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             windowEffects: result.windowEffects,
             dirtyNodeIds:
               request.kind === "evaluate"
-                ? takeDirtyWindowNodeIds(request.snapshot.id)
+                ? cached
+                  ? takeDirtyCompositionNodeIds(request.snapshot.id, cached)
+                  : []
                 : [],
             nextPollInMs:
               request.kind === "evaluate"
@@ -1548,14 +1638,16 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
             const debugConfig = takePendingDebugConfig();
-            await writeResponse(embeddedBridge, {
+            const response: SchedulerTickSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "schedulerTick",
               dirty: tick.dirty,
+              runtimeDirty: tick.runtimeDirty,
               dirtyWindowIds: tick.dirtyWindowIds,
               dirtyManagedWindowIds: tick.dirtyManagedWindowIds,
               dirtyWindowNodeIds: tick.dirtyWindowNodeIds,
+              dirtyLayerIds: tick.dirtyLayerIds,
               dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
               actions: tick.actions,
               nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
@@ -1568,8 +1660,26 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               processConfig,
               processActions,
               debugConfig,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeSchedulerResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "windowClosed") {
+            embeddedBridge.clearCompositionShaderUniformSlots(
+              request.windowId,
+            );
+            shaderUniformSlotIdsByWindow.delete(request.windowId);
             closeWindow(events, request.windowId);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
@@ -1595,7 +1705,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(embeddedBridge, {
+            const response: EvaluateSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "startClose",
@@ -1607,7 +1717,21 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               inputConfig,
               processConfig,
               processActions,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeCachedResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "evaluateCached") {
             const result = evaluateCached(
               composition,
@@ -1632,17 +1756,25 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
                 actions: cachedActions.map(summarizeWindowAction),
               });
             }
-            await writeResponse(embeddedBridge, {
+            writeCachedCompositionUpdate(
+              embeddedBridge,
+              request.requestId,
+              request.windowId,
+              result,
+              cacheByWindowId.get(request.windowId)?.cache,
+            );
+            const response: EvaluateSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "evaluateCached",
-              serialized: result.serialized,
               transform: result.transform,
               managedWindow: result.managedWindow,
               windowEffects: result.windowEffects,
               dirtyNodeIds: result.dirtyNodeIds,
               managedWindowOnly: result.managedWindowOnly,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: hasWindowAnimations(request.windowId)
+                ? 0
+                : result.nextPollInMs,
               actions: cachedActions.length > 0 ? cachedActions : undefined,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -1651,7 +1783,21 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               inputConfig,
               processConfig,
               processActions,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeCachedResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "getEffectConfig") {
             await writeResponse(embeddedBridge, {
               requestId: request.requestId,
@@ -1678,7 +1824,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               ok: true,
               kind: "evaluateLayerEffects",
               effects: result.effects,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1704,7 +1850,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               ok: true,
               kind: "evaluatePopupEffects",
               effects: result.effects,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1994,6 +2140,8 @@ function evaluateCached(
   forceFullReevaluation = false,
 ): {
   serialized?: unknown;
+  treeUpdate: "full" | "patches" | "uniforms" | "none";
+  uniformPatches?: NativeShaderUniformPatch[];
   transform: WindowTransform;
   managedWindow: ManagedWindowState;
   windowEffects: WindowEffectAssignment | null;
@@ -2024,6 +2172,7 @@ function evaluateCached(
     openedWindowIds.add(windowId);
     dirtyWindowIds.delete(windowId);
     takeDirtyWindowNodeIds(windowId);
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
     takeManagedWindowOnlyDirty(windowId);
     events.emitFocus(entry.cache.window, snapshot.isFocused);
     if (!firstCommittedWindowIds.has(windowId)) {
@@ -2067,6 +2216,7 @@ function evaluateCached(
   const managedWindowOnlyDirty = takeManagedWindowOnlyDirty(windowId);
   if (managedWindowOnlyDirty && !forceFullReevaluation) {
     const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
     if (updated) {
       debugLabel("evaluate-cached-managed-dirty-with-updated-tree", {
         windowId,
@@ -2075,25 +2225,29 @@ function evaluateCached(
       });
       return {
         serialized: updated.serialized,
+        treeUpdate: "full",
         transform: updated.transform,
         managedWindow: updated.managedWindow,
         windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
         dirtyNodeIds,
-        nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+        nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
       };
     }
     const reevaluated = entry.cache.reevaluateManagedWindow();
     return {
+      treeUpdate: "none",
       transform: reevaluated.transform,
       managedWindow: reevaluated.managedWindow,
       windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
       dirtyNodeIds: [],
       managedWindowOnly: true,
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+      nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
     };
   }
 
   const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const dirtyUniformBindingKeys =
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
   if (updated && !forceFullReevaluation) {
     debugLabel("evaluate-cached-updated-tree", {
       windowId,
@@ -2102,13 +2256,49 @@ function evaluateCached(
     });
     return {
       serialized: updated.serialized,
+      treeUpdate: "full",
       transform: updated.transform,
       managedWindow: updated.managedWindow,
       windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
       dirtyNodeIds,
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+      nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
     };
   }
+  if (
+    !forceFullReevaluation &&
+    dirtyNodeIds.length === 0 &&
+    dirtyUniformBindingKeys.length > 0
+  ) {
+    const uniformPatches = entry.cache.readShaderUniformPatches(
+      dirtyUniformBindingKeys,
+    );
+    if (uniformPatches !== null && uniformPatches.length > 0) {
+      return {
+        treeUpdate: "uniforms",
+        uniformPatches,
+        transform: entry.cache.lastTransform,
+        managedWindow: entry.cache.lastManagedWindow,
+        windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
+        dirtyNodeIds: Array.from(
+          new Set(uniformPatches.map((patch) => patch.nodeId)),
+        ),
+        nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
+      };
+    }
+  }
+  const reevaluateNodeIds =
+    dirtyUniformBindingKeys.length > 0
+      ? Array.from(
+          new Set([
+            ...dirtyNodeIds,
+            ...entry.cache.shaderUniformBindings
+              .filter((binding) =>
+                dirtyUniformBindingKeys.includes(binding.key)
+              )
+              .map((binding) => binding.nodeId),
+          ]),
+        )
+      : dirtyNodeIds;
   // A full window dirty can coincide with node-scoped dirty marks from
   // derived signals. Passing those node ids to reevaluate() selects the
   // serialized-tree patch path, which deliberately does not recreate the
@@ -2117,21 +2307,414 @@ function evaluateCached(
   // disappear again once the visual animation completed.
   const reevaluated = forceFullReevaluation
     ? entry.cache.reevaluate()
-    : entry.cache.reevaluate(dirtyNodeIds);
+    : entry.cache.reevaluate(reevaluateNodeIds);
   debugLabel("evaluate-cached-reevaluate", {
     windowId,
-    dirtyNodeIds,
+    dirtyNodeIds: reevaluateNodeIds,
     forceFullReevaluation,
     labels: summarizeSerializedLabels(reevaluated.serialized),
   });
   return {
     serialized: reevaluated.serialized,
+    treeUpdate:
+      !forceFullReevaluation && reevaluateNodeIds.length > 0
+        ? "patches"
+        : "full",
     transform: entry.cache.lastTransform,
     managedWindow: entry.cache.lastManagedWindow,
     windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
-    dirtyNodeIds: forceFullReevaluation ? [] : dirtyNodeIds,
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    dirtyNodeIds: forceFullReevaluation ? [] : reevaluateNodeIds,
+    nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
   };
+}
+
+function writeCachedCompositionUpdate(
+  bridge: EmbeddedRuntimeBridge,
+  requestId: number,
+  windowId: string,
+  result: ReturnType<typeof evaluateCached>,
+  cache: CompositionEvaluationCache | undefined,
+): void {
+  if (result.treeUpdate === "none") {
+    return;
+  }
+  if (result.treeUpdate === "uniforms") {
+    const uniformPatches = result.uniformPatches ?? [];
+    if (uniformPatches.length === 0) {
+      throw new Error(
+        `cached uniform composition update for ${windowId} has no patches`,
+      );
+    }
+    const registeredSlotIds = uniformPatches.map((patch) =>
+      patch.bindingKey === undefined
+        ? undefined
+        : shaderUniformSlotIdsByWindow
+            .get(windowId)
+            ?.get(patch.bindingKey)
+    );
+    const firstSlotId = registeredSlotIds[0];
+    const usesOnlyRegisteredSlots =
+      firstSlotId !== undefined &&
+      registeredSlotIds.every((slotId) => slotId !== undefined);
+    if (usesOnlyRegisteredSlots) {
+      bridge.beginCompositionShaderUniformSlotPatches(
+        requestId,
+        firstSlotId,
+      );
+    } else {
+      bridge.beginCompositionPatches(requestId, windowId);
+    }
+    for (let index = 0; index < uniformPatches.length; index++) {
+      const patch = uniformPatches[index];
+      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
+      const slotId = registeredSlotIds[index];
+      if (slotId !== undefined) {
+        bridge.writeCompositionShaderUniformSlotPatch(
+          requestId,
+          slotId,
+          patch.values.length,
+          x,
+          y,
+          z,
+          w,
+        );
+      } else {
+        bridge.writeCompositionShaderUniformPatch(
+          requestId,
+          patch.nodeId,
+          patch.stageIndex,
+          patch.name,
+          patch.values.length,
+          x,
+          y,
+          z,
+          w,
+        );
+      }
+    }
+    return;
+  }
+  if (result.serialized === undefined) {
+    throw new Error(
+      `cached composition update for ${windowId} is missing its serialized tree`,
+    );
+  }
+  if (result.treeUpdate === "full") {
+    bridge.writeCompositionUpdate(requestId, {
+      kind: "full",
+      windowId,
+      tree: result.serialized,
+    });
+    lastNativeCompositionByWindowId.set(windowId, result.serialized);
+    if (cache) {
+      syncCompositionShaderUniformSlots(bridge, windowId, cache);
+    }
+    return;
+  }
+
+  const dirtyNodeIds = topLevelDirtyNodeIds(result.dirtyNodeIds ?? []);
+  const previous = lastNativeCompositionByWindowId.get(windowId);
+  const uniformPatches =
+    previous === undefined
+      ? null
+      : collectShaderUniformPatches(
+          previous,
+          result.serialized,
+          dirtyNodeIds,
+          result.dirtyNodeIds ?? [],
+        );
+  if (uniformPatches && uniformPatches.length > 0) {
+    bridge.beginCompositionPatches(requestId, windowId);
+    for (const patch of uniformPatches) {
+      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
+      bridge.writeCompositionShaderUniformPatch(
+        requestId,
+        patch.nodeId,
+        patch.stageIndex,
+        patch.name,
+        patch.values.length,
+        x,
+        y,
+        z,
+        w,
+      );
+    }
+    lastNativeCompositionByWindowId.set(windowId, result.serialized);
+    return;
+  }
+  const patches = dirtyNodeIds.map((nodeId) => {
+    const node = findSerializedNode(result.serialized, nodeId);
+    if (node === undefined) {
+      throw new Error(
+        `dirty composition node ${nodeId} is missing from ${windowId}`,
+      );
+    }
+    return { nodeId, node };
+  });
+  bridge.writeCompositionUpdate(requestId, {
+    kind: "patches",
+    windowId,
+    patches,
+  });
+  lastNativeCompositionByWindowId.set(windowId, result.serialized);
+  if (cache) {
+    syncCompositionShaderUniformSlots(bridge, windowId, cache);
+  }
+}
+
+interface NativeShaderUniformPatch {
+  bindingKey?: string;
+  nodeId: string;
+  stageIndex: number;
+  name: string;
+  values: number[];
+}
+
+function syncCompositionShaderUniformSlots(
+  bridge: EmbeddedRuntimeBridge,
+  windowId: string,
+  cache: CompositionEvaluationCache,
+): void {
+  bridge.clearCompositionShaderUniformSlots(windowId);
+  const slotIds = new Map<string, number>();
+  for (const binding of cache.shaderUniformBindings) {
+    const slotId = nextShaderUniformSlotId++;
+    if (nextShaderUniformSlotId > 0xffff_ffff) {
+      nextShaderUniformSlotId = 1;
+    }
+    slotIds.set(binding.key, slotId);
+    bridge.registerCompositionShaderUniformSlot(
+      slotId,
+      windowId,
+      binding.nodeId,
+      binding.stageIndex,
+      binding.name,
+    );
+  }
+  shaderUniformSlotIdsByWindow.set(windowId, slotIds);
+}
+
+function takeDirtyCompositionNodeIds(
+  windowId: string,
+  cache: CompositionEvaluationCache,
+): string[] {
+  const nodeIds = new Set(takeDirtyWindowNodeIds(windowId));
+  const bindingKeys = new Set(
+    takeDirtyWindowShaderUniformBindingKeys(windowId),
+  );
+  if (bindingKeys.size > 0) {
+    for (const binding of cache.shaderUniformBindings) {
+      if (bindingKeys.has(binding.key)) {
+        nodeIds.add(binding.nodeId);
+      }
+    }
+  }
+  return Array.from(nodeIds);
+}
+
+function collectShaderUniformPatches(
+  previousTree: unknown,
+  nextTree: unknown,
+  dirtyNodeIds: readonly string[],
+  allDirtyNodeIds: readonly string[],
+): NativeShaderUniformPatch[] | null {
+  const patches: NativeShaderUniformPatch[] = [];
+  for (const nodeId of dirtyNodeIds) {
+    if (
+      allDirtyNodeIds.some(
+        (candidate) =>
+          candidate !== nodeId &&
+          (candidate.startsWith(`${nodeId}.`) ||
+            candidate.startsWith(`${nodeId}[`)),
+      )
+    ) {
+      return null;
+    }
+    const previous = findSerializedNode(previousTree, nodeId);
+    const next = findSerializedNode(nextTree, nodeId);
+    const nodePatches = collectNodeShaderUniformPatches(previous, next);
+    if (nodePatches === null) {
+      return null;
+    }
+    patches.push(...nodePatches);
+  }
+  return patches;
+}
+
+function collectNodeShaderUniformPatches(
+  previousValue: unknown,
+  nextValue: unknown,
+): NativeShaderUniformPatch[] | null {
+  const previous = asRecord(previousValue);
+  const next = asRecord(nextValue);
+  if (
+    !previous ||
+    !next ||
+    previous.kind !== "ShaderEffect" ||
+    next.kind !== "ShaderEffect" ||
+    typeof previous.nodeId !== "string" ||
+    previous.nodeId !== next.nodeId
+  ) {
+    return null;
+  }
+  const previousProps = asRecord(previous.props);
+  const nextProps = asRecord(next.props);
+  if (
+    !previousProps ||
+    !nextProps ||
+    !recordsEqualExcept(previousProps, nextProps, "shader")
+  ) {
+    return null;
+  }
+  const previousShader = asRecord(previousProps.shader);
+  const nextShader = asRecord(nextProps.shader);
+  if (
+    !previousShader ||
+    !nextShader ||
+    !recordsEqualExcept(previousShader, nextShader, "pipeline") ||
+    !Array.isArray(previousShader.pipeline) ||
+    !Array.isArray(nextShader.pipeline) ||
+    previousShader.pipeline.length !== nextShader.pipeline.length
+  ) {
+    return null;
+  }
+
+  const patches: NativeShaderUniformPatch[] = [];
+  for (let stageIndex = 0; stageIndex < previousShader.pipeline.length; stageIndex++) {
+    const previousStage = asRecord(previousShader.pipeline[stageIndex]);
+    const nextStage = asRecord(nextShader.pipeline[stageIndex]);
+    if (!previousStage || !nextStage) {
+      return null;
+    }
+    if (previousStage.kind !== "shader-stage") {
+      if (!deepEqual(previousStage, nextStage)) {
+        return null;
+      }
+      continue;
+    }
+    if (
+      nextStage.kind !== "shader-stage" ||
+      !recordsEqualExcept(previousStage, nextStage, "uniforms")
+    ) {
+      return null;
+    }
+    const previousUniforms = asRecord(previousStage.uniforms) ?? {};
+    const nextUniforms = asRecord(nextStage.uniforms) ?? {};
+    const previousNames = Object.keys(previousUniforms).sort();
+    const nextNames = Object.keys(nextUniforms).sort();
+    if (!deepEqual(previousNames, nextNames)) {
+      return null;
+    }
+    for (const name of nextNames) {
+      if (deepEqual(previousUniforms[name], nextUniforms[name])) {
+        continue;
+      }
+      const values = numericUniformValues(nextUniforms[name]);
+      if (values === null) {
+        return null;
+      }
+      patches.push({
+        nodeId: previous.nodeId,
+        stageIndex,
+        name,
+        values,
+      });
+    }
+  }
+  return patches;
+}
+
+function numericUniformValues(value: unknown): number[] | null {
+  const values = typeof value === "number" ? [value] : value;
+  if (
+    !Array.isArray(values) ||
+    values.length < 1 ||
+    values.length > 4 ||
+    values.some((entry) => typeof entry !== "number" || !Number.isFinite(entry))
+  ) {
+    return null;
+  }
+  return values as number[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function recordsEqualExcept(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  excludedKey: string,
+): boolean {
+  const keys = Array.from(
+    new Set([...Object.keys(left), ...Object.keys(right)]),
+  ).filter((key) => key !== excludedKey);
+  return keys.every((key) => deepEqual(left[key], right[key]));
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => deepEqual(value, right[index]))
+    );
+  }
+  const leftRecord = asRecord(left);
+  const rightRecord = asRecord(right);
+  if (!leftRecord || !rightRecord) {
+    return false;
+  }
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+        deepEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function topLevelDirtyNodeIds(nodeIds: readonly string[]): string[] {
+  const sorted = Array.from(new Set(nodeIds)).sort(
+    (left, right) => left.length - right.length,
+  );
+  const selected: string[] = [];
+  for (const nodeId of sorted) {
+    if (
+      selected.some(
+        (ancestor) =>
+          nodeId === ancestor || nodeId.startsWith(`${ancestor}.`),
+      )
+    ) {
+      continue;
+    }
+    selected.push(nodeId);
+  }
+  return selected;
+}
+
+function findSerializedNode(tree: unknown, nodeId: string): unknown {
+  if (!tree || typeof tree !== "object") {
+    return undefined;
+  }
+  const node = tree as { nodeId?: unknown; children?: unknown[] };
+  if (node.nodeId === nodeId) {
+    return tree;
+  }
+  for (const child of node.children ?? []) {
+    const found = findSerializedNode(child, nodeId);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 function summarizeSerializedLabels(node: unknown): unknown[] {
@@ -2204,7 +2787,10 @@ function evaluateSnapshot(
       events.emitFirstCommit(entry.cache.window);
     }
     dirtyWindowIds.delete(snapshot.id);
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-evaluate-new-cache-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2246,7 +2832,10 @@ function evaluateSnapshot(
 
   const wasDirty = dirtyWindowIds.delete(snapshot.id);
   if (wasDirty) {
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      existing.cache,
+    );
     debugSSD("runtime-evaluate-existing-dirty", {
       windowId: snapshot.id,
       wasPreconfigured,
@@ -2313,7 +2902,10 @@ function evaluatePreconfigure(
       events.emitInitialConfigure(entry.cache.window);
     }
     events.emitFocus(entry.cache.window, snapshot.isFocused);
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-preconfigure-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2339,7 +2931,10 @@ function evaluatePreconfigure(
       });
       events.emitInitialConfigure(entry.cache.window);
     }
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-preconfigure-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2720,7 +3315,15 @@ function evaluateLayerEffects(
 
   return {
     effects,
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    nextPollInMs: snapshots.some(
+      (snapshot) =>
+        snapshot.outputName === outputName &&
+        hasActiveAnimationsInStore(
+          animationEntriesByLayerId.get(snapshot.id) ?? new Map(),
+        ),
+    )
+      ? 0
+      : peekNextPollDelay(),
   };
 }
 
@@ -2827,7 +3430,10 @@ function evaluatePopupEffects(
             ) as SurfacePolicy | null)
           : null,
       })),
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    // Popup effects do not currently expose an animation controller. A
+    // window/layer animation therefore cannot make this output's popup cache
+    // continuously animating.
+    nextPollInMs: peekNextPollDelay(),
   };
 }
 
@@ -2927,6 +3533,7 @@ function ensureImmediateDirtyPoll(): void {
 
 function processSchedulerTick(nowMs: number): {
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -2961,9 +3568,11 @@ function processSchedulerTick(nowMs: number): {
 
 function collectRuntimeMutationState(): {
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerIds?: string[];
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
@@ -3006,7 +3615,7 @@ function collectRuntimeMutationState(): {
       );
   const dirtyWindowNodeIds = Object.fromEntries(
     nextDirtyWindowIds
-      .map((windowId) => [windowId, takeDirtyWindowNodeIds(windowId)] as const)
+      .map((windowId) => [windowId, peekDirtyWindowNodeIds(windowId)] as const)
       .filter(([, nodeIds]) => nodeIds.length > 0),
   );
   const dirtyLayerNodeIds = Object.fromEntries(
@@ -3020,8 +3629,9 @@ function collectRuntimeMutationState(): {
       actions: actions.map(summarizeWindowAction),
     });
   }
+  const nextRuntimeDirty = runtimeDirty;
   const dirty =
-    runtimeDirty ||
+    nextRuntimeDirty ||
     nextDirtyWindowIds.length > 0 ||
     nextDirtyLayerIds.length > 0;
   runtimeDirty = false;
@@ -3042,6 +3652,7 @@ function collectRuntimeMutationState(): {
 
   return {
     dirty,
+    runtimeDirty: nextRuntimeDirty || undefined,
     dirtyWindowIds: nextDirtyWindowIds,
     dirtyManagedWindowIds:
       dirtyManagedWindowIds.length > 0 ? dirtyManagedWindowIds : undefined,
@@ -3049,11 +3660,19 @@ function collectRuntimeMutationState(): {
       Object.keys(dirtyWindowNodeIds).length > 0
         ? dirtyWindowNodeIds
         : undefined,
+    dirtyLayerIds:
+      nextDirtyLayerIds.length > 0 ? nextDirtyLayerIds : undefined,
     dirtyLayerNodeIds:
       Object.keys(dirtyLayerNodeIds).length > 0 ? dirtyLayerNodeIds : undefined,
     actions,
     nextPollInMs,
   };
+}
+
+function hasWindowAnimations(windowId: string): boolean {
+  return hasActiveAnimationsInStore(
+    animationEntriesByWindowId.get(windowId) ?? new Map(),
+  );
 }
 
 function invokeGlobalKeyBinding(
@@ -3365,6 +3984,7 @@ function closeWindow(
   existing.closePoll?.cancel();
   events.emitClose(existing.cache.window);
   cacheByWindowId.delete(windowId);
+  lastNativeCompositionByWindowId.delete(windowId);
   openedWindowIds.delete(windowId);
   initialConfiguredWindowIds.delete(windowId);
   firstCommittedWindowIds.delete(windowId);
@@ -3417,7 +4037,7 @@ function startClose(
     }
   }
 
-  const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const dirtyNodeIds = takeDirtyCompositionNodeIds(windowId, entry.cache);
   const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   const actions = drainPendingActions();
   return {
@@ -3463,7 +4083,10 @@ function invokeHandler(
   const managedWindowOnly = isManagedWindowOnlyDirty(windowId);
   const dirtyNodeIds = managedWindowOnly
     ? []
-    : takeDirtyWindowNodeIds(windowId);
+    : takeDirtyCompositionNodeIds(windowId, entry.cache);
+  if (managedWindowOnly) {
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
+  }
   const reevaluated = managedWindowOnly
     ? undefined
     : entry.cache.reevaluate(dirtyNodeIds);
@@ -3640,6 +4263,180 @@ function resolveEffectConfig(
   };
 }
 
+interface PendingRuntimeResponseUpdates {
+  envUpdates: ReturnType<typeof drainPendingEnvUpdates>;
+  cursorConfig: ReturnType<typeof takePendingCursorConfig>;
+}
+
+function takeRuntimeResponseUpdates(): PendingRuntimeResponseUpdates {
+  return {
+    envUpdates: drainPendingEnvUpdates(),
+    cursorConfig: takePendingCursorConfig(),
+  };
+}
+
+function hasRuntimeResponseUpdates(
+  updates: PendingRuntimeResponseUpdates,
+): boolean {
+  return updates.envUpdates !== undefined || updates.cursorConfig !== undefined;
+}
+
+function tryWriteNativeSchedulerResponse(
+  output: EmbeddedRuntimeBridge,
+  response: SchedulerTickSuccess,
+  updates: PendingRuntimeResponseUpdates,
+): boolean {
+  if (
+    hasRuntimeResponseUpdates(updates) ||
+    response.actions.length > 0 ||
+    response.displayConfig !== undefined ||
+    response.workspaceConfig !== undefined ||
+    response.keyBindingConfig !== undefined ||
+    response.pointerConfig !== undefined ||
+    response.inputConfig !== undefined ||
+    response.eventConfig !== undefined ||
+    response.processConfig !== undefined ||
+    (response.processActions?.length ?? 0) > 0 ||
+    response.debugConfig !== undefined
+  ) {
+    return false;
+  }
+
+  output.beginSchedulerResponse(
+    response.requestId,
+    response.dirty,
+    response.runtimeDirty ?? false,
+    response.nextPollInMs ?? -1,
+  );
+  const managedOnly = new Set(response.dirtyManagedWindowIds ?? []);
+  for (const windowId of response.dirtyWindowIds) {
+    output.addSchedulerDirtyWindow(windowId, managedOnly.has(windowId));
+  }
+  for (const [windowId, nodeIds] of Object.entries(
+    response.dirtyWindowNodeIds ?? {},
+  )) {
+    for (const nodeId of nodeIds) {
+      output.addSchedulerDirtyWindowNode(windowId, nodeId);
+    }
+  }
+  for (const layerId of response.dirtyLayerIds ?? []) {
+    output.addSchedulerDirtyLayer(layerId);
+  }
+  for (const [layerId, nodeIds] of Object.entries(
+    response.dirtyLayerNodeIds ?? {},
+  )) {
+    for (const nodeId of nodeIds) {
+      output.addSchedulerDirtyLayerNode(layerId, nodeId);
+    }
+  }
+  output.finishNativeResponse();
+  return true;
+}
+
+const NATIVE_CACHED_RESPONSE_FIELD_COUNT = 15;
+const nativeCachedResponsePayload = new Uint8Array(
+  NATIVE_CACHED_RESPONSE_FIELD_COUNT * Float64Array.BYTES_PER_ELEMENT,
+);
+const nativeCachedResponseView = new DataView(
+  nativeCachedResponsePayload.buffer,
+);
+
+function tryWriteNativeCachedResponse(
+  output: EmbeddedRuntimeBridge,
+  response: EvaluateSuccess,
+  updates: PendingRuntimeResponseUpdates,
+): boolean {
+  if (
+    response.kind !== "evaluateCached" ||
+    hasRuntimeResponseUpdates(updates) ||
+    response.windowEffects !== null ||
+    (response.actions?.length ?? 0) > 0 ||
+    response.displayConfig !== undefined ||
+    response.workspaceConfig !== undefined ||
+    response.keyBindingConfig !== undefined ||
+    response.pointerConfig !== undefined ||
+    response.inputConfig !== undefined ||
+    response.eventConfig !== undefined ||
+    response.processConfig !== undefined ||
+    (response.processActions?.length ?? 0) > 0
+  ) {
+    return false;
+  }
+
+  const transform = response.transform ?? identityTransform();
+  const managedWindow = response.managedWindow ?? identityManagedWindow();
+  const workspace = managedWindow.workspace;
+  if (
+    workspace !== undefined &&
+    typeof workspace !== "string" &&
+    (typeof workspace !== "number" || !Number.isFinite(workspace))
+  ) {
+    return false;
+  }
+  const visibleOutputs = managedWindow.visibleOutputs;
+  if (
+    visibleOutputs !== undefined &&
+    visibleOutputs !== null &&
+    !Array.isArray(visibleOutputs)
+  ) {
+    return false;
+  }
+
+  let flags = 0;
+  if (response.managedWindowOnly) flags |= 1 << 0;
+  if (managedWindow.managed) flags |= 1 << 1;
+  if (managedWindow.visible) flags |= 1 << 2;
+  if (managedWindow.idle) flags |= 1 << 3;
+  if (managedWindow.interactive) flags |= 1 << 4;
+  if (managedWindow.forceRectSize) flags |= 1 << 5;
+  if (managedWindow.tiled) flags |= 1 << 6;
+  if (managedWindow.rect !== undefined) flags |= 1 << 7;
+  if (managedWindow.allowTearing === false) flags |= 1 << 8;
+  if (managedWindow.allowTearing === true) flags |= 2 << 8;
+  if (Array.isArray(visibleOutputs)) flags |= 1 << 10;
+  if (managedWindow.zIndex !== undefined) flags |= 1 << 11;
+
+  const rect = managedWindow.rect;
+  const fields = [
+    response.requestId,
+    response.nextPollInMs ?? -1,
+    flags,
+    transform.origin.x,
+    transform.origin.y,
+    transform.translateX,
+    transform.translateY,
+    transform.scaleX,
+    transform.scaleY,
+    transform.opacity,
+    rect?.x ?? 0,
+    rect?.y ?? 0,
+    rect?.width ?? 0,
+    rect?.height ?? 0,
+    managedWindow.zIndex ?? 0,
+  ];
+  if (fields.some((value) => !Number.isFinite(value))) {
+    return false;
+  }
+  for (let index = 0; index < fields.length; index++) {
+    nativeCachedResponseView.setFloat64(index * 8, fields[index], true);
+  }
+
+  output.beginCachedResponse(nativeCachedResponsePayload);
+  for (const nodeId of response.dirtyNodeIds ?? []) {
+    output.addCachedDirtyNode(nodeId);
+  }
+  for (const outputName of visibleOutputs ?? []) {
+    output.addCachedVisibleOutput(outputName);
+  }
+  if (typeof workspace === "string") {
+    output.setCachedWorkspaceString(workspace);
+  } else if (typeof workspace === "number") {
+    output.setCachedWorkspaceNumber(workspace);
+  }
+  output.finishNativeResponse();
+  return true;
+}
+
 function writeResponse(
   output: EmbeddedRuntimeBridge,
   response:
@@ -3662,12 +4459,22 @@ function writeResponse(
     | WindowDecorationPolicySuccess
     | RuntimeFailure,
 ): Promise<void> {
-  const envUpdates = drainPendingEnvUpdates();
-  const cursorConfig = takePendingCursorConfig();
+  return writeResponseWithRuntimeUpdates(
+    output,
+    response,
+    takeRuntimeResponseUpdates(),
+  );
+}
+
+function writeResponseWithRuntimeUpdates(
+  output: EmbeddedRuntimeBridge,
+  response: Parameters<typeof writeResponse>[1],
+  updates: PendingRuntimeResponseUpdates,
+): Promise<void> {
   const responseWithRuntimeUpdates = {
     ...response,
-    ...(envUpdates ? { envUpdates } : {}),
-    ...(cursorConfig ? { cursorConfig } : {}),
+    ...(updates.envUpdates ? { envUpdates: updates.envUpdates } : {}),
+    ...(updates.cursorConfig ? { cursorConfig: updates.cursorConfig } : {}),
   };
   output.writeResponse(JSON.stringify(responseWithRuntimeUpdates));
   return Promise.resolve();
@@ -3675,13 +4482,50 @@ function writeResponse(
 
 async function* readEmbeddedMessages(
   bridge: EmbeddedRuntimeBridge,
-): AsyncGenerator<string> {
+): AsyncGenerator<RuntimeRequest> {
   while (true) {
-    const request = await bridge.readRequest();
-    if (request === null) {
+    const envelope = await bridge.readRequest();
+    if (envelope === null) {
       return;
     }
-    yield request;
+    const composition = envelope.composition();
+    if (composition !== null) {
+      yield composition;
+      continue;
+    }
+    const scheduler = envelope.scheduler();
+    if (scheduler !== null) {
+      yield scheduler;
+      continue;
+    }
+    const fastKind = envelope.fastKind();
+    if (fastKind === 1) {
+      const request: EvaluateCachedRequest = {
+        requestId: envelope.fastRequestId(),
+        kind: "evaluateCached",
+        windowId: envelope.fastWindowId(),
+        forceFullReevaluation: envelope.fastForceFullReevaluation(),
+        nowMs: envelope.fastNowMs(),
+      };
+      envelope.finishFast();
+      yield request;
+      continue;
+    }
+    if (fastKind === 2) {
+      const request: SchedulerTickRequest = {
+        requestId: envelope.fastRequestId(),
+        kind: "schedulerTick",
+        nowMs: envelope.fastNowMs(),
+      };
+      envelope.finishFast();
+      yield request;
+      continue;
+    }
+    const json = envelope.json();
+    if (json === null) {
+      throw new Error("runtime request envelope contains no request");
+    }
+    yield JSON.parse(json) as RuntimeRequest;
   }
 }
 

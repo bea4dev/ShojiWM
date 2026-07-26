@@ -23,13 +23,15 @@ use crate::backend::{
 };
 use crate::state::{ActiveManagedWindowAnimation, ShojiWM};
 
+use super::embedded_runtime::{NativeCompositionPatch, SHADER_INPUT_STAGE_INDEX};
 use super::{
     ComputedDecorationTree, DecorationCachedEvaluationResult, DecorationEvaluationError,
     DecorationEvaluationResult, DecorationEvaluator, DecorationHandlerInvocation,
-    DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
-    LogicalPoint, LogicalRect, PopupEffectEvaluationResult, StaticDecorationEvaluator,
-    WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
-    WindowEffectConfig, WindowPositionSnapshot, WindowTransform, reapply_tree_preserving_layout,
+    DecorationHitTestResult, DecorationNode, DecorationSchedulerTick, DecorationTree,
+    LayerEffectEvaluationResult, LogicalPoint, LogicalRect, PopupEffectEvaluationResult,
+    StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
+    WaylandWindowSnapshot, WindowEffectConfig, WindowPositionSnapshot, WindowTransform,
+    reapply_tree_preserving_layout,
     window_model::{
         ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
         ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
@@ -37,6 +39,317 @@ use super::{
         ManagedWindowScalarAnimationSnapshot, ManagedWindowState,
     },
 };
+
+#[derive(Debug, Clone, Copy)]
+struct CachedTreeUpdate {
+    changed: bool,
+    layout_equivalent: bool,
+}
+
+#[derive(Debug, Default)]
+struct ShaderUniformFastUpdate {
+    tree_changed: bool,
+    rendered_changed: bool,
+    damage_rects: Vec<LogicalRect>,
+}
+
+fn is_shader_uniform_only_update(
+    full: &Option<DecorationNode>,
+    patches: &[NativeCompositionPatch],
+) -> bool {
+    full.is_none()
+        && !patches.is_empty()
+        && patches
+            .iter()
+            .all(|patch| matches!(patch, NativeCompositionPatch::ShaderUniform { .. }))
+}
+
+fn apply_shader_uniform_fast_update(
+    tree: &mut DecorationTree,
+    layout: &mut ComputedDecorationTree,
+    shader_buffers: &mut [CachedShaderEffect],
+    patches: &[NativeCompositionPatch],
+) -> Result<ShaderUniformFastUpdate, DecorationEvaluationError> {
+    for patch in patches {
+        let NativeCompositionPatch::ShaderUniform {
+            node_id,
+            stage_index,
+            name,
+            ..
+        } = patch
+        else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                "non-uniform patch reached the shader uniform fast path".into(),
+            ));
+        };
+
+        let Some(tree_node) = find_decoration_node(&tree.root, node_id) else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "cached composition patch target is missing: {node_id}"
+            )));
+        };
+        let super::DecorationNodeKind::ShaderEffect(tree_effect) = &tree_node.kind else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "shader uniform patch target is not ShaderEffect: {node_id}"
+            )));
+        };
+        validate_shader_uniform(&tree_effect.shader, node_id, *stage_index, name)?;
+
+        let Some(computed_node) = find_computed_decoration_node(&layout.root, node_id) else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "computed shader uniform patch target is missing: {node_id}"
+            )));
+        };
+        let super::DecorationNodeKind::ShaderEffect(computed_effect) = &computed_node.kind else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "computed shader uniform patch target is not ShaderEffect: {node_id}"
+            )));
+        };
+        validate_shader_uniform(&computed_effect.shader, node_id, *stage_index, name)?;
+
+        for buffer in shader_buffers
+            .iter()
+            .filter(|buffer| buffer.owner_node_id.as_deref() == Some(node_id.as_str()))
+        {
+            validate_shader_uniform(&buffer.shader, node_id, *stage_index, name)?;
+        }
+    }
+
+    let mut update = ShaderUniformFastUpdate::default();
+    for patch in patches {
+        let NativeCompositionPatch::ShaderUniform {
+            node_id,
+            stage_index,
+            name,
+            value,
+        } = patch
+        else {
+            unreachable!("uniform-only update was validated above");
+        };
+
+        let tree_node = find_decoration_node_mut(&mut tree.root, node_id)
+            .expect("uniform patch tree target was validated");
+        let super::DecorationNodeKind::ShaderEffect(tree_effect) = &mut tree_node.kind else {
+            unreachable!("uniform patch tree target kind was validated");
+        };
+        update.tree_changed |=
+            set_shader_uniform(&mut tree_effect.shader, *stage_index, name, value);
+
+        let computed_node = find_computed_decoration_node_mut(&mut layout.root, node_id)
+            .expect("uniform patch computed target was validated");
+        let super::DecorationNodeKind::ShaderEffect(computed_effect) = &mut computed_node.kind
+        else {
+            unreachable!("uniform patch computed target kind was validated");
+        };
+        set_shader_uniform(&mut computed_effect.shader, *stage_index, name, value);
+
+        let freeze_rendered_shader = matches!(
+            computed_effect.shader.invalidate_policy(),
+            crate::ssd::EffectInvalidationPolicy::Manual {
+                dirty_when: false,
+                ..
+            }
+        );
+        if freeze_rendered_shader {
+            continue;
+        }
+
+        for buffer in shader_buffers
+            .iter_mut()
+            .filter(|buffer| buffer.owner_node_id.as_deref() == Some(node_id.as_str()))
+        {
+            if set_shader_uniform(&mut buffer.shader, *stage_index, name, value) {
+                update.rendered_changed = true;
+                update.damage_rects.push(buffer.rect);
+            }
+        }
+    }
+
+    update
+        .damage_rects
+        .sort_unstable_by_key(|rect| (rect.x, rect.y, rect.width, rect.height));
+    update.damage_rects.dedup();
+    Ok(update)
+}
+
+fn validate_shader_uniform(
+    effect: &super::CompiledEffect,
+    node_id: &str,
+    stage_index: usize,
+    name: &str,
+) -> Result<(), DecorationEvaluationError> {
+    let stage = if stage_index == SHADER_INPUT_STAGE_INDEX {
+        match &effect.input {
+            super::EffectInput::Shader(stage) => Some(stage),
+            _ => None,
+        }
+    } else {
+        match effect.pipeline.get(stage_index) {
+            Some(super::EffectStage::Shader(stage)) => Some(stage),
+            _ => None,
+        }
+    };
+    let Some(stage) = stage else {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "shader uniform patch stage is missing: {node_id}[{stage_index}]"
+        )));
+    };
+    if !stage.uniforms.contains_key(name) {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "shader uniform patch target is missing: {node_id}.{name}"
+        )));
+    }
+    Ok(())
+}
+
+fn set_shader_uniform(
+    effect: &mut super::CompiledEffect,
+    stage_index: usize,
+    name: &str,
+    value: &super::ShaderUniformValue,
+) -> bool {
+    let stage = if stage_index == SHADER_INPUT_STAGE_INDEX {
+        match &mut effect.input {
+            super::EffectInput::Shader(stage) => Some(stage),
+            _ => None,
+        }
+    } else {
+        match effect.pipeline.get_mut(stage_index) {
+            Some(super::EffectStage::Shader(stage)) => Some(stage),
+            _ => None,
+        }
+    };
+    let Some(stage) = stage else {
+        unreachable!("shader uniform stage was validated");
+    };
+    let current = stage
+        .uniforms
+        .get_mut(name)
+        .expect("shader uniform was validated");
+    if current == value {
+        return false;
+    }
+    current.clone_from(value);
+    true
+}
+
+fn apply_cached_tree_update(
+    tree: &mut DecorationTree,
+    full: Option<DecorationNode>,
+    patches: Vec<NativeCompositionPatch>,
+) -> Result<CachedTreeUpdate, DecorationEvaluationError> {
+    match (full, patches.is_empty()) {
+        (Some(next_root), true) => {
+            let changed = tree.root != next_root;
+            let layout_equivalent = !changed || tree.root.layout_equivalent(&next_root);
+            if changed {
+                tree.root = next_root;
+            }
+            Ok(CachedTreeUpdate {
+                changed,
+                layout_equivalent,
+            })
+        }
+        (Some(_), false) => Err(DecorationEvaluationError::RuntimeProtocol(
+            "cached composition returned both a full tree and patches".into(),
+        )),
+        (None, true) => Err(DecorationEvaluationError::RuntimeProtocol(
+            "cached composition returned neither a full tree nor patches".into(),
+        )),
+        (None, false) => {
+            let mut changed = false;
+            let mut layout_equivalent = true;
+            for patch in patches {
+                let node_id = patch.node_id().to_owned();
+                let Some(target) = find_decoration_node_mut(&mut tree.root, &node_id) else {
+                    return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                        "cached composition patch target is missing: {}",
+                        node_id
+                    )));
+                };
+                match patch {
+                    NativeCompositionPatch::ReplaceNode { node, .. } => {
+                        if *target == node {
+                            continue;
+                        }
+                        layout_equivalent &= target.layout_equivalent(&node);
+                        *target = node;
+                        changed = true;
+                    }
+                    NativeCompositionPatch::ShaderUniform {
+                        stage_index,
+                        name,
+                        value,
+                        ..
+                    } => {
+                        let super::DecorationNodeKind::ShaderEffect(effect) = &mut target.kind
+                        else {
+                            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                                "shader uniform patch target is not ShaderEffect: {node_id}"
+                            )));
+                        };
+                        validate_shader_uniform(&effect.shader, &node_id, stage_index, &name)?;
+                        if set_shader_uniform(&mut effect.shader, stage_index, &name, &value) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            Ok(CachedTreeUpdate {
+                changed,
+                layout_equivalent,
+            })
+        }
+    }
+}
+
+fn find_decoration_node<'a>(
+    node: &'a DecorationNode,
+    stable_id: &str,
+) -> Option<&'a DecorationNode> {
+    if node.stable_id.as_deref() == Some(stable_id) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_decoration_node(child, stable_id))
+}
+
+fn find_decoration_node_mut<'a>(
+    node: &'a mut DecorationNode,
+    stable_id: &str,
+) -> Option<&'a mut DecorationNode> {
+    if node.stable_id.as_deref() == Some(stable_id) {
+        return Some(node);
+    }
+    node.children
+        .iter_mut()
+        .find_map(|child| find_decoration_node_mut(child, stable_id))
+}
+
+fn find_computed_decoration_node<'a>(
+    node: &'a super::ComputedDecorationNode,
+    stable_id: &str,
+) -> Option<&'a super::ComputedDecorationNode> {
+    if node.stable_id.as_deref() == Some(stable_id) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_computed_decoration_node(child, stable_id))
+}
+
+fn find_computed_decoration_node_mut<'a>(
+    node: &'a mut super::ComputedDecorationNode,
+    stable_id: &str,
+) -> Option<&'a mut super::ComputedDecorationNode> {
+    if node.stable_id.as_deref() == Some(stable_id) {
+        return Some(node);
+    }
+    node.children
+        .iter_mut()
+        .find_map(|child| find_computed_decoration_node_mut(child, stable_id))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectEvaluationCacheEntry {
@@ -2262,10 +2575,6 @@ impl ShojiWM {
         let spike_threshold_ms = animation_spike_threshold_ms();
         let force_runtime_reevaluate =
             self.runtime_poll_dirty && self.runtime_dirty_window_ids.is_empty();
-        if self.runtime_poll_dirty {
-            self.layer_effect_evaluation_cache.clear();
-            self.popup_effect_evaluation_cache.clear();
-        }
         let force_output_animation_reevaluate = target_output_name
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
@@ -2559,7 +2868,8 @@ impl ShojiWM {
                     || window_was_runtime_dirty;
                 let force_full_cached_reevaluation = force_runtime_reevaluate
                     || (window_was_runtime_dirty
-                        && !self.runtime_managed_only_window_ids.contains(&snapshot_id));
+                        && !self.runtime_managed_only_window_ids.contains(&snapshot_id)
+                        && !self.runtime_node_only_window_ids.contains(&snapshot_id));
                 if (runtime_dirty_debug_enabled() || minimize_debug)
                     && (window_was_runtime_dirty || runtime_dirty)
                 {
@@ -3003,7 +3313,7 @@ impl ShojiWM {
                             } else {
                                 match self.decoration_evaluator.evaluate_cached_window(
                                     &snapshot.id,
-                                    Some(&snapshot),
+                                    runtime_state_changed.then_some(&snapshot),
                                     now_ms,
                                     force_full_cached_reevaluation,
                                 ) {
@@ -3197,6 +3507,61 @@ impl ShojiWM {
                             processed_runtime_dirty_window_ids.insert(snapshot_id);
                             continue;
                         }
+                        let shader_uniform_fast_path = !force_async_asset_refresh
+                            && is_shader_uniform_only_update(
+                                &evaluation.node,
+                                &evaluation.node_patches,
+                            )
+                            && evaluation.transform == cached.static_visual_transform
+                            && evaluation.managed_window == cached.static_managed_window
+                            && evaluation.window_effects == cached.window_effects;
+                        if shader_uniform_fast_path {
+                            let update = {
+                                timescope::scope!("ssd window shader uniform fast update");
+                                apply_shader_uniform_fast_update(
+                                    &mut cached.tree,
+                                    &mut cached.layout,
+                                    &mut cached.shader_buffers,
+                                    &evaluation.node_patches,
+                                )?
+                            };
+                            cached.snapshot = snapshot;
+                            let rendered_changed = update.rendered_changed;
+                            if rendered_changed {
+                                self.pending_decoration_damage.extend(
+                                    update.damage_rects.into_iter().map(|rect| {
+                                        transformed_root_rect(rect, cached.visual_transform)
+                                    }),
+                                );
+                            }
+                            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                            record_managed_rect_path_event(ManagedRectPathEvent::RuntimeDirty);
+                            log_animation_window_refresh_timing(
+                                "shader-uniform-fast",
+                                &cached.snapshot,
+                                elapsed_ms,
+                                evaluate_ms,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                evaluation.dirty_node_ids.len(),
+                                Some(update.tree_changed),
+                                Some(true),
+                            );
+                            runtime_dirty_updates = runtime_dirty_updates.saturating_add(1);
+                            self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
+                            animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
+                            processed_runtime_dirty_window_ids.insert(snapshot_id);
+                            if rendered_changed {
+                                self.schedule_redraw();
+                            }
+                            continue;
+                        }
                         let previous_transform = cached.visual_transform;
                         let previous_layout = cached.layout.clone();
                         let previous_buffers = cached.buffers.clone();
@@ -3204,29 +3569,27 @@ impl ShojiWM {
                         let previous_text_buffers = cached.text_buffers.clone();
                         let previous_icon_buffers = cached.icon_buffers.clone();
                         let rebuild_started_at = Instant::now();
-                        let Some(evaluation_node) = evaluation.node else {
-                            return Err(DecorationEvaluationError::RuntimeProtocol(
-                                "cached evaluation returned no tree without managedWindowOnly"
-                                    .into(),
-                            ));
-                        };
-                        let next_tree = {
-                            timescope::scope!("ssd window build tree");
-                            DecorationTree::new(evaluation_node)
-                        };
                         let next_transform = evaluation.transform;
                         let next_managed_window = evaluation.managed_window;
                         let next_window_effects = evaluation.window_effects;
+                        let mut client_rect_potentially_stale = cached
+                            .client_rect_potentially_stale
+                            || next_managed_window != cached.static_managed_window
+                            || layout_scale != cached.layout_scale;
                         let dirty_node_ids = evaluation.dirty_node_ids;
-                        let tree_changed = {
-                            timescope::scope!("ssd window tree diff");
-                            next_tree != cached.tree
-                        };
                         let label_debug = label_debug_enabled();
                         let cached_label_summary =
                             label_debug.then(|| summarize_tree_labels(&cached.tree));
+                        let tree_update = {
+                            timescope::scope!("ssd window apply tree update");
+                            apply_cached_tree_update(
+                                &mut cached.tree,
+                                evaluation.node.take(),
+                                std::mem::take(&mut evaluation.node_patches),
+                            )?
+                        };
                         let next_label_summary =
-                            label_debug.then(|| summarize_tree_labels(&next_tree));
+                            label_debug.then(|| summarize_tree_labels(&cached.tree));
                         let previous_text_summary =
                             label_debug.then(|| summarize_text_buffers(&previous_text_buffers));
                         if runtime_dirty_debug_enabled() {
@@ -3234,7 +3597,7 @@ impl ShojiWM {
                                 window_id = %snapshot_id,
                                 title = %snapshot.title,
                                 cached_title = %cached.snapshot.title,
-                                tree_changed,
+                                tree_changed = tree_update.changed,
                                 dirty_node_count = dirty_node_ids.len(),
                                 dirty_node_ids = ?dirty_node_ids,
                                 previous_text_count = previous_text_buffers.len(),
@@ -3255,18 +3618,14 @@ impl ShojiWM {
                         }
                         cached.window_effects = next_window_effects;
 
-                        if !tree_changed {
+                        if !tree_update.changed {
                             if !has_active_animation {
                                 cached.visual_transform = next_transform;
                             }
                             cached.static_visual_transform = next_transform;
                         } else {
-                            let layout_equivalent = {
-                                timescope::scope!("ssd window layout equivalent");
-                                cached.tree.root.layout_equivalent(&next_tree.root)
-                            };
+                            let layout_equivalent = tree_update.layout_equivalent;
                             layout_equivalent_state = Some(layout_equivalent);
-                            cached.tree = next_tree;
                             if layout_equivalent {
                                 {
                                     timescope::scope!("ssd window reapply tree layout");
@@ -3414,6 +3773,7 @@ impl ShojiWM {
                                 };
                                 cached.layout_scale = layout_scale;
                                 cached.client_rect = layout_client_rect;
+                                client_rect_potentially_stale = has_active_animation;
                                 {
                                     timescope::scope!("ssd window clip");
                                     let shared_edges =
@@ -3539,7 +3899,7 @@ impl ShojiWM {
                             0.0,
                             finalize_ms,
                             dirty_node_ids.len(),
-                            Some(tree_changed),
+                            Some(tree_update.changed),
                             layout_equivalent_state,
                         );
                         if force_async_asset_refresh {
@@ -3576,12 +3936,11 @@ impl ShojiWM {
                             &cached.buffers,
                         );
                         runtime_dirty_updates = runtime_dirty_updates.saturating_add(1);
-                        // The runtime-dirty branch swaps `tree` / `managed_window`
-                        // / `layout_scale` but leaves `client_rect` matching the
-                        // *previous* probe-loop result, so the diff check on the
-                        // next refresh has to recompute once to either confirm
-                        // or detect the divergence.
-                        cached.client_rect_potentially_stale = true;
+                        // Uniform, color, and other layout-equivalent changes do
+                        // not affect the materialised client rect. Only keep the
+                        // cache stale when one of its actual geometry inputs
+                        // changed without a relayout above.
+                        cached.client_rect_potentially_stale = client_rect_potentially_stale;
                         self.schedule_redraw();
                         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                         animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
@@ -3658,7 +4017,8 @@ impl ShojiWM {
             timescope::scope!("ssd closing pass");
             for window_id in closing_dirty_ids {
                 let force_full_cached_reevaluation =
-                    self.runtime_dirty_window_ids.contains(&window_id);
+                    self.runtime_dirty_window_ids.contains(&window_id)
+                        && !self.runtime_node_only_window_ids.contains(&window_id);
                 let closing_raster_scale = self
                     .closing_window_snapshots
                     .get(&window_id)
@@ -3815,13 +4175,11 @@ impl ShojiWM {
                         processed_runtime_dirty_window_ids.insert(window_id);
                         continue;
                     }
-                    let Some(evaluation_node) = evaluation.node else {
-                        return Err(DecorationEvaluationError::RuntimeProtocol(
-                            "cached closing evaluation returned no tree without managedWindowOnly"
-                                .into(),
-                        ));
-                    };
-                    let next_tree = DecorationTree::new(evaluation_node);
+                    let tree_update = apply_cached_tree_update(
+                        &mut closing.decoration.tree,
+                        evaluation.node.take(),
+                        std::mem::take(&mut evaluation.node_patches),
+                    )?;
                     let has_active_animation = closing.decoration.managed_window_animation_active;
                     let next_managed_window = evaluation.managed_window;
                     let next_transform = evaluation.transform;
@@ -3831,19 +4189,13 @@ impl ShojiWM {
                         closing.decoration.managed_window = next_managed_window;
                     }
                     let dirty_node_ids = evaluation.dirty_node_ids;
-                    let tree_changed = next_tree != closing.decoration.tree;
-                    if !tree_changed {
+                    if !tree_update.changed {
                         if !has_active_animation {
                             closing.decoration.visual_transform = next_transform;
                         }
                         closing.decoration.static_visual_transform = next_transform;
                     } else {
-                        let layout_equivalent = closing
-                            .decoration
-                            .tree
-                            .root
-                            .layout_equivalent(&next_tree.root);
-                        closing.decoration.tree = next_tree;
+                        let layout_equivalent = tree_update.layout_equivalent;
                         if layout_equivalent {
                             reapply_tree_preserving_layout(
                                 &mut closing.decoration.layout.root,
@@ -4277,12 +4629,17 @@ impl ShojiWM {
         for window_id in processed_runtime_dirty_window_ids {
             self.runtime_dirty_window_ids.remove(&window_id);
             self.runtime_managed_only_window_ids.remove(&window_id);
+            self.runtime_node_only_window_ids.remove(&window_id);
         }
         self.runtime_dirty_window_ids.retain(|window_id| {
             live_window_ids.contains(window_id)
                 || self.closing_window_snapshots.contains_key(window_id)
         });
         self.runtime_managed_only_window_ids.retain(|window_id| {
+            live_window_ids.contains(window_id)
+                || self.closing_window_snapshots.contains_key(window_id)
+        });
+        self.runtime_node_only_window_ids.retain(|window_id| {
             live_window_ids.contains(window_id)
                 || self.closing_window_snapshots.contains_key(window_id)
         });
@@ -8398,6 +8755,247 @@ mod tests {
         BorderStyle, BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
         LayoutDirection, Overflow, StylePosition,
     };
+
+    #[test]
+    fn cached_tree_patch_replaces_only_the_target_subtree() {
+        let mut label = DecorationNode::new(DecorationNodeKind::Label(super::super::LabelNode {
+            text: "before".into(),
+        }));
+        label.stable_id = Some("root.Label[0]".into());
+        let mut slot = DecorationNode::new(DecorationNodeKind::WindowSlot);
+        slot.stable_id = Some("root.WindowSlot[1]".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![label, slot.clone()]);
+        root.stable_id = Some("root".into());
+        let mut tree = DecorationTree::new(root);
+
+        let mut replacement =
+            DecorationNode::new(DecorationNodeKind::Label(super::super::LabelNode {
+                text: "after".into(),
+            }));
+        replacement.stable_id = Some("root.Label[0]".into());
+        let update = apply_cached_tree_update(
+            &mut tree,
+            None,
+            vec![NativeCompositionPatch::ReplaceNode {
+                node_id: "root.Label[0]".into(),
+                node: replacement,
+            }],
+        )
+        .expect("native subtree patch should apply");
+
+        assert!(update.changed);
+        assert_eq!(tree.root.children[1], slot);
+        assert!(
+            matches!(
+                &tree.root.children[0].kind,
+                DecorationNodeKind::Label(label) if label.text == "after"
+            ),
+            "patched label should replace the old subtree"
+        );
+    }
+
+    #[test]
+    fn cached_tree_patch_updates_shader_uniform_without_replacing_node() {
+        let mut uniforms = std::collections::BTreeMap::new();
+        uniforms.insert(
+            "phase_01".into(),
+            crate::ssd::ShaderUniformValue::Float(0.0),
+        );
+        let effect = crate::ssd::CompiledEffect {
+            input: crate::ssd::EffectInput::Backdrop,
+            capture_padding: 0,
+            invalidate: crate::ssd::EffectInvalidationPolicy::Always,
+            pipeline: vec![crate::ssd::EffectStage::Shader(crate::ssd::ShaderStage {
+                shader: crate::ssd::ShaderModule {
+                    path: "animated.frag".into(),
+                },
+                uniforms,
+                textures: std::collections::BTreeMap::new(),
+            })],
+            alpha: crate::ssd::EffectAlphaMode::Opaque,
+        };
+        let mut root = DecorationNode::new(DecorationNodeKind::ShaderEffect(
+            crate::ssd::ShaderEffectNode {
+                direction: LayoutDirection::Column,
+                shader: effect,
+            },
+        ));
+        root.stable_id = Some("root".into());
+        let mut tree = DecorationTree::new(root);
+
+        let update = apply_cached_tree_update(
+            &mut tree,
+            None,
+            vec![NativeCompositionPatch::ShaderUniform {
+                node_id: "root".into(),
+                stage_index: 0,
+                name: "phase_01".into(),
+                value: crate::ssd::ShaderUniformValue::Float(0.5),
+            }],
+        )
+        .expect("native shader uniform patch should apply");
+
+        assert!(update.changed);
+        assert!(update.layout_equivalent);
+        let DecorationNodeKind::ShaderEffect(effect) = &tree.root.kind else {
+            panic!("root should remain a ShaderEffect");
+        };
+        let crate::ssd::EffectStage::Shader(stage) = &effect.shader.pipeline[0] else {
+            panic!("first stage should remain a shader stage");
+        };
+        assert_eq!(
+            stage.uniforms.get("phase_01"),
+            Some(&crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+    }
+
+    #[test]
+    fn shader_uniform_update_targets_shader_input() {
+        let mut uniforms = std::collections::BTreeMap::new();
+        uniforms.insert(
+            "phase_01".into(),
+            crate::ssd::ShaderUniformValue::Float(0.0),
+        );
+        let effect = crate::ssd::CompiledEffect {
+            input: crate::ssd::EffectInput::Shader(crate::ssd::ShaderStage {
+                shader: crate::ssd::ShaderModule {
+                    path: "animated.frag".into(),
+                },
+                uniforms,
+                textures: std::collections::BTreeMap::new(),
+            }),
+            capture_padding: 0,
+            invalidate: crate::ssd::EffectInvalidationPolicy::Always,
+            pipeline: Vec::new(),
+            alpha: crate::ssd::EffectAlphaMode::Opaque,
+        };
+        let mut root = DecorationNode::new(DecorationNodeKind::ShaderEffect(
+            crate::ssd::ShaderEffectNode {
+                direction: LayoutDirection::Column,
+                shader: effect,
+            },
+        ));
+        root.stable_id = Some("root".into());
+        let mut tree = DecorationTree::new(root);
+
+        let update = apply_cached_tree_update(
+            &mut tree,
+            None,
+            vec![NativeCompositionPatch::ShaderUniform {
+                node_id: "root".into(),
+                stage_index: SHADER_INPUT_STAGE_INDEX,
+                name: "phase_01".into(),
+                value: crate::ssd::ShaderUniformValue::Float(0.5),
+            }],
+        )
+        .expect("shader input uniform patch should apply through the generic update path");
+
+        assert!(update.changed);
+        assert!(update.layout_equivalent);
+        let DecorationNodeKind::ShaderEffect(effect) = &tree.root.kind else {
+            panic!("root should remain a ShaderEffect");
+        };
+        let crate::ssd::EffectInput::Shader(input) = &effect.shader.input else {
+            panic!("effect input should remain a shader input");
+        };
+        assert_eq!(
+            input.uniforms.get("phase_01"),
+            Some(&crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+    }
+
+    #[test]
+    fn shader_uniform_fast_update_mutates_render_state_without_relayout() {
+        let mut uniforms = std::collections::BTreeMap::new();
+        uniforms.insert(
+            "phase_01".into(),
+            crate::ssd::ShaderUniformValue::Float(0.0),
+        );
+        let effect = crate::ssd::CompiledEffect {
+            input: crate::ssd::EffectInput::Backdrop,
+            capture_padding: 0,
+            invalidate: crate::ssd::EffectInvalidationPolicy::Always,
+            pipeline: vec![crate::ssd::EffectStage::Shader(crate::ssd::ShaderStage {
+                shader: crate::ssd::ShaderModule {
+                    path: "animated.frag".into(),
+                },
+                uniforms,
+                textures: std::collections::BTreeMap::new(),
+            })],
+            alpha: crate::ssd::EffectAlphaMode::Opaque,
+        };
+        let mut shader = DecorationNode::new(DecorationNodeKind::ShaderEffect(
+            crate::ssd::ShaderEffectNode {
+                direction: LayoutDirection::Column,
+                shader: effect,
+            },
+        ))
+        .with_style(DecorationStyle {
+            width: Some(64),
+            height: Some(64),
+            ..Default::default()
+        });
+        shader.stable_id = Some("root.ShaderEffect[0]".into());
+        let mut slot = DecorationNode::new(DecorationNodeKind::WindowSlot);
+        slot.stable_id = Some("root.WindowSlot[1]".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![shader, slot]);
+        root.stable_id = Some("root".into());
+        let mut tree = DecorationTree::new(root);
+        let mut layout = tree
+            .layout_for_client(LogicalRect::new(10, 20, 800, 600))
+            .expect("layout should succeed");
+        let order_map = build_render_order_map(&layout);
+        let mut shader_buffers = build_shader_buffers(&layout, &order_map);
+        let layout_rect_before = layout.root.rect;
+
+        let update = apply_shader_uniform_fast_update(
+            &mut tree,
+            &mut layout,
+            &mut shader_buffers,
+            &[NativeCompositionPatch::ShaderUniform {
+                node_id: "root.ShaderEffect[0]".into(),
+                stage_index: 0,
+                name: "phase_01".into(),
+                value: crate::ssd::ShaderUniformValue::Float(0.5),
+            }],
+        )
+        .expect("native shader uniform fast update should apply");
+
+        assert!(update.tree_changed);
+        assert!(update.rendered_changed);
+        assert_eq!(update.damage_rects.len(), 1);
+        assert_eq!(layout.root.rect, layout_rect_before);
+        let shader_value = |effect: &crate::ssd::CompiledEffect| {
+            let crate::ssd::EffectStage::Shader(stage) = &effect.pipeline[0] else {
+                panic!("first stage should remain a shader stage");
+            };
+            stage.uniforms.get("phase_01").cloned()
+        };
+        let DecorationNodeKind::ShaderEffect(tree_effect) = &tree.root.children[0].kind else {
+            panic!("tree node should remain a ShaderEffect");
+        };
+        let DecorationNodeKind::ShaderEffect(layout_effect) = &layout.root.children[0].kind else {
+            panic!("computed node should remain a ShaderEffect");
+        };
+        assert_eq!(
+            shader_value(&tree_effect.shader),
+            Some(crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+        assert_eq!(
+            shader_value(&layout_effect.shader),
+            Some(crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+        assert_eq!(
+            shader_value(&shader_buffers[0].shader),
+            Some(crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+    }
 
     #[test]
     fn managed_rect_rounding_preserves_opposite_edges() {

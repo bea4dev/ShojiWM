@@ -1586,6 +1586,10 @@ impl ShojiWM {
                     .window_closed(&runtime_action.window_id);
                 self.runtime_dirty_window_ids
                     .remove(&runtime_action.window_id);
+                self.runtime_managed_only_window_ids
+                    .remove(&runtime_action.window_id);
+                self.runtime_node_only_window_ids
+                    .remove(&runtime_action.window_id);
                 self.schedule_redraw();
                 continue;
             }

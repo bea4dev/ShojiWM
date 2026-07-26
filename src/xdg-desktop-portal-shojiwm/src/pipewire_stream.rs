@@ -86,13 +86,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
-use std::os::fd::{
-    AsFd,
-    AsRawFd,
-    BorrowedFd, 
-    OwnedFd, 
-    RawFd,
-};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -222,8 +216,7 @@ struct AppState {
     last_log_at: std::time::Instant,
     /// Whether the PW stream is currently in Streaming state. Gates capture
     /// kicks from `on_add_buffer` so we don't capture into a paused stream.
-    is_streaming
-    : bool,
+    is_streaming: bool,
 
     // Same dying / stop_flag pattern as toplevel_stream.rs — once the
     // consumer disconnects we short-circuit every callback so we don't
@@ -865,10 +858,7 @@ impl AppState {
         {
             let _ = tx.send(Ok(stream.node_id()));
         }
-        self.is_streaming = matches!(
-            new,
-            pw::stream::StreamState::Streaming,
-        );
+        self.is_streaming = matches!(new, pw::stream::StreamState::Streaming,);
         // Kick a capture whenever we (re-)enter Streaming with no frame in
         // flight. A one-shot latch is not enough here: when the consumer
         // renegotiates buffers (Chromium switches its preview consumer for the
@@ -877,8 +867,7 @@ impl AppState {
         // has no other way to restart — the session then sits in Streaming
         // delivering nothing, forever. `pending_frame.is_some()` covers the
         // benign Paused→Streaming blips where a capture is still in flight.
-        if self.is_streaming && self.pending_frame
-            .is_none() {
+        if self.is_streaming && self.pending_frame.is_none() {
             self.kick_capture();
         }
         if matches!(
@@ -941,8 +930,7 @@ impl AppState {
             let data = &mut datas[0];
             data.type_ = data_type;
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
-            data.fd = fd_for_pw
-                .as_raw_fd() as i64;
+            data.fd = fd_for_pw.as_raw_fd() as i64;
             data.data = std::ptr::null_mut();
             data.maxsize = size as u32;
             data.mapoffset = 0;
@@ -967,10 +955,8 @@ impl AppState {
         // A renegotiation can replace the whole buffer pool without the stream
         // ever leaving Streaming; the teardown abandons any in-flight frame, so
         // restart the capture cycle as soon as a fresh buffer exists.
-        if self.is_streaming && self.pending_frame
-            .is_none() {
-            self
-                .kick_capture();
+        if self.is_streaming && self.pending_frame.is_none() {
+            self.kick_capture();
         }
     }
 
@@ -986,9 +972,7 @@ impl AppState {
         // DMA-BUF is only valid while the negotiated format carries a
         // modifier; under a modifier-less format the consumer expects
         // mappable memory even if its Buffers param still allows DmaBuf.
-        if allows_dmabuf 
-            && self.format_has_modifier
-            && !self.dmabuf_failed {
+        if allows_dmabuf && self.format_has_modifier && !self.dmabuf_failed {
             match self.create_dmabuf_slot() {
                 Ok(Some(slot)) => return Ok(slot),
                 Ok(None) if !allows_memfd => {

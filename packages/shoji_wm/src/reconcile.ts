@@ -6,6 +6,7 @@ import { createComponentStateStore, withComponentRenderRoot } from "./runtime";
 import {
   enterWindowManagedDependencyScope,
   enterWindowDependencyScope,
+  enterWindowPatchDependencyScope,
   leaveWindowManagedDependencyScope,
   leaveWindowDependencyScope,
 } from "./runtime-hooks";
@@ -13,6 +14,7 @@ import {
   patchSerializedCompositionTree,
   serializeCompositionTree,
   type CompositionSerializationContext,
+  type ShaderUniformBinding,
 } from "./serialize";
 import type {
   CompositionChild,
@@ -54,6 +56,14 @@ export interface CompositionEvaluationResult {
   version: number;
 }
 
+export interface CompositionShaderUniformPatch {
+  bindingKey: string;
+  nodeId: string;
+  stageIndex: number;
+  name: string;
+  values: number[];
+}
+
 export interface CompositionEvaluationCache {
   readonly window: ReactiveWaylandWindowHandle["window"];
   readonly version: number;
@@ -61,12 +71,16 @@ export interface CompositionEvaluationCache {
   readonly lastTree: CompositionChild;
   readonly lastTransform: WindowTransform;
   readonly lastManagedWindow: ManagedWindowState;
+  readonly shaderUniformBindings: readonly ShaderUniformBinding[];
   update(snapshot: WaylandWindowSnapshot): CompositionEvaluationResult | null;
   reevaluate(dirtyNodeIds?: readonly string[]): CompositionEvaluationResult;
   reevaluateManagedWindow(): Pick<
     CompositionEvaluationResult,
     "transform" | "managedWindow" | "version"
   >;
+  readShaderUniformPatches(
+    bindingKeys: readonly string[],
+  ): CompositionShaderUniformPatch[] | null;
   invokeHandler(handlerId: string): boolean;
   setContext(context: WindowCompositionContext): void;
 }
@@ -147,6 +161,7 @@ export function createCompositionEvaluationCache(
   let nextHandlerId = 1;
   let runtimeHandlers = new Map<string, () => void>();
   const handlerIdsByKey = new Map<string, string>();
+  const shaderUniformBindings = new Map<string, ShaderUniformBinding>();
 
   const serializationContext: CompositionSerializationContext = {
     registerClickHandler(key, handler) {
@@ -160,6 +175,9 @@ export function createCompositionEvaluationCache(
       handlerIdsByKey.set(key, handlerId);
       runtimeHandlers.set(handlerId, handler);
       return handlerId;
+    },
+    registerShaderUniformBinding(binding) {
+      shaderUniformBindings.set(binding.key, binding);
     },
   };
 
@@ -175,6 +193,7 @@ export function createCompositionEvaluationCache(
       managedWindow = extracted.managedWindow;
       managedWindowProps = extracted.props;
       handle.updateManagedWindow(managedWindow);
+      shaderUniformBindings.clear();
       serialized = serializeCompositionTree(tree, serializationContext);
       transform = managedWindow.transform;
     } finally {
@@ -196,9 +215,21 @@ export function createCompositionEvaluationCache(
       return evaluateCurrentTree();
     }
 
-    enterWindowDependencyScope(currentSnapshot.id);
+    enterWindowPatchDependencyScope(currentSnapshot.id, dirtyNodeIds);
     try {
       const dirtyNodeIdSet = new Set(dirtyNodeIds);
+      for (const [key, binding] of shaderUniformBindings) {
+        if (
+          dirtyNodeIds.some(
+            (nodeId) =>
+              binding.nodeId === nodeId ||
+              binding.nodeId.startsWith(`${nodeId}.`) ||
+              binding.nodeId.startsWith(`${nodeId}[`),
+          )
+        ) {
+          shaderUniformBindings.delete(key);
+        }
+      }
       serialized = patchSerializedCompositionTree(
         tree,
         serialized,
@@ -244,6 +275,9 @@ export function createCompositionEvaluationCache(
     get lastManagedWindow() {
       return managedWindow;
     },
+    get shaderUniformBindings() {
+      return Array.from(shaderUniformBindings.values());
+    },
     update(nextSnapshot) {
       if (!shouldReevaluateComposition(currentSnapshot, nextSnapshot)) {
         handle.update(nextSnapshot);
@@ -271,6 +305,27 @@ export function createCompositionEvaluationCache(
         managedWindow,
         version,
       };
+    },
+    readShaderUniformPatches(bindingKeys) {
+      const patches: CompositionShaderUniformPatch[] = [];
+      for (const bindingKey of bindingKeys) {
+        const binding = shaderUniformBindings.get(bindingKey);
+        if (!binding) {
+          return null;
+        }
+        const values = binding.read();
+        if (values === null) {
+          return null;
+        }
+        patches.push({
+          bindingKey,
+          nodeId: binding.nodeId,
+          stageIndex: binding.stageIndex,
+          name: binding.name,
+          values,
+        });
+      }
+      return patches;
     },
     invokeHandler(handlerId) {
       const handler = runtimeHandlers.get(handlerId);

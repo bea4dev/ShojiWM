@@ -3292,8 +3292,15 @@ fn lower_layer_scene_elements(
         )
             .hash(&mut hasher);
         let signature = hasher.finish();
-        let relevant_source_damage =
+        let mut relevant_source_damage =
             collect_layer_source_damage(state, lower_layers.iter().skip(index + 1).cloned(), true);
+        if config.effect.uses_layer_source_input() {
+            relevant_source_damage.extend(collect_layer_source_damage(
+                state,
+                std::iter::once(layer_surface.clone()),
+                true,
+            ));
+        }
         let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
             &config.effect,
             Rectangle::new(
@@ -3692,6 +3699,13 @@ fn configured_background_effect_elements_for_layer(
                 false,
             ));
         }
+        if config.effect.uses_layer_source_input() {
+            entries.extend(collect_layer_source_damage(
+                state,
+                std::iter::once(layer_surface.clone()),
+                false,
+            ));
+        }
         entries
     };
 
@@ -3811,15 +3825,14 @@ fn configured_background_effect_elements_for_layer(
     )
         .hash(&mut hasher);
     let signature = hasher.finish();
-    let source_damage_hit = config.effect.uses_layer_source_input()
-        || crate::backend::shader_effect::source_damage_intersects_rect(
-            &config.effect,
-            Rectangle::new(
-                smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
-                (effect_rect.width, effect_rect.height).into(),
-            ),
-            &relevant_source_damage,
-        );
+    let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+        &config.effect,
+        Rectangle::new(
+            smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+            (effect_rect.width, effect_rect.height).into(),
+        ),
+        &relevant_source_damage,
+    );
     let captured_local_rect = Rectangle::new(
         smithay::utils::Point::from((
             effect_rect.x - output_geo.loc.x,
