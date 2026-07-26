@@ -145,37 +145,6 @@ impl XdgShellHandler for ShojiWM {
         self.space
             .map_element(window.clone(), initial_location, false);
         self.ensure_wayland_window_decoration_policy(&wl_surface);
-        let mapped_snapshot = self.snapshot_window(&window);
-        let initial_managed_client_rect =
-            match self.initial_managed_window_client_rect(&mapped_snapshot) {
-                Ok(rect) => rect,
-                Err(error) => {
-                    warn!(
-                        window_id = mapped_snapshot.id,
-                        title = mapped_snapshot.title,
-                        app_id = mapped_snapshot.app_id,
-                        error = ?error,
-                        "failed to compute initial managed window rect"
-                    );
-                    None
-                }
-            };
-        if let Some(client_rect) = initial_managed_client_rect {
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(Size::from((client_rect.width, client_rect.height)));
-                });
-                toplevel.send_configure();
-            }
-            let geometry = window.geometry();
-            self.space.relocate_element(
-                &window,
-                (
-                    client_rect.x - geometry.loc.x,
-                    client_rect.y - geometry.loc.y,
-                ),
-            );
-        }
         // Announce the new toplevel on ext-foreign-toplevel-list-v1 so shells
         // and the portal picker can see it. Has to happen after map so the
         // initial title/app_id reads from xdg state succeed.
@@ -661,12 +630,12 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     state.commit_xdg_decoration_mode(surface);
 
     // Handle toplevel commits.
-    if let Some(window) = state
+    let toplevel_window = state
         .space
         .elements()
         .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
-        .cloned()
-    {
+        .cloned();
+    if let Some(window) = toplevel_window {
         let initial_configure_sent = with_states(surface, |states| {
             states
                 .data_map
@@ -678,7 +647,41 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
         });
 
         if !initial_configure_sent {
-            window.toplevel().unwrap().send_configure();
+            // xdg_toplevel metadata and size constraints are not available from
+            // `new_toplevel`: clients send them between role creation and this
+            // initial buffer-less commit. Evaluate the TS layout here so the
+            // very first configure already carries the final managed size.
+            let snapshot = state.snapshot_window(&window);
+            let initial_managed_client_rect =
+                match state.initial_managed_window_client_rect(&snapshot) {
+                    Ok(rect) => rect,
+                    Err(error) => {
+                        warn!(
+                            window_id = snapshot.id,
+                            title = snapshot.title,
+                            app_id = snapshot.app_id,
+                            error = ?error,
+                            "failed to compute initial managed window rect"
+                        );
+                        None
+                    }
+                };
+
+            let toplevel = window.toplevel().unwrap();
+            if let Some(client_rect) = initial_managed_client_rect {
+                toplevel.with_pending_state(|pending| {
+                    pending.size = Some(Size::from((client_rect.width, client_rect.height)));
+                });
+                let geometry = window.geometry();
+                state.space.relocate_element(
+                    &window,
+                    (
+                        client_rect.x - geometry.loc.x,
+                        client_rect.y - geometry.loc.y,
+                    ),
+                );
+            }
+            toplevel.send_configure();
         }
     }
 

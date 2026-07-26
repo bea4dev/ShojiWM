@@ -375,8 +375,6 @@ impl ShojiWM {
                 });
                 if toplevel.is_initial_configure_sent() {
                     toplevel.send_pending_configure();
-                } else {
-                    toplevel.send_configure();
                 }
             }
             WindowDecorationProtocolSnapshot::KdeServerDecoration => {
