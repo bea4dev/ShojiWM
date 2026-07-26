@@ -2140,6 +2140,7 @@ fn render_surface(
         let window_source_damage_snapshot = state.window_source_damage.clone();
         let ShojiWM {
             space,
+            tty_session_active,
             tty_backends,
             start_time,
             cursor_status,
@@ -5920,6 +5921,19 @@ fn render_surface(
                             ?err,
                             "tty queue_frame lost drm access; waiting for session resume"
                         );
+                        // A permission-denied commit means DRM master is already gone,
+                        // but logind's `PauseSession` has not been dispatched yet —
+                        // measured ~20ms wide on resume from suspend. Until the flag
+                        // flips, `run_tty_udev` still treats `UdevEvent::Changed` as a
+                        // live hotplug, so a connector event landing inside that window
+                        // half-applies exactly as its comment warns: the scanner records
+                        // the new topology while every CRTC commit fails with EACCES, and
+                        // the post-resume replay then skips the output because it is
+                        // already recorded as connected. Nothing re-arms it and the panel
+                        // stays dark for the rest of the session. Drop the flag where the
+                        // loss is first observed so the existing deferral covers the gap;
+                        // `ActivateSession` restores it.
+                        *tty_session_active = false;
                         reset_surface_after_tty_pause(surface);
                         return Ok(RenderSurfaceOutcome::Skipped);
                     }
