@@ -1,15 +1,14 @@
 {
   lib,
-  stdenv,
+  stdenvNoCC,
+  callPackage,
   rustPlatform,
-  buildNpmPackage,
   makeWrapper,
   clang,
   llvmPackages,
   libclang ? llvmPackages.libclang,
   pkg-config,
   bash,
-  nodejs_22,
   wayland,
   wayland-protocols,
   libxkbcommon,
@@ -25,6 +24,7 @@
   dbus,
   xwayland ? null,
   xwaylandSatellite ? null,
+  rustyV8Archive ? callPackage ./rusty-v8.nix { },
 }:
 
 let
@@ -48,23 +48,19 @@ let
       );
   };
 
-  runtime = buildNpmPackage {
+  runtime = stdenvNoCC.mkDerivation {
     pname = "shojiwm-typescript-runtime";
     inherit version src;
 
-    npmDepsHash = "sha256-FFyvtOiLBlufFsHF0wENj0xRkzEyTafaBzKJZWFXmqg=";
-
-    dontNpmBuild = true;
+    dontConfigure = true;
+    dontBuild = true;
 
     installPhase = ''
       runHook preInstall
 
       mkdir -p "$out/lib/shojiwm/packages" "$out/lib/shojiwm/tools"
-      cp package.json package-lock.json tsconfig.json "$out/lib/shojiwm/"
       cp -R packages/shoji_wm "$out/lib/shojiwm/packages/"
-      cp -R packages/config "$out/lib/shojiwm/packages/"
-      cp tools/decoration-runtime.ts tools/evaluate-decoration.ts "$out/lib/shojiwm/tools/"
-      cp -R node_modules "$out/lib/shojiwm/node_modules"
+      cp tools/decoration-runtime.ts "$out/lib/shojiwm/tools/"
 
       runHook postInstall
     '';
@@ -72,7 +68,6 @@ let
 
   runtimeBinPath =
     [
-      nodejs_22
       dbus
     ]
     ++ lib.optional (xwayland != null) xwayland
@@ -114,6 +109,7 @@ rustPlatform.buildRustPackage {
     outputHashes = {
       "smithay-0.7.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
       "smithay-drm-extras-0.1.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
+      "rustyscript-0.12.3" = "sha256-04yZws8aY6NpyQc0F6fg7CAwYYXer7r+eFABwafP+kU=";
     };
   };
 
@@ -124,6 +120,7 @@ rustPlatform.buildRustPackage {
   ];
 
   LIBCLANG_PATH = "${libclang.lib or libclang}/lib";
+  RUSTY_V8_ARCHIVE = rustyV8Archive;
 
   buildInputs = [
     wayland
@@ -167,7 +164,6 @@ rustPlatform.buildRustPackage {
 
     shoji_wrapper_args=(
       --set-default SHOJI_RUNTIME_DIR "$out/lib/shojiwm"
-      --set-default SHOJI_TSX "$out/lib/shojiwm/node_modules/.bin/tsx"
       --prefix PATH : "${lib.makeBinPath runtimeBinPath}"
       --prefix LD_LIBRARY_PATH : "${runtimeLibraryPath}"
       --suffix GBM_BACKENDS_PATH : "${gbmBackendsPath}"
@@ -251,7 +247,7 @@ mkdir -p "\$user_config_dir/node_modules"
 if [ -e "\$user_config_dir/node_modules/shoji_wm" ] || [ -L "\$user_config_dir/node_modules/shoji_wm" ]; then
   rm -rf "\$user_config_dir/node_modules/shoji_wm"
 fi
-ln -s "$out/lib/shojiwm/node_modules/shoji_wm" "\$user_config_dir/node_modules/shoji_wm"
+ln -s "$out/lib/shojiwm/packages/shoji_wm" "\$user_config_dir/node_modules/shoji_wm"
 
 cat > "\$user_config_dir/package.json" <<'PACKAGE_JSON'
 {

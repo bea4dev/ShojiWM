@@ -57,6 +57,7 @@
           libgbm = pkgs.libgbm or pkgs.mesa;
           xwayland = pkgs.xwayland or (pkgs.xorg.xwayland or null);
           xwaylandSatellite = pkgs.xwayland-satellite or null;
+          rustyV8Archive = pkgs.callPackage ./nix/rusty-v8.nix { };
           runtimeLibraryPath = lib.makeLibraryPath (
             with pkgs;
             [
@@ -121,11 +122,12 @@
             LIBGL_DRIVERS_PATH = driDriversPath;
             __EGL_VENDOR_LIBRARY_DIRS = eglVendorLibraryDirs;
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib or pkgs.llvmPackages.libclang}/lib";
+            RUSTY_V8_ARCHIVE = rustyV8Archive;
 
             shellHook = ''
               echo "ShojiWM development shell"
-              echo "Run: npm ci"
-              echo "Then: cargo run --release -p shoji_wm -- --dev"
+              echo "Run: cargo run --release -p shoji_wm -- --dev"
+              echo "Node/npm is only needed for TypeScript checks and documentation tools."
             '';
           };
         }

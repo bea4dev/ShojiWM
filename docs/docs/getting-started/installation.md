@@ -110,9 +110,14 @@ Run `./dist/install.sh --help` to see this list.
 ShojiWM also provides an experimental Nix flake. The flake is intended to keep
 the same split as the source installer:
 
-- the compositor, portal backend, and TypeScript runtime live in the Nix store
+- the compositor, portal backend, embedded Deno/V8 engine, and TypeScript
+  runtime sources live in the Nix store
 - your editable TypeScript config lives in `~/.config/shojiwm`
 - development still uses `--dev` and the source tree directly
+
+Node.js is not part of the installed compositor runtime. Nix downloads the
+versioned `rusty_v8` archive as a fixed-output dependency while building
+ShojiWM, then links it into the compositor binary.
 
 :::warning[Experimental]
 The NixOS support is new. Expect rough edges and check the latest repository
@@ -171,13 +176,14 @@ exist yet. Existing user config files such as `src/index.tsx` and
 `src/window-manager.ts` are kept. The generated support files are refreshed on
 every rebuild:
 
-- `node_modules/shoji_wm`, linked to the current Nix store package
+- `node_modules/shoji_wm`, linked to the current Nix store TypeScript package
 - `package.json`
 - `tsconfig.json`
 
 These files keep editor diagnostics and standalone TypeScript type checking in
-sync with the installed ShojiWM version. The compositor itself resolves and
-transpiles the config through its embedded RustyScript runtime.
+sync with the installed ShojiWM version. They are not Node runtime
+dependencies: the compositor resolves and transpiles the config through its
+embedded RustyScript/Deno runtime.
 
 If you do not want the NixOS module to manage the config directory, omit
 `initConfig` and initialize the editable TypeScript config manually:
@@ -211,7 +217,7 @@ checking or documentation development tools.
 ```
 
 This means you can keep the current fast edit-and-run workflow while using Nix
-only to provide the native build dependencies.
+to provide the native build dependencies and the pinned `rusty_v8` archive.
 
 ### xwayland-satellite fork
 
