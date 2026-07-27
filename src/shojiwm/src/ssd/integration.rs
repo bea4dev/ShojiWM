@@ -3349,20 +3349,37 @@ impl ShojiWM {
                                             title = snapshot.title,
                                             app_id = snapshot.app_id,
                                             ?error,
-                                            "cached decoration runtime evaluation failed during transform update, falling back to full evaluation"
+                                            "cached decoration runtime evaluation failed during transform update, re-seeding the runtime cache"
                                         );
-                                        match self
-                                            .decoration_evaluator
-                                            .evaluate_window(&snapshot, now_ms)
-                                        {
-                                            Ok(evaluation) => evaluation.into(),
+                                        // Retry through the *cached* entry point with the
+                                        // snapshot attached rather than `evaluate_window`.
+                                        // Both run a full composition evaluation, but only
+                                        // this one repopulates the runtime's
+                                        // `cacheByWindowId`: the `evaluate` handler merely
+                                        // reads that map, so a plain full evaluation leaves
+                                        // the cache missing and every later frame lands
+                                        // here again. That is what turns a single spurious
+                                        // `windowClosed` for a still-live window into a
+                                        // permanent per-frame re-evaluation — pointer
+                                        // motion stutters and the decoration stays stale
+                                        // until the window really closes. Passing the
+                                        // snapshot takes the runtime's recreate branch,
+                                        // which rebuilds the entry and re-emits focus and
+                                        // first-commit, so the next frame is cached again.
+                                        match self.decoration_evaluator.evaluate_cached_window(
+                                            &snapshot.id,
+                                            Some(&snapshot),
+                                            now_ms,
+                                            true,
+                                        ) {
+                                            Ok(evaluation) => evaluation,
                                             Err(error) => {
                                                 warn!(
                                                     window_id = snapshot.id,
                                                     title = snapshot.title,
                                                     app_id = snapshot.app_id,
                                                     ?error,
-                                                    "decoration runtime evaluation failed during transform update, falling back to static decoration"
+                                                    "decoration runtime cache re-seed failed during transform update, falling back to static decoration"
                                                 );
                                                 StaticDecorationEvaluator
                                                     .evaluate_window(&snapshot, now_ms)?
