@@ -302,8 +302,8 @@ export interface WindowSize {
 }
 
 export interface WindowSizeConstraints {
-  min?: WindowSize;
-  max?: WindowSize;
+  min?: WindowSize | null;
+  max?: WindowSize | null;
 }
 
 export interface LayerPosition {

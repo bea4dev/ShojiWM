@@ -91,6 +91,7 @@ COMPOSITOR.onDisable((event) => {
     const snapshot = HYBRID_WINDOW_MANAGER.snapshot();
     event.persist(HOT_RELOAD_WINDOW_MANAGER_STATE, snapshot);
   }
+  HYBRID_WINDOW_MANAGER.dispose();
 });
 
 COMPOSITOR.onEnable((event) => {
