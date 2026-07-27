@@ -6,6 +6,10 @@ built with [Docusaurus](https://docusaurus.io/).
 This is a standalone npm project with its own dependencies — it is **not** part
 of the npm/Cargo workspace at the repository root.
 
+The Node.js requirement on this page applies only to building and serving the
+Docusaurus documentation. ShojiWM itself runs TypeScript through the embedded
+RustyScript/Deno runtime and does not require Node.js at runtime.
+
 ## Development
 
 ```bash
