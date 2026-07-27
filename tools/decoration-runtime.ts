@@ -36,6 +36,12 @@ interface EmbeddedRuntimeBridge {
     z: number,
     w: number,
   ): void;
+  writeEffectShaderUniformArraySlotPatch(
+    requestId: number,
+    slotId: number,
+    elementWidth: number,
+    values: Float32Array,
+  ): void;
   beginCompositionPatches(requestId: number, windowId: string): void;
   writeCompositionShaderUniformPatch(
     requestId: number,
@@ -47,6 +53,14 @@ interface EmbeddedRuntimeBridge {
     y: number,
     z: number,
     w: number,
+  ): void;
+  writeCompositionShaderUniformArrayPatch(
+    requestId: number,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+    elementWidth: number,
+    values: Float32Array,
   ): void;
   registerCompositionShaderUniformSlot(
     slotId: number,
@@ -68,6 +82,12 @@ interface EmbeddedRuntimeBridge {
     y: number,
     z: number,
     w: number,
+  ): void;
+  writeCompositionShaderUniformArraySlotPatch(
+    requestId: number,
+    slotId: number,
+    elementWidth: number,
+    values: Float32Array,
   ): void;
   beginSchedulerResponse(
     requestId: number,
@@ -2456,8 +2476,29 @@ function writeCachedCompositionUpdate(
     }
     for (let index = 0; index < uniformPatches.length; index++) {
       const patch = uniformPatches[index];
-      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
       const slotId = registeredSlotIds[index];
+      if (patch.arrayElementWidth !== undefined) {
+        const values = new Float32Array(patch.values);
+        if (slotId !== undefined) {
+          bridge.writeCompositionShaderUniformArraySlotPatch(
+            requestId,
+            slotId,
+            patch.arrayElementWidth,
+            values,
+          );
+        } else {
+          bridge.writeCompositionShaderUniformArrayPatch(
+            requestId,
+            patch.nodeId,
+            patch.stageIndex,
+            patch.name,
+            patch.arrayElementWidth,
+            values,
+          );
+        }
+        continue;
+      }
+      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
       if (slotId !== undefined) {
         bridge.writeCompositionShaderUniformSlotPatch(
           requestId,
@@ -2516,6 +2557,17 @@ function writeCachedCompositionUpdate(
   if (uniformPatches && uniformPatches.length > 0) {
     bridge.beginCompositionPatches(requestId, windowId);
     for (const patch of uniformPatches) {
+      if (patch.arrayElementWidth !== undefined) {
+        bridge.writeCompositionShaderUniformArrayPatch(
+          requestId,
+          patch.nodeId,
+          patch.stageIndex,
+          patch.name,
+          patch.arrayElementWidth,
+          new Float32Array(patch.values),
+        );
+        continue;
+      }
       const [x = 0, y = 0, z = 0, w = 0] = patch.values;
       bridge.writeCompositionShaderUniformPatch(
         requestId,
@@ -2558,6 +2610,7 @@ interface NativeShaderUniformPatch {
   stageIndex: number;
   name: string;
   values: number[];
+  arrayElementWidth?: number;
 }
 
 function syncCompositionShaderUniformSlots(
@@ -2699,22 +2752,61 @@ function collectNodeShaderUniformPatches(
       if (deepEqual(previousUniforms[name], nextUniforms[name])) {
         continue;
       }
-      const values = numericUniformValues(nextUniforms[name]);
-      if (values === null) {
+      const previousSnapshot = numericUniformSnapshot(previousUniforms[name]);
+      const snapshot = numericUniformSnapshot(nextUniforms[name]);
+      if (!sameShaderUniformShape(previousSnapshot, snapshot) || snapshot === null) {
         return null;
       }
       patches.push({
         nodeId: previous.nodeId,
         stageIndex,
         name,
-        values,
+        values: snapshot.values,
+        arrayElementWidth: snapshot.arrayElementWidth,
       });
     }
   }
   return patches;
 }
 
-function numericUniformValues(value: unknown): number[] | null {
+interface NativeShaderUniformSnapshot {
+  values: number[];
+  arrayElementWidth?: number;
+}
+
+function numericUniformSnapshot(
+  value: unknown,
+): NativeShaderUniformSnapshot | null {
+  if (isRecord(value) && value.kind === "uniform-array") {
+    const width =
+      value.element === "float"
+        ? 1
+        : value.element === "vec2"
+          ? 2
+          : value.element === "vec3"
+            ? 3
+            : value.element === "vec4"
+              ? 4
+              : 0;
+    if (width === 0 || !Array.isArray(value.values) || value.values.length === 0) {
+      return null;
+    }
+    const flattened: number[] = [];
+    for (const element of value.values) {
+      const entries = width === 1 ? [element] : element;
+      if (
+        !Array.isArray(entries) ||
+        entries.length !== width ||
+        entries.some(
+          (entry) => typeof entry !== "number" || !Number.isFinite(entry),
+        )
+      ) {
+        return null;
+      }
+      flattened.push(...(entries as number[]));
+    }
+    return { values: flattened, arrayElementWidth: width };
+  }
   const values = typeof value === "number" ? [value] : value;
   if (
     !Array.isArray(values) ||
@@ -2724,7 +2816,7 @@ function numericUniformValues(value: unknown): number[] | null {
   ) {
     return null;
   }
-  return values as number[];
+  return { values: values as number[] };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -4719,6 +4811,7 @@ interface NativeEffectUniformBinding {
   shaderPath: NativeEffectShaderPathSegment[];
   name: string;
   values: number[];
+  arrayElementWidth?: number;
 }
 
 function writeNativeWindowEffectUpdate(
@@ -4754,7 +4847,11 @@ function writeNativeEffectTargets(
   targets: NativeEffectTarget[],
   writeFullUpdate: () => void,
 ): void {
-  const changes: Array<{ slotId: number; values: number[] }> = [];
+  const changes: Array<{
+    slotId: number;
+    values: number[];
+    arrayElementWidth?: number;
+  }> = [];
   let canPatch = targets.length > 0;
   for (const target of targets) {
     const targetKey = nativeEffectTargetKey(
@@ -4799,7 +4896,11 @@ function writeNativeEffectTargets(
         canPatch = false;
         break;
       }
-      changes.push({ slotId, values: nextBinding.values });
+      changes.push({
+        slotId,
+        values: nextBinding.values,
+        arrayElementWidth: nextBinding.arrayElementWidth,
+      });
     }
     if (!canPatch) {
       break;
@@ -4812,6 +4913,15 @@ function writeNativeEffectTargets(
       output.addEffectShaderUniformPatchTarget(requestId, target.targetId);
     }
     for (const change of changes) {
+      if (change.arrayElementWidth !== undefined) {
+        output.writeEffectShaderUniformArraySlotPatch(
+          requestId,
+          change.slotId,
+          change.arrayElementWidth,
+          new Float32Array(change.values),
+        );
+        continue;
+      }
       const [x = 0, y = 0, z = 0, w = 0] = change.values;
       output.writeEffectShaderUniformSlotPatch(
         requestId,
@@ -4986,8 +5096,8 @@ function collectShaderStageUniformBindings(
   const uniforms = shader.uniforms;
   if (isRecord(uniforms)) {
     for (const name of Object.keys(uniforms).sort()) {
-      const values = shaderUniformValues(uniforms[name]);
-      if (values === null) {
+      const snapshot = numericUniformSnapshot(uniforms[name]);
+      if (snapshot === null) {
         continue;
       }
       bindings.push({
@@ -4995,7 +5105,8 @@ function collectShaderStageUniformBindings(
         effectSlot,
         shaderPath: path,
         name,
-        values,
+        values: snapshot.values,
+        arrayElementWidth: snapshot.arrayElementWidth,
       });
     }
   }
@@ -5089,23 +5200,24 @@ function sameShaderUniformStructure(
     previousNames.every(
       (name, index) =>
         name === nextNames[index] &&
-        shaderUniformValues(previous[name])?.length ===
-          shaderUniformValues(next[name])?.length,
+        sameShaderUniformShape(
+          numericUniformSnapshot(previous[name]),
+          numericUniformSnapshot(next[name]),
+        ),
     )
   );
 }
 
-function shaderUniformValues(value: unknown): number[] | null {
-  const values =
-    typeof value === "number"
-      ? [value]
-      : Array.isArray(value) &&
-          value.length >= 2 &&
-          value.length <= 4 &&
-          value.every((entry) => typeof entry === "number")
-        ? (value as number[])
-        : null;
-  return values?.every(Number.isFinite) ? values : null;
+function sameShaderUniformShape(
+  previous: NativeShaderUniformSnapshot | null,
+  next: NativeShaderUniformSnapshot | null,
+): boolean {
+  return (
+    previous !== null &&
+    next !== null &&
+    previous.values.length === next.values.length &&
+    previous.arrayElementWidth === next.arrayElementWidth
+  );
 }
 
 function sameUniformValues(previous: number[], next: number[]): boolean {

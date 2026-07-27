@@ -372,6 +372,36 @@ The TypeScript value type maps to the GLSL uniform type by length:
 | `[number, number, number]` | `vec3` |
 | `[number, number, number, number]` | `vec4` |
 
+GLSL arrays use the explicit `uniformArray.float/vec2/vec3/vec4` helpers. The
+array length must match the GLSL declaration and is treated as shader-binding
+structure. Changing values uses the native uniform fast path; changing the
+length rebuilds the binding.
+
+```glsl
+uniform float weights[3];
+uniform vec2 control_points[2];
+```
+
+```ts
+import {signal, uniformArray} from 'shoji_wm';
+
+const phase = signal(0);
+
+shaderStage(loadShader('./shaders/weighted.frag'), {
+  uniforms: {
+    weights: uniformArray.float([1, phase, 0.25]),
+    control_points: uniformArray.vec2([
+      [0, 0],
+      [phase, 1],
+    ]),
+  },
+});
+```
+
+The array itself, each scalar element, and every vector component may be a
+signal. Arrays must be non-empty. Keep their length fixed during animation;
+replace the effect or composition structure when a different length is needed.
+
 ### Animating a shader
 
 Every uniform value (each component) may be a **signal**, so you animate a shader

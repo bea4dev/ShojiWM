@@ -226,6 +226,9 @@ fn set_shader_uniform(
         .uniforms
         .get_mut(name)
         .expect("shader uniform was validated");
+    if !current.shape_matches(value) {
+        unreachable!("shader uniform shape was validated");
+    }
     if current == value {
         return false;
     }

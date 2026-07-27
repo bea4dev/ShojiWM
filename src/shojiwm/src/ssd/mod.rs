@@ -702,6 +702,39 @@ pub enum ShaderUniformValue {
     Vec2([f32; 2]),
     Vec3([f32; 3]),
     Vec4([f32; 4]),
+    FloatArray(Vec<f32>),
+    Vec2Array(Vec<[f32; 2]>),
+    Vec3Array(Vec<[f32; 3]>),
+    Vec4Array(Vec<[f32; 4]>),
+}
+
+impl ShaderUniformValue {
+    pub(crate) fn shape_matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Float(_), Self::Float(_))
+            | (Self::Vec2(_), Self::Vec2(_))
+            | (Self::Vec3(_), Self::Vec3(_))
+            | (Self::Vec4(_), Self::Vec4(_)) => true,
+            (Self::FloatArray(left), Self::FloatArray(right)) => left.len() == right.len(),
+            (Self::Vec2Array(left), Self::Vec2Array(right)) => left.len() == right.len(),
+            (Self::Vec3Array(left), Self::Vec3Array(right)) => left.len() == right.len(),
+            (Self::Vec4Array(left), Self::Vec4Array(right)) => left.len() == right.len(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn shape_key(&self) -> String {
+        match self {
+            Self::Float(_) => "f1".to_owned(),
+            Self::Vec2(_) => "f2".to_owned(),
+            Self::Vec3(_) => "f3".to_owned(),
+            Self::Vec4(_) => "f4".to_owned(),
+            Self::FloatArray(values) => format!("a1x{}", values.len()),
+            Self::Vec2Array(values) => format!("a2x{}", values.len()),
+            Self::Vec3Array(values) => format!("a3x{}", values.len()),
+            Self::Vec4Array(values) => format!("a4x{}", values.len()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

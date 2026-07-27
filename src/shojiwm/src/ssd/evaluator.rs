@@ -5260,6 +5260,7 @@ import {
   loadShader,
   shaderStage,
   ShaderEffect,
+  uniformArray,
 } from "shoji_wm";
 
 const phase = animationVariable("native-uniform-patch-test");
@@ -5276,7 +5277,10 @@ COMPOSITOR.window.composition = (window) => {
     input: backdropSource(),
     pipeline: [
       shaderStage(loadShader("./animated.frag"), {
-        uniforms: { phase_01: value },
+        uniforms: {
+          phase_01: value,
+          control_points: uniformArray.vec2([[value, 0], [1, value]]),
+        },
       }),
     ],
   });
@@ -5309,13 +5313,24 @@ COMPOSITOR.window.composition = (window) => {
             .expect("cached native composition should evaluate");
 
         assert!(!cached.node_patches.is_empty());
-        assert!(cached.node_patches.iter().all(|patch| matches!(
+        assert!(cached.node_patches.iter().any(|patch| matches!(
             patch,
             NativeCompositionPatch::ShaderUniform {
                 name,
                 stage_index: 0,
                 ..
             } if name == "phase_01"
+        )));
+        assert!(cached.node_patches.iter().any(|patch| matches!(
+            patch,
+            NativeCompositionPatch::ShaderUniform {
+                name,
+                value: super::super::ShaderUniformValue::Vec2Array(values),
+                ..
+            } if name == "control_points"
+                && values.len() == 2
+                && values[0][0] > 0.0
+                && values[1][1] > 0.0
         )));
 
         drop(evaluator);
@@ -5349,6 +5364,7 @@ import {
   COMPOSITOR,
   loadShader,
   shaderStage,
+  uniformArray,
   windowSource,
 } from "shoji_wm";
 
@@ -5368,7 +5384,11 @@ COMPOSITOR.effect.window = (window) => ({
     input: windowSource(),
     pipeline: [
       shaderStage(loadShader("./animated.frag"), {
-        uniforms: { phase_01: window.animation.variable(phase) },
+        uniforms: {
+          phase_01: uniformArray.float(
+            window.animation.variable(phase)((value) => [value, 0.5]),
+          ),
+        },
       }),
     ],
   }),
@@ -5426,9 +5446,11 @@ COMPOSITOR.effect.window = (window) => ({
                 EffectStage::Shader(shader) => shader.uniforms.get("phase_01").cloned(),
                 _ => None,
             });
-        assert!(
-            matches!(phase, Some(super::super::ShaderUniformValue::Float(value)) if value > 0.0)
-        );
+        assert!(matches!(
+            phase,
+            Some(super::super::ShaderUniformValue::FloatArray(values))
+                if values.len() == 2 && values[0] > 0.0 && values[1] == 0.5
+        ));
 
         drop(evaluator);
         let _ = std::fs::remove_dir_all(&test_dir);

@@ -57,7 +57,13 @@ export interface ShaderUniformBinding {
   nodeId: string;
   stageIndex: number;
   name: string;
-  read(): number[] | null;
+  read(): NumericShaderUniformSnapshot | null;
+}
+
+export interface NumericShaderUniformSnapshot {
+  values: number[];
+  /** Undefined for scalar/vector uniforms; 1-4 for uniform arrays. */
+  arrayElementWidth?: number;
 }
 
 const SHADER_INPUT_STAGE_INDEX = 0xffff_ffff;
@@ -308,8 +314,53 @@ function shaderUniformBindingKey(
   return `${nodeId}\u0000${stageIndex}\u0000${name}`;
 }
 
-function readNumericShaderUniform(value: unknown): number[] | null {
-  const entries = Array.isArray(value) ? value : [value];
+function readNumericShaderUniform(
+  value: unknown,
+): NumericShaderUniformSnapshot | null {
+  const resolvedValue = isSignal(value) ? value.peek() : value;
+  if (
+    typeof resolvedValue === "object" &&
+    resolvedValue !== null &&
+    !Array.isArray(resolvedValue)
+  ) {
+    const handle = resolvedValue as Record<string, unknown>;
+    if (handle.kind === "uniform-array") {
+      const width =
+        handle.element === "float"
+          ? 1
+          : handle.element === "vec2"
+            ? 2
+            : handle.element === "vec3"
+              ? 3
+              : handle.element === "vec4"
+                ? 4
+                : 0;
+      const resolvedArray = isSignal(handle.values)
+        ? handle.values.peek()
+        : handle.values;
+      if (width === 0 || !Array.isArray(resolvedArray) || resolvedArray.length === 0) {
+        return null;
+      }
+      const values: number[] = [];
+      for (const element of resolvedArray) {
+        const entries: unknown[] =
+          width === 1 ? [element] : Array.isArray(element) ? element : [];
+        if (entries.length !== width) {
+          return null;
+        }
+        for (const entry of entries) {
+          const resolved = isSignal(entry) ? entry.peek() : entry;
+          if (typeof resolved !== "number" || !Number.isFinite(resolved)) {
+            return null;
+          }
+          values.push(resolved);
+        }
+      }
+      return { values, arrayElementWidth: width };
+    }
+  }
+
+  const entries = Array.isArray(resolvedValue) ? resolvedValue : [resolvedValue];
   if (entries.length < 1 || entries.length > 4) {
     return null;
   }
@@ -321,7 +372,7 @@ function readNumericShaderUniform(value: unknown): number[] | null {
     }
     values.push(resolved);
   }
-  return values;
+  return { values };
 }
 
 function serializeInteractionChangeHandler(

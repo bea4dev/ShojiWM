@@ -16,6 +16,9 @@ import type {
   UnitStageHandle,
   ImageSourceHandle,
   NamedTextureHandle,
+  ShaderUniformArrayElement,
+  ShaderUniformArrayHandle,
+  ShaderUniformArrayValues,
   ShaderUniformMap,
   EffectAlphaMode,
   EffectInvalidationPolicyHandle,
@@ -106,6 +109,57 @@ export function loadShader(path: string): ShaderModuleHandle {
     path: resolveAssetPath(path),
   };
 }
+
+function createUniformArray<Element extends ShaderUniformArrayElement>(
+  element: Element,
+  values: ShaderUniformArrayHandle<Element>["values"],
+): ShaderUniformArrayHandle<Element> {
+  return { kind: "uniform-array", element, values };
+}
+
+/**
+ * Create a GLSL scalar/vector uniform array. Its length is structural, while
+ * the array, each element, and each vector component may be signals.
+ * GLSL のスカラー・ベクトル uniform 配列を作成します。配列長は構造として扱われ、
+ * 配列全体・各要素・各ベクトル成分には Signal を指定できます。
+ *
+ * @example
+ * ```ts
+ * const phase = signal(0);
+ * shaderStage(loadShader("./waves.frag"), {
+ *   uniforms: {
+ *     weights: uniformArray.float([1, phase, 0.25]),
+ *     points: uniformArray.vec2([[0, 0], [phase, 1]]),
+ *   },
+ * });
+ * ```
+ */
+export const uniformArray = {
+  float(
+    values: ShaderUniformArrayHandle<"float">["values"],
+  ): ShaderUniformArrayHandle<"float"> {
+    return createUniformArray("float", values);
+  },
+  vec2(
+    values: ShaderUniformArrayHandle<"vec2">["values"],
+  ): ShaderUniformArrayHandle<"vec2"> {
+    return createUniformArray("vec2", values);
+  },
+  vec3(
+    values: ShaderUniformArrayHandle<"vec3">["values"],
+  ): ShaderUniformArrayHandle<"vec3"> {
+    return createUniformArray("vec3", values);
+  },
+  vec4(
+    values: ShaderUniformArrayHandle<"vec4">["values"],
+  ): ShaderUniformArrayHandle<"vec4"> {
+    return createUniformArray("vec4", values);
+  },
+} satisfies {
+  [Element in ShaderUniformArrayElement]: (
+    values: MaybeSignal<ShaderUniformArrayValues<Element>>,
+  ) => ShaderUniformArrayHandle<Element>;
+};
 
 /**
  * Capture the composited scene **beneath** the current surface as an effect

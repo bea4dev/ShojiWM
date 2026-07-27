@@ -1603,6 +1603,99 @@ impl StableBackdropTextureElement {
     }
 }
 
+fn shader_uniform_type(
+    value: &ShaderUniformValue,
+) -> smithay::backend::renderer::gles::UniformType {
+    match value {
+        ShaderUniformValue::Float(_) | ShaderUniformValue::FloatArray(_) => {
+            smithay::backend::renderer::gles::UniformType::_1f
+        }
+        ShaderUniformValue::Vec2(_) | ShaderUniformValue::Vec2Array(_) => {
+            smithay::backend::renderer::gles::UniformType::_2f
+        }
+        ShaderUniformValue::Vec3(_) | ShaderUniformValue::Vec3Array(_) => {
+            smithay::backend::renderer::gles::UniformType::_3f
+        }
+        ShaderUniformValue::Vec4(_) | ShaderUniformValue::Vec4Array(_) => {
+            smithay::backend::renderer::gles::UniformType::_4f
+        }
+    }
+}
+
+fn append_shader_uniform_names(
+    uniforms: &mut Vec<UniformName>,
+    name: &str,
+    value: &ShaderUniformValue,
+) {
+    let ty = shader_uniform_type(value);
+    let array_len = match value {
+        ShaderUniformValue::FloatArray(values) => Some(values.len()),
+        ShaderUniformValue::Vec2Array(values) => Some(values.len()),
+        ShaderUniformValue::Vec3Array(values) => Some(values.len()),
+        ShaderUniformValue::Vec4Array(values) => Some(values.len()),
+        _ => None,
+    };
+    if let Some(array_len) = array_len {
+        uniforms
+            .extend((0..array_len).map(|index| UniformName::new(format!("{name}[{index}]"), ty)));
+    } else {
+        uniforms.push(UniformName::new(name.to_owned(), ty));
+    }
+}
+
+fn append_shader_uniform_values(
+    uniforms: &mut Vec<Uniform<'static>>,
+    name: &str,
+    value: &ShaderUniformValue,
+) {
+    match value {
+        ShaderUniformValue::Float(value) => {
+            uniforms.push(Uniform::new(name.to_owned(), *value));
+        }
+        ShaderUniformValue::Vec2(value) => {
+            uniforms.push(Uniform::new(name.to_owned(), *value));
+        }
+        ShaderUniformValue::Vec3(value) => {
+            uniforms.push(Uniform::new(name.to_owned(), *value));
+        }
+        ShaderUniformValue::Vec4(value) => {
+            uniforms.push(Uniform::new(name.to_owned(), *value));
+        }
+        ShaderUniformValue::FloatArray(values) => {
+            uniforms.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| Uniform::new(format!("{name}[{index}]"), *value)),
+            );
+        }
+        ShaderUniformValue::Vec2Array(values) => {
+            uniforms.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| Uniform::new(format!("{name}[{index}]"), *value)),
+            );
+        }
+        ShaderUniformValue::Vec3Array(values) => {
+            uniforms.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| Uniform::new(format!("{name}[{index}]"), *value)),
+            );
+        }
+        ShaderUniformValue::Vec4Array(values) => {
+            uniforms.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| Uniform::new(format!("{name}[{index}]"), *value)),
+            );
+        }
+    }
+}
+
 fn compile_shader_program(
     renderer: &mut GlesRenderer,
     shader: &CompiledEffect,
@@ -1624,16 +1717,11 @@ fn compile_shader_program(
         .expect("pixel shader effects should always have a final shader stage");
     let mut cache_key = format!("pixel:{}", shader_module.shader.path);
     for (name, value) in &shader_module.uniforms {
-        let kind = match value {
-            ShaderUniformValue::Float(_) => "f1",
-            ShaderUniformValue::Vec2(_) => "f2",
-            ShaderUniformValue::Vec3(_) => "f3",
-            ShaderUniformValue::Vec4(_) => "f4",
-        };
+        let kind = value.shape_key();
         cache_key.push(':');
         cache_key.push_str(name);
         cache_key.push(':');
-        cache_key.push_str(kind);
+        cache_key.push_str(&kind);
     }
     if let Some(program) = renderer
         .egl_context()
@@ -1674,13 +1762,7 @@ fn compile_shader_program(
         ),
     ];
     for (name, value) in &shader_module.uniforms {
-        let ty = match value {
-            ShaderUniformValue::Float(_) => smithay::backend::renderer::gles::UniformType::_1f,
-            ShaderUniformValue::Vec2(_) => smithay::backend::renderer::gles::UniformType::_2f,
-            ShaderUniformValue::Vec3(_) => smithay::backend::renderer::gles::UniformType::_3f,
-            ShaderUniformValue::Vec4(_) => smithay::backend::renderer::gles::UniformType::_4f,
-        };
-        uniform_names.push(UniformName::new(name.clone(), ty));
+        append_shader_uniform_names(&mut uniform_names, name, value);
     }
     let program =
         renderer.compile_custom_pixel_shader(wrap_pixel_shader_source(&source), &uniform_names)?;
@@ -2093,16 +2175,11 @@ fn multi_texture_stage_program(
         cache_key.push_str(name);
     }
     for (name, value) in &stage.uniforms {
-        let kind = match value {
-            ShaderUniformValue::Float(_) => "f1",
-            ShaderUniformValue::Vec2(_) => "f2",
-            ShaderUniformValue::Vec3(_) => "f3",
-            ShaderUniformValue::Vec4(_) => "f4",
-        };
+        let kind = value.shape_key();
         cache_key.push_str(":uniform:");
         cache_key.push_str(name);
         cache_key.push(':');
-        cache_key.push_str(kind);
+        cache_key.push_str(&kind);
     }
     if let Some(program) = renderer
         .egl_context()
@@ -2145,8 +2222,17 @@ fn multi_texture_stage_program(
                 .collect(),
             value_uniforms: stage
                 .uniforms
-                .keys()
-                .map(|name| (name.clone(), location(name)))
+                .iter()
+                .map(|(name, value)| {
+                    let location_name = match value {
+                        ShaderUniformValue::FloatArray(_)
+                        | ShaderUniformValue::Vec2Array(_)
+                        | ShaderUniformValue::Vec3Array(_)
+                        | ShaderUniformValue::Vec4Array(_) => format!("{name}[0]"),
+                        _ => name.clone(),
+                    };
+                    (name.clone(), location(&location_name))
+                })
                 .collect(),
             attrib_vert: gl.GetAttribLocation(program, c"vert".as_ptr()),
             renderer_context_id,
@@ -2186,16 +2272,11 @@ fn compile_texture_program(
     let mut cache_key = format!("effect-context-v1:{namespace}:{path}:{with_clip}");
     if let Some(uniforms) = uniforms {
         for (name, value) in uniforms {
-            let kind = match value {
-                ShaderUniformValue::Float(_) => "f1",
-                ShaderUniformValue::Vec2(_) => "f2",
-                ShaderUniformValue::Vec3(_) => "f3",
-                ShaderUniformValue::Vec4(_) => "f4",
-            };
+            let kind = value.shape_key();
             cache_key.push(':');
             cache_key.push_str(name);
             cache_key.push(':');
-            cache_key.push_str(kind);
+            cache_key.push_str(&kind);
         }
     }
     if let Some(program) = renderer
@@ -2266,13 +2347,7 @@ fn compile_texture_program(
     };
     if let Some(uniforms) = uniforms {
         for (name, value) in uniforms {
-            let ty = match value {
-                ShaderUniformValue::Float(_) => smithay::backend::renderer::gles::UniformType::_1f,
-                ShaderUniformValue::Vec2(_) => smithay::backend::renderer::gles::UniformType::_2f,
-                ShaderUniformValue::Vec3(_) => smithay::backend::renderer::gles::UniformType::_3f,
-                ShaderUniformValue::Vec4(_) => smithay::backend::renderer::gles::UniformType::_4f,
-            };
-            uniform_names.push(UniformName::new(name.clone(), ty));
+            append_shader_uniform_names(&mut uniform_names, name, value);
         }
     }
     let program = renderer.compile_custom_texture_shader(wrapped, &uniform_names)?;
@@ -2596,15 +2671,9 @@ fn uniforms_for_spec(spec: &ShaderEffectSpec) -> Vec<Uniform<'static>> {
 }
 
 fn uniforms_for_shader_stage(stage: &ShaderStage) -> Vec<Uniform<'static>> {
-    let mut uniforms = Vec::with_capacity(stage.uniforms.len());
+    let mut uniforms = Vec::new();
     for (name, value) in &stage.uniforms {
-        let uniform = match value {
-            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
-        };
-        uniforms.push(uniform);
+        append_shader_uniform_values(&mut uniforms, name, value);
     }
     uniforms
 }
@@ -3641,13 +3710,7 @@ fn apply_texture_shader_stage(
         ),
     ];
     for (name, value) in &stage.uniforms {
-        let uniform = match value {
-            ShaderUniformValue::Float(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec2(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec3(value) => Uniform::new(name.clone(), *value),
-            ShaderUniformValue::Vec4(value) => Uniform::new(name.clone(), *value),
-        };
-        uniforms.push(uniform);
+        append_shader_uniform_values(&mut uniforms, name, value);
     }
     apply_texture_program(
         renderer,
@@ -3726,6 +3789,18 @@ fn apply_multi_texture_shader_stage(
                         }
                         ShaderUniformValue::Vec4(value) => {
                             gl.Uniform4f(*location, value[0], value[1], value[2], value[3])
+                        }
+                        ShaderUniformValue::FloatArray(values) => {
+                            gl.Uniform1fv(*location, values.len() as i32, values.as_ptr())
+                        }
+                        ShaderUniformValue::Vec2Array(values) => {
+                            gl.Uniform2fv(*location, values.len() as i32, values.as_ptr().cast())
+                        }
+                        ShaderUniformValue::Vec3Array(values) => {
+                            gl.Uniform3fv(*location, values.len() as i32, values.as_ptr().cast())
+                        }
+                        ShaderUniformValue::Vec4Array(values) => {
+                            gl.Uniform4fv(*location, values.len() as i32, values.as_ptr().cast())
                         }
                     }
                 }

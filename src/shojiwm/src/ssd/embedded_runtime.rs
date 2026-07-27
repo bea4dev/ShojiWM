@@ -1411,6 +1411,58 @@ impl ShojiRuntimeBridge {
     }
 
     #[fast]
+    fn write_effect_shader_uniform_array_slot_patch(
+        &self,
+        request_id: f64,
+        slot_id: u32,
+        element_width: u32,
+        #[buffer] values: &[f32],
+    ) -> Result<(), std::io::Error> {
+        timescope::scope!("runtime native effect uniform array slot patch");
+        let request_id = checked_request_id(request_id)?;
+        let value = native_shader_uniform_array_value(element_width, values)?;
+        let slot = self
+            .effect_uniform_slots
+            .lock()
+            .map_err(|_| std::io::Error::other("effect uniform slot store is poisoned"))?
+            .get(&slot_id)
+            .cloned()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "effect shader uniform slot is not registered",
+                )
+            })?;
+        let mut updates = self
+            .effect_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("effect update store is poisoned"))?;
+        let Some(NativeEffectUpdate::UniformPatches(batch)) = updates.get_mut(&request_id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "effect uniform patch batch was not started",
+            ));
+        };
+        if !native_effect_update_accepts_target(batch.kind, slot.target_kind) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "effect uniform slot target does not match the update kind",
+            ));
+        }
+        batch.patches.push(NativeEffectUniformPatch {
+            target_kind: slot.target_kind,
+            target_id: slot.target_id,
+            effect_slot: slot.effect_slot,
+            shader_path: slot.shader_path,
+            name: slot.name,
+            value,
+        });
+        self.effect_uniform_patch_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    #[fast]
     fn begin_composition_patches(
         &self,
         request_id: f64,
@@ -1532,6 +1584,38 @@ impl ShojiRuntimeBridge {
     }
 
     #[fast]
+    fn write_composition_shader_uniform_array_patch(
+        &self,
+        request_id: f64,
+        #[string] node_id: &str,
+        stage_index: u32,
+        #[string] name: &str,
+        element_width: u32,
+        #[buffer] values: &[f32],
+    ) -> Result<(), std::io::Error> {
+        let request_id = checked_request_id(request_id)?;
+        let value = native_shader_uniform_array_value(element_width, values)?;
+        let mut updates = self
+            .composition_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("composition update store is poisoned"))?;
+        let Some(NativeCompositionUpdate::Patches { patches, .. }) = updates.get_mut(&request_id)
+        else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "composition patch batch was not started",
+            ));
+        };
+        patches.push(NativeCompositionPatch::ShaderUniform {
+            node_id: node_id.to_owned(),
+            stage_index: stage_index as usize,
+            name: name.to_owned(),
+            value,
+        });
+        Ok(())
+    }
+
+    #[fast]
     fn register_composition_shader_uniform_slot(
         &self,
         slot_id: u32,
@@ -1603,6 +1687,56 @@ impl ShojiRuntimeBridge {
                 ));
             }
         };
+        let slot = self
+            .composition_uniform_slots
+            .lock()
+            .map_err(|_| std::io::Error::other("composition uniform slot store is poisoned"))?
+            .get(&slot_id)
+            .cloned()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "composition shader uniform slot is not registered",
+                )
+            })?;
+        let mut updates = self
+            .composition_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("composition update store is poisoned"))?;
+        let Some(NativeCompositionUpdate::Patches { window_id, patches }) =
+            updates.get_mut(&request_id)
+        else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "composition patch batch was not started",
+            ));
+        };
+        if *window_id != slot.window_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "composition shader uniform slot belongs to a different window",
+            ));
+        }
+        patches.push(NativeCompositionPatch::ShaderUniform {
+            node_id: slot.node_id,
+            stage_index: slot.stage_index,
+            name: slot.name,
+            value,
+        });
+        Ok(())
+    }
+
+    #[fast]
+    fn write_composition_shader_uniform_array_slot_patch(
+        &self,
+        request_id: f64,
+        slot_id: u32,
+        element_width: u32,
+        #[buffer] values: &[f32],
+    ) -> Result<(), std::io::Error> {
+        timescope::scope!("runtime native uniform array slot patch");
+        let request_id = checked_request_id(request_id)?;
+        let value = native_shader_uniform_array_value(element_width, values)?;
         let slot = self
             .composition_uniform_slots
             .lock()
@@ -1785,6 +1919,41 @@ fn native_shader_uniform_value(
             "shader uniform length must be between 1 and 4",
         )),
     }
+}
+
+fn native_shader_uniform_array_value(
+    element_width: u32,
+    values: &[f32],
+) -> Result<super::ShaderUniformValue, std::io::Error> {
+    let width = element_width as usize;
+    if !(1..=4).contains(&width) || values.is_empty() || !values.len().is_multiple_of(width) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "shader uniform array must be non-empty and divisible by its 1-4 component width",
+        ));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "shader uniform array values must be finite",
+        ));
+    }
+    Ok(match width {
+        1 => super::ShaderUniformValue::FloatArray(values.to_vec()),
+        2 => super::ShaderUniformValue::Vec2Array(
+            values.chunks_exact(2).map(|v| [v[0], v[1]]).collect(),
+        ),
+        3 => super::ShaderUniformValue::Vec3Array(
+            values.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect(),
+        ),
+        4 => super::ShaderUniformValue::Vec4Array(
+            values
+                .chunks_exact(4)
+                .map(|v| [v[0], v[1], v[2], v[3]])
+                .collect(),
+        ),
+        _ => unreachable!(),
+    })
 }
 
 fn set_pending_native_response(
@@ -2121,7 +2290,7 @@ fn apply_native_effect_uniform_patch(
         .uniforms
         .get_mut(&patch.name)
         .ok_or_else(|| format!("effect shader uniform is missing: {}", patch.name))?;
-    if std::mem::discriminant(current) != std::mem::discriminant(&patch.value) {
+    if !current.shape_matches(&patch.value) {
         return Err(format!(
             "effect shader uniform shape changed without a structural update: {}",
             patch.name

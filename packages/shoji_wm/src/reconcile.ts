@@ -62,6 +62,7 @@ export interface CompositionShaderUniformPatch {
   stageIndex: number;
   name: string;
   values: number[];
+  arrayElementWidth?: number;
 }
 
 export interface CompositionEvaluationCache {
@@ -162,6 +163,10 @@ export function createCompositionEvaluationCache(
   let runtimeHandlers = new Map<string, () => void>();
   const handlerIdsByKey = new Map<string, string>();
   const shaderUniformBindings = new Map<string, ShaderUniformBinding>();
+  const shaderUniformSnapshots = new Map<
+    string,
+    ReturnType<ShaderUniformBinding["read"]>
+  >();
 
   const serializationContext: CompositionSerializationContext = {
     registerClickHandler(key, handler) {
@@ -178,6 +183,7 @@ export function createCompositionEvaluationCache(
     },
     registerShaderUniformBinding(binding) {
       shaderUniformBindings.set(binding.key, binding);
+      shaderUniformSnapshots.set(binding.key, binding.read());
     },
   };
 
@@ -308,22 +314,40 @@ export function createCompositionEvaluationCache(
     },
     readShaderUniformPatches(bindingKeys) {
       const patches: CompositionShaderUniformPatch[] = [];
+      const nextSnapshots = new Map<
+        string,
+        NonNullable<ReturnType<ShaderUniformBinding["read"]>>
+      >();
       for (const bindingKey of bindingKeys) {
         const binding = shaderUniformBindings.get(bindingKey);
         if (!binding) {
           return null;
         }
-        const values = binding.read();
-        if (values === null) {
+        const snapshot = binding.read();
+        if (snapshot === null) {
           return null;
         }
+        const previous = shaderUniformSnapshots.get(bindingKey);
+        if (
+          previous === undefined ||
+          previous === null ||
+          previous.values.length !== snapshot.values.length ||
+          previous.arrayElementWidth !== snapshot.arrayElementWidth
+        ) {
+          return null;
+        }
+        nextSnapshots.set(bindingKey, snapshot);
         patches.push({
           bindingKey,
           nodeId: binding.nodeId,
           stageIndex: binding.stageIndex,
           name: binding.name,
-          values,
+          values: snapshot.values,
+          arrayElementWidth: snapshot.arrayElementWidth,
         });
+      }
+      for (const [bindingKey, snapshot] of nextSnapshots) {
+        shaderUniformSnapshots.set(bindingKey, snapshot);
       }
       return patches;
     },
