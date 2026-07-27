@@ -16,6 +16,13 @@ const TITLEBAR_HEIGHT = 30;
 
 export const defaultWindowComposition = (window: WaylandWindow) => {
   const isFocused = window.isFocused();
+  const decoration = window.decoration();
+  const useClientDecoration =
+    decoration.mode === "client" &&
+    !(
+      decoration.clientPreference === "server" &&
+      decoration.configuredMode === "server"
+    );
   const [closeHovered, setCloseHovered] = useState(false);
   const [closeActive, setCloseActive] = useState(false);
 
@@ -40,7 +47,7 @@ export const defaultWindowComposition = (window: WaylandWindow) => {
     background: titlebarBackground,
   };
 
-  if (window.decoration().mode === "client") {
+  if (useClientDecoration) {
     return <ClientWindow />;
   }
 

@@ -465,21 +465,12 @@ impl CompositorHandler for ShojiWM {
                 states
                     .data_map
                     .get::<CommitTimerStateUserData>()
-                    .is_some_and(
-                        |timer| timer
-                            .borrow()
-                            .timestamp
-                            .is_some()
-                    )
+                    .is_some_and(|timer| timer.borrow().timestamp.is_some())
             });
             if has_commit_timer_timestamp {
                 state.loop_handle.insert_idle(|state| {
-                    let loop_handle = state.loop_handle
-                        .clone();
-                    crate::backend::tty::arm_commit_timing_timers(
-                        state, 
-                        &loop_handle,
-                    );
+                    let loop_handle = state.loop_handle.clone();
+                    crate::backend::tty::arm_commit_timing_timers(state, &loop_handle);
                 });
             }
         });

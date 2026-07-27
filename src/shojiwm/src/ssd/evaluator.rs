@@ -1,17 +1,19 @@
 use std::{
-    ffi::OsString,
-    io::{BufRead, BufReader, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
+use super::embedded_runtime::{
+    EmbeddedRuntime, EmbeddedRuntimeResponse, NativeCachedResponse, NativeCompositionPatch,
+    NativeCompositionRequest, NativeCompositionUpdate, NativeEffectRequest, NativeEffectUpdate,
+    NativeInteractionRequest, NativeInteractionResponse, NativeSchedulerRequest,
+    NativeSchedulerResponse,
+};
 use super::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowAnimationSnapshot,
     ManagedWindowState, PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandOutputSnapshot,
@@ -23,8 +25,7 @@ use super::window_model::{
 };
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
-    DecorationTree, EffectInput, WindowEffectConfig, WindowTransform, WireCompiledEffect,
-    WireWindowEffectConfig, decode_tree_json,
+    DecorationTree, EffectInput, WindowEffectConfig, WindowTransform, decode_tree_json,
 };
 use crate::{
     activation_environment::{RuntimeEnvUpdates, apply_runtime_env_updates},
@@ -45,7 +46,7 @@ fn managed_rect_debug_enabled() -> bool {
 
 /// Dynamic decoration evaluation boundary.
 ///
-/// This trait represents the future hand-off point to the Node/TS runtime. For now it allows
+/// This trait represents the hand-off point to the embedded TypeScript runtime. It allows
 /// ShojiWM to build and validate window-aware decoration trees while keeping the dynamic
 /// evaluation contract explicit.
 pub trait DecorationEvaluator {
@@ -183,7 +184,23 @@ pub trait DecorationEvaluator {
         Ok(DecorationWindowStateRequestInvocation::default())
     }
 
+    fn pointer_move(
+        &self,
+        _event: &PointerMoveEventSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        Ok(DecorationPointerMoveAsyncInvocation::default())
+    }
+
     fn pointer_move_async(&self, _event: PointerMoveEventSnapshot, _now_ms: u64) {}
+
+    fn gesture_swipe(
+        &self,
+        _event: &GestureSwipeEventSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        Ok(DecorationGestureSwipeAsyncInvocation::default())
+    }
 
     fn gesture_swipe_async(&self, _event: GestureSwipeEventSnapshot, _now_ms: u64) {}
 
@@ -233,9 +250,11 @@ pub struct DecorationEvaluationResult {
 #[derive(Debug, Clone)]
 pub struct DecorationCachedEvaluationResult {
     pub node: Option<DecorationNode>,
+    pub node_patches: Vec<NativeCompositionPatch>,
     pub transform: WindowTransform,
     pub managed_window: ManagedWindowState,
     pub window_effects: Option<WindowEffectConfig>,
+    pub window_effect_uniform_only: bool,
     pub dirty_node_ids: Vec<String>,
     pub managed_window_only: bool,
     pub next_poll_in_ms: Option<u64>,
@@ -255,9 +274,11 @@ impl From<DecorationEvaluationResult> for DecorationCachedEvaluationResult {
     fn from(result: DecorationEvaluationResult) -> Self {
         Self {
             node: Some(result.node),
+            node_patches: Vec::new(),
             transform: result.transform,
             managed_window: result.managed_window,
             window_effects: result.window_effects,
+            window_effect_uniform_only: false,
             dirty_node_ids: result.dirty_node_ids,
             managed_window_only: false,
             next_poll_in_ms: result.next_poll_in_ms,
@@ -277,9 +298,11 @@ impl From<DecorationEvaluationResult> for DecorationCachedEvaluationResult {
 #[derive(Debug, Clone, Default)]
 pub struct DecorationSchedulerTick {
     pub dirty: bool,
+    pub runtime_dirty: bool,
     pub dirty_window_ids: Vec<String>,
     pub dirty_managed_window_ids: Vec<String>,
     pub dirty_window_node_ids: std::collections::HashMap<String, Vec<String>>,
+    pub dirty_layer_ids: Vec<String>,
     pub dirty_layer_node_ids: std::collections::HashMap<String, Vec<String>>,
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
@@ -429,7 +452,12 @@ pub enum DecorationRuntimeAsyncInvocation {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeEventConfigUpdate {
+    #[serde(default)]
+    pub pointer_move: bool,
+    #[serde(default)]
     pub pointer_move_async: bool,
+    #[serde(default)]
+    pub gesture_swipe: bool,
     #[serde(default)]
     pub gesture_swipe_async: bool,
 }
@@ -676,16 +704,14 @@ pub enum DecorationEvaluationError {
     RuntimeProtocol(String),
 }
 
-pub struct NodeDecorationEvaluator {
-    program: PathBuf,
-    base_args: Vec<OsString>,
+pub struct EmbeddedDecorationEvaluator {
     script_path: PathBuf,
     config_path: PathBuf,
     working_dir: Option<PathBuf>,
-    transport: RuntimeTransportKind,
-    runtime: Arc<Mutex<Option<NodeDecorationRuntime>>>,
+    runtime: Arc<Mutex<Option<EmbeddedDecorationRuntime>>>,
     display_state: Arc<Mutex<std::collections::BTreeMap<String, WaylandOutputSnapshot>>>,
     input_state: Arc<Mutex<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>>,
+    runtime_state_generation: Arc<AtomicU64>,
     pointer_move_async: Arc<PointerMoveAsyncDispatcher>,
     async_event_sender: Arc<Mutex<Option<CalloopSender<DecorationRuntimeAsyncInvocation>>>>,
 }
@@ -709,30 +735,12 @@ struct PointerMoveAsyncDispatcher {
     worker_started: AtomicBool,
 }
 
-struct NodeDecorationRuntime {
-    child: Child,
-    connection: RuntimeConnection,
+struct EmbeddedDecorationRuntime {
+    child: EmbeddedRuntime,
     next_request_id: u64,
     stderr_log: Arc<Mutex<String>>,
     async_event_sender: Arc<Mutex<Option<CalloopSender<DecorationRuntimeAsyncInvocation>>>>,
-}
-
-enum RuntimeConnection {
-    Stdio {
-        stdin: ChildStdin,
-        stdout: BufReader<ChildStdout>,
-    },
-    Uds {
-        writer: UnixStream,
-        reader: BufReader<UnixStream>,
-        socket_path: PathBuf,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RuntimeTransportKind {
-    Stdio,
-    Uds,
+    last_sent_runtime_state_generation: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -742,43 +750,11 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "requestId")]
         request_id: u64,
     },
-    Evaluate {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        snapshot: &'a WaylandWindowSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluatePreview {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        snapshot: &'a WaylandWindowSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
     WindowDecorationPolicy {
         #[serde(rename = "requestId")]
         request_id: u64,
         snapshot: &'a WaylandWindowSnapshot,
         context: &'a WindowDecorationPolicyContextSnapshot,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    SchedulerTick {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
         #[serde(rename = "displayState")]
         display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
         #[serde(rename = "inputState")]
@@ -828,32 +804,6 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "groupId")]
         #[serde(skip_serializing_if = "Option::is_none")]
         group_id: Option<&'a str>,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    WindowResize {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "windowId")]
-        window_id: &'a str,
-        event: &'a WindowResizeEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    WindowMove {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "windowId")]
-        window_id: &'a str,
-        event: &'a WindowMoveEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -917,83 +867,11 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "inputState")]
         input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     },
-    PointerMoveAsync {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        event: &'a PointerMoveEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    GestureSwipeAsync {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        event: &'a GestureSwipeEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
     StartClose {
         #[serde(rename = "requestId")]
         request_id: u64,
         #[serde(rename = "windowId")]
         window_id: &'a str,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluateCached {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "windowId")]
-        window_id: &'a str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        snapshot: Option<&'a WaylandWindowSnapshot>,
-        #[serde(rename = "forceFullReevaluation")]
-        force_full_reevaluation: bool,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    GetEffectConfig {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluateLayerEffects {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "outputName")]
-        output_name: &'a str,
-        layers: &'a [WaylandLayerSnapshot],
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluatePopupEffects {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "outputName")]
-        output_name: &'a str,
-        popups: &'a [WaylandPopupSnapshot],
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -1030,12 +908,9 @@ struct RuntimeEvaluateResponse {
     request_id: u64,
     kind: String,
     ok: bool,
-    serialized: Option<serde_json::Value>,
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyNodeIds")]
     dirty_node_ids: Option<Vec<String>>,
     #[serde(rename = "managedWindowOnly")]
@@ -1088,12 +963,16 @@ struct RuntimeSchedulerResponse {
     kind: String,
     ok: bool,
     dirty: Option<bool>,
+    #[serde(rename = "runtimeDirty")]
+    runtime_dirty: Option<bool>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyManagedWindowIds")]
     dirty_managed_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyWindowNodeIds")]
     dirty_window_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(rename = "dirtyLayerIds")]
+    dirty_layer_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyLayerNodeIds")]
     dirty_layer_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
     actions: Option<Vec<RuntimeWindowAction>>,
@@ -1118,6 +997,60 @@ struct RuntimeSchedulerResponse {
     #[serde(rename = "debugConfig")]
     debug_config: Option<RuntimeDebugConfigUpdate>,
     error: Option<String>,
+}
+
+fn runtime_scheduler_response_from_native(
+    response: NativeSchedulerResponse,
+) -> RuntimeSchedulerResponse {
+    RuntimeSchedulerResponse {
+        request_id: response.request_id,
+        kind: "schedulerTick".into(),
+        ok: true,
+        dirty: Some(response.dirty),
+        runtime_dirty: Some(response.runtime_dirty),
+        dirty_window_ids: Some(response.dirty_window_ids),
+        dirty_managed_window_ids: Some(response.dirty_managed_window_ids),
+        dirty_window_node_ids: Some(response.dirty_window_node_ids),
+        dirty_layer_ids: Some(response.dirty_layer_ids),
+        dirty_layer_node_ids: Some(response.dirty_layer_node_ids),
+        actions: None,
+        next_poll_in_ms: response.next_poll_in_ms,
+        display_config: None,
+        workspace_config: None,
+        key_binding_config: None,
+        pointer_config: None,
+        input_config: None,
+        event_config: None,
+        process_config: None,
+        process_actions: None,
+        debug_config: None,
+        error: None,
+    }
+}
+
+fn runtime_evaluate_response_from_native(
+    response: NativeCachedResponse,
+) -> RuntimeEvaluateResponse {
+    RuntimeEvaluateResponse {
+        request_id: response.request_id,
+        kind: "evaluateCached".into(),
+        ok: true,
+        transform: Some(response.transform),
+        managed_window: Some(response.managed_window),
+        dirty_node_ids: Some(response.dirty_node_ids),
+        managed_window_only: Some(response.managed_window_only),
+        next_poll_in_ms: response.next_poll_in_ms,
+        actions: None,
+        display_config: None,
+        workspace_config: None,
+        key_binding_config: None,
+        pointer_config: None,
+        input_config: None,
+        event_config: None,
+        process_config: None,
+        process_actions: None,
+        error: None,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1156,8 +1089,6 @@ struct RuntimeInvokeHandlerResponse {
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyManagedWindowIds")]
@@ -1197,8 +1128,6 @@ struct RuntimeStartCloseResponse {
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyManagedWindowIds")]
@@ -1233,8 +1162,6 @@ struct RuntimeEffectConfigResponse {
     request_id: u64,
     kind: String,
     ok: bool,
-    #[serde(rename = "backgroundEffect")]
-    background_effect: Option<WireCompiledEffect>,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
     #[serde(rename = "workspaceConfig")]
@@ -1253,43 +1180,11 @@ struct RuntimeEffectConfigResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RuntimeLayerEffectAssignmentResponse {
-    #[serde(rename = "layerId")]
-    layer_id: String,
-    effects: Option<WireWindowEffectConfig>,
-}
-
-#[derive(serde::Deserialize)]
-struct WireSurfacePolicy {
-    #[serde(rename = "opaqueRegion")]
-    opaque_region: Option<String>,
-}
-
-fn surface_policy_from_wire(wire: WireSurfacePolicy) -> crate::ssd::SurfacePolicy {
-    crate::ssd::SurfacePolicy {
-        opaque_region: match wire.opaque_region.as_deref() {
-            Some("ignore") => crate::ssd::OpaqueRegionPolicy::Ignore,
-            _ => crate::ssd::OpaqueRegionPolicy::Trust,
-        },
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct RuntimePopupEffectAssignmentResponse {
-    #[serde(rename = "popupId")]
-    popup_id: String,
-    effects: Option<WireWindowEffectConfig>,
-    #[serde(rename = "surfacePolicy")]
-    surface_policy: Option<WireSurfacePolicy>,
-}
-
-#[derive(serde::Deserialize)]
 struct RuntimePopupEffectsResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
     kind: String,
     ok: bool,
-    effects: Option<Vec<RuntimePopupEffectAssignmentResponse>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
@@ -1317,7 +1212,6 @@ struct RuntimeLayerEffectsResponse {
     request_id: u64,
     kind: String,
     ok: bool,
-    effects: Option<Vec<RuntimeLayerEffectAssignmentResponse>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
@@ -1416,44 +1310,6 @@ struct RuntimeInvokeKeyBindingResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RuntimeWindowResizeResponse {
-    #[serde(rename = "requestId")]
-    request_id: u64,
-    kind: String,
-    ok: bool,
-    invoked: Option<bool>,
-    dirty: Option<bool>,
-    #[serde(rename = "dirtyWindowIds")]
-    dirty_window_ids: Option<Vec<String>>,
-    #[serde(rename = "dirtyManagedWindowIds")]
-    dirty_managed_window_ids: Option<Vec<String>>,
-    #[serde(rename = "dirtyWindowNodeIds")]
-    dirty_window_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
-    #[serde(rename = "dirtyLayerNodeIds")]
-    dirty_layer_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
-    actions: Option<Vec<RuntimeWindowAction>>,
-    #[serde(rename = "nextPollInMs")]
-    next_poll_in_ms: Option<u64>,
-    #[serde(rename = "displayConfig")]
-    display_config: Option<RuntimeDisplayConfigUpdate>,
-    #[serde(rename = "workspaceConfig")]
-    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
-    #[serde(rename = "keyBindingConfig")]
-    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
-    #[serde(rename = "pointerConfig")]
-    pointer_config: Option<RuntimePointerConfigUpdate>,
-    #[serde(rename = "inputConfig")]
-    input_config: Option<RuntimeInputConfigUpdate>,
-    #[serde(rename = "eventConfig")]
-    event_config: Option<RuntimeEventConfigUpdate>,
-    #[serde(rename = "processConfig")]
-    process_config: Option<RuntimeProcessConfigUpdate>,
-    #[serde(rename = "processActions")]
-    process_actions: Option<Vec<RuntimeProcessAction>>,
-    error: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
 struct RuntimeWindowMoveResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
@@ -1533,11 +1389,103 @@ struct RuntimePointerMoveAsyncResponse {
 
 type RuntimeGestureSwipeAsyncResponse = RuntimePointerMoveAsyncResponse;
 
-impl std::fmt::Debug for NodeDecorationEvaluator {
+fn runtime_interaction_response_from_native(
+    response: NativeInteractionResponse,
+) -> RuntimePointerMoveAsyncResponse {
+    RuntimePointerMoveAsyncResponse {
+        request_id: response.request_id,
+        kind: response.kind.as_str().to_owned(),
+        ok: true,
+        invoked: Some(response.invoked),
+        dirty: Some(response.dirty),
+        dirty_window_ids: Some(response.dirty_window_ids),
+        dirty_managed_window_ids: Some(response.dirty_managed_window_ids),
+        dirty_window_node_ids: Some(response.dirty_window_node_ids),
+        dirty_layer_node_ids: Some(response.dirty_layer_node_ids),
+        actions: Some(response.actions),
+        next_poll_in_ms: response.next_poll_in_ms,
+        display_config: None,
+        workspace_config: None,
+        key_binding_config: None,
+        pointer_config: None,
+        input_config: None,
+        event_config: None,
+        process_config: None,
+        process_actions: None,
+        error: None,
+    }
+}
+
+fn validate_interaction_response(
+    response: &RuntimePointerMoveAsyncResponse,
+    request_id: u64,
+    expected_kind: &str,
+) -> Result<(), DecorationEvaluationError> {
+    if response.request_id != request_id {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "mismatched response id: expected {request_id}, got {}",
+            response.request_id
+        )));
+    }
+    if response.kind != expected_kind {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "mismatched response kind for {expected_kind}: {}",
+            response.kind
+        )));
+    }
+    if !response.ok {
+        return Err(DecorationEvaluationError::RuntimeProtocol(
+            response
+                .error
+                .clone()
+                .unwrap_or_else(|| "runtime returned failure".into()),
+        ));
+    }
+    Ok(())
+}
+
+fn interaction_invocation_from_response(
+    response: RuntimePointerMoveAsyncResponse,
+) -> DecorationPointerMoveAsyncInvocation {
+    DecorationPointerMoveAsyncInvocation {
+        invoked: response.invoked.unwrap_or(false),
+        dirty: response.dirty.unwrap_or(false),
+        dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+        dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
+        dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+        dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+        actions: response.actions.unwrap_or_default(),
+        next_poll_in_ms: response.next_poll_in_ms,
+        display_config: response.display_config,
+        workspace_config: response.workspace_config,
+        key_binding_config: response.key_binding_config,
+        pointer_config: response.pointer_config,
+        input_config: response.input_config,
+        event_config: response.event_config,
+        process_config: response.process_config,
+        process_actions: response.process_actions.unwrap_or_default(),
+    }
+}
+
+fn runtime_failed_error(runtime: &mut EmbeddedDecorationRuntime) -> DecorationEvaluationError {
+    let status = runtime
+        .child
+        .try_wait()
+        .ok()
+        .flatten()
+        .and_then(|status| status.code())
+        .unwrap_or(-1);
+    let stderr = runtime
+        .stderr_log
+        .lock()
+        .map(|stderr| stderr.clone())
+        .unwrap_or_default();
+    DecorationEvaluationError::RuntimeFailed { status, stderr }
+}
+
+impl std::fmt::Debug for EmbeddedDecorationEvaluator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeDecorationEvaluator")
-            .field("program", &self.program)
-            .field("base_args", &self.base_args)
+        f.debug_struct("EmbeddedDecorationEvaluator")
             .field("script_path", &self.script_path)
             .field("config_path", &self.config_path)
             .field("working_dir", &self.working_dir)
@@ -1545,46 +1493,30 @@ impl std::fmt::Debug for NodeDecorationEvaluator {
     }
 }
 
-impl NodeDecorationEvaluator {
+impl EmbeddedDecorationEvaluator {
     pub fn for_workspace(config_path: impl Into<PathBuf>) -> Self {
-        let config_path = config_path.into();
-        let local_tsx = PathBuf::from("node_modules/.bin/tsx");
-        let program = if local_tsx.exists() {
-            local_tsx
-        } else {
-            PathBuf::from("tsx")
-        };
-
         Self {
-            program,
-            base_args: Vec::new(),
             script_path: PathBuf::from("tools/decoration-runtime.ts"),
-            config_path,
+            config_path: config_path.into(),
             working_dir: None,
-            transport: RuntimeTransportKind::Uds,
             runtime: Arc::new(Mutex::new(None)),
             display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             input_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            runtime_state_generation: Arc::new(AtomicU64::new(1)),
             pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
             async_event_sender: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn for_paths(
-        program: impl Into<PathBuf>,
-        script_path: impl Into<PathBuf>,
-        config_path: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn for_paths(script_path: impl Into<PathBuf>, config_path: impl Into<PathBuf>) -> Self {
         Self {
-            program: program.into(),
-            base_args: Vec::new(),
             script_path: script_path.into(),
             config_path: config_path.into(),
             working_dir: None,
-            transport: RuntimeTransportKind::Uds,
             runtime: Arc::new(Mutex::new(None)),
             display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             input_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            runtime_state_generation: Arc::new(AtomicU64::new(1)),
             pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
             async_event_sender: Arc::new(Mutex::new(None)),
         }
@@ -1593,35 +1525,6 @@ impl NodeDecorationEvaluator {
     pub fn with_working_dir(mut self, working_dir: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(working_dir.into());
         self
-    }
-
-    pub fn with_command(
-        program: impl Into<PathBuf>,
-        base_args: Vec<OsString>,
-        script_path: impl Into<PathBuf>,
-        config_path: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            program: program.into(),
-            base_args,
-            script_path: script_path.into(),
-            config_path: config_path.into(),
-            working_dir: None,
-            transport: RuntimeTransportKind::Stdio,
-            runtime: Arc::new(Mutex::new(None)),
-            display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
-            input_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
-            pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
-            async_event_sender: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    fn apply_runtime_wake_pid_to_command(&self, command: &mut Command) {
-        // Communicate our PID to the runtime so its IPC handlers can send
-        // SIGUSR1 here to wake the compositor loop. tsx forks a child node and
-        // does not pass extra inherited fds, so the only reliable cross-wrapper
-        // wake channel is a signal.
-        command.env("SHOJI_RUNTIME_WAKE_PID", std::process::id().to_string());
     }
 
     pub fn set_async_event_sender(&self, sender: CalloopSender<DecorationRuntimeAsyncInvocation>) {
@@ -1635,7 +1538,11 @@ impl NodeDecorationEvaluator {
         display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     ) {
         if let Ok(mut guard) = self.display_state.lock() {
-            *guard = display_state;
+            if *guard != display_state {
+                *guard = display_state;
+                self.runtime_state_generation
+                    .fetch_add(1, Ordering::Release);
+            }
         }
     }
 
@@ -1644,18 +1551,19 @@ impl NodeDecorationEvaluator {
         input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     ) {
         if let Ok(mut guard) = self.input_state.lock() {
-            *guard = input_state;
+            if *guard != input_state {
+                *guard = input_state;
+                self.runtime_state_generation
+                    .fetch_add(1, Ordering::Release);
+            }
         }
     }
 
     pub fn fresh_like(&self) -> Self {
         Self {
-            program: self.program.clone(),
-            base_args: self.base_args.clone(),
             script_path: self.script_path.clone(),
             config_path: self.config_path.clone(),
             working_dir: self.working_dir.clone(),
-            transport: self.transport,
             runtime: Arc::new(Mutex::new(None)),
             display_state: Arc::new(Mutex::new(
                 self.display_state
@@ -1668,6 +1576,9 @@ impl NodeDecorationEvaluator {
                     .lock()
                     .map(|guard| guard.clone())
                     .unwrap_or_default(),
+            )),
+            runtime_state_generation: Arc::new(AtomicU64::new(
+                self.runtime_state_generation.load(Ordering::Acquire),
             )),
             pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
             async_event_sender: Arc::new(Mutex::new(
@@ -1895,13 +1806,10 @@ impl NodeDecorationEvaluator {
 
     fn ensure_runtime<'a>(
         &'a self,
-        runtime: &'a mut Option<NodeDecorationRuntime>,
-    ) -> Result<&'a mut NodeDecorationRuntime, DecorationEvaluationError> {
+        runtime: &'a mut Option<EmbeddedDecorationRuntime>,
+    ) -> Result<&'a mut EmbeddedDecorationRuntime, DecorationEvaluationError> {
         if runtime.is_none() {
-            *runtime = Some(match self.transport {
-                RuntimeTransportKind::Stdio => self.spawn_stdio_runtime()?,
-                RuntimeTransportKind::Uds => self.spawn_uds_runtime()?,
-            });
+            *runtime = Some(self.spawn_embedded_runtime()?);
         }
 
         runtime
@@ -1909,117 +1817,22 @@ impl NodeDecorationEvaluator {
             .ok_or_else(|| DecorationEvaluationError::RuntimeProtocol("runtime unavailable".into()))
     }
 
-    fn spawn_stdio_runtime(&self) -> Result<NodeDecorationRuntime, DecorationEvaluationError> {
-        let mut command = Command::new(&self.program);
-        apply_decoration_runtime_node_options(&mut command);
-        command.args(&self.base_args);
-        command.arg(&self.script_path);
-        command.arg(&self.config_path);
-        if let Some(cwd) = &self.working_dir {
-            command.current_dir(cwd);
-        }
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        self.apply_runtime_wake_pid_to_command(&mut command);
-
-        let mut child = command.spawn()?;
-        let stderr_log = spawn_stderr_drain(&mut child);
-        let stdin = child.stdin.take().ok_or_else(|| {
-            DecorationEvaluationError::RuntimeProtocol("missing runtime stdin".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            DecorationEvaluationError::RuntimeProtocol("missing runtime stdout".into())
-        })?;
-
-        Ok(NodeDecorationRuntime {
+    fn spawn_embedded_runtime(
+        &self,
+    ) -> Result<EmbeddedDecorationRuntime, DecorationEvaluationError> {
+        debug!("spawning embedded RustyScript decoration runtime");
+        let child = EmbeddedRuntime::start(
+            self.script_path.clone(),
+            self.config_path.clone(),
+            self.working_dir.clone(),
+        )
+        .map_err(DecorationEvaluationError::RuntimeProtocol)?;
+        Ok(EmbeddedDecorationRuntime {
             child,
-            connection: RuntimeConnection::Stdio {
-                stdin,
-                stdout: BufReader::new(stdout),
-            },
             next_request_id: 1,
-            stderr_log,
+            stderr_log: Arc::new(Mutex::new(String::new())),
             async_event_sender: Arc::clone(&self.async_event_sender),
-        })
-    }
-
-    fn spawn_uds_runtime(&self) -> Result<NodeDecorationRuntime, DecorationEvaluationError> {
-        debug!("spawning node decoration runtime over uds");
-        let socket_path = std::env::temp_dir().join(format!(
-            "shojiwm-decoration-runtime-{}-{}.sock",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&socket_path);
-        let listener = UnixListener::bind(&socket_path)?;
-        listener.set_nonblocking(true)?;
-
-        let mut command = Command::new(&self.program);
-        apply_decoration_runtime_node_options(&mut command);
-        command.args(&self.base_args);
-        command.arg(&self.script_path);
-        command.arg(&self.config_path);
-        command.arg(&socket_path);
-        if let Some(cwd) = &self.working_dir {
-            command.current_dir(cwd);
-        }
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::null());
-        command.stderr(Stdio::piped());
-        self.apply_runtime_wake_pid_to_command(&mut command);
-
-        let mut child = command.spawn()?;
-        let stderr_log = spawn_stderr_drain(&mut child);
-        let accept_started_at = Instant::now();
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if let Some(status) = child.try_wait()? {
-                        let status = status.code().unwrap_or(-1);
-                        let stderr = stderr_log
-                            .lock()
-                            .map(|stderr| stderr.clone())
-                            .unwrap_or_default();
-                        let _ = std::fs::remove_file(&socket_path);
-                        return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-                    }
-
-                    if accept_started_at.elapsed() > Duration::from_secs(5) {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = std::fs::remove_file(&socket_path);
-                        return Err(DecorationEvaluationError::RuntimeProtocol(
-                            "timed out waiting for decoration runtime socket".into(),
-                        ));
-                    }
-
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = std::fs::remove_file(&socket_path);
-                    return Err(DecorationEvaluationError::Io(error));
-                }
-            }
-        };
-        let writer = stream.try_clone()?;
-
-        Ok(NodeDecorationRuntime {
-            child,
-            connection: RuntimeConnection::Uds {
-                writer,
-                reader: BufReader::new(stream),
-                socket_path,
-            },
-            next_request_id: 1,
-            stderr_log,
-            async_event_sender: Arc::clone(&self.async_event_sender),
+            last_sent_runtime_state_generation: 0,
         })
     }
 
@@ -2043,13 +1856,11 @@ impl NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig {
+        runtime.write_effect_request(NativeEffectRequest::GetEffectConfig {
             request_id,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeEffectConfigResponse =
             if let Some(response) = runtime.read_response()? {
@@ -2091,11 +1902,18 @@ impl NodeDecorationEvaluator {
             ));
         }
 
-        response
-            .background_effect
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(DecorationEvaluationError::Bridge)
+        match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Background(effect)) => Ok(effect),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "mismatched native effect update for getEffectConfig".into(),
+            )),
+            None => Err(DecorationEvaluationError::RuntimeProtocol(
+                "missing native background effect update".into(),
+            )),
+        }
     }
 
     fn enqueue_pointer_move_async(&self, event: PointerMoveEventSnapshot, now_ms: u64) {
@@ -2196,6 +2014,82 @@ impl NodeDecorationEvaluator {
         }
     }
 
+    fn dispatch_pointer_move(
+        &self,
+        event: &PointerMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        runtime.write_interaction_request(NativeInteractionRequest::PointerMove {
+            request_id,
+            event: event.clone(),
+            now_ms,
+            display_state,
+            input_state,
+        })?;
+        let response = if let Some(response) = runtime.read_interaction_response()? {
+            response
+        } else {
+            return Err(runtime_failed_error(runtime));
+        };
+        validate_interaction_response(&response, request_id, "pointerMove")?;
+        Ok(interaction_invocation_from_response(response))
+    }
+
+    fn dispatch_gesture_swipe(
+        &self,
+        event: &GestureSwipeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        runtime.write_interaction_request(NativeInteractionRequest::GestureSwipe {
+            request_id,
+            event: event.clone(),
+            now_ms,
+            display_state,
+            input_state,
+        })?;
+        let response = if let Some(response) = runtime.read_interaction_response()? {
+            response
+        } else {
+            return Err(runtime_failed_error(runtime));
+        };
+        validate_interaction_response(&response, request_id, "gestureSwipe")?;
+        Ok(interaction_invocation_from_response(response))
+    }
+
     fn dispatch_pointer_move_async(
         &self,
         event: &PointerMoveEventSnapshot,
@@ -2220,18 +2114,16 @@ impl NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::PointerMoveAsync {
+        runtime.write_interaction_request(NativeInteractionRequest::PointerMoveAsync {
             request_id,
-            event,
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimePointerMoveAsyncResponse =
-            if let Some(response) = runtime.read_response()? {
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -2312,18 +2204,16 @@ impl NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::GestureSwipeAsync {
+        runtime.write_interaction_request(NativeInteractionRequest::GestureSwipeAsync {
             request_id,
-            event,
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeGestureSwipeAsyncResponse =
-            if let Some(response) = runtime.read_response()? {
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -2383,45 +2273,120 @@ impl NodeDecorationEvaluator {
     }
 }
 
-impl Clone for NodeDecorationEvaluator {
+impl Clone for EmbeddedDecorationEvaluator {
     fn clone(&self) -> Self {
         Self {
-            program: self.program.clone(),
-            base_args: self.base_args.clone(),
             script_path: self.script_path.clone(),
             config_path: self.config_path.clone(),
             working_dir: self.working_dir.clone(),
-            transport: self.transport,
             runtime: Arc::clone(&self.runtime),
             display_state: Arc::clone(&self.display_state),
             input_state: Arc::clone(&self.input_state),
+            runtime_state_generation: Arc::clone(&self.runtime_state_generation),
             pointer_move_async: Arc::clone(&self.pointer_move_async),
             async_event_sender: Arc::clone(&self.async_event_sender),
         }
     }
 }
 
-impl NodeDecorationRuntime {
+impl EmbeddedDecorationRuntime {
     fn write_request(&mut self, request: &str) -> Result<(), DecorationEvaluationError> {
         timescope::scope!("runtime write request");
         let bytes = request.as_bytes();
-        let len = u32::try_from(bytes.len()).map_err(|_| {
+        let _ = u32::try_from(bytes.len()).map_err(|_| {
             DecorationEvaluationError::RuntimeProtocol("runtime request too large".into())
         })?;
         record_runtime_protocol_request(request, bytes.len());
-        match &mut self.connection {
-            RuntimeConnection::Stdio { stdin, .. } => {
-                stdin.write_all(&len.to_le_bytes())?;
-                stdin.write_all(bytes)?;
-                stdin.flush()?;
-            }
-            RuntimeConnection::Uds { writer, .. } => {
-                writer.write_all(&len.to_le_bytes())?;
-                writer.write_all(bytes)?;
-                writer.flush()?;
-            }
-        }
-        Ok(())
+        self.child
+            .write_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_composition_request(
+        &mut self,
+        request: NativeCompositionRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write composition request");
+        self.child
+            .write_composition_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_effect_request(
+        &mut self,
+        request: NativeEffectRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write effect request");
+        self.child
+            .write_effect_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_interaction_request(
+        &mut self,
+        request: NativeInteractionRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write interaction request");
+        self.child
+            .write_interaction_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_scheduler_request(
+        &mut self,
+        request: NativeSchedulerRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write scheduler request");
+        self.child
+            .write_scheduler_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_cached_fast_request(
+        &mut self,
+        request_id: u64,
+        window_id: String,
+        force_full_reevaluation: bool,
+        now_ms: u64,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write cached fast request");
+        self.child
+            .write_cached_fast_request(request_id, window_id, force_full_reevaluation, now_ms)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_scheduler_fast_request(
+        &mut self,
+        request_id: u64,
+        now_ms: u64,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write scheduler fast request");
+        self.child
+            .write_scheduler_fast_request(request_id, now_ms)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn take_composition_update(
+        &self,
+        request_id: u64,
+    ) -> Result<Option<NativeCompositionUpdate>, DecorationEvaluationError> {
+        timescope::scope!("runtime take composition update");
+        self.child
+            .take_composition_update(request_id)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn take_effect_update(
+        &self,
+        request_id: u64,
+    ) -> Result<
+        Option<super::embedded_runtime::ResolvedNativeEffectUpdate>,
+        DecorationEvaluationError,
+    > {
+        timescope::scope!("runtime take effect update");
+        self.child
+            .take_effect_update(request_id)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
     }
 
     fn read_response<T: serde::de::DeserializeOwned>(
@@ -2430,14 +2395,85 @@ impl NodeDecorationRuntime {
         timescope::scope!("runtime read response");
         let payload = {
             timescope::scope!("runtime read frame");
-            match &mut self.connection {
-                RuntimeConnection::Stdio { stdout, .. } => read_framed_message(stdout)?,
-                RuntimeConnection::Uds { reader, .. } => read_framed_message(reader)?,
-            }
+            self.child
+                .read_response()
+                .map_err(DecorationEvaluationError::RuntimeProtocol)?
         };
-        let Some(payload) = payload else {
+        let Some(response) = payload else {
             return Ok(None);
         };
+        let EmbeddedRuntimeResponse::Json(payload) = response else {
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                "received native metadata for a JSON response".into(),
+            ));
+        };
+        self.decode_json_response(payload)
+    }
+
+    fn read_scheduler_response(
+        &mut self,
+    ) -> Result<Option<RuntimeSchedulerResponse>, DecorationEvaluationError> {
+        timescope::scope!("runtime read scheduler response");
+        let response = self
+            .child
+            .read_response()
+            .map_err(DecorationEvaluationError::RuntimeProtocol)?;
+        match response {
+            None => Ok(None),
+            Some(EmbeddedRuntimeResponse::Scheduler(response)) => {
+                Ok(Some(runtime_scheduler_response_from_native(response)))
+            }
+            Some(EmbeddedRuntimeResponse::Json(payload)) => self.decode_json_response(payload),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "received mismatched native response for schedulerTick".into(),
+            )),
+        }
+    }
+
+    fn read_cached_response(
+        &mut self,
+    ) -> Result<Option<RuntimeEvaluateResponse>, DecorationEvaluationError> {
+        timescope::scope!("runtime read cached response");
+        let response = self
+            .child
+            .read_response()
+            .map_err(DecorationEvaluationError::RuntimeProtocol)?;
+        match response {
+            None => Ok(None),
+            Some(EmbeddedRuntimeResponse::Cached(response)) => {
+                Ok(Some(runtime_evaluate_response_from_native(response)))
+            }
+            Some(EmbeddedRuntimeResponse::Json(payload)) => self.decode_json_response(payload),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "received mismatched native response for evaluateCached".into(),
+            )),
+        }
+    }
+
+    fn read_interaction_response(
+        &mut self,
+    ) -> Result<Option<RuntimePointerMoveAsyncResponse>, DecorationEvaluationError> {
+        timescope::scope!("runtime read interaction response");
+        let response = self
+            .child
+            .read_response()
+            .map_err(DecorationEvaluationError::RuntimeProtocol)?;
+        match response {
+            None => Ok(None),
+            Some(EmbeddedRuntimeResponse::Interaction(response)) => {
+                Ok(Some(runtime_interaction_response_from_native(response)))
+            }
+            Some(EmbeddedRuntimeResponse::Json(payload)) => self.decode_json_response(payload),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "received mismatched native response for interaction event".into(),
+            )),
+        }
+    }
+
+    fn decode_json_response<T: serde::de::DeserializeOwned>(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<Option<T>, DecorationEvaluationError> {
         let value: serde_json::Value = {
             timescope::scope!("runtime json parse value");
             serde_json::from_slice(&payload).map_err(|error| {
@@ -2501,6 +2537,42 @@ impl NodeDecorationRuntime {
                 ))
             })
         }
+    }
+}
+
+fn take_native_window_effects(
+    runtime: &EmbeddedDecorationRuntime,
+    request_id: u64,
+    expected_window_id: &str,
+) -> Result<Option<WindowEffectConfig>, DecorationEvaluationError> {
+    take_native_window_effect_update(runtime, request_id, expected_window_id)
+        .map(|(effects, _)| effects)
+}
+
+fn take_native_window_effect_update(
+    runtime: &EmbeddedDecorationRuntime,
+    request_id: u64,
+    expected_window_id: &str,
+) -> Result<(Option<WindowEffectConfig>, bool), DecorationEvaluationError> {
+    timescope::scope!("runtime take native window effect update");
+    match runtime.take_effect_update(request_id)? {
+        Some(resolved)
+            if matches!(
+                &resolved.update,
+                NativeEffectUpdate::Window { window_id, .. } if expected_window_id == window_id
+            ) =>
+        {
+            let NativeEffectUpdate::Window { effects, .. } = resolved.update else {
+                unreachable!();
+            };
+            Ok((effects, resolved.uniform_only))
+        }
+        Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+            "mismatched native window effect update".into(),
+        )),
+        None => Err(DecorationEvaluationError::RuntimeProtocol(
+            "missing native window effect update".into(),
+        )),
     }
 }
 
@@ -2663,132 +2735,13 @@ fn runtime_environment_snapshot() -> std::collections::BTreeMap<String, String> 
     .collect()
 }
 
-fn apply_decoration_runtime_node_options(command: &mut Command) {
-    let extra = std::env::var("SHOJI_DECORATION_RUNTIME_NODE_OPTIONS")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let Some(extra) = extra else {
-        return;
-    };
-
-    let merged = match std::env::var("NODE_OPTIONS") {
-        Ok(existing) if !existing.trim().is_empty() => format!("{} {}", existing.trim(), extra),
-        _ => extra,
-    };
-    command.env("NODE_OPTIONS", merged);
-}
-
-impl Drop for NodeDecorationRuntime {
+impl Drop for EmbeddedDecorationRuntime {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let RuntimeConnection::Uds { socket_path, .. } = &self.connection {
-            let _ = std::fs::remove_file(socket_path);
-        }
     }
 }
-
-fn spawn_stderr_drain(child: &mut Child) -> Arc<Mutex<String>> {
-    let stderr_log = Arc::new(Mutex::new(String::new()));
-
-    if let Some(stderr) = child.stderr.take() {
-        let stderr_log_clone = Arc::clone(&stderr_log);
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-
-            loop {
-                line.clear();
-                let Ok(bytes) = reader.read_line(&mut line) else {
-                    break;
-                };
-                if bytes == 0 {
-                    break;
-                }
-
-                let trimmed = line.trim_end();
-                if !trimmed.is_empty() {
-                    if let Some(payload) = trimmed.strip_prefix("__SHOJI_RUNTIME_LOG__") {
-                        match serde_json::from_str::<RuntimeConsoleLog>(payload) {
-                            Ok(log) => match log.level.as_str() {
-                                "debug" => {
-                                    debug!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
-                                }
-                                "info" => {
-                                    info!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
-                                }
-                                "warn" => {
-                                    warn!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
-                                }
-                                "error" => {
-                                    error!(target: "shoji_wm::ssd::runtime", message = %log.message, "decoration runtime log");
-                                }
-                                _ => {
-                                    info!(target: "shoji_wm::ssd::runtime", message = %log.message, level = %log.level, "decoration runtime log");
-                                }
-                            },
-                            Err(error) => {
-                                warn!(
-                                    target: "shoji_wm::ssd::runtime",
-                                    line = %trimmed,
-                                    ?error,
-                                    "failed to decode decoration runtime structured log"
-                                );
-                            }
-                        }
-                    } else {
-                        warn!(target: "shoji_wm::ssd::runtime", line = %trimmed, "decoration runtime stderr");
-                    }
-                }
-
-                if let Ok(mut log) = stderr_log_clone.lock() {
-                    log.push_str(trimmed);
-                    log.push('\n');
-                    if log.len() > 64 * 1024 {
-                        let mut keep_from = log.len().saturating_sub(64 * 1024);
-                        while keep_from < log.len() && !log.is_char_boundary(keep_from) {
-                            keep_from += 1;
-                        }
-                        log.drain(..keep_from);
-                    }
-                }
-            }
-        });
-    }
-
-    stderr_log
-}
-
-fn read_framed_message<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
-    let mut header = [0u8; 4];
-    match reader.read_exact(&mut header) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
-    }
-
-    let payload_len = u32::from_le_bytes(header) as usize;
-    const MAX_RUNTIME_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
-    if payload_len > MAX_RUNTIME_MESSAGE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("runtime message too large: {payload_len} bytes"),
-        ));
-    }
-
-    let mut payload = vec![0u8; payload_len];
-    reader.read_exact(&mut payload)?;
-    Ok(Some(payload))
-}
-
-#[derive(serde::Deserialize)]
-struct RuntimeConsoleLog {
-    level: String,
-    message: String,
-}
-
-impl DecorationEvaluator for NodeDecorationEvaluator {
+impl DecorationEvaluator for EmbeddedDecorationEvaluator {
     fn evaluate_window(
         &self,
         window: &WaylandWindowSnapshot,
@@ -2807,6 +2760,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         };
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let runtime_state_generation = self.runtime_state_generation.load(Ordering::Acquire);
         let (display_state, input_state) = {
             timescope::scope!("runtime clone state");
             let display_state = self
@@ -2822,20 +2776,16 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             (display_state, input_state)
         };
 
-        let request = {
-            timescope::scope!("runtime serialize request");
-            serde_json::to_string(&RuntimeRequest::Evaluate {
-                request_id,
-                snapshot: window,
-                now_ms,
-                display_state: &display_state,
-                input_state: &input_state,
-            })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?
-        };
         {
             timescope::scope!("runtime evaluate_window write request");
-            runtime.write_request(&request)?;
+            runtime.write_composition_request(NativeCompositionRequest::Evaluate {
+                request_id,
+                snapshot: window.clone(),
+                now_ms,
+                display_state,
+                input_state,
+            })?;
+            runtime.last_sent_runtime_state_generation = runtime_state_generation;
         }
 
         let response: RuntimeEvaluateResponse = {
@@ -2880,29 +2830,26 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             ));
         }
 
-        let Some(serialized) = response.serialized else {
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeProtocol(
-                "missing serialized tree".into(),
-            ));
+        let node = match runtime.take_composition_update(request_id)? {
+            Some(NativeCompositionUpdate::Full { window_id, node }) if window_id == window.id => {
+                node
+            }
+            Some(update) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                    "invalid native composition update for evaluate: window={}, expected={}",
+                    update.window_id(),
+                    window.id
+                )));
+            }
+            None => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native composition tree".into(),
+                ));
+            }
         };
-        let stdout = {
-            timescope::scope!("runtime serialize tree value");
-            serde_json::to_string(&serialized)
-                .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?
-        };
-        let node = {
-            timescope::scope!("runtime decode tree");
-            decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?
-        };
-        let window_effects = {
-            timescope::scope!("runtime convert window effects");
-            response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?
-        };
+        let window_effects = take_native_window_effects(runtime, request_id, &window.id)?;
         Ok(DecorationEvaluationResult {
             node,
             transform: response.transform.unwrap_or_default(),
@@ -2940,6 +2887,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         };
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
+        let runtime_state_generation = self.runtime_state_generation.load(Ordering::Acquire);
         let (display_state, input_state) = {
             timescope::scope!("runtime clone state");
             let display_state = self
@@ -2955,20 +2903,16 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             (display_state, input_state)
         };
 
-        let request = {
-            timescope::scope!("runtime serialize request");
-            serde_json::to_string(&RuntimeRequest::EvaluatePreview {
-                request_id,
-                snapshot: window,
-                now_ms,
-                display_state: &display_state,
-                input_state: &input_state,
-            })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?
-        };
         {
             timescope::scope!("runtime evaluate_window_preview write request");
-            runtime.write_request(&request)?;
+            runtime.write_composition_request(NativeCompositionRequest::EvaluatePreview {
+                request_id,
+                snapshot: window.clone(),
+                now_ms,
+                display_state,
+                input_state,
+            })?;
+            runtime.last_sent_runtime_state_generation = runtime_state_generation;
         }
 
         let response: RuntimeEvaluateResponse = {
@@ -3013,32 +2957,30 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             ));
         }
 
-        let Some(serialized) = response.serialized else {
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeProtocol(
-                "missing serialized tree".into(),
-            ));
-        };
-        let stdout = {
-            timescope::scope!("runtime serialize tree value");
-            serde_json::to_string(&serialized)
-                .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?
+        let node = match runtime.take_composition_update(request_id)? {
+            Some(NativeCompositionUpdate::Full { window_id, node }) if window_id == window.id => {
+                node
+            }
+            Some(update) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                    "invalid native composition update for evaluatePreview: window={}, expected={}",
+                    update.window_id(),
+                    window.id
+                )));
+            }
+            None => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native composition preview tree".into(),
+                ));
+            }
         };
         Ok(DecorationEvaluationResult {
-            node: {
-                timescope::scope!("runtime decode tree");
-                decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?
-            },
+            node,
             transform: response.transform.unwrap_or_default(),
             managed_window: response.managed_window.unwrap_or_default(),
-            window_effects: {
-                timescope::scope!("runtime convert window effects");
-                response
-                    .window_effects
-                    .map(TryInto::try_into)
-                    .transpose()
-                    .map_err(DecorationEvaluationError::Bridge)?
-            },
+            window_effects: take_native_window_effects(runtime, request_id, &window.id)?,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             actions: response.actions.unwrap_or_default(),
@@ -3141,42 +3083,50 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         };
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let (display_state, input_state) = {
-            timescope::scope!("runtime clone state");
-            let display_state = self
-                .display_state
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default();
-            let input_state = self
-                .input_state
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default();
-            (display_state, input_state)
-        };
+        let runtime_state_generation = self.runtime_state_generation.load(Ordering::Acquire);
+        let use_fast_request = window.is_none()
+            && runtime.last_sent_runtime_state_generation == runtime_state_generation;
 
-        let request = {
-            timescope::scope!("runtime serialize request");
-            serde_json::to_string(&RuntimeRequest::EvaluateCached {
-                request_id,
-                window_id,
-                snapshot: window,
-                force_full_reevaluation,
-                now_ms,
-                display_state: &display_state,
-                input_state: &input_state,
-            })
-            .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?
-        };
         {
             timescope::scope!("runtime evaluate_cached_window write request");
-            runtime.write_request(&request)?;
+            if use_fast_request {
+                runtime.write_cached_fast_request(
+                    request_id,
+                    window_id.to_owned(),
+                    force_full_reevaluation,
+                    now_ms,
+                )?;
+            } else {
+                let (display_state, input_state) = {
+                    timescope::scope!("runtime clone state");
+                    let display_state = self
+                        .display_state
+                        .lock()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
+                    let input_state = self
+                        .input_state
+                        .lock()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
+                    (display_state, input_state)
+                };
+                runtime.write_composition_request(NativeCompositionRequest::EvaluateCached {
+                    request_id,
+                    window_id: window_id.to_owned(),
+                    snapshot: window.cloned(),
+                    force_full_reevaluation,
+                    now_ms,
+                    display_state,
+                    input_state,
+                })?;
+                runtime.last_sent_runtime_state_generation = runtime_state_generation;
+            }
         }
 
         let response: RuntimeEvaluateResponse = {
             timescope::scope!("runtime evaluate_cached_window read response");
-            if let Some(response) = runtime.read_response()? {
+            if let Some(response) = runtime.read_cached_response()? {
                 response
             } else {
                 let status = runtime
@@ -3217,38 +3167,53 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         }
 
         let managed_window_only = response.managed_window_only.unwrap_or(false);
-        let node = if managed_window_only {
-            None
-        } else {
-            let Some(serialized) = response.serialized else {
+        let native_update = runtime.take_composition_update(request_id)?;
+        let (node, node_patches) = match (managed_window_only, native_update) {
+            (true, None) => (None, Vec::new()),
+            (true, Some(_)) => {
                 *runtime_guard = None;
                 return Err(DecorationEvaluationError::RuntimeProtocol(
-                    "missing serialized tree".into(),
+                    "managed-window-only evaluation unexpectedly returned a composition update"
+                        .into(),
                 ));
-            };
-            let stdout = {
-                timescope::scope!("runtime serialize tree value");
-                serde_json::to_string(&serialized)
-                    .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?
-            };
-            Some({
-                timescope::scope!("runtime decode tree");
-                decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?
-            })
+            }
+            (
+                false,
+                Some(NativeCompositionUpdate::Full {
+                    window_id: update_window_id,
+                    node,
+                }),
+            ) if update_window_id == window_id => (Some(node), Vec::new()),
+            (
+                false,
+                Some(NativeCompositionUpdate::Patches {
+                    window_id: update_window_id,
+                    patches,
+                }),
+            ) if update_window_id == window_id => (None, patches),
+            (false, Some(update)) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                    "native cached composition window mismatch: got={}, expected={window_id}",
+                    update.window_id()
+                )));
+            }
+            (false, None) => {
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native cached composition update".into(),
+                ));
+            }
         };
-        let window_effects = {
-            timescope::scope!("runtime convert window effects");
-            response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?
-        };
+        let (window_effects, window_effect_uniform_only) =
+            take_native_window_effect_update(runtime, request_id, window_id)?;
         Ok(DecorationCachedEvaluationResult {
             node,
+            node_patches,
             transform: response.transform.unwrap_or_default(),
             managed_window: response.managed_window.unwrap_or_default(),
             window_effects,
+            window_effect_uniform_only,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             managed_window_only,
             next_poll_in_ms: response.next_poll_in_ms,
@@ -3279,42 +3244,48 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-
-        let request = serde_json::to_string(&RuntimeRequest::SchedulerTick {
-            request_id,
-            now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
-
-        let response: RuntimeSchedulerResponse = if let Some(response) = runtime.read_response()? {
-            response
+        let runtime_state_generation = self.runtime_state_generation.load(Ordering::Acquire);
+        if runtime.last_sent_runtime_state_generation == runtime_state_generation {
+            runtime.write_scheduler_fast_request(request_id, now_ms)?;
         } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
+            let display_state = self
+                .display_state
                 .lock()
-                .map(|stderr| stderr.clone())
+                .map(|guard| guard.clone())
                 .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+            let input_state = self
+                .input_state
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+
+            runtime.write_scheduler_request(NativeSchedulerRequest {
+                request_id,
+                kind: "schedulerTick",
+                now_ms,
+                display_state,
+                input_state,
+            })?;
+            runtime.last_sent_runtime_state_generation = runtime_state_generation;
+        }
+
+        let response: RuntimeSchedulerResponse =
+            if let Some(response) = runtime.read_scheduler_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -3351,9 +3322,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
 
         Ok(DecorationSchedulerTick {
             dirty: response.dirty.unwrap_or(false),
+            runtime_dirty: response.runtime_dirty.unwrap_or(false),
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+            dirty_layer_ids: response.dirty_layer_ids.unwrap_or_default(),
             dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
@@ -3535,11 +3508,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: take_native_window_effects(runtime, request_id, window_id)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -3745,11 +3714,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: None,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -3794,19 +3759,17 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::WindowResize {
+        runtime.write_interaction_request(NativeInteractionRequest::WindowResize {
             request_id,
-            window_id,
-            event,
+            window_id: window_id.to_owned(),
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
-        let response: RuntimeWindowResizeResponse =
-            if let Some(response) = runtime.read_response()? {
+        let response: RuntimePointerMoveAsyncResponse =
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -3893,33 +3856,32 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::WindowMove {
+        runtime.write_interaction_request(NativeInteractionRequest::WindowMove {
             request_id,
-            window_id,
-            event,
+            window_id: window_id.to_owned(),
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
-        let response: RuntimeWindowMoveResponse = if let Some(response) = runtime.read_response()? {
-            response
-        } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
-                .lock()
-                .map(|stderr| stderr.clone())
-                .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+        let response: RuntimePointerMoveAsyncResponse =
+            if let Some(response) = runtime.read_interaction_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -4347,8 +4309,24 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         })
     }
 
+    fn pointer_move(
+        &self,
+        event: &PointerMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        self.dispatch_pointer_move(event, now_ms)
+    }
+
     fn pointer_move_async(&self, event: PointerMoveEventSnapshot, now_ms: u64) {
         self.enqueue_pointer_move_async(event, now_ms);
+    }
+
+    fn gesture_swipe(
+        &self,
+        event: &GestureSwipeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        self.dispatch_gesture_swipe(event, now_ms)
     }
 
     fn gesture_swipe_async(&self, event: GestureSwipeEventSnapshot, now_ms: u64) {
@@ -4444,11 +4422,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: take_native_window_effects(runtime, request_id, window_id)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -4488,16 +4462,14 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::EvaluateLayerEffects {
+        runtime.write_effect_request(NativeEffectRequest::EvaluateLayerEffects {
             request_id,
-            output_name,
-            layers,
+            output_name: output_name.to_owned(),
+            layers: layers.to_vec(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeLayerEffectsResponse =
             if let Some(response) = runtime.read_response()? {
@@ -4539,24 +4511,37 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             ));
         }
 
-        Ok(LayerEffectEvaluationResult {
-            effects: response
-                .effects
-                .unwrap_or_default()
+        let effects = match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Layers(assignments)) => assignments
                 .into_iter()
                 .map(|assignment| {
                     Ok(RuntimeLayerEffectAssignment {
                         layer_id: assignment.layer_id,
                         effects: assignment
                             .effects
-                            .map(TryInto::try_into)
-                            .transpose()?
                             .map(validate_layer_effect_config)
                             .transpose()?,
                     })
                 })
                 .collect::<Result<Vec<_>, DecorationBridgeError>>()
                 .map_err(DecorationEvaluationError::Bridge)?,
+            Some(_) => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "mismatched native layer effect update".into(),
+                ));
+            }
+            None => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native layer effect update".into(),
+                ));
+            }
+        };
+
+        Ok(LayerEffectEvaluationResult {
+            effects,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
             workspace_config: response.workspace_config,
@@ -4592,16 +4577,14 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::EvaluatePopupEffects {
+        runtime.write_effect_request(NativeEffectRequest::EvaluatePopupEffects {
             request_id,
-            output_name,
-            popups,
+            output_name: output_name.to_owned(),
+            popups: popups.to_vec(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimePopupEffectsResponse =
             if let Some(response) = runtime.read_response()? {
@@ -4643,25 +4626,38 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             ));
         }
 
-        Ok(PopupEffectEvaluationResult {
-            effects: response
-                .effects
-                .unwrap_or_default()
+        let effects = match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Popups(assignments)) => assignments
                 .into_iter()
                 .map(|assignment| {
                     Ok(RuntimePopupEffectAssignment {
                         popup_id: assignment.popup_id,
                         effects: assignment
                             .effects
-                            .map(TryInto::try_into)
-                            .transpose()?
                             .map(validate_popup_effect_config)
                             .transpose()?,
-                        surface_policy: assignment.surface_policy.map(surface_policy_from_wire),
+                        surface_policy: assignment.surface_policy,
                     })
                 })
                 .collect::<Result<Vec<_>, DecorationBridgeError>>()
                 .map_err(DecorationEvaluationError::Bridge)?,
+            Some(_) => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "mismatched native popup effect update".into(),
+                ));
+            }
+            None => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native popup effect update".into(),
+                ));
+            }
+        };
+
+        Ok(PopupEffectEvaluationResult {
+            effects,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
             workspace_config: response.workspace_config,
@@ -4683,6 +4679,10 @@ mod tests {
         EffectInvalidationPolicy, EffectOutsets, EffectStage, ShaderModule, ShaderStage,
         WindowEffectSlot, WindowSourceInclude,
         window_model::{WaylandWindowSnapshot, WindowPositionSnapshot},
+    };
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixStream,
     };
 
     fn make_window(is_focused: bool) -> WaylandWindowSnapshot {
@@ -4738,6 +4738,835 @@ mod tests {
                 .expect("unfocused evaluation should succeed");
 
         assert_ne!(focused.root.style.border, unfocused.root.style.border);
+    }
+
+    #[test]
+    fn embedded_runtime_loads_tsx_config() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm deno runtime #?-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let result = evaluator.lifecycle_enable("test", None);
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        result.expect("embedded runtime should load and evaluate a TSX config");
+    }
+
+    #[test]
+    fn embedded_runtime_dispatches_interactions_through_native_bridge() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, PointerHitTargetSnapshot,
+            PointerModifierStateSnapshot, PointerMoveEventSnapshot, PointerMovePointSnapshot,
+            WindowMoveEventSnapshot, WindowMovePhaseSnapshot, WindowMoveSourceSnapshot,
+            WindowResizeEdgesSnapshot, WindowResizeEventSnapshot, WindowResizePhaseSnapshot,
+            WindowResizePointSnapshot, WindowResizeSourceSnapshot,
+        };
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-native-interactions-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.event.onPointerMove(() => {});
+COMPOSITOR.event.onPointerMoveAsync(() => {});
+COMPOSITOR.event.onGestureSwipe(() => {});
+COMPOSITOR.event.onGestureSwipeAsync(() => {});
+COMPOSITOR.event.onWindowMove(() => {});
+COMPOSITOR.event.onWindowResize(() => {});
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let lifecycle = evaluator
+            .lifecycle_enable("test", None)
+            .expect("runtime should load interaction listeners");
+        let event_config = lifecycle
+            .event_config
+            .expect("runtime should publish interaction listener configuration");
+        assert!(event_config.pointer_move);
+        assert!(event_config.pointer_move_async);
+        assert!(event_config.gesture_swipe);
+        assert!(event_config.gesture_swipe_async);
+
+        let pointer = PointerMoveEventSnapshot {
+            position: PointerMovePointSnapshot { x: 10.0, y: 20.0 },
+            delta: PointerMovePointSnapshot { x: 1.0, y: -1.0 },
+            target: PointerHitTargetSnapshot::None,
+            output_name: Some("output-1".into()),
+            modifiers: PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 1,
+        };
+        assert!(
+            evaluator
+                .pointer_move(&pointer, 1)
+                .expect("native pointer event should complete")
+                .invoked
+        );
+        assert!(
+            evaluator
+                .dispatch_pointer_move_async(&pointer, 1)
+                .expect("native async pointer event should complete")
+                .expect("runtime should be available")
+                .invoked
+        );
+
+        let gesture = GestureSwipeEventSnapshot {
+            phase: GestureSwipePhaseSnapshot::Update,
+            fingers: 3,
+            position: Some(pointer.position),
+            delta_x: 2.0,
+            delta_y: 3.0,
+            total_x: 4.0,
+            total_y: 5.0,
+            velocity_x: 6.0,
+            velocity_y: 7.0,
+            output_name: Some("output-1".into()),
+            device: None,
+            timestamp: 2,
+        };
+        assert!(
+            evaluator
+                .gesture_swipe(&gesture, 2)
+                .expect("native gesture event should complete")
+                .invoked
+        );
+        assert!(
+            evaluator
+                .dispatch_gesture_swipe_async(&gesture, 2)
+                .expect("native async gesture event should complete")
+                .expect("runtime should be available")
+                .invoked
+        );
+
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 3)
+            .expect("window cache should be initialized");
+        let point = WindowResizePointSnapshot { x: 10, y: 20 };
+        let modifiers = PointerModifierStateSnapshot {
+            logo: true,
+            alt: false,
+            ctrl: false,
+            shift: false,
+        };
+        let move_event = WindowMoveEventSnapshot {
+            source: WindowMoveSourceSnapshot::Modifier,
+            phase: WindowMovePhaseSnapshot::Update,
+            start_pointer: point,
+            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
+            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            start_rect: window.rect,
+            current_rect: window.rect,
+            output_name: Some("output-1".into()),
+            modifiers,
+            timestamp: 3,
+        };
+        assert!(
+            evaluator
+                .window_move(&window.id, &move_event, 3)
+                .expect("native window move should complete")
+                .invoked
+        );
+
+        let resize_event = WindowResizeEventSnapshot {
+            source: WindowResizeSourceSnapshot::Modifier,
+            phase: WindowResizePhaseSnapshot::Update,
+            edges: WindowResizeEdgesSnapshot {
+                left: false,
+                right: true,
+                top: false,
+                bottom: true,
+            },
+            start_pointer: point,
+            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
+            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            start_rect: window.rect,
+            current_rect: window.rect,
+            output_name: Some("output-1".into()),
+            timestamp: 4,
+        };
+        assert!(
+            evaluator
+                .window_resize(&window.id, &resize_event, 4)
+                .expect("native window resize should complete")
+                .invoked
+        );
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_transfers_all_effect_configs_through_native_bridge() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-native-effects-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  backdropSource,
+  Box,
+  compileEffect,
+  compileLayerEffect,
+  compilePopupEffect,
+  compileWindowEffect,
+  COMPOSITOR,
+  layerSource,
+  noise,
+  popupSource,
+  windowSource,
+} from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.effect.background_effect = compileEffect({
+  input: backdropSource(),
+  pipeline: [noise()],
+});
+COMPOSITOR.effect.window = () => ({
+  behind: compileWindowEffect({
+    input: windowSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.effect.layer = () => ({
+  replace: compileLayerEffect({
+    input: layerSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.effect.popup = () => ({
+  inFront: compilePopupEffect({
+    input: popupSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+
+        let background = evaluator
+            .background_effect_config()
+            .expect("native background effect should evaluate")
+            .expect("background effect should be present");
+        assert!(matches!(background.effect.input, EffectInput::Backdrop));
+
+        let window = evaluator
+            .evaluate_window(&make_window(false), 0)
+            .expect("native window effect should evaluate");
+        assert!(window.window_effects.is_some_and(|effects| {
+            effects
+                .behind
+                .is_some_and(|slot| matches!(slot.effect.input, EffectInput::WindowSource(_)))
+        }));
+        let cached_window = evaluator
+            .evaluate_cached_window(&make_window(false).id, None, 16, false)
+            .expect("native cached response should support a non-null window effect");
+        assert!(cached_window.window_effects.is_some_and(|effects| {
+            effects
+                .behind
+                .is_some_and(|slot| matches!(slot.effect.input, EffectInput::WindowSource(_)))
+        }));
+
+        let layer = WaylandLayerSnapshot {
+            id: "layer-1".into(),
+            namespace: Some("test".into()),
+            layer: crate::ssd::window_model::LayerKindSnapshot::Top,
+            output_name: "output-1".into(),
+            position: crate::ssd::window_model::LayerPositionSnapshot {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 32,
+            },
+            anchor: crate::ssd::window_model::LayerAnchorSnapshot {
+                top: true,
+                bottom: false,
+                left: true,
+                right: true,
+            },
+            exclusive_zone: crate::ssd::window_model::LayerExclusiveZoneSnapshot::Exclusive {
+                size: 32,
+            },
+            exclusive_edge: Some(crate::ssd::window_model::LayerEdgeSnapshot::Top),
+            margin: crate::ssd::window_model::LayerMarginSnapshot::default(),
+            keyboard_interactivity: crate::ssd::window_model::KeyboardInteractivitySnapshot::None,
+            desired_size: crate::ssd::window_model::LayerDesiredSizeSnapshot {
+                width: 800,
+                height: 32,
+            },
+        };
+        let layers = evaluator
+            .evaluate_layer_effects("output-1", &[layer], 0)
+            .expect("native layer effect should evaluate");
+        assert!(layers.effects.first().is_some_and(|assignment| {
+            assignment.effects.as_ref().is_some_and(|effects| {
+                effects
+                    .replace
+                    .as_ref()
+                    .is_some_and(|slot| matches!(slot.effect.input, EffectInput::LayerSource(_)))
+            })
+        }));
+
+        let popup = WaylandPopupSnapshot {
+            id: "popup-1".into(),
+            parent_id: "layer-1".into(),
+            parent_kind: crate::ssd::window_model::PopupParentKindSnapshot::Layer,
+            output_name: "output-1".into(),
+            position: crate::ssd::window_model::LayerPositionSnapshot {
+                x: 10,
+                y: 10,
+                width: 200,
+                height: 100,
+            },
+        };
+        let popups = evaluator
+            .evaluate_popup_effects("output-1", &[popup], 0)
+            .expect("native popup effect should evaluate");
+        assert!(popups.effects.first().is_some_and(|assignment| {
+            assignment.effects.as_ref().is_some_and(|effects| {
+                effects
+                    .in_front
+                    .as_ref()
+                    .is_some_and(|slot| matches!(slot.effect.input, EffectInput::PopupSource(_)))
+            }) && assignment.surface_policy.is_some_and(|policy| {
+                policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
+            })
+        }));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_preloads_default_config() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            repository_root.join("packages/config/src/index.tsx"),
+        )
+        .with_working_dir(&repository_root);
+
+        evaluator
+            .preload()
+            .expect("embedded runtime should preload the default config");
+    }
+
+    #[test]
+    fn embedded_runtime_fresh_instance_reloads_config() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-reload-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        let write_config = |text: &str| {
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+import {{ COMPOSITOR, Label }} from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text={text:?} />;
+"#
+                ),
+            )
+            .expect("test config should be written");
+        };
+        let evaluate_text = |evaluator: &EmbeddedDecorationEvaluator| {
+            let result = evaluator
+                .evaluate_window(&make_window(false), 0)
+                .expect("config should evaluate");
+            match result.node.kind {
+                DecorationNodeKind::Label(label) => label.text,
+                other => panic!("expected label root, got {other:?}"),
+            }
+        };
+
+        write_config("before");
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        assert_eq!(evaluate_text(&evaluator), "before");
+
+        write_config("after");
+        let reloaded = evaluator.fresh_like();
+        assert_eq!(evaluate_text(&reloaded), "after");
+
+        drop(reloaded);
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_returns_native_composition_patches_for_signal_updates() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-patch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  animationVariable,
+  Box,
+  ClientWindow,
+  COMPOSITOR,
+} from "shoji_wm";
+
+const phase = animationVariable("native-patch-test");
+COMPOSITOR.window.composition = (window) => {
+  const opacity = window.animation.variable(phase);
+  if (!window.animation.running(phase)) {
+    window.animation.start(phase, {
+      duration: 1000,
+      from: 0,
+      to: 1,
+    });
+  }
+  return <Box style={{ opacity }}><ClientWindow /></Box>;
+};
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 0)
+            .expect("initial native composition should evaluate");
+        let tick = evaluator
+            .scheduler_tick(16)
+            .expect("animation scheduler should advance");
+        assert!(tick.dirty_window_ids.iter().any(|id| id == &window.id));
+
+        let cached = evaluator
+            .evaluate_cached_window(&window.id, None, 16, false)
+            .expect("cached native composition should evaluate");
+        assert!(
+            cached.node.is_none(),
+            "signal-only updates must not return a full tree; dirty ids: {:?}",
+            cached.dirty_node_ids
+        );
+        assert!(
+            !cached.node_patches.is_empty(),
+            "signal-only updates must return native subtree patches"
+        );
+        assert!(cached.node_patches.iter().all(|patch| {
+            patch
+                .replacement_node()
+                .is_none_or(|node| node.stable_id.as_deref() == Some(patch.node_id()))
+        }));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_uses_direct_shader_uniform_patches_for_animation() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-uniform-patch-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        std::fs::write(
+            test_dir.join("animated.frag"),
+            "#version 100\nprecision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+        )
+        .expect("test shader should be written");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  animationVariable,
+  backdropSource,
+  ClientWindow,
+  compileEffect,
+  COMPOSITOR,
+  loadShader,
+  shaderStage,
+  ShaderEffect,
+  uniformArray,
+} from "shoji_wm";
+
+const phase = animationVariable("native-uniform-patch-test");
+COMPOSITOR.window.composition = (window) => {
+  const value = window.animation.variable(phase);
+  if (!window.animation.running(phase)) {
+    window.animation.start(phase, {
+      duration: 1000,
+      from: 0,
+      to: 1,
+    });
+  }
+  const effect = compileEffect({
+    input: backdropSource(),
+    pipeline: [
+      shaderStage(loadShader("./animated.frag"), {
+        uniforms: {
+          phase_01: value,
+          control_points: uniformArray.vec2([[value, 0], [1, value]]),
+        },
+      }),
+    ],
+  });
+  return <ShaderEffect shader={effect}><ClientWindow /></ShaderEffect>;
+};
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 0)
+            .expect("initial native composition should evaluate");
+        let tick = evaluator
+            .scheduler_tick(16)
+            .expect("animation scheduler should advance");
+        assert!(
+            tick.dirty_window_node_ids
+                .get(&window.id)
+                .is_some_and(|node_ids| !node_ids.is_empty()),
+            "uniform-only animation must remain node-scoped"
+        );
+        let cached = evaluator
+            .evaluate_cached_window(&window.id, None, 16, false)
+            .expect("cached native composition should evaluate");
+
+        assert!(!cached.node_patches.is_empty());
+        assert!(cached.node_patches.iter().any(|patch| matches!(
+            patch,
+            NativeCompositionPatch::ShaderUniform {
+                name,
+                stage_index: 0,
+                ..
+            } if name == "phase_01"
+        )));
+        assert!(cached.node_patches.iter().any(|patch| matches!(
+            patch,
+            NativeCompositionPatch::ShaderUniform {
+                name,
+                value: super::super::ShaderUniformValue::Vec2Array(values),
+                ..
+            } if name == "control_points"
+                && values.len() == 2
+                && values[0][0] > 0.0
+                && values[1][1] > 0.0
+        )));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_uses_direct_effect_uniform_patches_for_animation() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-effect-uniform-patch-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        std::fs::write(
+            test_dir.join("animated.frag"),
+            "#version 100\nprecision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+        )
+        .expect("test shader should be written");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  animationVariable,
+  Box,
+  compileWindowEffect,
+  COMPOSITOR,
+  loadShader,
+  shaderStage,
+  uniformArray,
+  windowSource,
+} from "shoji_wm";
+
+const phase = animationVariable("native-effect-uniform-patch-test");
+COMPOSITOR.window.composition = (window) => {
+  if (!window.animation.running(phase)) {
+    window.animation.start(phase, {
+      duration: 1000,
+      from: 0,
+      to: 1,
+    });
+  }
+  return <Box />;
+};
+COMPOSITOR.effect.window = (window) => ({
+  behind: compileWindowEffect({
+    input: windowSource(),
+    pipeline: [
+      shaderStage(loadShader("./animated.frag"), {
+        uniforms: {
+          phase_01: uniformArray.float(
+            window.animation.variable(phase)((value) => [value, 0.5]),
+          ),
+        },
+      }),
+    ],
+  }),
+});
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 0)
+            .expect("initial native effect should evaluate");
+        let patches_before = evaluator
+            .runtime
+            .lock()
+            .expect("runtime lock should be available")
+            .as_ref()
+            .expect("runtime should be initialized")
+            .child
+            .effect_uniform_patch_count();
+
+        evaluator
+            .scheduler_tick(16)
+            .expect("animation scheduler should advance");
+        let cached = evaluator
+            .evaluate_cached_window(&window.id, None, 16, false)
+            .expect("cached native effect should evaluate");
+        let patches_after = evaluator
+            .runtime
+            .lock()
+            .expect("runtime lock should be available")
+            .as_ref()
+            .expect("runtime should remain initialized")
+            .child
+            .effect_uniform_patch_count();
+
+        assert!(
+            patches_after > patches_before,
+            "effect animation must use the direct uniform slot path"
+        );
+        assert!(
+            cached.window_effect_uniform_only,
+            "cached effect animation must remain marked as uniform-only"
+        );
+        let phase = cached
+            .window_effects
+            .and_then(|effects| effects.behind)
+            .and_then(|slot| slot.effect.pipeline.into_iter().next())
+            .and_then(|stage| match stage {
+                EffectStage::Shader(shader) => shader.uniforms.get("phase_01").cloned(),
+                _ => None,
+            });
+        assert!(matches!(
+            phase,
+            Some(super::super::ShaderUniformValue::FloatArray(values))
+                if values.len() == 2 && values[0] > 0.0 && values[1] == 0.5
+        ));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_uses_configured_working_directory() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-cwd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text={Deno.cwd()} />;
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+        let result = evaluator
+            .evaluate_window(&make_window(false), 0)
+            .expect("config should evaluate");
+        match result.node.kind {
+            DecorationNodeKind::Label(label) => {
+                assert_eq!(PathBuf::from(label.text), test_dir);
+            }
+            other => panic!("expected label root, got {other:?}"),
+        }
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_serves_deno_unix_ipc() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-ipc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        let socket_path = test_dir.join("ipc.sock");
+        drop(
+            std::os::unix::net::UnixListener::bind(&socket_path)
+                .expect("stale Unix socket should be created"),
+        );
+        assert!(
+            socket_path.exists(),
+            "dropping a Unix listener should leave its socket path behind"
+        );
+        let socket_literal =
+            serde_json::to_string(&socket_path.to_string_lossy()).expect("path should serialize");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+ipc.handle("ping", () => "pong");
+COMPOSITOR.onDisable(() => ipc.close());
+COMPOSITOR.window.composition = () => <Box />;
+"#
+            ),
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("test", None)
+            .expect("embedded runtime should enable the IPC config");
+
+        let mut socket =
+            UnixStream::connect(&socket_path).expect("Deno Unix listener should accept clients");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout should be configured");
+        socket
+            .write_all(b"{\"id\":1,\"method\":\"ping\"}\n")
+            .expect("IPC request should be written");
+        let mut response = String::new();
+        BufReader::new(socket)
+            .read_line(&mut response)
+            .expect("IPC response should be read");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response)
+                .expect("IPC response should be JSON"),
+            serde_json::json!({ "id": 1, "result": "pong" })
+        );
+
+        evaluator
+            .lifecycle_disable("test")
+            .expect("embedded runtime should disable the IPC config");
+        assert!(
+            !socket_path.exists(),
+            "closing the Deno IPC server should remove its socket path"
+        );
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 
     #[test]

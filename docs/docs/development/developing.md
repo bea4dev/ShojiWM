@@ -39,14 +39,15 @@ you evaluate performance, add `--release`:
 ```bash
 cargo run --release -p shoji_wm -- --dev --tty
 ```
+
 :::
 
 ## Profiling
 
-ShojiWM splits work across two processes: the Rust compositor (`shoji_wm`) and the
-Node.js decoration runtime. The helper script
+ShojiWM runs the Rust compositor and the RustyScript/Deno decoration runtime in
+one `shoji_wm` process. The helper script
 [`tools/perf-top-functions.sh`](https://github.com/bea4dev/ShojiWM/blob/main/tools/perf-top-functions.sh)
-profiles **both** with Linux `perf`.
+profiles that process with Linux `perf`.
 
 1. Start ShojiWM with a **release** build and put it under the load you want to
    measure.
@@ -56,9 +57,9 @@ profiles **both** with Linux `perf`.
    tools/perf-top-functions.sh 20
    ```
 
-   The script auto-detects the `shoji_wm` and decoration-runtime PIDs, records
-   with `perf`, and writes top-10 self-time and inclusive symbol reports (you can
-   also pin targets with `PIDS=<pid,pid> tools/perf-top-functions.sh`).
+   The script auto-detects the `shoji_wm` PID, records with `perf`, and writes
+   top-10 self-time and inclusive symbol reports (you can also pin targets with
+   `PIDS=<pid,pid> tools/perf-top-functions.sh`).
 
 :::note
 `perf` may need relaxed kernel settings (e.g.
@@ -66,16 +67,6 @@ profiles **both** with Linux `perf`.
 recording fails.
 :::
 
-### Symbolizing Node.js functions
-
-By default `perf` cannot symbolize the JIT-compiled JavaScript in the decoration
-runtime, so Node frames show up as raw addresses. To make Node emit a perf symbol
-map, launch ShojiWM with the Node flag passed through `--decoration-runtime-node-arg`:
-
-```bash
-cargo run --release -p shoji_wm -- --dev --tty \
-  --decoration-runtime-node-arg --perf-basic-prof-only-functions
-```
-
-Then run `tools/perf-top-functions.sh` as above — the decoration runtime's
-JavaScript functions will now appear with names in the reports.
+V8 JIT frames may still appear as raw addresses in `perf`. Use ShojiWM's
+timescope profiler when you need timings for the compositor/runtime protocol
+boundaries.

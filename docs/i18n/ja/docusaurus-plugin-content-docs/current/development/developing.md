@@ -39,14 +39,15 @@ cargo run -p shoji_wm -- --dev --tty
 ```bash
 cargo run --release -p shoji_wm -- --dev --tty
 ```
+
 :::
 
 ## プロファイリング
 
-ShojiWM は処理を2つのプロセスに分けています。Rust 製コンポジター（`shoji_wm`）と
-Node.js 製の装飾ランタイムです。ヘルパースクリプト
+ShojiWM は、Rust 製コンポジターと RustyScript/Deno 製の装飾ランタイムを1つの
+`shoji_wm` プロセス内で実行します。ヘルパースクリプト
 [`tools/perf-top-functions.sh`](https://github.com/bea4dev/ShojiWM/blob/main/tools/perf-top-functions.sh)
-は、Linux の `perf` で**両方**をプロファイリングします。
+は、Linux の `perf` でこのプロセスをプロファイリングします。
 
 1. **リリース**ビルドで ShojiWM を起動し、測定したい負荷をかけます。
 2. 実行中に、N 秒間（デフォルト `15`）プロファイリングします。
@@ -55,9 +56,9 @@ Node.js 製の装飾ランタイムです。ヘルパースクリプト
    tools/perf-top-functions.sh 20
    ```
 
-   スクリプトは `shoji_wm` と装飾ランタイムの PID を自動検出し、`perf` で記録して、
-   self タイムと inclusive のトップ 10 シンボルのレポートを書き出します（`PIDS=<pid,pid>
-   tools/perf-top-functions.sh` のように対象を明示することもできます）。
+   スクリプトは `shoji_wm` の PID を自動検出し、`perf` で記録して、self タイムと
+   inclusive のトップ 10 シンボルのレポートを書き出します（`PIDS=<pid,pid>
+tools/perf-top-functions.sh` のように対象を明示することもできます）。
 
 :::note
 `perf` はカーネル設定の緩和が必要なことがあります（例:
@@ -65,17 +66,6 @@ Node.js 製の装飾ランタイムです。ヘルパースクリプト
 具体的な対処法を表示します。
 :::
 
-### Node.js の関数をシンボル化する
-
-デフォルトでは `perf` は装飾ランタイムの JIT コンパイルされた JavaScript をシンボル化
-できないため、Node のフレームは生のアドレスとして表示されます。Node に perf シンボル
-マップを出力させるには、`--decoration-runtime-node-arg` を通して Node のフラグを渡して
-ShojiWM を起動します。
-
-```bash
-cargo run --release -p shoji_wm -- --dev --tty \
-  --decoration-runtime-node-arg --perf-basic-prof-only-functions
-```
-
-その後、上記のとおり `tools/perf-top-functions.sh` を実行すると、装飾ランタイムの
-JavaScript 関数が名前付きでレポートに現れるようになります。
+V8 の JIT フレームは `perf` 上で生のアドレスとして表示される場合があります。
+コンポジターとランタイムプロトコルの境界を計測する場合は、ShojiWM の timescope
+プロファイラを使用してください。

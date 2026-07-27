@@ -364,6 +364,36 @@ TypeScript 側の値の型は、長さによって GLSL のユニフォーム型
 | `[number, number, number]` | `vec3` |
 | `[number, number, number, number]` | `vec4` |
 
+GLSL 配列には、明示的な `uniformArray.float/vec2/vec3/vec4` ヘルパーを使います。
+配列長は GLSL の宣言と一致させる必要があり、シェーダーバインディングの構造として
+扱われます。値の変更は native uniform fast path を通り、配列長の変更時だけ
+バインディングが再構築されます。
+
+```glsl
+uniform float weights[3];
+uniform vec2 control_points[2];
+```
+
+```ts
+import {signal, uniformArray} from 'shoji_wm';
+
+const phase = signal(0);
+
+shaderStage(loadShader('./shaders/weighted.frag'), {
+  uniforms: {
+    weights: uniformArray.float([1, phase, 0.25]),
+    control_points: uniformArray.vec2([
+      [0, 0],
+      [phase, 1],
+    ]),
+  },
+});
+```
+
+配列全体、各スカラー要素、ベクトルの各成分のいずれにも Signal を指定できます。
+空配列は使用できません。アニメーション中は配列長を固定し、異なる長さが必要な場合は
+エフェクトまたは composition の構造を差し替えてください。
+
 ### シェーダーをアニメーションする
 
 ユニフォームの値（各成分）は**シグナル**にできるので、変化する値を渡すことで

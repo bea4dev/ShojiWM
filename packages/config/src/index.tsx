@@ -612,6 +612,10 @@ COMPOSITOR.event.onOpen((window) => {
   HYBRID_WINDOW_MANAGER.onOpen(window);
 });
 
+COMPOSITOR.event.onInitialConfigure((window) => {
+  HYBRID_WINDOW_MANAGER.onInitialConfigure(window);
+});
+
 COMPOSITOR.event.onFirstCommit((window) => {
   HYBRID_WINDOW_MANAGER.onFirstCommit(window);
   scheduleWorkspaceBroadcast();
@@ -635,7 +639,7 @@ COMPOSITOR.event.onFocus((window, focused) => {
   }
 });
 
-COMPOSITOR.event.onPointerMoveAsync((event) => {
+COMPOSITOR.event.onPointerMove((event) => {
   HYBRID_WINDOW_MANAGER.onPointerMove(event);
 
   // Dock proximity: update only the monitor the pointer is currently on,
@@ -654,7 +658,7 @@ COMPOSITOR.event.onPointerMoveAsync((event) => {
   }
 });
 
-COMPOSITOR.event.onGestureSwipeAsync((event) => {
+COMPOSITOR.event.onGestureSwipe((event) => {
   HYBRID_WINDOW_MANAGER.onGestureSwipe(event);
   scheduleWorkspaceBroadcast();
 });
@@ -715,6 +719,13 @@ function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
 }
 
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
+  const decoration = window.decoration();
+  const useClientDecoration =
+    decoration.mode === "client" &&
+    !(
+      decoration.clientPreference === "server" &&
+      decoration.configuredMode === "server"
+    );
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
   const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
   const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
@@ -864,7 +875,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     );
   }
 
-  if (window.decoration().mode === "client") {
+  if (useClientDecoration) {
     return (
       <ManagedWindow
         rect={managedRect}

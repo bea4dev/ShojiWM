@@ -17,10 +17,7 @@ if [[ -n "${PIDS:-}" ]]; then
   pid_list="$PIDS"
 else
   mapfile -t detected_pids < <(
-    {
-      pgrep -x shoji_wm || true
-      pgrep -f 'node.*tools/decoration-runtime|node.*decoration-runtime|tsx.*tools/decoration-runtime|tsx.*decoration-runtime' || true
-    } | awk '!seen[$0]++ && $0 ~ /^[0-9]+$/'
+    pgrep -x shoji_wm | awk '!seen[$0]++ && $0 ~ /^[0-9]+$/' || true
   )
 
   if [[ "${#detected_pids[@]}" -eq 0 ]]; then
@@ -95,4 +92,3 @@ awk '
   echo "Saved files:"
   find "$out_dir" -maxdepth 1 -type f | sort
 } | tee -a "$out_dir/summary.txt"
-

@@ -3,10 +3,7 @@
 //! See: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.impl.portal.ScreenCast.html
 
 use std::collections::HashMap;
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::{Arc, Mutex};
 
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -135,9 +132,7 @@ struct SessionImpl {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl SessionImpl {
     #[zbus(property, name = "version")]
-    fn version(
-        &self
-    ) -> u32 {
+    fn version(&self) -> u32 {
         1
     }
 
@@ -145,14 +140,8 @@ impl SessionImpl {
         &self,
         #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> zbus::fdo::Result<()> {
-        self.inner
-            .cleanup_session(
-                &self.session_key,
-            );
-        if let Ok(path) = ObjectPath::try_from(
-            self.session_key
-                .clone(),
-        ) {
+        self.inner.cleanup_session(&self.session_key);
+        if let Ok(path) = ObjectPath::try_from(self.session_key.clone()) {
             let _ = server.remove::<Self, _>(&path).await;
         }
         Ok(())
@@ -172,27 +161,20 @@ const RESTORE_VERSION: u32 = 1;
 fn encode_restore_data(selection: &Selection) -> Value<'static> {
     let data = match selection {
         Selection::Output(out) => Value::from((
-            "output"
-                .to_string(),
-            out.name
-                .clone(),
+            "output".to_string(),
+            out.name.clone(),
             String::new(),
             String::new(),
         )),
         Selection::Toplevel(top) => Value::from((
-            "toplevel"
-                .to_string(),
-            top.identifier
-                .clone(),
-            top.app_id
-                .clone(),
-            top.title
-                .clone(),
+            "toplevel".to_string(),
+            top.identifier.clone(),
+            top.app_id.clone(),
+            top.title.clone(),
         )),
     };
     Value::from((
-        RESTORE_VENDOR
-            .to_string(),
+        RESTORE_VENDOR.to_string(),
         RESTORE_VERSION,
         Value::new(data),
     ))
@@ -211,20 +193,8 @@ fn append_restore_results(
     }
     match OwnedValue::try_from(encode_restore_data(selection)) {
         Ok(blob) => {
-            results
-                .insert(
-                    "persist_mode"
-                        .to_string(), 
-                    OwnedValue::from(
-                        persist_mode,
-                    ),
-                );
-            results
-                .insert(
-                    "restore_data"
-                        .to_string(),
-                    blob,
-                );
+            results.insert("persist_mode".to_string(), OwnedValue::from(persist_mode));
+            results.insert("restore_data".to_string(), blob);
         }
         Err(e) => tracing::warn!("failed to encode restore_data: {e}"),
     }
@@ -243,12 +213,9 @@ fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
         Value::Structure(s) => s,
         _ => return None,
     };
-    let fields = structure
-        .fields();
-    let vendor = match fields
-        .first()? {
-        Value::Str(s) => s
-            .as_str(),
+    let fields = structure.fields();
+    let vendor = match fields.first()? {
+        Value::Str(s) => s.as_str(),
         _ => return None,
     };
     let version = match fields.get(1)? {
@@ -268,10 +235,7 @@ fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
     };
     let field_str = |i: usize| -> Option<String> {
         match data.fields().get(i)? {
-            Value::Str(s) => Some(
-                s
-                    .to_string()
-            ),
+            Value::Str(s) => Some(s.to_string()),
             _ => None,
         }
     };
@@ -290,12 +254,7 @@ fn match_restore(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<Sel
     match request.kind.as_str() {
         "output" => sources.iter().find_map(|s| match &s.kind {
             SourceKind::Output(out) if out.name == request.key => {
-                Some(
-                    Selection::Output(
-                        out
-                            .clone()
-                    )
-                )
+                Some(Selection::Output(out.clone()))
             }
             _ => None,
         }),
@@ -311,41 +270,19 @@ fn match_restore(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<Sel
             // the cross-restart fallback; a unique app_id match handles
             // title drift (documents, web pages).
             if let Some(top) = toplevels.iter().find(|t| t.identifier == request.key) {
-                return Some(
-                    Selection::Toplevel(
-                        (
-                            *top
-                        ).clone()
-                    )
-                );
+                return Some(Selection::Toplevel((*top).clone()));
             }
             if !request.app_id.is_empty()
                 && let Some(top) = toplevels
                     .iter()
                     .find(|t| t.app_id == request.app_id && t.title == request.title)
             {
-                return Some(
-                    Selection::Toplevel(
-                        (
-                            *top
-                        ).clone()
-                    )
-                );
+                return Some(Selection::Toplevel((*top).clone()));
             }
             if !request.app_id.is_empty() {
-                let mut by_app = toplevels
-                    .iter()
-                    .filter(
-                        |t| t.app_id == request.app_id,
-                    );
+                let mut by_app = toplevels.iter().filter(|t| t.app_id == request.app_id);
                 if let (Some(top), None) = (by_app.next(), by_app.next()) {
-                    return Some(
-                        Selection::Toplevel(
-                            (
-                                *top
-                            ).clone(),
-                        ),
-                    );
+                    return Some(Selection::Toplevel((*top).clone()));
                 }
             }
             None
@@ -365,9 +302,7 @@ impl ScreenCast {
                 sessions: Mutex::new(HashMap::new()),
                 streams: Mutex::new(HashMap::new()),
                 cursor_visibility: Mutex::new(HashMap::new()),
-                persist_modes: Mutex::new(
-                    HashMap::new()
-                ),
+                persist_modes: Mutex::new(HashMap::new()),
                 thumbnail_tx,
             }),
         }
@@ -413,24 +348,13 @@ impl ScreenCast {
         // frontend can Close() us — that's how a session's stream gets torn
         // down when the app is done with it.
         let session = SessionImpl {
-            session_key: session_handle
-                .to_string(),
-            inner: self.inner
-                .clone(),
+            session_key: session_handle.to_string(),
+            inner: self.inner.clone(),
         };
         server
-            .at(
-                &session_handle, 
-                session,
-            )
+            .at(&session_handle, session)
             .await
-            .map_err(
-                |e| zbus::fdo::Error::Failed(
-                    format!(
-                        "export session object: {e}",
-                    ),
-                ),
-            )?;
+            .map_err(|e| zbus::fdo::Error::Failed(format!("export session object: {e}",)))?;
         Ok((0, HashMap::new()))
     }
 
@@ -452,34 +376,21 @@ impl ScreenCast {
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(cursor_modes::EMBEDDED);
         let cursor_visible = cursor_mode & cursor_modes::EMBEDDED != 0;
-        self.inner.cursor_visibility
+        self.inner
+            .cursor_visibility
             .lock()
             .unwrap()
             .insert(session_handle.to_string(), cursor_visible);
         let persist_mode = options
-            .get(
-                "persist_mode",
-            )
-            .and_then(
-                |v| u32::try_from(v)
-                    .ok(),
-            )
+            .get("persist_mode")
+            .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0);
-        self.inner.persist_modes
+        self.inner
+            .persist_modes
             .lock()
             .unwrap()
-            .insert(
-                session_handle
-                    .to_string(),
-                persist_mode,
-            );
-        let restore_request = options
-            .get(
-                "restore_data",
-            )
-            .and_then(
-                decode_restore_data,
-            );
+            .insert(session_handle.to_string(), persist_mode);
+        let restore_request = options.get("restore_data").and_then(decode_restore_data);
         tracing::info!(
             %handle, %session_handle, %app_id, requested_types = requested, cursor_mode, cursor_visible,
             "SelectSources: enumerating sources and prompting picker"
@@ -512,25 +423,17 @@ impl ScreenCast {
         if let Some(request) = restore_request {
             if let Some(selection) = match_restore(&request, &filtered) {
                 tracing::info!(
-                    %session_handle, 
+                    %session_handle,
                     ?selection,
                     "restore_data matched a live source; skipping picker",
                 );
                 drop(_stream_guard);
-                self.inner.sessions
+                self.inner
+                    .sessions
                     .lock()
                     .unwrap()
-                    .insert(
-                        session_handle
-                            .to_string(), 
-                        selection,
-                    );
-                return Ok(
-                    (
-                        0,
-                        HashMap::new(),
-                    )
-                );
+                    .insert(session_handle.to_string(), selection);
+                return Ok((0, HashMap::new()));
             }
             tracing::info!(
                 %session_handle,
@@ -545,7 +448,8 @@ impl ScreenCast {
             PickResult::Source(src) => match src.kind {
                 SourceKind::Output(out) => {
                     tracing::info!(?out, %session_handle, "picker: selected output");
-                    self.inner.sessions
+                    self.inner
+                        .sessions
                         .lock()
                         .unwrap()
                         .insert(session_handle.to_string(), Selection::Output(out));
@@ -553,7 +457,8 @@ impl ScreenCast {
                 }
                 SourceKind::Toplevel(top) => {
                     tracing::info!(?top, %session_handle, "picker: selected toplevel");
-                    self.inner.sessions
+                    self.inner
+                        .sessions
                         .lock()
                         .unwrap()
                         .insert(session_handle.to_string(), Selection::Toplevel(top));
@@ -598,9 +503,7 @@ impl ScreenCast {
             .persist_modes
             .lock()
             .unwrap()
-            .get(
-                &session_key
-            )
+            .get(&session_key)
             .copied()
             .unwrap_or(0);
         match selection {
@@ -628,7 +531,8 @@ impl ScreenCast {
                         return Ok((2, HashMap::new()));
                     }
                 };
-                self.inner.streams
+                self.inner
+                    .streams
                     .lock()
                     .unwrap()
                     .insert(
@@ -680,11 +584,7 @@ impl ScreenCast {
                     "streams".to_string(),
                     OwnedValue::try_from(Value::from(streams)).unwrap(),
                 );
-                append_restore_results(
-                    &mut results,
-                    persist_mode, 
-                    &Selection::Output(out),
-                );
+                append_restore_results(&mut results, persist_mode, &Selection::Output(out));
                 Ok((0, results))
             }
             Some(Selection::Toplevel(top)) => {
@@ -711,7 +611,8 @@ impl ScreenCast {
                         return Ok((2, HashMap::new()));
                     }
                 };
-                self.inner.streams
+                self.inner
+                    .streams
                     .lock()
                     .unwrap()
                     .insert(
@@ -751,13 +652,7 @@ impl ScreenCast {
                     "streams".to_string(),
                     OwnedValue::try_from(Value::from(streams)).unwrap(),
                 );
-                append_restore_results(
-                    &mut results, 
-                    persist_mode,
-                    &Selection::Toplevel(
-                        top,
-                    ),
-                );
+                append_restore_results(&mut results, persist_mode, &Selection::Toplevel(top));
                 Ok((0, results))
             }
             None => {

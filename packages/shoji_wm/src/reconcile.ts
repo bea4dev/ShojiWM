@@ -6,6 +6,7 @@ import { createComponentStateStore, withComponentRenderRoot } from "./runtime";
 import {
   enterWindowManagedDependencyScope,
   enterWindowDependencyScope,
+  enterWindowPatchDependencyScope,
   leaveWindowManagedDependencyScope,
   leaveWindowDependencyScope,
 } from "./runtime-hooks";
@@ -13,6 +14,7 @@ import {
   patchSerializedCompositionTree,
   serializeCompositionTree,
   type CompositionSerializationContext,
+  type ShaderUniformBinding,
 } from "./serialize";
 import type {
   CompositionChild,
@@ -54,6 +56,15 @@ export interface CompositionEvaluationResult {
   version: number;
 }
 
+export interface CompositionShaderUniformPatch {
+  bindingKey: string;
+  nodeId: string;
+  stageIndex: number;
+  name: string;
+  values: number[];
+  arrayElementWidth?: number;
+}
+
 export interface CompositionEvaluationCache {
   readonly window: ReactiveWaylandWindowHandle["window"];
   readonly version: number;
@@ -61,12 +72,16 @@ export interface CompositionEvaluationCache {
   readonly lastTree: CompositionChild;
   readonly lastTransform: WindowTransform;
   readonly lastManagedWindow: ManagedWindowState;
+  readonly shaderUniformBindings: readonly ShaderUniformBinding[];
   update(snapshot: WaylandWindowSnapshot): CompositionEvaluationResult | null;
   reevaluate(dirtyNodeIds?: readonly string[]): CompositionEvaluationResult;
   reevaluateManagedWindow(): Pick<
     CompositionEvaluationResult,
     "transform" | "managedWindow" | "version"
   >;
+  readShaderUniformPatches(
+    bindingKeys: readonly string[],
+  ): CompositionShaderUniformPatch[] | null;
   invokeHandler(handlerId: string): boolean;
   setContext(context: WindowCompositionContext): void;
 }
@@ -147,6 +162,11 @@ export function createCompositionEvaluationCache(
   let nextHandlerId = 1;
   let runtimeHandlers = new Map<string, () => void>();
   const handlerIdsByKey = new Map<string, string>();
+  const shaderUniformBindings = new Map<string, ShaderUniformBinding>();
+  const shaderUniformSnapshots = new Map<
+    string,
+    ReturnType<ShaderUniformBinding["read"]>
+  >();
 
   const serializationContext: CompositionSerializationContext = {
     registerClickHandler(key, handler) {
@@ -160,6 +180,10 @@ export function createCompositionEvaluationCache(
       handlerIdsByKey.set(key, handlerId);
       runtimeHandlers.set(handlerId, handler);
       return handlerId;
+    },
+    registerShaderUniformBinding(binding) {
+      shaderUniformBindings.set(binding.key, binding);
+      shaderUniformSnapshots.set(binding.key, binding.read());
     },
   };
 
@@ -175,6 +199,7 @@ export function createCompositionEvaluationCache(
       managedWindow = extracted.managedWindow;
       managedWindowProps = extracted.props;
       handle.updateManagedWindow(managedWindow);
+      shaderUniformBindings.clear();
       serialized = serializeCompositionTree(tree, serializationContext);
       transform = managedWindow.transform;
     } finally {
@@ -196,9 +221,21 @@ export function createCompositionEvaluationCache(
       return evaluateCurrentTree();
     }
 
-    enterWindowDependencyScope(currentSnapshot.id);
+    enterWindowPatchDependencyScope(currentSnapshot.id, dirtyNodeIds);
     try {
       const dirtyNodeIdSet = new Set(dirtyNodeIds);
+      for (const [key, binding] of shaderUniformBindings) {
+        if (
+          dirtyNodeIds.some(
+            (nodeId) =>
+              binding.nodeId === nodeId ||
+              binding.nodeId.startsWith(`${nodeId}.`) ||
+              binding.nodeId.startsWith(`${nodeId}[`),
+          )
+        ) {
+          shaderUniformBindings.delete(key);
+        }
+      }
       serialized = patchSerializedCompositionTree(
         tree,
         serialized,
@@ -244,6 +281,9 @@ export function createCompositionEvaluationCache(
     get lastManagedWindow() {
       return managedWindow;
     },
+    get shaderUniformBindings() {
+      return Array.from(shaderUniformBindings.values());
+    },
     update(nextSnapshot) {
       if (!shouldReevaluateComposition(currentSnapshot, nextSnapshot)) {
         handle.update(nextSnapshot);
@@ -271,6 +311,45 @@ export function createCompositionEvaluationCache(
         managedWindow,
         version,
       };
+    },
+    readShaderUniformPatches(bindingKeys) {
+      const patches: CompositionShaderUniformPatch[] = [];
+      const nextSnapshots = new Map<
+        string,
+        NonNullable<ReturnType<ShaderUniformBinding["read"]>>
+      >();
+      for (const bindingKey of bindingKeys) {
+        const binding = shaderUniformBindings.get(bindingKey);
+        if (!binding) {
+          return null;
+        }
+        const snapshot = binding.read();
+        if (snapshot === null) {
+          return null;
+        }
+        const previous = shaderUniformSnapshots.get(bindingKey);
+        if (
+          previous === undefined ||
+          previous === null ||
+          previous.values.length !== snapshot.values.length ||
+          previous.arrayElementWidth !== snapshot.arrayElementWidth
+        ) {
+          return null;
+        }
+        nextSnapshots.set(bindingKey, snapshot);
+        patches.push({
+          bindingKey,
+          nodeId: binding.nodeId,
+          stageIndex: binding.stageIndex,
+          name: binding.name,
+          values: snapshot.values,
+          arrayElementWidth: snapshot.arrayElementWidth,
+        });
+      }
+      for (const [bindingKey, snapshot] of nextSnapshots) {
+        shaderUniformSnapshots.set(bindingKey, snapshot);
+      }
+      return patches;
     },
     invokeHandler(handlerId) {
       const handler = runtimeHandlers.get(handlerId);

@@ -18,7 +18,6 @@ ShojiWM は1つのスクリプト `dist/install.sh` でソースからインス�
 
 - 動作する Wayland / DRM 環境を備えた Linux システム
 - 最近の Rust ツールチェーン（`cargo`）
-- Node.js 18 以降（`npm` を含む）
 - 以下のネイティブライブラリ（および開発用ヘッダー）。ShojiWM がリンクします。
   - `libwayland`
   - `libxkbcommon`
@@ -42,6 +41,7 @@ sudo apt install libwayland-dev libxkbcommon-dev libudev-dev libinput-dev \
 # Arch Linux
 sudo pacman -S wayland libxkbcommon systemd-libs libinput mesa seatd xorg-xwayland
 ```
+
 :::
 
 :::note[xwayland-satellite は必須です]
@@ -68,6 +68,7 @@ git clone -b shojiwm https://github.com/bea4dev/xwayland-satellite.git
 cd xwayland-satellite
 cargo install --path ./
 ```
+
 :::
 
 ## インストール
@@ -81,8 +82,9 @@ cd ShojiWM
 システムディレクトリへのコピーが必要になると、スクリプトが `sudo` を要求します。
 スクリプトは次のことを行います。
 
-- コンポジターと xdg-desktop-portal バックエンドを**ビルド**し（`cargo`）、TypeScript
-  ランタイムの依存関係をインストールします（`npm ci`）。
+- コンポジターと xdg-desktop-portal バックエンドを `cargo` で**ビルド**します。
+- RustyScript を通して Deno/V8 TypeScript エンジンをコンポジターへ埋め込みます。
+  実行時に Node.js は必要ありません。
 - コンポジターを `/usr/bin/shoji_wm` に、ランタイムを `/usr/lib/shojiwm` に
   インストールします。
 - `~/.config/shojiwm` に**デフォルトのユーザー設定**を作成します（既存の設定はそのまま
@@ -94,11 +96,11 @@ cd ShojiWM
 
 ### インストールオプション
 
-| フラグ | 効果 |
-| --- | --- |
-| `--no-build` | `cargo` / `npm` のビルドをスキップし、既存のバイナリを使う |
+| フラグ        | 効果                                                |
+| ------------- | --------------------------------------------------- |
+| `--no-build`  | `cargo` のビルドをスキップし、既存のバイナリを使う  |
 | `--no-portal` | xdg-desktop-portal バックエンドをインストールしない |
-| `--no-config` | ユーザー設定の作成・更新を行わない |
+| `--no-config` | ユーザー設定の作成・更新を行わない                  |
 
 `./dist/install.sh --help` でこの一覧を表示できます。
 
@@ -107,9 +109,14 @@ cd ShojiWM
 ShojiWM は実験的な Nix flake も提供しています。構成はソースインストーラーと同じ考え方で、
 次のように分離します。
 
-- コンポジター、portal バックエンド、TypeScript ランタイムは Nix store に配置
+- コンポジター、portal バックエンド、組み込み Deno/V8 エンジン、TypeScript
+  ランタイムのソースは Nix store に配置
 - 編集する TypeScript 設定は `~/.config/shojiwm` に配置
 - 開発時は引き続き `--dev` でソースツリーを直接参照
+
+インストール済みコンポジターの実行時依存に Node.js は含まれません。Nix は ShojiWM の
+ビルド時に、バージョンを固定した `rusty_v8` archive を固定出力依存として取得し、
+コンポジター本体へリンクします。
 
 :::warning[実験的機能]
 NixOS 対応は追加直後です。常用環境で使う前に、リポジトリの最新状態を確認してください。
@@ -166,12 +173,14 @@ activation 時に指定ユーザーの ShojiWM TypeScript 設定ディレクト�
 既存の `src/index.tsx` や `src/window-manager.ts` などのユーザー設定ファイルは保持されます。
 一方で、次の生成済みサポートファイルは rebuild のたびに同期されます。
 
-- 現在の Nix store package を指す `node_modules/shoji_wm`
+- 現在の Nix store 内の TypeScript package を指す `node_modules/shoji_wm`
 - `package.json`
 - `tsconfig.json`
 
-これらの同期は重要です。TypeScript runtime は TSX/JSX 変換に `tsconfig.json` を使い、
-型と runtime import の解決に `shoji_wm` package link を使います。
+これらは、エディターの診断や単独での TypeScript 型チェックをインストール済みの
+ShojiWM と同期させるために使われます。Node.js の実行時依存ではありません。
+コンポジター本体は、埋め込み RustyScript/Deno ランタイムで config の解決と変換を
+行います。
 
 NixOS module に config directory を管理させたくない場合は `initConfig` を省略し、
 編集可能な TypeScript 設定を手動で初期化します。
@@ -190,9 +199,11 @@ ShojiWM のソースツリーで次を実行します。
 
 ```bash
 nix develop
-npm ci
 cargo run --release -p shoji_wm -- --dev
 ```
+
+リポジトリの TypeScript 型チェックやドキュメント開発ツールを使う場合に限り、
+別途 `npm ci` を実行してください。
 
 `--dev` では現在と同じくリポジトリ内のファイルを直接使います。
 
@@ -200,11 +211,10 @@ cargo run --release -p shoji_wm -- --dev
 ./tools/decoration-runtime.ts
 ./packages/config/src/index.tsx
 ./packages/shoji_wm
-./node_modules/.bin/tsx
 ```
 
-つまり、Nix はネイティブ依存を揃えるために使い、TS 設定や runtime の編集は今まで通り
-素早く試せます。
+つまり、Nix はネイティブ依存と固定済みの `rusty_v8` archive を揃えるために使い、
+TS 設定や runtime の編集は今まで通り素早く試せます。
 
 ### xwayland-satellite fork
 

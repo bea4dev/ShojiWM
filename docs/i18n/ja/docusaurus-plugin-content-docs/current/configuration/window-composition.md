@@ -13,12 +13,21 @@ sidebar_position: 7
 COMPOSITOR.window.composition = (window) => (
   <ManagedWindow rect={window.position} zIndex={1}>
     <WindowBorder
-      style={{borderRadius: 10, border: {px: 2, color: window.isFocused((f) => (f ? '#d7ba7d' : '#4f5666'))}}}
+      style={{
+        borderRadius: 10,
+        border: {
+          px: 2,
+          color: window.isFocused((f) => (f ? "#d7ba7d" : "#4f5666")),
+        },
+      }}
     >
       <Box direction="column">
-        <Box direction="row" style={{height: 28, paddingX: 8, gap: 8, alignItems: 'center'}}>
-          <AppIcon icon={window.icon} style={{width: 16, height: 16}} />
-          <Label text={window.title} style={{flexGrow: 1, fontSize: 13}} />
+        <Box
+          direction="row"
+          style={{ height: 28, paddingX: 8, gap: 8, alignItems: "center" }}
+        >
+          <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+          <Label text={window.title} style={{ flexGrow: 1, fontSize: 13 }} />
         </Box>
         <ClientWindow />
       </Box>
@@ -42,21 +51,21 @@ COMPOSITOR.window.composition = (window) => (
 それぞれ `ReadonlySignal` です――`window.title()` や `window.title.value` のように
 読むか、`window.isFocused((f) => f ? 'a' : 'b')` のようにマップします。
 
-| プロパティ | 型 | 意味 |
-| --- | --- | --- |
-| `title` | `string` | ウィンドウタイトル |
-| `appId` | `string \| undefined` | アプリケーション id（例: `"org.gnome.Nautilus"`） |
-| `icon` | `WindowIcon \| undefined` | アプリケーションアイコン |
-| `isFocused` | `boolean` | キーボードフォーカスを持つ |
-| `isFloating` | `boolean` | フローティング（非タイル） |
-| `isMaximized` | `boolean` | 最大化 |
-| `isFullscreen` | `boolean` | フルスクリーン |
-| `decoration` | `WindowDecorationState` | 有効な CSD／SSD ネゴシエーション状態 |
-| `isResizable` | `boolean` | クライアントがインタラクティブリサイズを許可 |
-| `isTransient` | `boolean` | 別ウィンドウの子（ダイアログ） |
-| `parentId` | `string \| undefined` | トランジェントの場合の親ウィンドウ id |
-| `sizeConstraints` | `WindowSizeConstraints` | クライアントの最小／最大サイズ |
-| `interaction` | スナップショット | 現在のポインター／ドラッグの状態 |
+| プロパティ        | 型                        | 意味                                              |
+| ----------------- | ------------------------- | ------------------------------------------------- |
+| `title`           | `string`                  | ウィンドウタイトル                                |
+| `appId`           | `string \| undefined`     | アプリケーション id（例: `"org.gnome.Nautilus"`） |
+| `icon`            | `WindowIcon \| undefined` | アプリケーションアイコン                          |
+| `isFocused`       | `boolean`                 | キーボードフォーカスを持つ                        |
+| `isFloating`      | `boolean`                 | フローティング（非タイル）                        |
+| `isMaximized`     | `boolean`                 | 最大化                                            |
+| `isFullscreen`    | `boolean`                 | フルスクリーン                                    |
+| `decoration`      | `WindowDecorationState`   | 有効な CSD／SSD ネゴシエーション状態              |
+| `isResizable`     | `boolean`                 | クライアントがインタラクティブリサイズを許可      |
+| `isTransient`     | `boolean`                 | 別ウィンドウの子（ダイアログ）                    |
+| `parentId`        | `string \| undefined`     | トランジェントの場合の親ウィンドウ id             |
+| `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
+| `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
 非リアクティブなヘルパー: `id`（安定した文字列）、`position` / `rect`（現在の論理
 ジオメトリ）、`state`（ウィンドウごとのストア。[状態とシグナル](./state-and-signals.md)
@@ -84,20 +93,30 @@ COMPOSITOR.window.decoration.configure((window, context) => {
   return { mode: "server" };
 });
 
-COMPOSITOR.window.composition = (window) => (
-  <ManagedWindow rect={window.position} zIndex={1}>
-    {window.decoration().mode === "client" ? (
-      <ClientWindow />
-    ) : (
-      <WindowBorder style={{ border: { px: 2, color: "#4f5666" } }}>
-        <Box direction="column">
-          {/* タイトルバー */}
-          <ClientWindow />
-        </Box>
-      </WindowBorder>
-    )}
-  </ManagedWindow>
-);
+COMPOSITOR.window.composition = (window) => {
+  const decoration = window.decoration();
+  const useClientDecoration =
+    decoration.mode === "client" &&
+    !(
+      decoration.clientPreference === "server" &&
+      decoration.configuredMode === "server"
+    );
+
+  return (
+    <ManagedWindow rect={window.position} zIndex={1}>
+      {useClientDecoration ? (
+        <ClientWindow />
+      ) : (
+        <WindowBorder style={{ border: { px: 2, color: "#4f5666" } }}>
+          <Box direction="column">
+            {/* タイトルバー */}
+            <ClientWindow />
+          </Box>
+        </WindowBorder>
+      )}
+    </ManagedWindow>
+  );
+};
 ```
 
 resolver は装飾オブジェクトの作成、クライアント要求の変更、関連メタデータの変更、
@@ -110,17 +129,21 @@ TS config のリロード時に同期的に実行されます。`context` の内
 ウィンドウ枠を構築し、後から CSD を返しても完全には作り直さないことがあります。resolver は
 副作用なしである必要があり、この中で `focus()` などのウィンドウ操作を呼ぶとエラーになります。
 
-| プロパティ | 意味 |
-| --- | --- |
-| `protocol` | `xdg-decoration-v1`、`kde-server-decoration`、`xwayland`、`none` のいずれか |
-| `clientPreference` | クライアントが要求したモード。未指定なら `null` |
-| `canNegotiate` | 装飾プロトコルを通して決定をクライアントへ送れるか |
-| `reason` | ポリシーが評価された理由 |
+| プロパティ         | 意味                                                                        |
+| ------------------ | --------------------------------------------------------------------------- |
+| `protocol`         | `xdg-decoration-v1`、`kde-server-decoration`、`xwayland`、`none` のいずれか |
+| `clientPreference` | クライアントが要求したモード。未指定なら `null`                             |
+| `canNegotiate`     | 装飾プロトコルを通して決定をクライアントへ送れるか                          |
+| `reason`           | ポリシーが評価された理由                                                    |
 
 `window.decoration.configuredMode` は ShojiWM が最後に選択したモードです。
 `window.decoration.mode` はクライアントが ack し commit した有効なモードなので、描画の
-分岐にはこちらを使います。XDG の configure／ack／commit 中は、両者が一時的に異なる
-場合があります。
+通常の基準にはこちらを使います。XDG の configure／ack／commit 中は、両者が一時的に
+異なる場合があります。`clientPreference` と `configuredMode` がどちらも `server` なら、
+クライアントとコンポジターはすでに SSD で合意しているため、上の例では effective mode の
+反映を待たず SSD を描画します。これにより、activation まで configure の commit を遅らせる
+ツールキットでも起動直後に装飾なしの状態にならず、CSD を要求したクライアントへ SSD を
+強制することもありません。
 
 `canNegotiate` が `false` の場合でも、ShojiWM はどちらの composition を描くか選べます。
 ただし、クライアントに CSD の追加や削除を強制することはできません。XWayland は
@@ -134,37 +157,37 @@ TS config のリロード時に同期的に実行されます。`context` の内
 
 ### メソッド
 
-| メソッド | 効果 |
-| --- | --- |
-| `close()` | クライアントに閉じるよう要求 |
-| `maximize()` / `unmaximize()` | 最大化の切り替え |
-| `minimize()` | 最小化 |
-| `fullscreen()` / `unfullscreen()` | フルスクリーンの切り替え |
-| `focus()` | キーボードフォーカスを与え前面に出す |
-| `scheduleAnimation(options)` | マネージドウィンドウのジオメトリをアニメーション |
-| `cancelAnimation(channel?)` | 実行中のアニメーションをキャンセル |
-| `setCloseAnimationDuration(ms)` | 閉じるアニメーションに合わせてサーフェス破棄を遅延 |
-| `isXWayland()` | XWayland 上で動作中なら `true` |
+| メソッド                          | 効果                                               |
+| --------------------------------- | -------------------------------------------------- |
+| `close()`                         | クライアントに閉じるよう要求                       |
+| `maximize()` / `unmaximize()`     | 最大化の切り替え                                   |
+| `minimize()`                      | 最小化                                             |
+| `fullscreen()` / `unfullscreen()` | フルスクリーンの切り替え                           |
+| `focus()`                         | キーボードフォーカスを与え前面に出す               |
+| `scheduleAnimation(options)`      | マネージドウィンドウのジオメトリをアニメーション   |
+| `cancelAnimation(channel?)`       | 実行中のアニメーションをキャンセル                 |
+| `setCloseAnimationDuration(ms)`   | 閉じるアニメーションに合わせてサーフェス破棄を遅延 |
+| `isXWayland()`                    | XWayland 上で動作中なら `true`                     |
 
 ## ManagedWindow
 
 `<ManagedWindow/>` はウィンドウをレイアウトシステムに結びつけるアンカーです。
 ウィンドウごとに1つ置きます。
 
-| Prop | 型 | 意味 |
-| --- | --- | --- |
-| `rect` | `ManagedWindowRect` | ウィンドウの論理的な `{x, y, width, height}` |
-| `zIndex` | `number` | 重なり順（大きいほど上） |
-| `workspace` | `string \| number` | ワークスペース割り当て |
-| `visibleOutputs` | `string[] \| null` | 指定出力に限定（`null` で全出力） |
-| `visible` | `boolean` | アンマップせずに表示／非表示 |
-| `idle` | `boolean` | フォーカス巡回から除外。背景として扱う |
-| `interactive` | `boolean` | `false` のときポインター入力を無視 |
-| `forceRectSize` | `boolean` | クライアントを `rect` のサイズに強制 |
-| `tiled` | `boolean` | タイル状態をクライアントに送る |
-| `opacity` | `number` | `0.0`〜`1.0` |
-| `transform` | `ManagedWindowTransform` | 追加の GPU トランスフォーム |
-| `allowTearing` | `boolean` | フルスクリーン＋ダイレクトスキャンアウト時のテアリングを許可（ゲーム向け） |
+| Prop             | 型                       | 意味                                                                       |
+| ---------------- | ------------------------ | -------------------------------------------------------------------------- |
+| `rect`           | `ManagedWindowRect`      | ウィンドウの論理的な `{x, y, width, height}`                               |
+| `zIndex`         | `number`                 | 重なり順（大きいほど上）                                                   |
+| `workspace`      | `string \| number`       | ワークスペース割り当て                                                     |
+| `visibleOutputs` | `string[] \| null`       | 指定出力に限定（`null` で全出力）                                          |
+| `visible`        | `boolean`                | アンマップせずに表示／非表示                                               |
+| `idle`           | `boolean`                | フォーカス巡回から除外。背景として扱う                                     |
+| `interactive`    | `boolean`                | `false` のときポインター入力を無視                                         |
+| `forceRectSize`  | `boolean`                | クライアントを `rect` のサイズに強制                                       |
+| `tiled`          | `boolean`                | タイル状態をクライアントに送る                                             |
+| `opacity`        | `number`                 | `0.0`〜`1.0`                                                               |
+| `transform`      | `ManagedWindowTransform` | 追加の GPU トランスフォーム                                                |
+| `allowTearing`   | `boolean`                | フルスクリーン＋ダイレクトスキャンアウト時のテアリングを許可（ゲーム向け） |
 
 すべての prop はリアクティブなレイアウトのためにシグナルを受け付けます。`rect`・
 `zIndex` などは通常、あなたのウィンドウマネージャのロジックが駆動します。
@@ -189,7 +212,7 @@ ManagedWindow のスロットを占有しているという理由だけでは切
 
 ```tsx
 <WindowBorder
-  style={{border: {px: 2, color: borderColor}, borderRadius: 8}}
+  style={{ border: { px: 2, color: borderColor }, borderRadius: 8 }}
 >
   <ClientWindow />
 </WindowBorder>

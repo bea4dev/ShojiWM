@@ -1,8 +1,4 @@
-import type {
-  EnvController,
-  EnvUpdatePayload,
-  EnvValue,
-} from "./types";
+import type { EnvController, EnvUpdatePayload, EnvValue } from "./types";
 
 interface PendingEnvOperation {
   key: string;
@@ -16,7 +12,9 @@ const desiredEnvironment = new Map<string, string>();
 function normalizeKey(key: string): string {
   const normalized = String(key);
   if (!normalized || normalized.includes("=") || normalized.includes("\0")) {
-    throw new Error(`invalid environment variable name: ${JSON.stringify(key)}`);
+    throw new Error(
+      `invalid environment variable name: ${JSON.stringify(key)}`,
+    );
   }
   return normalized;
 }
@@ -28,18 +26,33 @@ function normalizeValue(value: EnvValue): string {
   return String(value);
 }
 
-function processEnv(): Record<string, string | undefined> {
+function processEnv(): Record<string, string | undefined> | undefined {
   return (
-    (globalThis as { process?: { env?: Record<string, string | undefined> } })
-      .process?.env ?? {}
-  );
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env;
 }
+
+const denoEnv = (
+  globalThis as typeof globalThis & {
+    Deno?: {
+      env: {
+        get(key: string): string | undefined;
+        set(key: string, value: string): void;
+        delete(key: string): void;
+      };
+    };
+  }
+).Deno?.env;
 
 export const ENV_CONTROLLER: EnvController = {
   set(key, value) {
     const normalizedKey = normalizeKey(key);
     const normalizedValue = normalizeValue(value);
-    processEnv()[normalizedKey] = normalizedValue;
+    denoEnv?.set(normalizedKey, normalizedValue);
+    const env = processEnv();
+    if (env) {
+      env[normalizedKey] = normalizedValue;
+    }
     pendingOperations.push({
       key: normalizedKey,
       value: normalizedValue,
@@ -48,12 +61,17 @@ export const ENV_CONTROLLER: EnvController = {
   },
   unset(key) {
     const normalizedKey = normalizeKey(key);
-    delete processEnv()[normalizedKey];
+    denoEnv?.delete(normalizedKey);
+    const env = processEnv();
+    if (env) {
+      delete env[normalizedKey];
+    }
     pendingOperations.push({ key: normalizedKey });
     desiredEnvironment.delete(normalizedKey);
   },
   get(key) {
-    return processEnv()[normalizeKey(key)];
+    const normalizedKey = normalizeKey(key);
+    return denoEnv?.get(normalizedKey) ?? processEnv()?.[normalizedKey];
   },
   apply(values) {
     for (const [key, value] of Object.entries(values)) {

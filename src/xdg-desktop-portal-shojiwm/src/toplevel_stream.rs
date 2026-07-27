@@ -22,13 +22,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::os::fd::{
-    AsFd,
-    AsRawFd,
-    BorrowedFd,
-    OwnedFd,
-    RawFd
-};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -774,15 +768,15 @@ impl AppState {
         {
             let _ = tx.send(Ok(stream.node_id()));
         }
-        self.is_streaming = matches!(
-            new,
-            pw::stream::StreamState::Streaming,
-        );
+
+        self.is_streaming = matches!(new, pw::stream::StreamState::Streaming,);
+
         // Entering Streaming means the renegotiation (if any) has concluded
         // from the graph's point of view — never leave the quiesce flag stuck.
         if self.is_streaming {
             self.renegotiating = false;
         }
+
         // Kick a capture whenever we (re-)enter Streaming with no frame in
         // flight. The old one-shot `capture_kicked` latch only covered our own
         // size renegotiations; a consumer-initiated renegotiation (Chromium
@@ -790,10 +784,8 @@ impl AppState {
         // the stream through Paused and abandons the in-flight frame, leaving
         // no other restart path. `pending_frame.is_some()` covers the benign
         // Paused→Streaming blips where a capture is still in flight.
-        if self.is_streaming && self.pending_frame
-            .is_none() {
-            self
-                .kick_capture();
+        if self.is_streaming && self.pending_frame.is_none() {
+            self.kick_capture();
         }
         if matches!(
             new,
@@ -903,8 +895,7 @@ impl AppState {
             let data = &mut datas[0];
             data.type_ = spa_sys::SPA_DATA_MemFd;
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
-            data.fd = fd_for_pw
-                .as_raw_fd() as i64;
+            data.fd = fd_for_pw.as_raw_fd() as i64;
             data.data = std::ptr::null_mut();
             data.maxsize = size as u32;
             data.mapoffset = 0;
@@ -931,10 +922,8 @@ impl AppState {
         // A renegotiation can replace the whole buffer pool without the stream
         // ever leaving Streaming; the teardown abandons any in-flight frame, so
         // restart the capture cycle as soon as a fresh buffer exists.
-        if self.is_streaming && self.pending_frame
-            .is_none() {
-            self
-                .kick_capture();
+        if self.is_streaming && self.pending_frame.is_none() {
+            self.kick_capture();
         }
     }
 

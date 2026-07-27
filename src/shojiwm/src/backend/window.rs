@@ -527,7 +527,11 @@ where
 
     surface_elements(window, renderer, location, scale, alpha)
         .into_iter()
-        .filter(|element| root_id.as_ref().is_none_or(|root_id| element.id() != root_id))
+        .filter(|element| {
+            root_id
+                .as_ref()
+                .is_none_or(|root_id| element.id() != root_id)
+        })
         .collect()
 }
 

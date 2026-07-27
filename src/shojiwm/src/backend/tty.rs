@@ -9221,8 +9221,132 @@ fn configured_background_effect_elements_for_layer(
                 upper_layer_source_damage,
             ));
         }
+        if effect_config.effect.uses_layer_source_input() {
+            entries.extend(collect_layer_source_damage(
+                std::iter::once(layer_surface.clone()),
+                upper_layer_source_damage,
+            ));
+        }
         entries
     };
+    let stable_key = format!(
+        "__layer_background_effect_{}_{}_top_{}x{}",
+        output.name(),
+        layer_surface.wl_surface().id().protocol_id(),
+        effect_rect.width,
+        effect_rect.height
+    );
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    stable_key.hash(&mut hasher);
+    if uses_backdrop || uses_xray {
+        lower_layer_scene_generation.hash(&mut hasher);
+    }
+    if uses_backdrop {
+        hash_window_scene_contributors(
+            &mut hasher,
+            space,
+            window_decorations,
+            windows_top_to_bottom,
+            effect_rect,
+        );
+    }
+    if uses_backdrop || uses_xray {
+        hash_layer_scene_contributors(&mut hasher, output, &lower_layers, effect_rect);
+    }
+    if uses_backdrop {
+        hash_layer_scene_contributors(&mut hasher, output, upper_layers_below, effect_rect);
+    }
+    format!("{:?}", effect_config.effect).hash(&mut hasher);
+    (
+        effect_rect.x,
+        effect_rect.y,
+        effect_rect.width,
+        effect_rect.height,
+        capture_geo.loc.x,
+        capture_geo.loc.y,
+        capture_geo.size.w,
+        capture_geo.size.h,
+    )
+        .hash(&mut hasher);
+    let signature = hasher.finish();
+    let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
+        &effect_config.effect,
+        smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
+            (effect_rect.width, effect_rect.height).into(),
+        ),
+        &relevant_source_damage,
+    );
+    let captured_local_rect = smithay::utils::Rectangle::new(
+        smithay::utils::Point::from((
+            effect_rect.x - output_geo.loc.x,
+            effect_rect.y - output_geo.loc.y,
+        )),
+        (effect_rect.width, effect_rect.height).into(),
+    );
+    let mut elements = Vec::new();
+    if !matches!(
+        effect_config.effect.invalidate_policy(),
+        crate::ssd::EffectInvalidationPolicy::Always
+    ) && !source_damage_hit
+    {
+        if let Some(existing) = layer_backdrop_cache
+            .get(&stable_key)
+            .filter(|existing| existing.signature == signature)
+            .cloned()
+        {
+            for rect in rects {
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    stable_key, rect.x, rect.y, rect.width, rect.height
+                );
+                let rect_local = smithay::utils::Rectangle::new(
+                    smithay::utils::Point::from((
+                        rect.x - output_geo.loc.x,
+                        rect.y - output_geo.loc.y,
+                    )),
+                    (rect.width, rect.height).into(),
+                );
+                if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
+                    tracing::info!(
+                        layer_surface = ?layer_surface.wl_surface().id(),
+                        output = %output.name(),
+                        rect = ?rect,
+                        rect_local = ?rect_local,
+                        captured_local_rect = ?captured_local_rect,
+                        from_cache = true,
+                        "backdrop debug: layer effect element"
+                    );
+                }
+                elements.push(TtyRenderElements::Backdrop(
+                    crate::backend::shader_effect::backdrop_shader_element(
+                        renderer,
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.id.clone())
+                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                        existing
+                            .sub_elements
+                            .get(&rect_key)
+                            .map(|entry| entry.commit_counter)
+                            .unwrap_or_default(),
+                        existing.texture.clone(),
+                        rect_local,
+                        rect_local,
+                        captured_local_rect,
+                        &effect_config.effect,
+                        alpha,
+                        scale.x as f32,
+                        None,
+                        0.0,
+                        format!("layer-top:{}:{}", output.name(), rect_key),
+                    )?,
+                ));
+            }
+            return Ok(elements);
+        }
+    }
     let backdrop_texture = if effect_config.effect.uses_backdrop_input() {
         let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
         // Upper layers below this one render above every toplevel window, so
@@ -9417,134 +9541,6 @@ fn configured_background_effect_elements_for_layer(
             from_cache = false,
             "backdrop debug: layer effect texture"
         );
-    }
-    let _captured_local_rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
-        smithay::utils::Rectangle::new(
-            smithay::utils::Point::from((
-                effect_rect.x - output_geo.loc.x,
-                effect_rect.y - output_geo.loc.y,
-            )),
-            (effect_rect.width, effect_rect.height).into(),
-        );
-
-    let mut elements = Vec::new();
-    let stable_key = format!(
-        "__layer_background_effect_{}_{}_top_{}x{}",
-        output.name(),
-        layer_surface.wl_surface().id().protocol_id(),
-        effect_rect.width,
-        effect_rect.height
-    );
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    stable_key.hash(&mut hasher);
-    if uses_backdrop || uses_xray {
-        lower_layer_scene_generation.hash(&mut hasher);
-    }
-    if uses_backdrop {
-        hash_window_scene_contributors(
-            &mut hasher,
-            space,
-            window_decorations,
-            windows_top_to_bottom,
-            effect_rect,
-        );
-    }
-    if uses_backdrop || uses_xray {
-        hash_layer_scene_contributors(&mut hasher, output, &lower_layers, effect_rect);
-    }
-    if uses_backdrop {
-        hash_layer_scene_contributors(&mut hasher, output, upper_layers_below, effect_rect);
-    }
-    format!("{:?}", effect_config.effect).hash(&mut hasher);
-    (
-        effect_rect.x,
-        effect_rect.y,
-        effect_rect.width,
-        effect_rect.height,
-        capture_geo.loc.x,
-        capture_geo.loc.y,
-        capture_geo.size.w,
-        capture_geo.size.h,
-    )
-        .hash(&mut hasher);
-    let signature = hasher.finish();
-    let source_damage_hit = effect_config.effect.uses_layer_source_input()
-        || crate::backend::shader_effect::source_damage_intersects_rect(
-            &effect_config.effect,
-            smithay::utils::Rectangle::new(
-                smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
-                (effect_rect.width, effect_rect.height).into(),
-            ),
-            &relevant_source_damage,
-        );
-    let captured_local_rect = smithay::utils::Rectangle::new(
-        smithay::utils::Point::from((
-            effect_rect.x - output_geo.loc.x,
-            effect_rect.y - output_geo.loc.y,
-        )),
-        (effect_rect.width, effect_rect.height).into(),
-    );
-    if !matches!(
-        effect_config.effect.invalidate_policy(),
-        crate::ssd::EffectInvalidationPolicy::Always
-    ) && !source_damage_hit
-    {
-        if let Some(existing) = layer_backdrop_cache
-            .get(&stable_key)
-            .filter(|existing| existing.signature == signature)
-            .cloned()
-        {
-            for rect in rects {
-                let rect_key = format!(
-                    "{}:{}:{}:{}:{}",
-                    stable_key, rect.x, rect.y, rect.width, rect.height
-                );
-                let rect_local = smithay::utils::Rectangle::new(
-                    smithay::utils::Point::from((
-                        rect.x - output_geo.loc.x,
-                        rect.y - output_geo.loc.y,
-                    )),
-                    (rect.width, rect.height).into(),
-                );
-                if std::env::var_os("SHOJI_FIREFOX_BACKDROP_DEBUG").is_some() {
-                    tracing::info!(
-                        layer_surface = ?layer_surface.wl_surface().id(),
-                        output = %output.name(),
-                        rect = ?rect,
-                        rect_local = ?rect_local,
-                        captured_local_rect = ?captured_local_rect,
-                        from_cache = true,
-                        "backdrop debug: layer effect element"
-                    );
-                }
-                elements.push(TtyRenderElements::Backdrop(
-                    crate::backend::shader_effect::backdrop_shader_element(
-                        renderer,
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.id.clone())
-                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.commit_counter)
-                            .unwrap_or_default(),
-                        existing.texture.clone(),
-                        rect_local,
-                        rect_local,
-                        captured_local_rect,
-                        &effect_config.effect,
-                        alpha,
-                        scale.x as f32,
-                        None,
-                        0.0,
-                        format!("layer-top:{}:{}", output.name(), rect_key),
-                    )?,
-                ));
-            }
-            return Ok(elements);
-        }
     }
     let mut sub_elements = layer_backdrop_cache
         .get(&stable_key)
@@ -9743,10 +9739,16 @@ fn lower_layer_scene_elements(
             )
                 .hash(&mut hasher);
             let signature = hasher.finish();
-            let relevant_source_damage = collect_layer_source_damage(
+            let mut relevant_source_damage = collect_layer_source_damage(
                 lower_layers.iter().skip(index + 1).cloned(),
                 lower_layer_source_damage,
             );
+            if effect_config.effect.uses_layer_source_input() {
+                relevant_source_damage.extend(collect_layer_source_damage(
+                    std::iter::once(layer_surface.clone()),
+                    lower_layer_source_damage,
+                ));
+            }
             let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
                 &effect_config.effect,
                 smithay::utils::Rectangle::new(
@@ -11667,6 +11669,7 @@ fn connector_disconnected(
     state.runtime_animation_outputs.remove(&output_name);
     state.damage_blink_visible.remove(&output_name);
     state.damage_blink_pending.remove(&output_name);
+    state.damage_blink_capture_suppression.remove(&output_name);
     state.pending_decoration_damage.clear();
     state.apply_runtime_display_configuration();
     state.notify_runtime_outputs_changed();
@@ -12252,31 +12255,14 @@ fn schedule_commit_timing_timer(
 /// happens to repaint. Calling this whenever a timestamped commit arrives keeps
 /// the deadline covered; `schedule_commit_timing_timer` is a no-op for outputs
 /// that are rendering or already have a timer armed.
-pub fn arm_commit_timing_timers(
-    state: &mut ShojiWM,
-    loop_handle: &LoopHandle<'_, ShojiWM>,
-) {
+pub fn arm_commit_timing_timers(state: &mut ShojiWM, loop_handle: &LoopHandle<'_, ShojiWM>) {
     let targets: Vec<(DrmNode, crtc::Handle)> = state
         .tty_backends
         .iter()
-        .flat_map(
-            |(node, backend)| backend.surfaces
-                .keys()
-                .map(
-                    move |crtc| (*node, *crtc)
-                )
-        )
+        .flat_map(|(node, backend)| backend.surfaces.keys().map(move |crtc| (*node, *crtc)))
         .collect();
-    for (
-        node,
-        crtc,
-    ) in targets {
-        schedule_commit_timing_timer(
-            loop_handle, 
-            state, 
-            node, 
-            crtc,
-        );
+    for (node, crtc) in targets {
+        schedule_commit_timing_timer(loop_handle, state, node, crtc);
     }
 }
 

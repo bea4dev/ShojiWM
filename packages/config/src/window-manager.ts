@@ -570,6 +570,68 @@ export class HybridWindowManager {
     window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
   }
 
+  private readonly restoredDuringInitialConfigure = new Set<string>();
+
+  private initializeWindowLayout(window: WaylandWindow): {
+    workspace: Workspace | undefined;
+    restoredExistingWindow: boolean;
+  } {
+    const existingWorkspace = this.findWorkspaceForWindow(window);
+    if (existingWorkspace) {
+      return {
+        workspace: existingWorkspace,
+        restoredExistingWindow: this.restoredDuringInitialConfigure.has(
+          window.id,
+        ),
+      };
+    }
+
+    let restoredExistingWindow = false;
+    const workspace =
+      this.findWorkspaceRestoringWindow(window) ?? this.getCurrentWorkspace();
+    if (workspace) {
+      restoredExistingWindow = workspace.addWindow(window);
+      if (
+        !restoredExistingWindow &&
+        workspace.isTiled &&
+        workspace.shouldTile(window)
+      ) {
+        this.trackPendingInitialFocus(window);
+      }
+      this.applyWorkspaceStackPolicy(workspace);
+      this.syncWorkspaceVisibility();
+    } else {
+      window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
+    }
+
+    if (window.isMaximized()) {
+      window.state[WINDOW_STATE_RESTORE_RECT].set(
+        this.initialRestoreRectForMaximizedWindow(window),
+      );
+      window.state[WINDOW_STATE_RECT].set(this.maximizedRectForWindow(window));
+      window.state[WINDOW_STATE_MAXIMIZED].set(true);
+    }
+
+    if (restoredExistingWindow) {
+      this.restoredDuringInitialConfigure.add(window.id);
+    }
+    return { workspace, restoredExistingWindow };
+  }
+
+  public onInitialConfigure(window: WaylandWindow) {
+    const { workspace, restoredExistingWindow } =
+      this.initializeWindowLayout(window);
+    hotReloadDebug("hybrid-initial-configure", {
+      windowId: window.id,
+      title: window.title.peek(),
+      workspace: workspace
+        ? { monitor: workspace.monitor, index: workspace.index }
+        : null,
+      restoredExistingWindow,
+      rect: window.state[WINDOW_STATE_RECT](),
+    });
+  }
+
   public snapshot(): HybridWindowManagerSnapshot {
     const snapshot = {
       currentMonitor: this.currentMonitor,
@@ -627,31 +689,13 @@ export class HybridWindowManager {
     }
     window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
 
-    let restoredExistingWindow = false;
-    const workspace =
-      this.findWorkspaceRestoringWindow(window) ?? this.getCurrentWorkspace();
-    if (workspace) {
-      restoredExistingWindow = workspace.addWindow(window);
-      if (
-        !restoredExistingWindow &&
-        workspace.isTiled &&
-        workspace.shouldTile(window)
-      ) {
-        this.trackPendingInitialFocus(window);
-      }
-      this.applyWorkspaceStackPolicy(workspace);
-      this.syncWorkspaceVisibility();
-    } else {
-      window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
-    }
-
-    if (window.isMaximized()) {
-      window.state[WINDOW_STATE_RESTORE_RECT].set(
-        this.initialRestoreRectForMaximizedWindow(window),
-      );
-      window.state[WINDOW_STATE_RECT].set(this.maximizedRectForWindow(window));
-      window.state[WINDOW_STATE_MAXIMIZED].set(true);
-    }
+    const initialized = this.initializeWindowLayout(window);
+    const restoredDuringInitialConfigure =
+      this.restoredDuringInitialConfigure.delete(window.id);
+    const restoredExistingWindow =
+      initialized.restoredExistingWindow ||
+      restoredDuringInitialConfigure;
+    const workspace = initialized.workspace;
     if (!restoredExistingWindow) {
       scheduleOpenAnimation(window);
     }
@@ -681,6 +725,7 @@ export class HybridWindowManager {
   }
 
   public onClose(window: WaylandWindow) {
+    this.restoredDuringInitialConfigure.delete(window.id);
     this.windowStack.remove(window);
     for (const workspace of this.workspaces.values()) {
       if (workspace.removeWindow(window) !== undefined) {

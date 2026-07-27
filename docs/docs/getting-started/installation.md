@@ -18,7 +18,6 @@ official release**. Until then, install from source as described below.
 
 - A Linux system with a working Wayland / DRM setup
 - A recent Rust toolchain (`cargo`)
-- Node.js 18 or newer (with `npm`)
 - The following native libraries (with their development headers), which ShojiWM
   links against:
   - `libwayland`
@@ -43,6 +42,7 @@ sudo apt install libwayland-dev libxkbcommon-dev libudev-dev libinput-dev \
 # Arch Linux
 sudo pacman -S wayland libxkbcommon systemd-libs libinput mesa seatd xorg-xwayland
 ```
+
 :::
 
 :::note[xwayland-satellite is required]
@@ -70,6 +70,7 @@ git clone -b shojiwm https://github.com/bea4dev/xwayland-satellite.git
 cd xwayland-satellite
 cargo install --path ./
 ```
+
 :::
 
 ## Install
@@ -83,8 +84,9 @@ cd ShojiWM
 The script will prompt for `sudo` when it needs to copy files into system
 directories. It performs the following:
 
-- **Builds** the compositor and the xdg-desktop-portal backend (`cargo`), and
-  installs the TypeScript runtime dependencies (`npm ci`).
+- **Builds** the compositor and the xdg-desktop-portal backend with `cargo`.
+- Embeds the Deno/V8 TypeScript engine into the compositor through RustyScript;
+  Node.js is not required at runtime.
 - Installs the compositor to `/usr/bin/shoji_wm` and the runtime to
   `/usr/lib/shojiwm`.
 - Creates a **default user config** at `~/.config/shojiwm` (an existing config is
@@ -95,11 +97,11 @@ directories. It performs the following:
 
 ### Install options
 
-| Flag | Effect |
-| --- | --- |
-| `--no-build` | Skip the `cargo` / `npm` build and use existing binaries |
-| `--no-portal` | Don't install the xdg-desktop-portal backend |
-| `--no-config` | Don't create or update the user config |
+| Flag          | Effect                                           |
+| ------------- | ------------------------------------------------ |
+| `--no-build`  | Skip the `cargo` build and use existing binaries |
+| `--no-portal` | Don't install the xdg-desktop-portal backend     |
+| `--no-config` | Don't create or update the user config           |
 
 Run `./dist/install.sh --help` to see this list.
 
@@ -108,9 +110,14 @@ Run `./dist/install.sh --help` to see this list.
 ShojiWM also provides an experimental Nix flake. The flake is intended to keep
 the same split as the source installer:
 
-- the compositor, portal backend, and TypeScript runtime live in the Nix store
+- the compositor, portal backend, embedded Deno/V8 engine, and TypeScript
+  runtime sources live in the Nix store
 - your editable TypeScript config lives in `~/.config/shojiwm`
 - development still uses `--dev` and the source tree directly
+
+Node.js is not part of the installed compositor runtime. Nix downloads the
+versioned `rusty_v8` archive as a fixed-output dependency while building
+ShojiWM, then links it into the compositor binary.
 
 :::warning[Experimental]
 The NixOS support is new. Expect rough edges and check the latest repository
@@ -169,13 +176,14 @@ exist yet. Existing user config files such as `src/index.tsx` and
 `src/window-manager.ts` are kept. The generated support files are refreshed on
 every rebuild:
 
-- `node_modules/shoji_wm`, linked to the current Nix store package
+- `node_modules/shoji_wm`, linked to the current Nix store TypeScript package
 - `package.json`
 - `tsconfig.json`
 
-Keeping these support files in sync matters because the TypeScript runtime uses
-`tsconfig.json` for TSX/JSX transformation and uses the `shoji_wm` package link
-for type and runtime imports.
+These files keep editor diagnostics and standalone TypeScript type checking in
+sync with the installed ShojiWM version. They are not Node runtime
+dependencies: the compositor resolves and transpiles the config through its
+embedded RustyScript/Deno runtime.
 
 If you do not want the NixOS module to manage the config directory, omit
 `initConfig` and initialize the editable TypeScript config manually:
@@ -194,9 +202,11 @@ From the ShojiWM source tree:
 
 ```bash
 nix develop
-npm ci
 cargo run --release -p shoji_wm -- --dev
 ```
+
+Run `npm ci` separately only when you need the repository's TypeScript type
+checking or documentation development tools.
 
 `--dev` keeps using the repository checkout:
 
@@ -204,11 +214,10 @@ cargo run --release -p shoji_wm -- --dev
 ./tools/decoration-runtime.ts
 ./packages/config/src/index.tsx
 ./packages/shoji_wm
-./node_modules/.bin/tsx
 ```
 
 This means you can keep the current fast edit-and-run workflow while using Nix
-only to provide the native build dependencies.
+to provide the native build dependencies and the pinned `rusty_v8` archive.
 
 ### xwayland-satellite fork
 

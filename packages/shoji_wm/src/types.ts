@@ -518,16 +518,46 @@ export interface ManualInvalidationHandle {
 export type EffectInvalidationPolicyHandle =
   AutomaticEffectInvalidationPolicyHandle | ManualInvalidationHandle;
 export type ShaderUniformScalar = MaybeSignal<number>;
+export type ShaderUniformVec2 = readonly [
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+];
+export type ShaderUniformVec3 = readonly [
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+];
+export type ShaderUniformVec4 = readonly [
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+  ShaderUniformScalar,
+];
+export type ShaderUniformArrayElement = "float" | "vec2" | "vec3" | "vec4";
+export type ShaderUniformArrayValues<Element extends ShaderUniformArrayElement> =
+  Element extends "float"
+    ? readonly ShaderUniformScalar[]
+    : Element extends "vec2"
+      ? readonly ShaderUniformVec2[]
+      : Element extends "vec3"
+        ? readonly ShaderUniformVec3[]
+        : readonly ShaderUniformVec4[];
+
+export interface ShaderUniformArrayHandle<
+  Element extends ShaderUniformArrayElement = ShaderUniformArrayElement,
+> {
+  kind: "uniform-array";
+  element: Element;
+  /** The array length is structural; changing it rebuilds the shader binding. */
+  values: MaybeSignal<ShaderUniformArrayValues<Element>>;
+}
+
 export type ShaderUniformValue =
   | ShaderUniformScalar
-  | readonly [ShaderUniformScalar, ShaderUniformScalar]
-  | readonly [ShaderUniformScalar, ShaderUniformScalar, ShaderUniformScalar]
-  | readonly [
-      ShaderUniformScalar,
-      ShaderUniformScalar,
-      ShaderUniformScalar,
-      ShaderUniformScalar,
-    ];
+  | ShaderUniformVec2
+  | ShaderUniformVec3
+  | ShaderUniformVec4
+  | ShaderUniformArrayHandle;
 export type ShaderUniformMap = Record<string, ShaderUniformValue>;
 
 export interface BackdropBlurOptions {

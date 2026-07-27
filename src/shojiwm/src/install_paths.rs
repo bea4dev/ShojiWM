@@ -10,7 +10,6 @@ pub struct RuntimePathOptions {
     pub dev: bool,
     pub config_path: Option<PathBuf>,
     pub runtime_dir: Option<PathBuf>,
-    pub tsx_program: Option<PathBuf>,
     pub decoration_runtime: Option<PathBuf>,
 }
 
@@ -24,7 +23,6 @@ pub enum RuntimePathMode {
 pub struct DecorationRuntimePaths {
     pub mode: RuntimePathMode,
     pub working_dir: PathBuf,
-    pub tsx_program: PathBuf,
     pub script_path: PathBuf,
     pub config_path: PathBuf,
 }
@@ -52,21 +50,9 @@ fn development_paths(options: &RuntimePathOptions) -> DecorationRuntimePaths {
         .runtime_dir
         .clone()
         .unwrap_or_else(|| repo_root.clone());
-    let local_tsx = runtime_dir.join("node_modules/.bin/tsx");
     DecorationRuntimePaths {
         mode: RuntimePathMode::Development,
         working_dir: runtime_dir.clone(),
-        tsx_program: options
-            .tsx_program
-            .clone()
-            .or_else(|| std::env::var_os("SHOJI_TSX").map(PathBuf::from))
-            .unwrap_or_else(|| {
-                if local_tsx.exists() {
-                    local_tsx
-                } else {
-                    PathBuf::from("tsx")
-                }
-            }),
         script_path: options
             .decoration_runtime
             .clone()
@@ -86,7 +72,6 @@ fn installed_paths(options: &RuntimePathOptions) -> DecorationRuntimePaths {
         .clone()
         .or_else(|| std::env::var_os("SHOJI_RUNTIME_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/usr/lib/shojiwm"));
-    let local_tsx = runtime_dir.join("node_modules/.bin/tsx");
     let config_path = options
         .config_path
         .clone()
@@ -97,17 +82,6 @@ fn installed_paths(options: &RuntimePathOptions) -> DecorationRuntimePaths {
     DecorationRuntimePaths {
         mode: RuntimePathMode::Installed,
         working_dir,
-        tsx_program: options
-            .tsx_program
-            .clone()
-            .or_else(|| std::env::var_os("SHOJI_TSX").map(PathBuf::from))
-            .unwrap_or_else(|| {
-                if local_tsx.exists() {
-                    local_tsx
-                } else {
-                    PathBuf::from("tsx")
-                }
-            }),
         script_path: options
             .decoration_runtime
             .clone()

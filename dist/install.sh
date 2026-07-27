@@ -88,14 +88,8 @@ trap 'rm -rf "$STAGE"' EXIT
 RUNTIME_STAGE="$STAGE/shojiwm-runtime"
 mkdir -p "$RUNTIME_STAGE/packages" "$RUNTIME_STAGE/tools"
 
-cp "$REPO_ROOT/package.json" "$REPO_ROOT/package-lock.json" "$REPO_ROOT/tsconfig.json" "$RUNTIME_STAGE/"
 cp -a "$REPO_ROOT/packages/shoji_wm" "$RUNTIME_STAGE/packages/"
-cp -a "$REPO_ROOT/packages/config" "$RUNTIME_STAGE/packages/"
 cp "$REPO_ROOT/tools/decoration-runtime.ts" "$RUNTIME_STAGE/tools/"
-cp "$REPO_ROOT/tools/evaluate-decoration.ts" "$RUNTIME_STAGE/tools/"
-
-echo ">> npm ci for installed TypeScript runtime"
-npm --prefix "$RUNTIME_STAGE" ci
 
 echo ">> installing compositor files (sudo)"
 sudo rm -rf /usr/lib/shojiwm

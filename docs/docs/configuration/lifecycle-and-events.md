@@ -93,22 +93,26 @@ window manager decides how to honor them.
 
 | Event | Fires when |
 | --- | --- |
-| `onPointerMoveAsync(event)` | The pointer moves (async, see below) |
-| `onGestureSwipeAsync(event)` | A multi-finger touchpad swipe progresses |
+| `onPointerMove(event)` / `onPointerMoveAsync(event)` | The pointer moves |
+| `onGestureSwipe(event)` / `onGestureSwipeAsync(event)` | A multi-finger touchpad swipe progresses |
 | `onOutputChange(event)` | An output is added/removed/reconfigured |
 | `onInputDeviceChange(...)` | The set of input devices changes (hotplug) |
 | `onCreateLayer(...)` / `onUpdateLayer(...)` / `onDestroyLayer(...)` | A layer-shell surface (bar/dock/wallpaper) is mapped/updated/unmapped |
 
-### Async listeners
+### Synchronous and async input listeners
 
-Pointer-move and gesture events have **async** variants
-(`onPointerMoveAsync`, `onGestureSwipeAsync`). The listener may return a
-`Promise`, which the compositor awaits before continuing; returning `false`
-(or resolving to `false`) suppresses further handling. Use these for handlers
-that do non-trivial work per event so you don't block the input path.
+`onPointerMove` and `onGestureSwipe` run synchronously on the compositor input
+path through the native runtime bridge. Prefer these for short handlers that
+must update window management state with minimum latency. They must not perform
+blocking I/O or other expensive work.
+
+The `onPointerMoveAsync` and `onGestureSwipeAsync` variants run on the runtime
+worker, may return a `Promise`, and coalesce high-frequency input while the
+runtime is busy. Use them for handlers that perform non-trivial work and can
+tolerate dropped intermediate samples.
 
 ```ts
-COMPOSITOR.event.onPointerMoveAsync((event) => {
+COMPOSITOR.event.onPointerMove((event) => {
   hybridWM.onPointerMove(event);
 });
 ```

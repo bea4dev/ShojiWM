@@ -89,6 +89,22 @@ pub struct WireShaderStageFields {
 pub enum WireShaderUniformValue {
     Float(f32),
     Vec(Vec<f32>),
+    Array(WireShaderUniformArray),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireShaderUniformArray {
+    pub kind: String,
+    pub element: String,
+    pub values: Vec<WireShaderUniformArrayElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WireShaderUniformArrayElement {
+    Float(f32),
+    Vec(Vec<f32>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -508,17 +524,8 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                     }
                     let mut uniforms = std::collections::BTreeMap::new();
                     for (name, value) in stage.uniforms {
-                        let value = match value {
-                            WireShaderUniformValue::Float(value) => {
-                                ShaderUniformValue::Float(value)
-                            }
-                            WireShaderUniformValue::Vec(value) => match value.as_slice() {
-                                [x, y] => ShaderUniformValue::Vec2([*x, *y]),
-                                [x, y, z] => ShaderUniformValue::Vec3([*x, *y, *z]),
-                                [x, y, z, w] => ShaderUniformValue::Vec4([*x, *y, *z, *w]),
-                                _ => return Err(DecorationBridgeError::InvalidShaderDescriptor),
-                            },
-                        };
+                        let value = decode_shader_uniform(value)
+                            .ok_or(DecorationBridgeError::InvalidShaderDescriptor)?;
                         uniforms.insert(name, value);
                     }
                     let textures = stage
@@ -744,15 +751,8 @@ fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, Decoration
             }
             let mut uniforms = std::collections::BTreeMap::new();
             for (name, value) in stage.uniforms {
-                let value = match value {
-                    WireShaderUniformValue::Float(value) => ShaderUniformValue::Float(value),
-                    WireShaderUniformValue::Vec(value) => match value.as_slice() {
-                        [x, y] => ShaderUniformValue::Vec2([*x, *y]),
-                        [x, y, z] => ShaderUniformValue::Vec3([*x, *y, *z]),
-                        [x, y, z, w] => ShaderUniformValue::Vec4([*x, *y, *z, *w]),
-                        _ => return Err(DecorationBridgeError::InvalidEffectInput),
-                    },
-                };
+                let value = decode_shader_uniform(value)
+                    .ok_or(DecorationBridgeError::InvalidEffectInput)?;
                 uniforms.insert(name, value);
             }
             EffectInput::Shader(ShaderStage {
@@ -780,6 +780,53 @@ fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, Decoration
             EffectInput::Named(name)
         }
     })
+}
+
+fn decode_shader_uniform(value: WireShaderUniformValue) -> Option<ShaderUniformValue> {
+    match value {
+        WireShaderUniformValue::Float(value) => Some(ShaderUniformValue::Float(value)),
+        WireShaderUniformValue::Vec(value) => match value.as_slice() {
+            [x, y] => Some(ShaderUniformValue::Vec2([*x, *y])),
+            [x, y, z] => Some(ShaderUniformValue::Vec3([*x, *y, *z])),
+            [x, y, z, w] => Some(ShaderUniformValue::Vec4([*x, *y, *z, *w])),
+            _ => None,
+        },
+        WireShaderUniformValue::Array(array) => {
+            if array.kind != "uniform-array" || array.values.is_empty() {
+                return None;
+            }
+            match array.element.as_str() {
+                "float" => array
+                    .values
+                    .into_iter()
+                    .map(|entry| match entry {
+                        WireShaderUniformArrayElement::Float(value) => Some(value),
+                        WireShaderUniformArrayElement::Vec(_) => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(ShaderUniformValue::FloatArray),
+                "vec2" => decode_shader_uniform_vectors::<2>(array.values)
+                    .map(ShaderUniformValue::Vec2Array),
+                "vec3" => decode_shader_uniform_vectors::<3>(array.values)
+                    .map(ShaderUniformValue::Vec3Array),
+                "vec4" => decode_shader_uniform_vectors::<4>(array.values)
+                    .map(ShaderUniformValue::Vec4Array),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn decode_shader_uniform_vectors<const N: usize>(
+    values: Vec<WireShaderUniformArrayElement>,
+) -> Option<Vec<[f32; N]>> {
+    values
+        .into_iter()
+        .map(|entry| match entry {
+            WireShaderUniformArrayElement::Vec(values) => values.try_into().ok(),
+            WireShaderUniformArrayElement::Float(_) => None,
+        })
+        .collect()
 }
 
 fn is_reserved_effect_binding_name(name: &str) -> bool {
@@ -1316,6 +1363,46 @@ mod tests {
             stage.textures.get("layer_mask"),
             Some(EffectInput::LayerSource(WindowSourceInclude::Full))
         ));
+    }
+
+    #[test]
+    fn decode_shader_uniform_arrays() {
+        let wire: WireCompiledEffect = serde_json::from_str(
+            r#"{
+                "kind": "compiled-effect",
+                "input": { "kind": "backdrop-source" },
+                "pipeline": [{
+                    "kind": "shader-stage",
+                    "shader": { "kind": "shader-module", "path": "/tmp/array.frag" },
+                    "uniforms": {
+                        "weights": {
+                            "kind": "uniform-array",
+                            "element": "float",
+                            "values": [0.25, 0.75]
+                        },
+                        "points": {
+                            "kind": "uniform-array",
+                            "element": "vec2",
+                            "values": [[1.0, 2.0], [3.0, 4.0]]
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .expect("uniform arrays should deserialize");
+
+        let effect: CompiledEffect = wire.try_into().expect("uniform arrays should decode");
+        let EffectStage::Shader(stage) = &effect.pipeline[0] else {
+            panic!("expected shader stage");
+        };
+        assert_eq!(
+            stage.uniforms.get("weights"),
+            Some(&ShaderUniformValue::FloatArray(vec![0.25, 0.75]))
+        );
+        assert_eq!(
+            stage.uniforms.get("points"),
+            Some(&ShaderUniformValue::Vec2Array(vec![[1.0, 2.0], [3.0, 4.0]]))
+        );
     }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]

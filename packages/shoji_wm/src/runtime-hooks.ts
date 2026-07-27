@@ -18,6 +18,10 @@ let activeLayerDependencyScope: string | null = null;
 let activeWindowNodeDependencyScope: string | null = null;
 let activeLayerNodeDependencyScope: string | null = null;
 let activeWindowManagedDependencyScope: string | null = null;
+let activeWindowShaderUniformDependencyScope: {
+  bindingKey: string;
+  nodeId: string;
+} | null = null;
 const windowSignalDependencies = new WeakMap<object, Set<string>>();
 const windowEffectSignalDependencies = new WeakMap<object, Set<string>>();
 const layerSignalDependencies = new WeakMap<object, Set<string>>();
@@ -25,6 +29,10 @@ const windowManagedSignalDependencies = new WeakMap<object, Set<string>>();
 const windowStructuralSignalDependencies = new WeakMap<object, Set<string>>();
 const layerStructuralSignalDependencies = new WeakMap<object, Set<string>>();
 const windowNodeSignalDependencies = new WeakMap<
+  object,
+  Map<string, Set<string>>
+>();
+const windowShaderUniformSignalDependencies = new WeakMap<
   object,
   Map<string, Set<string>>
 >();
@@ -36,8 +44,14 @@ const windowDependencies = new Map<string, Set<object>>();
 const windowEffectDependencies = new Map<string, Set<object>>();
 const layerDependencies = new Map<string, Set<object>>();
 const windowNodeDependencies = new Map<string, Map<string, Set<object>>>();
+const windowShaderUniformDependencies = new Map<
+  string,
+  Map<string, Set<object>>
+>();
+const windowShaderUniformNodeIds = new Map<string, Map<string, string>>();
 const layerNodeDependencies = new Map<string, Map<string, Set<object>>>();
 const dirtyWindowNodeIds = new Map<string, Set<string>>();
+const dirtyWindowShaderUniformBindingKeys = new Map<string, Set<string>>();
 const dirtyLayerNodeIds = new Map<string, Set<string>>();
 const dirtyManagedWindowIds = new Set<string>();
 // Windows/layers that received a structural-dep write since the last
@@ -148,14 +162,27 @@ let nextSuppressionId = 1;
 const ssdRebuildSuppressionStack: ActiveSSDRebuildSuppression[] = [];
 let managedWindowOnlyFastPathInvalidated = false;
 
+function runtimeEnvironmentValue(key: string): string | undefined {
+  const denoValue = (
+    globalThis as typeof globalThis & {
+      Deno?: { env: { get(key: string): string | undefined } };
+    }
+  ).Deno?.env?.get(key);
+  return (
+    denoValue ??
+    (
+      globalThis as {
+        process?: { env?: Record<string, string | undefined> };
+      }
+    ).process?.env?.[key]
+  );
+}
+
 function debugSSD(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  if (!env?.SHOJI_SSD_SUPPRESSION_DEBUG) {
+  if (!runtimeEnvironmentValue("SHOJI_SSD_SUPPRESSION_DEBUG")) {
     return;
   }
   console.info(`ssd-suppression ${message}`, JSON.stringify(details));
@@ -170,18 +197,14 @@ function debugSSD(
  * call site so the offending writer can be located.
  */
 const UNKNOWN_SIGNAL_DEBUG_ENABLED = (() => {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  const value = env?.SHOJI_SIGNAL_UNKNOWN_DEBUG;
+  const value = runtimeEnvironmentValue("SHOJI_SIGNAL_UNKNOWN_DEBUG");
   return value !== undefined && value !== "" && value !== "0";
 })();
 
 const UNKNOWN_SIGNAL_STACK_DEPTH = (() => {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env;
-  const raw = Number(env?.SHOJI_SIGNAL_UNKNOWN_DEBUG_FRAMES ?? "6");
+  const raw = Number(
+    runtimeEnvironmentValue("SHOJI_SIGNAL_UNKNOWN_DEBUG_FRAMES") ?? "6",
+  );
   return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 32) : 6;
 })();
 
@@ -300,8 +323,7 @@ export function withSSDRebuildSuppressed<T>(
 }
 
 function activeSSDRebuildSuppression():
-  | ActiveSSDRebuildSuppression
-  | undefined {
+  ActiveSSDRebuildSuppression | undefined {
   return ssdRebuildSuppressionStack.at(-1);
 }
 
@@ -474,6 +496,21 @@ export function enterWindowDependencyScope(windowId: string): void {
   activeWindowDependencyScope = windowId;
   activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
+  activeLayerDependencyScope = null;
+  activeLayerNodeDependencyScope = null;
+}
+
+export function enterWindowPatchDependencyScope(
+  windowId: string,
+  nodeIds: readonly string[],
+): void {
+  clearWindowNodeDependencies(windowId, new Set(nodeIds));
+  activeCompositionOwner = ownerKeyForWindow(windowId);
+  activeWindowDependencyScope = windowId;
+  activeWindowEffectDependencyScope = null;
+  activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
   activeLayerDependencyScope = null;
   activeLayerNodeDependencyScope = null;
 }
@@ -483,6 +520,7 @@ export function leaveWindowDependencyScope(): void {
   activeWindowDependencyScope = null;
   activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
   activeWindowManagedDependencyScope = null;
 }
 
@@ -494,6 +532,7 @@ export function enterWindowEffectDependencyScope(windowId: string): void {
   activeWindowEffectDependencyScope = windowId;
   activeWindowDependencyScope = null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
   activeWindowManagedDependencyScope = null;
   activeLayerDependencyScope = null;
   activeLayerNodeDependencyScope = null;
@@ -514,6 +553,7 @@ export function enterLayerDependencyScope(layerId: string): void {
   activeWindowDependencyScope = null;
   activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
 }
 
 export function leaveLayerDependencyScope(): void {
@@ -524,17 +564,33 @@ export function leaveLayerDependencyScope(): void {
 
 export function enterWindowNodeDependencyScope(nodeId: string): void {
   activeWindowNodeDependencyScope = activeWindowDependencyScope ? nodeId : null;
+  activeWindowShaderUniformDependencyScope = null;
   activeLayerNodeDependencyScope = null;
 }
 
 export function leaveWindowNodeDependencyScope(): void {
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
+}
+
+export function enterWindowShaderUniformDependencyScope(
+  bindingKey: string,
+  nodeId: string,
+): void {
+  activeWindowShaderUniformDependencyScope = activeWindowDependencyScope
+    ? { bindingKey, nodeId }
+    : null;
+}
+
+export function leaveWindowShaderUniformDependencyScope(): void {
+  activeWindowShaderUniformDependencyScope = null;
 }
 
 export function enterWindowManagedDependencyScope(windowId: string): void {
   activeWindowManagedDependencyScope =
     activeWindowDependencyScope === windowId ? windowId : null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
   activeLayerNodeDependencyScope = null;
 }
 
@@ -545,6 +601,7 @@ export function leaveWindowManagedDependencyScope(): void {
 export function enterLayerNodeDependencyScope(nodeId: string): void {
   activeLayerNodeDependencyScope = activeLayerDependencyScope ? nodeId : null;
   activeWindowNodeDependencyScope = null;
+  activeWindowShaderUniformDependencyScope = null;
 }
 
 export function leaveLayerNodeDependencyScope(): void {
@@ -583,6 +640,35 @@ export function takeDirtyWindowNodeIds(windowId: string): string[] {
   return Array.from(dirty);
 }
 
+export function peekDirtyWindowNodeIds(windowId: string): string[] {
+  if (windowsWithStructuralWrite.has(windowId)) {
+    return [];
+  }
+  const nodeIds = new Set(dirtyWindowNodeIds.get(windowId) ?? []);
+  const bindings = dirtyWindowShaderUniformBindingKeys.get(windowId);
+  const bindingNodeIds = windowShaderUniformNodeIds.get(windowId);
+  if (bindings && bindingNodeIds) {
+    for (const bindingKey of bindings) {
+      const nodeId = bindingNodeIds.get(bindingKey);
+      if (nodeId) {
+        nodeIds.add(nodeId);
+      }
+    }
+  }
+  return Array.from(nodeIds);
+}
+
+export function takeDirtyWindowShaderUniformBindingKeys(
+  windowId: string,
+): string[] {
+  const dirty = dirtyWindowShaderUniformBindingKeys.get(windowId);
+  if (!dirty) {
+    return [];
+  }
+  dirtyWindowShaderUniformBindingKeys.delete(windowId);
+  return Array.from(dirty);
+}
+
 export function takeManagedWindowOnlyDirty(windowId: string): boolean {
   if (!isManagedWindowOnlyDirty(windowId)) {
     dirtyManagedWindowIds.delete(windowId);
@@ -615,7 +701,8 @@ export function isManagedWindowOnlyDirty(windowId: string): boolean {
   }
   if (
     windowsWithStructuralWrite.has(windowId) ||
-    dirtyWindowNodeIds.has(windowId)
+    dirtyWindowNodeIds.has(windowId) ||
+    dirtyWindowShaderUniformBindingKeys.has(windowId)
   ) {
     return false;
   }
@@ -682,6 +769,46 @@ export function trackSignalRead(signal: object): void {
 
   const windowId = activeWindowDependencyScope;
   if (windowId) {
+    const uniformScope = activeWindowShaderUniformDependencyScope;
+    if (uniformScope) {
+      let dependentBindingsByWindow =
+        windowShaderUniformSignalDependencies.get(signal);
+      if (!dependentBindingsByWindow) {
+        dependentBindingsByWindow = new Map<string, Set<string>>();
+        windowShaderUniformSignalDependencies.set(
+          signal,
+          dependentBindingsByWindow,
+        );
+      }
+      let dependentBindings = dependentBindingsByWindow.get(windowId);
+      if (!dependentBindings) {
+        dependentBindings = new Set<string>();
+        dependentBindingsByWindow.set(windowId, dependentBindings);
+      }
+      dependentBindings.add(uniformScope.bindingKey);
+
+      let dependenciesByBinding =
+        windowShaderUniformDependencies.get(windowId);
+      if (!dependenciesByBinding) {
+        dependenciesByBinding = new Map<string, Set<object>>();
+        windowShaderUniformDependencies.set(windowId, dependenciesByBinding);
+      }
+      let dependencies = dependenciesByBinding.get(uniformScope.bindingKey);
+      if (!dependencies) {
+        dependencies = new Set<object>();
+        dependenciesByBinding.set(uniformScope.bindingKey, dependencies);
+      }
+      dependencies.add(signal);
+
+      let nodeIds = windowShaderUniformNodeIds.get(windowId);
+      if (!nodeIds) {
+        nodeIds = new Map<string, string>();
+        windowShaderUniformNodeIds.set(windowId, nodeIds);
+      }
+      nodeIds.set(uniformScope.bindingKey, uniformScope.nodeId);
+      return;
+    }
+
     let dependentWindows = windowSignalDependencies.get(signal);
     if (!dependentWindows) {
       dependentWindows = new Set<string>();
@@ -795,6 +922,8 @@ export function trackSignalWrite(signal: object): void {
   const structuralWindows = windowStructuralSignalDependencies.get(signal);
   const structuralLayers = layerStructuralSignalDependencies.get(signal);
   const dependentWindowNodes = windowNodeSignalDependencies.get(signal);
+  const dependentWindowShaderUniforms =
+    windowShaderUniformSignalDependencies.get(signal);
   const dependentLayerNodes = layerNodeSignalDependencies.get(signal);
   const hasWindowDeps = !!dependentWindows && dependentWindows.size > 0;
   const hasWindowEffectDeps =
@@ -803,6 +932,9 @@ export function trackSignalWrite(signal: object): void {
   const hasManagedWindowDeps = !!managedWindows && managedWindows.size > 0;
   const hasWindowNodeDeps =
     !!dependentWindowNodes && dependentWindowNodes.size > 0;
+  const hasWindowShaderUniformDeps =
+    !!dependentWindowShaderUniforms &&
+    dependentWindowShaderUniforms.size > 0;
   const hasLayerNodeDeps =
     !!dependentLayerNodes && dependentLayerNodes.size > 0;
   const suppression = activeSSDRebuildSuppression();
@@ -812,6 +944,7 @@ export function trackSignalWrite(signal: object): void {
     !hasLayerDeps &&
     !hasManagedWindowDeps &&
     !hasWindowNodeDeps &&
+    !hasWindowShaderUniformDeps &&
     !hasLayerNodeDeps
   ) {
     if (suppression?.allowManagedWindowOnly) {
@@ -901,6 +1034,20 @@ export function trackSignalWrite(signal: object): void {
       markWindowDirty(windowId);
     }
   }
+  if (dependentWindowShaderUniforms) {
+    for (const [windowId, bindingKeys] of dependentWindowShaderUniforms) {
+      markWindowDirty(windowId);
+      let dirtyBindings =
+        dirtyWindowShaderUniformBindingKeys.get(windowId);
+      if (!dirtyBindings) {
+        dirtyBindings = new Set<string>();
+        dirtyWindowShaderUniformBindingKeys.set(windowId, dirtyBindings);
+      }
+      for (const bindingKey of bindingKeys) {
+        dirtyBindings.add(bindingKey);
+      }
+    }
+  }
   if (dependentLayers) {
     for (const layerId of dependentLayers) {
       if (suppressedLayerDirty?.has(layerId)) {
@@ -924,6 +1071,7 @@ export function trackSignalWrite(signal: object): void {
       // re-added by derived signals during the cascading notify() — record the
       // intent until the runtime collects dirty ids.
       dirtyWindowNodeIds.delete(windowId);
+      dirtyWindowShaderUniformBindingKeys.delete(windowId);
       dirtyManagedWindowIds.delete(windowId);
       windowsWithStructuralWrite.add(windowId);
     }
@@ -986,21 +1134,20 @@ export function trackSignalWrite(signal: object): void {
 
 function clearWindowDependencies(windowId: string): void {
   const dependencies = windowDependencies.get(windowId);
-  if (!dependencies) {
-    return;
-  }
-
-  for (const signal of dependencies) {
-    const dependentWindows = windowSignalDependencies.get(signal);
-    dependentWindows?.delete(windowId);
-    const structuralWindows = windowStructuralSignalDependencies.get(signal);
-    structuralWindows?.delete(windowId);
-    const managedWindows = windowManagedSignalDependencies.get(signal);
-    managedWindows?.delete(windowId);
+  if (dependencies) {
+    for (const signal of dependencies) {
+      const dependentWindows = windowSignalDependencies.get(signal);
+      dependentWindows?.delete(windowId);
+      const structuralWindows = windowStructuralSignalDependencies.get(signal);
+      structuralWindows?.delete(windowId);
+      const managedWindows = windowManagedSignalDependencies.get(signal);
+      managedWindows?.delete(windowId);
+    }
   }
 
   windowDependencies.delete(windowId);
   dirtyWindowNodeIds.delete(windowId);
+  dirtyWindowShaderUniformBindingKeys.delete(windowId);
   dirtyManagedWindowIds.delete(windowId);
   windowsWithStructuralWrite.delete(windowId);
 
@@ -1017,6 +1164,99 @@ function clearWindowDependencies(windowId: string): void {
     }
     windowNodeDependencies.delete(windowId);
   }
+
+  const uniformDependenciesByBinding =
+    windowShaderUniformDependencies.get(windowId);
+  if (uniformDependenciesByBinding) {
+    for (const [bindingKey, uniformDependencies] of uniformDependenciesByBinding) {
+      for (const signal of uniformDependencies) {
+        const dependentBindingsByWindow =
+          windowShaderUniformSignalDependencies.get(signal);
+        dependentBindingsByWindow?.get(windowId)?.delete(bindingKey);
+        if (dependentBindingsByWindow?.get(windowId)?.size === 0) {
+          dependentBindingsByWindow.delete(windowId);
+        }
+      }
+    }
+    windowShaderUniformDependencies.delete(windowId);
+  }
+  windowShaderUniformNodeIds.delete(windowId);
+}
+
+function clearWindowNodeDependencies(
+  windowId: string,
+  nodeIds: ReadonlySet<string>,
+): void {
+  const nodeDependenciesByWindow = windowNodeDependencies.get(windowId);
+  if (nodeDependenciesByWindow) {
+    for (const nodeId of Array.from(nodeDependenciesByWindow.keys())) {
+      if (!isNodeWithinDirtySet(nodeId, nodeIds)) {
+        continue;
+      }
+      const nodeDependencies = nodeDependenciesByWindow.get(nodeId);
+      if (!nodeDependencies) {
+        continue;
+      }
+      for (const signal of nodeDependencies) {
+        const dependentNodesByWindow = windowNodeSignalDependencies.get(signal);
+        dependentNodesByWindow?.get(windowId)?.delete(nodeId);
+        if (dependentNodesByWindow?.get(windowId)?.size === 0) {
+          dependentNodesByWindow.delete(windowId);
+        }
+      }
+      nodeDependenciesByWindow.delete(nodeId);
+    }
+    if (nodeDependenciesByWindow.size === 0) {
+      windowNodeDependencies.delete(windowId);
+    }
+  }
+
+  const bindingNodeIds = windowShaderUniformNodeIds.get(windowId);
+  const uniformDependenciesByBinding =
+    windowShaderUniformDependencies.get(windowId);
+  if (!bindingNodeIds || !uniformDependenciesByBinding) {
+    return;
+  }
+  for (const [bindingKey, nodeId] of Array.from(bindingNodeIds)) {
+    if (!isNodeWithinDirtySet(nodeId, nodeIds)) {
+      continue;
+    }
+    const dependencies = uniformDependenciesByBinding.get(bindingKey);
+    if (dependencies) {
+      for (const signal of dependencies) {
+        const dependentBindingsByWindow =
+          windowShaderUniformSignalDependencies.get(signal);
+        dependentBindingsByWindow?.get(windowId)?.delete(bindingKey);
+        if (dependentBindingsByWindow?.get(windowId)?.size === 0) {
+          dependentBindingsByWindow.delete(windowId);
+        }
+      }
+    }
+    uniformDependenciesByBinding.delete(bindingKey);
+    bindingNodeIds.delete(bindingKey);
+  }
+  if (uniformDependenciesByBinding.size === 0) {
+    windowShaderUniformDependencies.delete(windowId);
+  }
+  if (bindingNodeIds.size === 0) {
+    windowShaderUniformNodeIds.delete(windowId);
+  }
+}
+
+function isNodeWithinDirtySet(
+  nodeId: string,
+  dirtyNodeIds: ReadonlySet<string>,
+): boolean {
+  for (const dirtyNodeId of dirtyNodeIds) {
+    if (
+      nodeId === dirtyNodeId ||
+      nodeId.startsWith(`${dirtyNodeId}.`) ||
+      nodeId.startsWith(`${dirtyNodeId}[`)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function clearWindowEffectDependencies(windowId: string): void {

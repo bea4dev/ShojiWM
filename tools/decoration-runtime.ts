@@ -1,23 +1,267 @@
-import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { Socket, createConnection } from "node:net";
-import { format } from "node:util";
-import { existsSync } from "node:fs";
+interface EmbeddedRuntimeBridge {
+  readRequest(): Promise<EmbeddedRuntimeRequest | null>;
+  writeResponse(response: string): void;
+  writeInteractionResponse(response: NativeInteractionSuccess): void;
+  writeCompositionUpdate(
+    requestId: number,
+    update: NativeCompositionUpdate,
+  ): void;
+  writeEffectUpdate(requestId: number, update: NativeEffectUpdate): void;
+  beginEffectShaderUniformSlotPatches(
+    requestId: number,
+    updateKind: number,
+  ): void;
+  addEffectShaderUniformPatchTarget(
+    requestId: number,
+    targetId: string,
+  ): void;
+  registerEffectShaderUniformSlot(
+    slotId: number,
+    targetKind: number,
+    targetId: string,
+    effectSlot: number,
+    shaderPathJson: string,
+    name: string,
+  ): void;
+  clearEffectShaderUniformSlots(
+    targetKind: number,
+    targetId: string,
+  ): void;
+  writeEffectShaderUniformSlotPatch(
+    requestId: number,
+    slotId: number,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
+  writeEffectShaderUniformArraySlotPatch(
+    requestId: number,
+    slotId: number,
+    elementWidth: number,
+    values: Float32Array,
+  ): void;
+  beginCompositionPatches(requestId: number, windowId: string): void;
+  writeCompositionShaderUniformPatch(
+    requestId: number,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
+  writeCompositionShaderUniformArrayPatch(
+    requestId: number,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+    elementWidth: number,
+    values: Float32Array,
+  ): void;
+  registerCompositionShaderUniformSlot(
+    slotId: number,
+    windowId: string,
+    nodeId: string,
+    stageIndex: number,
+    name: string,
+  ): void;
+  clearCompositionShaderUniformSlots(windowId: string): void;
+  beginCompositionShaderUniformSlotPatches(
+    requestId: number,
+    slotId: number,
+  ): void;
+  writeCompositionShaderUniformSlotPatch(
+    requestId: number,
+    slotId: number,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
+  writeCompositionShaderUniformArraySlotPatch(
+    requestId: number,
+    slotId: number,
+    elementWidth: number,
+    values: Float32Array,
+  ): void;
+  beginSchedulerResponse(
+    requestId: number,
+    dirty: boolean,
+    runtimeDirty: boolean,
+    nextPollInMs: number,
+  ): void;
+  addSchedulerDirtyWindow(windowId: string, managedOnly: boolean): void;
+  addSchedulerDirtyWindowNode(windowId: string, nodeId: string): void;
+  addSchedulerDirtyLayer(layerId: string): void;
+  addSchedulerDirtyLayerNode(layerId: string, nodeId: string): void;
+  beginCachedResponse(payload: Uint8Array): void;
+  addCachedDirtyNode(nodeId: string): void;
+  addCachedVisibleOutput(outputName: string): void;
+  setCachedWorkspaceString(workspace: string): void;
+  setCachedWorkspaceNumber(workspace: number): void;
+  finishNativeResponse(): void;
+  log(level: "debug" | "info" | "warn" | "error", message: string): void;
+}
+
+interface EmbeddedRuntimeRequest {
+  json(): string | null;
+  composition(): RuntimeRequest | null;
+  effect(): RuntimeRequest | null;
+  interaction(): RuntimeRequest | null;
+  scheduler(): SchedulerTickRequest | null;
+  fastKind(): number;
+  fastRequestId(): number;
+  fastWindowId(): string;
+  fastForceFullReevaluation(): boolean;
+  fastNowMs(): number;
+  finishFast(): void;
+}
+
+type NativeCompositionUpdate =
+  | {
+      kind: "full";
+      windowId: string;
+      tree: unknown;
+    }
+  | {
+      kind: "patches";
+      windowId: string;
+      patches: Array<{ nodeId: string; node: unknown }>;
+    };
+
+type NativeEffectUpdate =
+  | {
+      kind: "background";
+      effect: CompiledEffectHandle | null;
+    }
+  | {
+      kind: "window";
+      windowId: string;
+      effects: WindowEffectAssignment | null;
+    }
+  | {
+      kind: "layers";
+      assignments: RuntimeLayerEffectAssignment[];
+    }
+  | {
+      kind: "popups";
+      assignments: RuntimePopupEffectAssignment[];
+    };
+
+interface EmbeddedRuntimeBridgeConstructor {
+  new (bridgeId: number): EmbeddedRuntimeBridge;
+}
+
+const runtimeGlobal = globalThis as typeof globalThis & {
+  ShojiRuntimeBridge?: EmbeddedRuntimeBridgeConstructor;
+  __SHOJI_EMBEDDED_RUNTIME__?: boolean;
+  Deno?: {
+    cwd(): string;
+    env: {
+      get(key: string): string | undefined;
+      set(key: string, value: string): void;
+      delete(key: string): void;
+    };
+    statSync(path: string): unknown;
+    inspect?(value: unknown): string;
+  };
+  process?: {
+    cwd?(): string;
+    env?: Record<string, string | undefined>;
+  };
+  __SHOJI_PATH_EXISTS__?: (path: string) => boolean;
+};
+
+function runtimeCwd(): string {
+  return runtimeGlobal.Deno?.cwd() ?? runtimeGlobal.process?.cwd?.() ?? "/";
+}
+
+function normalizePath(path: string): string {
+  const absolute = path.startsWith("/") ? path : `${runtimeCwd()}/${path}`;
+  const parts: string[] = [];
+  for (const part of absolute.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
+function resolvePath(...paths: string[]): string {
+  return normalizePath(paths.filter(Boolean).join("/"));
+}
+
+function dirnamePath(path: string): string {
+  const normalized = normalizePath(path);
+  const slash = normalized.lastIndexOf("/");
+  return slash <= 0 ? "/" : normalized.slice(0, slash);
+}
+
+function pathToFileUrl(path: string): string {
+  const url = new URL("file:///");
+  url.pathname = normalizePath(path);
+  return url.href;
+}
+
+function pathExists(path: string): boolean {
+  if (runtimeGlobal.__SHOJI_PATH_EXISTS__) {
+    return runtimeGlobal.__SHOJI_PATH_EXISTS__(path);
+  }
+  try {
+    if (!runtimeGlobal.Deno?.statSync) return false;
+    runtimeGlobal.Deno.statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runtimeEnv(key: string): string | undefined {
+  return runtimeGlobal.Deno?.env?.get(key) ?? runtimeGlobal.process?.env?.[key];
+}
+
+function formatRuntimeLog(args: unknown[]): string {
+  return args
+    .map((value) => {
+      if (typeof value === "string") return value;
+      if (value instanceof Error) return value.stack ?? value.message;
+      if (runtimeGlobal.Deno?.inspect) {
+        return runtimeGlobal.Deno.inspect(value);
+      }
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })
+    .join(" ");
+}
 
 function findConfigRoot(entryPath: string): string {
-  let dir = dirname(resolve(entryPath));
-  while (dir !== dirname(dir)) {
-    if (existsSync(`${dir}/package.json`)) {
+  let dir = dirnamePath(resolvePath(entryPath));
+  while (dir !== dirnamePath(dir)) {
+    if (pathExists(`${dir}/package.json`)) {
       return dir;
     }
-    dir = dirname(dir);
+    dir = dirnamePath(dir);
   }
-  return dirname(resolve(entryPath));
+  return dirnamePath(resolvePath(entryPath));
 }
 
 function findPreloadPath(configPath: string): string | null {
-  const candidate = resolve(dirname(resolve(configPath)), "preload.ts");
-  return existsSync(candidate) ? candidate : null;
+  const candidate = resolvePath(
+    dirnamePath(resolvePath(configPath)),
+    "preload.ts",
+  );
+  return pathExists(candidate) ? candidate : null;
 }
 
 import {
@@ -37,6 +281,7 @@ import {
   drainPendingProcessActions,
   drainPendingEnvUpdates,
   hasActiveAnimations,
+  hasActiveAnimationsInStore,
   type CompiledEffectHandle,
   type LayerEffectAssignment,
   type PopupEffectAssignment,
@@ -72,6 +317,7 @@ import {
   takeDirtyLayerNodeIds,
   takeManagedWindowOnlyDirty,
   takeDirtyWindowNodeIds,
+  takeDirtyWindowShaderUniformBindingKeys,
   type CompositorEventController,
   installSchedulerBridge,
   isManagedWindowOnlyDirty,
@@ -116,13 +362,14 @@ import {
   type ManagedWindowScheduleAnimationOptions,
   type ManagedWindowState,
   type WindowTransform,
-} from "shoji_wm";
+} from "../packages/shoji_wm/src/index.ts";
+import { peekDirtyWindowNodeIds } from "../packages/shoji_wm/src/runtime-hooks.ts";
 
 function debugSSD(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_SSD_SUPPRESSION_DEBUG) {
+  if (!runtimeEnv("SHOJI_SSD_SUPPRESSION_DEBUG")) {
     return;
   }
   console.info(`ssd-suppression ${message}`, JSON.stringify(details));
@@ -132,7 +379,7 @@ function debugLabel(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_LABEL_DEBUG) {
+  if (!runtimeEnv("SHOJI_LABEL_DEBUG")) {
     return;
   }
   console.info(`label-debug ${message}`, JSON.stringify(details));
@@ -142,7 +389,7 @@ function debugHotReload(
   message: string,
   details: Record<string, unknown> = {},
 ): void {
-  if (!process.env.SHOJI_HOT_RELOAD_DEBUG) {
+  if (!runtimeEnv("SHOJI_HOT_RELOAD_DEBUG")) {
     return;
   }
   console.info(`hot-reload-runtime ${message}`, JSON.stringify(details));
@@ -248,7 +495,7 @@ interface SchedulerTickRequest {
   requestId: number;
   kind: "schedulerTick";
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -276,7 +523,7 @@ interface EvaluateCachedRequest {
   snapshot?: WaylandWindowSnapshot;
   forceFullReevaluation?: boolean;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -363,18 +610,18 @@ interface WindowActivateRequest {
   inputState?: Record<string, InputDeviceInfo>;
 }
 
-interface PointerMoveAsyncRequest {
+interface PointerMoveRequest {
   requestId: number;
-  kind: "pointerMoveAsync";
+  kind: "pointerMove" | "pointerMoveAsync";
   event: PointerMoveEvent;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
-interface GestureSwipeAsyncRequest {
+interface GestureSwipeRequest {
   requestId: number;
-  kind: "gestureSwipeAsync";
+  kind: "gestureSwipe" | "gestureSwipeAsync";
   event: GestureSwipeEvent;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
@@ -452,8 +699,8 @@ type RuntimeRequest =
   | WindowMinimizeRequest
   | WindowFullscreenRequest
   | WindowActivateRequest
-  | PointerMoveAsyncRequest
-  | GestureSwipeAsyncRequest
+  | PointerMoveRequest
+  | GestureSwipeRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest
   | EvaluatePopupEffectsRequest
@@ -471,6 +718,7 @@ interface EvaluateSuccess {
   transform: WindowTransform;
   managedWindow: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyNodeIds?: string[];
   managedWindowOnly?: boolean;
   nextPollInMs?: number;
@@ -509,9 +757,11 @@ interface SchedulerTickSuccess {
   ok: true;
   kind: "schedulerTick";
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerIds?: string[];
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
@@ -607,6 +857,7 @@ interface InvokeHandlerSuccess {
   transform?: WindowTransform;
   managedWindow?: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -721,6 +972,7 @@ interface StartCloseSuccess {
   transform?: WindowTransform;
   managedWindow?: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -735,10 +987,16 @@ interface StartCloseSuccess {
   processActions?: RuntimeProcessSpawnAction[];
 }
 
-interface PointerMoveAsyncSuccess {
+interface NativeInteractionSuccess {
   requestId: number;
   ok: true;
-  kind: "pointerMoveAsync" | "gestureSwipeAsync";
+  kind:
+    | "pointerMove"
+    | "pointerMoveAsync"
+    | "gestureSwipe"
+    | "gestureSwipeAsync"
+    | "windowMove"
+    | "windowResize";
   invoked: boolean;
   dirty: boolean;
   dirtyWindowIds: string[];
@@ -930,7 +1188,10 @@ function applyRuntimeEnvironment(
     return;
   }
   for (const [key, value] of Object.entries(environment)) {
-    process.env[key] = value;
+    runtimeGlobal.Deno?.env?.set(key, value);
+    if (runtimeGlobal.process?.env) {
+      runtimeGlobal.process.env[key] = value;
+    }
   }
 }
 
@@ -952,6 +1213,13 @@ const animationEntriesByLayerId = new Map<string, Map<symbol, unknown>>();
 const polls = new Map<number, RuntimePoll>();
 const dirtyWindowIds = new Set<string>();
 const dirtyLayerIds = new Set<string>();
+const lastNativeCompositionByWindowId = new Map<string, unknown>();
+const shaderUniformSlotIdsByWindow = new Map<string, Map<string, number>>();
+let nextShaderUniformSlotId = 1;
+const lastNativeEffectByTarget = new Map<string, unknown>();
+const lastNativeEffectStructureByTarget = new Map<string, unknown>();
+const effectUniformSlotIdsByTarget = new Map<string, Map<string, number>>();
+let nextEffectUniformSlotId = 1;
 let runtimeDirty = false;
 let immediateDirtyPoll: PollHandle | null = null;
 let nextPollId = 1;
@@ -999,16 +1267,12 @@ interface RuntimePoll {
   dirtyMode: PollDirtyMode;
 }
 
-function installRuntimeConsoleBridge() {
-  const original = { ...console };
+function installRuntimeConsoleBridge(embeddedBridge: EmbeddedRuntimeBridge) {
   const emit = (
     level: "debug" | "info" | "warn" | "error",
     args: unknown[],
   ) => {
-    const message = format(...args);
-    process.stderr.write(
-      `__SHOJI_RUNTIME_LOG__${JSON.stringify({ level, message })}\n`,
-    );
+    embeddedBridge.log(level, formatRuntimeLog(args));
   };
 
   console.debug = (...args: unknown[]) => emit("debug", args);
@@ -1016,8 +1280,6 @@ function installRuntimeConsoleBridge() {
   console.info = (...args: unknown[]) => emit("info", args);
   console.warn = (...args: unknown[]) => emit("warn", args);
   console.error = (...args: unknown[]) => emit("error", args);
-
-  return original;
 }
 
 function hasRuntimeTimestamp(
@@ -1040,7 +1302,7 @@ function beginRuntimeTurn(nowMs: number): void {
 }
 
 // --- Diagnostic counters (SHOJI_RUNTIME_STATS=1) -----------------------------
-const statsEnabled = process.env.SHOJI_RUNTIME_STATS === "1";
+const statsEnabled = runtimeEnv("SHOJI_RUNTIME_STATS") === "1";
 const stats = {
   evaluate: 0,
   schedulerTick: 0,
@@ -1074,18 +1336,11 @@ function startStatsLogger(): void {
       stats[key] = 0;
     }
     console.error("[stats/1s]", JSON.stringify(snapshot));
-  }, 1000).unref();
+  }, 1000);
 }
 
-async function main() {
-  const configPath = process.argv[2];
-  const socketPath = process.argv[3];
-  if (!configPath) {
-    throw new Error(
-      "usage: tsx tools/composition-runtime.ts <config-path> [socket-path]",
-    );
-  }
-  installRuntimeConsoleBridge();
+async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
+  installRuntimeConsoleBridge(embeddedBridge);
   startStatsLogger();
 
   installSchedulerBridge({
@@ -1114,14 +1369,14 @@ async function main() {
     },
   });
 
-  const resolvedConfigPath = resolve(configPath);
-  const moduleUrl = pathToFileURL(resolvedConfigPath).href;
+  const resolvedConfigPath = resolvePath(configPath);
+  const moduleUrl = pathToFileUrl(resolvedConfigPath);
   installAssetResolverBridge(findConfigRoot(configPath));
   installProcessResolverBridge(resolvedConfigPath);
 
   const preloadPath = findPreloadPath(resolvedConfigPath);
   if (preloadPath) {
-    await import(pathToFileURL(preloadPath).href);
+    await import(pathToFileUrl(preloadPath));
   }
 
   let loadedConfig: Record<string, unknown> | null = null;
@@ -1160,23 +1415,7 @@ async function main() {
     };
   }
 
-  const socket = socketPath ? await connectSocket(socketPath) : null;
-  const input = socket ?? process.stdin;
-  const output = socket ?? process.stdout;
-
-  for await (const payload of readFramedMessages(input)) {
-    let request: RuntimeRequest;
-    try {
-      request = JSON.parse(payload.toString("utf8")) as RuntimeRequest;
-    } catch (error) {
-      await writeResponse(output, {
-        requestId: -1,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      continue;
-    }
-
+  for await (const request of readEmbeddedMessages(embeddedBridge)) {
     try {
       if ("displayState" in request) {
         updateOutputState(request.displayState);
@@ -1222,9 +1461,11 @@ async function main() {
           case "windowActivateRequest":
             stats.windowActivateRequest++;
             break;
+          case "pointerMove":
           case "pointerMoveAsync":
             stats.pointerMoveAsync++;
             break;
+          case "gestureSwipe":
           case "gestureSwipeAsync":
             stats.gestureSwipeAsync++;
             break;
@@ -1247,7 +1488,7 @@ async function main() {
         }
       }
       if (request.kind === "drainPreload") {
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "drainPreload",
@@ -1282,7 +1523,7 @@ async function main() {
           ),
           processActions,
         });
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "lifecycleEnable",
@@ -1316,7 +1557,7 @@ async function main() {
         const eventConfig = pendingEventConfigPayload(runtimeConfig.events);
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "invokeHandler",
@@ -1356,7 +1597,7 @@ async function main() {
             animationEntriesByWindowId,
           ),
         });
-        await writeResponse(output, {
+        await writeResponse(embeddedBridge, {
           requestId: request.requestId,
           ok: true,
           kind: "lifecycleDisable",
@@ -1410,11 +1651,26 @@ async function main() {
               actions: evaluationActions.map(summarizeWindowAction),
             });
           }
-          await writeResponse(output, {
+          embeddedBridge.writeCompositionUpdate(request.requestId, {
+            kind: "full",
+            windowId: request.snapshot.id,
+            tree: result.serialized,
+          });
+          lastNativeCompositionByWindowId.set(
+            request.snapshot.id,
+            result.serialized,
+          );
+          if (cached) {
+            syncCompositionShaderUniformSlots(
+              embeddedBridge,
+              request.snapshot.id,
+              cached,
+            );
+          }
+          await writeResponse(embeddedBridge, {
             requestId: request.requestId,
             ok: true,
             kind: request.kind,
-            serialized: result.serialized,
             transform:
               cached?.lastTransform ?? result.transform ?? identityTransform(),
             managedWindow:
@@ -1422,9 +1678,12 @@ async function main() {
               result.managedWindow ??
               identityManagedWindow(),
             windowEffects: result.windowEffects,
+            effectTargetId: request.snapshot.id,
             dirtyNodeIds:
               request.kind === "evaluate"
-                ? takeDirtyWindowNodeIds(request.snapshot.id)
+                ? cached
+                  ? takeDirtyCompositionNodeIds(request.snapshot.id, cached)
+                  : []
                 : [],
             nextPollInMs:
               request.kind === "evaluate"
@@ -1450,7 +1709,7 @@ async function main() {
             request.snapshot,
             request.context,
           );
-          await writeResponse(output, {
+          await writeResponse(embeddedBridge, {
             requestId: request.requestId,
             ok: true,
             kind: "windowDecorationPolicy",
@@ -1467,14 +1726,16 @@ async function main() {
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
             const debugConfig = takePendingDebugConfig();
-            await writeResponse(output, {
+            const response: SchedulerTickSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "schedulerTick",
               dirty: tick.dirty,
+              runtimeDirty: tick.runtimeDirty,
               dirtyWindowIds: tick.dirtyWindowIds,
               dirtyManagedWindowIds: tick.dirtyManagedWindowIds,
               dirtyWindowNodeIds: tick.dirtyWindowNodeIds,
+              dirtyLayerIds: tick.dirtyLayerIds,
               dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
               actions: tick.actions,
               nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
@@ -1487,15 +1748,38 @@ async function main() {
               processConfig,
               processActions,
               debugConfig,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeSchedulerResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "windowClosed") {
+            embeddedBridge.clearCompositionShaderUniformSlots(
+              request.windowId,
+            );
+            shaderUniformSlotIdsByWindow.delete(request.windowId);
+            clearNativeEffectTarget(
+              embeddedBridge,
+              NATIVE_EFFECT_TARGET_WINDOW,
+              request.windowId,
+            );
             closeWindow(events, request.windowId);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowClosed",
@@ -1514,11 +1798,12 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            const response: EvaluateSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "startClose",
               ...result,
+              effectTargetId: request.windowId,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1526,7 +1811,22 @@ async function main() {
               inputConfig,
               processConfig,
               processActions,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeCachedResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+                request.windowId,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "evaluateCached") {
             const result = evaluateCached(
               composition,
@@ -1551,17 +1851,26 @@ async function main() {
                 actions: cachedActions.map(summarizeWindowAction),
               });
             }
-            await writeResponse(output, {
+            writeCachedCompositionUpdate(
+              embeddedBridge,
+              request.requestId,
+              request.windowId,
+              result,
+              cacheByWindowId.get(request.windowId)?.cache,
+            );
+            const response: EvaluateSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "evaluateCached",
-              serialized: result.serialized,
               transform: result.transform,
               managedWindow: result.managedWindow,
               windowEffects: result.windowEffects,
+              effectTargetId: request.windowId,
               dirtyNodeIds: result.dirtyNodeIds,
               managedWindowOnly: result.managedWindowOnly,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: hasWindowAnimations(request.windowId)
+                ? 0
+                : result.nextPollInMs,
               actions: cachedActions.length > 0 ? cachedActions : undefined,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -1570,9 +1879,24 @@ async function main() {
               inputConfig,
               processConfig,
               processActions,
-            });
+            };
+            const runtimeUpdates = takeRuntimeResponseUpdates();
+            if (
+              !tryWriteNativeCachedResponse(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+                request.windowId,
+              )
+            ) {
+              await writeResponseWithRuntimeUpdates(
+                embeddedBridge,
+                response,
+                runtimeUpdates,
+              );
+            }
           } else if (request.kind === "getEffectConfig") {
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "getEffectConfig",
@@ -1592,12 +1916,12 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "evaluateLayerEffects",
               effects: result.effects,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1618,12 +1942,12 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "evaluatePopupEffects",
               effects: result.effects,
-              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              nextPollInMs: result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1641,7 +1965,7 @@ async function main() {
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
             const debugConfig = takePendingDebugConfig();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "invokeKeyBinding",
@@ -1666,7 +1990,7 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowResize",
@@ -1691,7 +2015,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMove",
@@ -1719,7 +2043,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMaximizeRequest",
@@ -1747,7 +2071,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMinimizeRequest",
@@ -1775,7 +2099,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowFullscreenRequest",
@@ -1803,7 +2127,7 @@ async function main() {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowActivateRequest",
@@ -1817,18 +2141,24 @@ async function main() {
               processConfig,
               processActions,
             });
-          } else if (request.kind === "pointerMoveAsync") {
-            const result = await invokePointerMoveAsync(events, request.event);
+          } else if (
+            request.kind === "pointerMove" ||
+            request.kind === "pointerMoveAsync"
+          ) {
+            const result =
+              request.kind === "pointerMove"
+                ? invokePointerMove(events, request.event)
+                : await invokePointerMoveAsync(events, request.event);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
-              kind: "pointerMoveAsync",
+              kind: request.kind,
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -1839,18 +2169,24 @@ async function main() {
               processConfig,
               processActions,
             });
-          } else if (request.kind === "gestureSwipeAsync") {
-            const result = await invokeGestureSwipeAsync(events, request.event);
+          } else if (
+            request.kind === "gestureSwipe" ||
+            request.kind === "gestureSwipeAsync"
+          ) {
+            const result =
+              request.kind === "gestureSwipe"
+                ? invokeGestureSwipe(events, request.event)
+                : await invokeGestureSwipeAsync(events, request.event);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
-              kind: "gestureSwipeAsync",
+              kind: request.kind,
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -1872,11 +2208,12 @@ async function main() {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(output, {
+            await writeResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "invokeHandler",
               ...result,
+              effectTargetId: request.windowId,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1889,7 +2226,7 @@ async function main() {
         }
       }
     } catch (error) {
-      await writeResponse(output, {
+      await writeResponse(embeddedBridge, {
         requestId: request.requestId,
         ok: false,
         kind: request.kind,
@@ -1913,6 +2250,8 @@ function evaluateCached(
   forceFullReevaluation = false,
 ): {
   serialized?: unknown;
+  treeUpdate: "full" | "patches" | "uniforms" | "none";
+  uniformPatches?: NativeShaderUniformPatch[];
   transform: WindowTransform;
   managedWindow: ManagedWindowState;
   windowEffects: WindowEffectAssignment | null;
@@ -1943,6 +2282,7 @@ function evaluateCached(
     openedWindowIds.add(windowId);
     dirtyWindowIds.delete(windowId);
     takeDirtyWindowNodeIds(windowId);
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
     takeManagedWindowOnlyDirty(windowId);
     events.emitFocus(entry.cache.window, snapshot.isFocused);
     if (!firstCommittedWindowIds.has(windowId)) {
@@ -1986,6 +2326,7 @@ function evaluateCached(
   const managedWindowOnlyDirty = takeManagedWindowOnlyDirty(windowId);
   if (managedWindowOnlyDirty && !forceFullReevaluation) {
     const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
     if (updated) {
       debugLabel("evaluate-cached-managed-dirty-with-updated-tree", {
         windowId,
@@ -1994,25 +2335,29 @@ function evaluateCached(
       });
       return {
         serialized: updated.serialized,
+        treeUpdate: "full",
         transform: updated.transform,
         managedWindow: updated.managedWindow,
         windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
         dirtyNodeIds,
-        nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+        nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
       };
     }
     const reevaluated = entry.cache.reevaluateManagedWindow();
     return {
+      treeUpdate: "none",
       transform: reevaluated.transform,
       managedWindow: reevaluated.managedWindow,
       windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
       dirtyNodeIds: [],
       managedWindowOnly: true,
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+      nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
     };
   }
 
   const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const dirtyUniformBindingKeys =
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
   if (updated && !forceFullReevaluation) {
     debugLabel("evaluate-cached-updated-tree", {
       windowId,
@@ -2021,13 +2366,49 @@ function evaluateCached(
     });
     return {
       serialized: updated.serialized,
+      treeUpdate: "full",
       transform: updated.transform,
       managedWindow: updated.managedWindow,
       windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
       dirtyNodeIds,
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+      nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
     };
   }
+  if (
+    !forceFullReevaluation &&
+    dirtyNodeIds.length === 0 &&
+    dirtyUniformBindingKeys.length > 0
+  ) {
+    const uniformPatches = entry.cache.readShaderUniformPatches(
+      dirtyUniformBindingKeys,
+    );
+    if (uniformPatches !== null && uniformPatches.length > 0) {
+      return {
+        treeUpdate: "uniforms",
+        uniformPatches,
+        transform: entry.cache.lastTransform,
+        managedWindow: entry.cache.lastManagedWindow,
+        windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
+        dirtyNodeIds: Array.from(
+          new Set(uniformPatches.map((patch) => patch.nodeId)),
+        ),
+        nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
+      };
+    }
+  }
+  const reevaluateNodeIds =
+    dirtyUniformBindingKeys.length > 0
+      ? Array.from(
+          new Set([
+            ...dirtyNodeIds,
+            ...entry.cache.shaderUniformBindings
+              .filter((binding) =>
+                dirtyUniformBindingKeys.includes(binding.key)
+              )
+              .map((binding) => binding.nodeId),
+          ]),
+        )
+      : dirtyNodeIds;
   // A full window dirty can coincide with node-scoped dirty marks from
   // derived signals. Passing those node ids to reevaluate() selects the
   // serialized-tree patch path, which deliberately does not recreate the
@@ -2036,21 +2417,486 @@ function evaluateCached(
   // disappear again once the visual animation completed.
   const reevaluated = forceFullReevaluation
     ? entry.cache.reevaluate()
-    : entry.cache.reevaluate(dirtyNodeIds);
+    : entry.cache.reevaluate(reevaluateNodeIds);
   debugLabel("evaluate-cached-reevaluate", {
     windowId,
-    dirtyNodeIds,
+    dirtyNodeIds: reevaluateNodeIds,
     forceFullReevaluation,
     labels: summarizeSerializedLabels(reevaluated.serialized),
   });
   return {
     serialized: reevaluated.serialized,
+    treeUpdate:
+      !forceFullReevaluation && reevaluateNodeIds.length > 0
+        ? "patches"
+        : "full",
     transform: entry.cache.lastTransform,
     managedWindow: entry.cache.lastManagedWindow,
     windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
-    dirtyNodeIds: forceFullReevaluation ? [] : dirtyNodeIds,
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    dirtyNodeIds: forceFullReevaluation ? [] : reevaluateNodeIds,
+    nextPollInMs: hasWindowAnimations(windowId) ? 0 : peekNextPollDelay(),
   };
+}
+
+function writeCachedCompositionUpdate(
+  bridge: EmbeddedRuntimeBridge,
+  requestId: number,
+  windowId: string,
+  result: ReturnType<typeof evaluateCached>,
+  cache: CompositionEvaluationCache | undefined,
+): void {
+  if (result.treeUpdate === "none") {
+    return;
+  }
+  if (result.treeUpdate === "uniforms") {
+    const uniformPatches = result.uniformPatches ?? [];
+    if (uniformPatches.length === 0) {
+      throw new Error(
+        `cached uniform composition update for ${windowId} has no patches`,
+      );
+    }
+    const registeredSlotIds = uniformPatches.map((patch) =>
+      patch.bindingKey === undefined
+        ? undefined
+        : shaderUniformSlotIdsByWindow
+            .get(windowId)
+            ?.get(patch.bindingKey)
+    );
+    const firstSlotId = registeredSlotIds[0];
+    const usesOnlyRegisteredSlots =
+      firstSlotId !== undefined &&
+      registeredSlotIds.every((slotId) => slotId !== undefined);
+    if (usesOnlyRegisteredSlots) {
+      bridge.beginCompositionShaderUniformSlotPatches(
+        requestId,
+        firstSlotId,
+      );
+    } else {
+      bridge.beginCompositionPatches(requestId, windowId);
+    }
+    for (let index = 0; index < uniformPatches.length; index++) {
+      const patch = uniformPatches[index];
+      const slotId = registeredSlotIds[index];
+      if (patch.arrayElementWidth !== undefined) {
+        const values = new Float32Array(patch.values);
+        if (slotId !== undefined) {
+          bridge.writeCompositionShaderUniformArraySlotPatch(
+            requestId,
+            slotId,
+            patch.arrayElementWidth,
+            values,
+          );
+        } else {
+          bridge.writeCompositionShaderUniformArrayPatch(
+            requestId,
+            patch.nodeId,
+            patch.stageIndex,
+            patch.name,
+            patch.arrayElementWidth,
+            values,
+          );
+        }
+        continue;
+      }
+      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
+      if (slotId !== undefined) {
+        bridge.writeCompositionShaderUniformSlotPatch(
+          requestId,
+          slotId,
+          patch.values.length,
+          x,
+          y,
+          z,
+          w,
+        );
+      } else {
+        bridge.writeCompositionShaderUniformPatch(
+          requestId,
+          patch.nodeId,
+          patch.stageIndex,
+          patch.name,
+          patch.values.length,
+          x,
+          y,
+          z,
+          w,
+        );
+      }
+    }
+    return;
+  }
+  if (result.serialized === undefined) {
+    throw new Error(
+      `cached composition update for ${windowId} is missing its serialized tree`,
+    );
+  }
+  if (result.treeUpdate === "full") {
+    bridge.writeCompositionUpdate(requestId, {
+      kind: "full",
+      windowId,
+      tree: result.serialized,
+    });
+    lastNativeCompositionByWindowId.set(windowId, result.serialized);
+    if (cache) {
+      syncCompositionShaderUniformSlots(bridge, windowId, cache);
+    }
+    return;
+  }
+
+  const dirtyNodeIds = topLevelDirtyNodeIds(result.dirtyNodeIds ?? []);
+  const previous = lastNativeCompositionByWindowId.get(windowId);
+  const uniformPatches =
+    previous === undefined
+      ? null
+      : collectShaderUniformPatches(
+          previous,
+          result.serialized,
+          dirtyNodeIds,
+          result.dirtyNodeIds ?? [],
+        );
+  if (uniformPatches && uniformPatches.length > 0) {
+    bridge.beginCompositionPatches(requestId, windowId);
+    for (const patch of uniformPatches) {
+      if (patch.arrayElementWidth !== undefined) {
+        bridge.writeCompositionShaderUniformArrayPatch(
+          requestId,
+          patch.nodeId,
+          patch.stageIndex,
+          patch.name,
+          patch.arrayElementWidth,
+          new Float32Array(patch.values),
+        );
+        continue;
+      }
+      const [x = 0, y = 0, z = 0, w = 0] = patch.values;
+      bridge.writeCompositionShaderUniformPatch(
+        requestId,
+        patch.nodeId,
+        patch.stageIndex,
+        patch.name,
+        patch.values.length,
+        x,
+        y,
+        z,
+        w,
+      );
+    }
+    lastNativeCompositionByWindowId.set(windowId, result.serialized);
+    return;
+  }
+  const patches = dirtyNodeIds.map((nodeId) => {
+    const node = findSerializedNode(result.serialized, nodeId);
+    if (node === undefined) {
+      throw new Error(
+        `dirty composition node ${nodeId} is missing from ${windowId}`,
+      );
+    }
+    return { nodeId, node };
+  });
+  bridge.writeCompositionUpdate(requestId, {
+    kind: "patches",
+    windowId,
+    patches,
+  });
+  lastNativeCompositionByWindowId.set(windowId, result.serialized);
+  if (cache) {
+    syncCompositionShaderUniformSlots(bridge, windowId, cache);
+  }
+}
+
+interface NativeShaderUniformPatch {
+  bindingKey?: string;
+  nodeId: string;
+  stageIndex: number;
+  name: string;
+  values: number[];
+  arrayElementWidth?: number;
+}
+
+function syncCompositionShaderUniformSlots(
+  bridge: EmbeddedRuntimeBridge,
+  windowId: string,
+  cache: CompositionEvaluationCache,
+): void {
+  bridge.clearCompositionShaderUniformSlots(windowId);
+  const slotIds = new Map<string, number>();
+  for (const binding of cache.shaderUniformBindings) {
+    const slotId = nextShaderUniformSlotId++;
+    if (nextShaderUniformSlotId > 0xffff_ffff) {
+      nextShaderUniformSlotId = 1;
+    }
+    slotIds.set(binding.key, slotId);
+    bridge.registerCompositionShaderUniformSlot(
+      slotId,
+      windowId,
+      binding.nodeId,
+      binding.stageIndex,
+      binding.name,
+    );
+  }
+  shaderUniformSlotIdsByWindow.set(windowId, slotIds);
+}
+
+function takeDirtyCompositionNodeIds(
+  windowId: string,
+  cache: CompositionEvaluationCache,
+): string[] {
+  const nodeIds = new Set(takeDirtyWindowNodeIds(windowId));
+  const bindingKeys = new Set(
+    takeDirtyWindowShaderUniformBindingKeys(windowId),
+  );
+  if (bindingKeys.size > 0) {
+    for (const binding of cache.shaderUniformBindings) {
+      if (bindingKeys.has(binding.key)) {
+        nodeIds.add(binding.nodeId);
+      }
+    }
+  }
+  return Array.from(nodeIds);
+}
+
+function collectShaderUniformPatches(
+  previousTree: unknown,
+  nextTree: unknown,
+  dirtyNodeIds: readonly string[],
+  allDirtyNodeIds: readonly string[],
+): NativeShaderUniformPatch[] | null {
+  const patches: NativeShaderUniformPatch[] = [];
+  for (const nodeId of dirtyNodeIds) {
+    if (
+      allDirtyNodeIds.some(
+        (candidate) =>
+          candidate !== nodeId &&
+          (candidate.startsWith(`${nodeId}.`) ||
+            candidate.startsWith(`${nodeId}[`)),
+      )
+    ) {
+      return null;
+    }
+    const previous = findSerializedNode(previousTree, nodeId);
+    const next = findSerializedNode(nextTree, nodeId);
+    const nodePatches = collectNodeShaderUniformPatches(previous, next);
+    if (nodePatches === null) {
+      return null;
+    }
+    patches.push(...nodePatches);
+  }
+  return patches;
+}
+
+function collectNodeShaderUniformPatches(
+  previousValue: unknown,
+  nextValue: unknown,
+): NativeShaderUniformPatch[] | null {
+  const previous = asRecord(previousValue);
+  const next = asRecord(nextValue);
+  if (
+    !previous ||
+    !next ||
+    previous.kind !== "ShaderEffect" ||
+    next.kind !== "ShaderEffect" ||
+    typeof previous.nodeId !== "string" ||
+    previous.nodeId !== next.nodeId
+  ) {
+    return null;
+  }
+  const previousProps = asRecord(previous.props);
+  const nextProps = asRecord(next.props);
+  if (
+    !previousProps ||
+    !nextProps ||
+    !recordsEqualExcept(previousProps, nextProps, "shader")
+  ) {
+    return null;
+  }
+  const previousShader = asRecord(previousProps.shader);
+  const nextShader = asRecord(nextProps.shader);
+  if (
+    !previousShader ||
+    !nextShader ||
+    !recordsEqualExcept(previousShader, nextShader, "pipeline") ||
+    !Array.isArray(previousShader.pipeline) ||
+    !Array.isArray(nextShader.pipeline) ||
+    previousShader.pipeline.length !== nextShader.pipeline.length
+  ) {
+    return null;
+  }
+
+  const patches: NativeShaderUniformPatch[] = [];
+  for (let stageIndex = 0; stageIndex < previousShader.pipeline.length; stageIndex++) {
+    const previousStage = asRecord(previousShader.pipeline[stageIndex]);
+    const nextStage = asRecord(nextShader.pipeline[stageIndex]);
+    if (!previousStage || !nextStage) {
+      return null;
+    }
+    if (previousStage.kind !== "shader-stage") {
+      if (!deepEqual(previousStage, nextStage)) {
+        return null;
+      }
+      continue;
+    }
+    if (
+      nextStage.kind !== "shader-stage" ||
+      !recordsEqualExcept(previousStage, nextStage, "uniforms")
+    ) {
+      return null;
+    }
+    const previousUniforms = asRecord(previousStage.uniforms) ?? {};
+    const nextUniforms = asRecord(nextStage.uniforms) ?? {};
+    const previousNames = Object.keys(previousUniforms).sort();
+    const nextNames = Object.keys(nextUniforms).sort();
+    if (!deepEqual(previousNames, nextNames)) {
+      return null;
+    }
+    for (const name of nextNames) {
+      if (deepEqual(previousUniforms[name], nextUniforms[name])) {
+        continue;
+      }
+      const previousSnapshot = numericUniformSnapshot(previousUniforms[name]);
+      const snapshot = numericUniformSnapshot(nextUniforms[name]);
+      if (!sameShaderUniformShape(previousSnapshot, snapshot) || snapshot === null) {
+        return null;
+      }
+      patches.push({
+        nodeId: previous.nodeId,
+        stageIndex,
+        name,
+        values: snapshot.values,
+        arrayElementWidth: snapshot.arrayElementWidth,
+      });
+    }
+  }
+  return patches;
+}
+
+interface NativeShaderUniformSnapshot {
+  values: number[];
+  arrayElementWidth?: number;
+}
+
+function numericUniformSnapshot(
+  value: unknown,
+): NativeShaderUniformSnapshot | null {
+  if (isRecord(value) && value.kind === "uniform-array") {
+    const width =
+      value.element === "float"
+        ? 1
+        : value.element === "vec2"
+          ? 2
+          : value.element === "vec3"
+            ? 3
+            : value.element === "vec4"
+              ? 4
+              : 0;
+    if (width === 0 || !Array.isArray(value.values) || value.values.length === 0) {
+      return null;
+    }
+    const flattened: number[] = [];
+    for (const element of value.values) {
+      const entries = width === 1 ? [element] : element;
+      if (
+        !Array.isArray(entries) ||
+        entries.length !== width ||
+        entries.some(
+          (entry) => typeof entry !== "number" || !Number.isFinite(entry),
+        )
+      ) {
+        return null;
+      }
+      flattened.push(...(entries as number[]));
+    }
+    return { values: flattened, arrayElementWidth: width };
+  }
+  const values = typeof value === "number" ? [value] : value;
+  if (
+    !Array.isArray(values) ||
+    values.length < 1 ||
+    values.length > 4 ||
+    values.some((entry) => typeof entry !== "number" || !Number.isFinite(entry))
+  ) {
+    return null;
+  }
+  return { values: values as number[] };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function recordsEqualExcept(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  excludedKey: string,
+): boolean {
+  const keys = Array.from(
+    new Set([...Object.keys(left), ...Object.keys(right)]),
+  ).filter((key) => key !== excludedKey);
+  return keys.every((key) => deepEqual(left[key], right[key]));
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => deepEqual(value, right[index]))
+    );
+  }
+  const leftRecord = asRecord(left);
+  const rightRecord = asRecord(right);
+  if (!leftRecord || !rightRecord) {
+    return false;
+  }
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+        deepEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function topLevelDirtyNodeIds(nodeIds: readonly string[]): string[] {
+  const sorted = Array.from(new Set(nodeIds)).sort(
+    (left, right) => left.length - right.length,
+  );
+  const selected: string[] = [];
+  for (const nodeId of sorted) {
+    if (
+      selected.some(
+        (ancestor) =>
+          nodeId === ancestor || nodeId.startsWith(`${ancestor}.`),
+      )
+    ) {
+      continue;
+    }
+    selected.push(nodeId);
+  }
+  return selected;
+}
+
+function findSerializedNode(tree: unknown, nodeId: string): unknown {
+  if (!tree || typeof tree !== "object") {
+    return undefined;
+  }
+  const node = tree as { nodeId?: unknown; children?: unknown[] };
+  if (node.nodeId === nodeId) {
+    return tree;
+  }
+  for (const child of node.children ?? []) {
+    const found = findSerializedNode(child, nodeId);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 function summarizeSerializedLabels(node: unknown): unknown[] {
@@ -2123,7 +2969,10 @@ function evaluateSnapshot(
       events.emitFirstCommit(entry.cache.window);
     }
     dirtyWindowIds.delete(snapshot.id);
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-evaluate-new-cache-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2165,7 +3014,10 @@ function evaluateSnapshot(
 
   const wasDirty = dirtyWindowIds.delete(snapshot.id);
   if (wasDirty) {
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      existing.cache,
+    );
     debugSSD("runtime-evaluate-existing-dirty", {
       windowId: snapshot.id,
       wasPreconfigured,
@@ -2232,7 +3084,10 @@ function evaluatePreconfigure(
       events.emitInitialConfigure(entry.cache.window);
     }
     events.emitFocus(entry.cache.window, snapshot.isFocused);
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-preconfigure-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2258,7 +3113,10 @@ function evaluatePreconfigure(
       });
       events.emitInitialConfigure(entry.cache.window);
     }
-    const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
+    const dirtyNodeIds = takeDirtyCompositionNodeIds(
+      snapshot.id,
+      entry.cache,
+    );
     debugSSD("runtime-preconfigure-reevaluate", {
       windowId: snapshot.id,
       dirtyNodeIds,
@@ -2639,7 +3497,15 @@ function evaluateLayerEffects(
 
   return {
     effects,
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    nextPollInMs: snapshots.some(
+      (snapshot) =>
+        snapshot.outputName === outputName &&
+        hasActiveAnimationsInStore(
+          animationEntriesByLayerId.get(snapshot.id) ?? new Map(),
+        ),
+    )
+      ? 0
+      : peekNextPollDelay(),
   };
 }
 
@@ -2746,7 +3612,10 @@ function evaluatePopupEffects(
             ) as SurfacePolicy | null)
           : null,
       })),
-    nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    // Popup effects do not currently expose an animation controller. A
+    // window/layer animation therefore cannot make this output's popup cache
+    // continuously animating.
+    nextPollInMs: peekNextPollDelay(),
   };
 }
 
@@ -2846,6 +3715,7 @@ function ensureImmediateDirtyPoll(): void {
 
 function processSchedulerTick(nowMs: number): {
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -2880,9 +3750,11 @@ function processSchedulerTick(nowMs: number): {
 
 function collectRuntimeMutationState(): {
   dirty: boolean;
+  runtimeDirty?: boolean;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerIds?: string[];
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
@@ -2925,7 +3797,7 @@ function collectRuntimeMutationState(): {
       );
   const dirtyWindowNodeIds = Object.fromEntries(
     nextDirtyWindowIds
-      .map((windowId) => [windowId, takeDirtyWindowNodeIds(windowId)] as const)
+      .map((windowId) => [windowId, peekDirtyWindowNodeIds(windowId)] as const)
       .filter(([, nodeIds]) => nodeIds.length > 0),
   );
   const dirtyLayerNodeIds = Object.fromEntries(
@@ -2939,8 +3811,9 @@ function collectRuntimeMutationState(): {
       actions: actions.map(summarizeWindowAction),
     });
   }
+  const nextRuntimeDirty = runtimeDirty;
   const dirty =
-    runtimeDirty ||
+    nextRuntimeDirty ||
     nextDirtyWindowIds.length > 0 ||
     nextDirtyLayerIds.length > 0;
   runtimeDirty = false;
@@ -2961,6 +3834,7 @@ function collectRuntimeMutationState(): {
 
   return {
     dirty,
+    runtimeDirty: nextRuntimeDirty || undefined,
     dirtyWindowIds: nextDirtyWindowIds,
     dirtyManagedWindowIds:
       dirtyManagedWindowIds.length > 0 ? dirtyManagedWindowIds : undefined,
@@ -2968,11 +3842,19 @@ function collectRuntimeMutationState(): {
       Object.keys(dirtyWindowNodeIds).length > 0
         ? dirtyWindowNodeIds
         : undefined,
+    dirtyLayerIds:
+      nextDirtyLayerIds.length > 0 ? nextDirtyLayerIds : undefined,
     dirtyLayerNodeIds:
       Object.keys(dirtyLayerNodeIds).length > 0 ? dirtyLayerNodeIds : undefined,
     actions,
     nextPollInMs,
   };
+}
+
+function hasWindowAnimations(windowId: string): boolean {
+  return hasActiveAnimationsInStore(
+    animationEntriesByWindowId.get(windowId) ?? new Map(),
+  );
 }
 
 function invokeGlobalKeyBinding(
@@ -3215,11 +4097,9 @@ function emptyWindowStateRequestResult(): Omit<
   };
 }
 
-async function invokePointerMoveAsync(
-  events: CompositorEventController,
-  event: PointerMoveEvent,
-): Promise<Omit<PointerMoveAsyncSuccess, "requestId" | "ok" | "kind">> {
-  const invoked = await events.emitPointerMoveAsync(event);
+function interactionMutationResult(
+  invoked: boolean,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
   if (!invoked) {
     return {
       invoked: false,
@@ -3243,32 +4123,32 @@ async function invokePointerMoveAsync(
   };
 }
 
+function invokePointerMove(
+  events: CompositorEventController,
+  event: PointerMoveEvent,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
+  return interactionMutationResult(events.emitPointerMove(event));
+}
+
+function invokeGestureSwipe(
+  events: CompositorEventController,
+  event: GestureSwipeEvent,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
+  return interactionMutationResult(events.emitGestureSwipe(event));
+}
+
+async function invokePointerMoveAsync(
+  events: CompositorEventController,
+  event: PointerMoveEvent,
+): Promise<Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind">> {
+  return interactionMutationResult(await events.emitPointerMoveAsync(event));
+}
+
 async function invokeGestureSwipeAsync(
   events: CompositorEventController,
   event: GestureSwipeEvent,
-): Promise<Omit<PointerMoveAsyncSuccess, "requestId" | "ok" | "kind">> {
-  const invoked = await events.emitGestureSwipeAsync(event);
-  if (!invoked) {
-    return {
-      invoked: false,
-      dirty: false,
-      dirtyWindowIds: [],
-      actions: [],
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
-    };
-  }
-
-  const result = collectRuntimeMutationState();
-  return {
-    invoked: true,
-    dirty: result.dirty,
-    dirtyWindowIds: result.dirtyWindowIds,
-    dirtyManagedWindowIds: result.dirtyManagedWindowIds,
-    dirtyWindowNodeIds: result.dirtyWindowNodeIds,
-    dirtyLayerNodeIds: result.dirtyLayerNodeIds,
-    actions: result.actions,
-    nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
-  };
+): Promise<Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind">> {
+  return interactionMutationResult(await events.emitGestureSwipeAsync(event));
 }
 
 function closeWindow(
@@ -3284,6 +4164,7 @@ function closeWindow(
   existing.closePoll?.cancel();
   events.emitClose(existing.cache.window);
   cacheByWindowId.delete(windowId);
+  lastNativeCompositionByWindowId.delete(windowId);
   openedWindowIds.delete(windowId);
   initialConfiguredWindowIds.delete(windowId);
   firstCommittedWindowIds.delete(windowId);
@@ -3336,7 +4217,7 @@ function startClose(
     }
   }
 
-  const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
+  const dirtyNodeIds = takeDirtyCompositionNodeIds(windowId, entry.cache);
   const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
   const actions = drainPendingActions();
   return {
@@ -3382,7 +4263,10 @@ function invokeHandler(
   const managedWindowOnly = isManagedWindowOnlyDirty(windowId);
   const dirtyNodeIds = managedWindowOnly
     ? []
-    : takeDirtyWindowNodeIds(windowId);
+    : takeDirtyCompositionNodeIds(windowId, entry.cache);
+  if (managedWindowOnly) {
+    takeDirtyWindowShaderUniformBindingKeys(windowId);
+  }
   const reevaluated = managedWindowOnly
     ? undefined
     : entry.cache.reevaluate(dirtyNodeIds);
@@ -3390,7 +4274,7 @@ function invokeHandler(
     entry.cache.reevaluateManagedWindow();
   }
   const actions = entry.pendingActions.splice(0, entry.pendingActions.length);
-  if (process.env.SHOJI_SSD_HANDLER_DEBUG) {
+  if (runtimeEnv("SHOJI_SSD_HANDLER_DEBUG")) {
     console.debug(
       "runtime handler composition result",
       JSON.stringify({
@@ -3559,16 +4443,188 @@ function resolveEffectConfig(
   };
 }
 
-async function connectSocket(socketPath: string): Promise<Socket> {
-  return await new Promise((resolveSocket, reject) => {
-    const socket = createConnection(socketPath);
-    socket.once("connect", () => resolveSocket(socket));
-    socket.once("error", reject);
-  });
+interface PendingRuntimeResponseUpdates {
+  envUpdates: ReturnType<typeof drainPendingEnvUpdates>;
+  cursorConfig: ReturnType<typeof takePendingCursorConfig>;
+}
+
+function takeRuntimeResponseUpdates(): PendingRuntimeResponseUpdates {
+  return {
+    envUpdates: drainPendingEnvUpdates(),
+    cursorConfig: takePendingCursorConfig(),
+  };
+}
+
+function hasRuntimeResponseUpdates(
+  updates: PendingRuntimeResponseUpdates,
+): boolean {
+  return updates.envUpdates !== undefined || updates.cursorConfig !== undefined;
+}
+
+function tryWriteNativeSchedulerResponse(
+  output: EmbeddedRuntimeBridge,
+  response: SchedulerTickSuccess,
+  updates: PendingRuntimeResponseUpdates,
+): boolean {
+  if (
+    hasRuntimeResponseUpdates(updates) ||
+    response.actions.length > 0 ||
+    response.displayConfig !== undefined ||
+    response.workspaceConfig !== undefined ||
+    response.keyBindingConfig !== undefined ||
+    response.pointerConfig !== undefined ||
+    response.inputConfig !== undefined ||
+    response.eventConfig !== undefined ||
+    response.processConfig !== undefined ||
+    (response.processActions?.length ?? 0) > 0 ||
+    response.debugConfig !== undefined
+  ) {
+    return false;
+  }
+
+  output.beginSchedulerResponse(
+    response.requestId,
+    response.dirty,
+    response.runtimeDirty ?? false,
+    response.nextPollInMs ?? -1,
+  );
+  const managedOnly = new Set(response.dirtyManagedWindowIds ?? []);
+  for (const windowId of response.dirtyWindowIds) {
+    output.addSchedulerDirtyWindow(windowId, managedOnly.has(windowId));
+  }
+  for (const [windowId, nodeIds] of Object.entries(
+    response.dirtyWindowNodeIds ?? {},
+  )) {
+    for (const nodeId of nodeIds) {
+      output.addSchedulerDirtyWindowNode(windowId, nodeId);
+    }
+  }
+  for (const layerId of response.dirtyLayerIds ?? []) {
+    output.addSchedulerDirtyLayer(layerId);
+  }
+  for (const [layerId, nodeIds] of Object.entries(
+    response.dirtyLayerNodeIds ?? {},
+  )) {
+    for (const nodeId of nodeIds) {
+      output.addSchedulerDirtyLayerNode(layerId, nodeId);
+    }
+  }
+  output.finishNativeResponse();
+  return true;
+}
+
+const NATIVE_CACHED_RESPONSE_FIELD_COUNT = 15;
+const nativeCachedResponsePayload = new Uint8Array(
+  NATIVE_CACHED_RESPONSE_FIELD_COUNT * Float64Array.BYTES_PER_ELEMENT,
+);
+const nativeCachedResponseView = new DataView(
+  nativeCachedResponsePayload.buffer,
+);
+
+function tryWriteNativeCachedResponse(
+  output: EmbeddedRuntimeBridge,
+  response: EvaluateSuccess,
+  updates: PendingRuntimeResponseUpdates,
+  windowId: string,
+): boolean {
+  if (
+    response.kind !== "evaluateCached" ||
+    hasRuntimeResponseUpdates(updates) ||
+    (response.actions?.length ?? 0) > 0 ||
+    response.displayConfig !== undefined ||
+    response.workspaceConfig !== undefined ||
+    response.keyBindingConfig !== undefined ||
+    response.pointerConfig !== undefined ||
+    response.inputConfig !== undefined ||
+    response.eventConfig !== undefined ||
+    response.processConfig !== undefined ||
+    (response.processActions?.length ?? 0) > 0
+  ) {
+    return false;
+  }
+
+  const transform = response.transform ?? identityTransform();
+  const managedWindow = response.managedWindow ?? identityManagedWindow();
+  const workspace = managedWindow.workspace;
+  if (
+    workspace !== undefined &&
+    typeof workspace !== "string" &&
+    (typeof workspace !== "number" || !Number.isFinite(workspace))
+  ) {
+    return false;
+  }
+  const visibleOutputs = managedWindow.visibleOutputs;
+  if (
+    visibleOutputs !== undefined &&
+    visibleOutputs !== null &&
+    !Array.isArray(visibleOutputs)
+  ) {
+    return false;
+  }
+
+  let flags = 0;
+  if (response.managedWindowOnly) flags |= 1 << 0;
+  if (managedWindow.managed) flags |= 1 << 1;
+  if (managedWindow.visible) flags |= 1 << 2;
+  if (managedWindow.idle) flags |= 1 << 3;
+  if (managedWindow.interactive) flags |= 1 << 4;
+  if (managedWindow.forceRectSize) flags |= 1 << 5;
+  if (managedWindow.tiled) flags |= 1 << 6;
+  if (managedWindow.rect !== undefined) flags |= 1 << 7;
+  if (managedWindow.allowTearing === false) flags |= 1 << 8;
+  if (managedWindow.allowTearing === true) flags |= 2 << 8;
+  if (Array.isArray(visibleOutputs)) flags |= 1 << 10;
+  if (managedWindow.zIndex !== undefined) flags |= 1 << 11;
+
+  const rect = managedWindow.rect;
+  const fields = [
+    response.requestId,
+    response.nextPollInMs ?? -1,
+    flags,
+    transform.origin.x,
+    transform.origin.y,
+    transform.translateX,
+    transform.translateY,
+    transform.scaleX,
+    transform.scaleY,
+    transform.opacity,
+    rect?.x ?? 0,
+    rect?.y ?? 0,
+    rect?.width ?? 0,
+    rect?.height ?? 0,
+    managedWindow.zIndex ?? 0,
+  ];
+  if (fields.some((value) => !Number.isFinite(value))) {
+    return false;
+  }
+  for (let index = 0; index < fields.length; index++) {
+    nativeCachedResponseView.setFloat64(index * 8, fields[index], true);
+  }
+
+  writeNativeWindowEffectUpdate(
+    output,
+    response.requestId,
+    windowId,
+    response.windowEffects ?? null,
+  );
+  output.beginCachedResponse(nativeCachedResponsePayload);
+  for (const nodeId of response.dirtyNodeIds ?? []) {
+    output.addCachedDirtyNode(nodeId);
+  }
+  for (const outputName of visibleOutputs ?? []) {
+    output.addCachedVisibleOutput(outputName);
+  }
+  if (typeof workspace === "string") {
+    output.setCachedWorkspaceString(workspace);
+  } else if (typeof workspace === "number") {
+    output.setCachedWorkspaceNumber(workspace);
+  }
+  output.finishNativeResponse();
+  return true;
 }
 
 function writeResponse(
-  output: NodeJS.WritableStream,
+  output: EmbeddedRuntimeBridge,
   response:
     | EvaluateSuccess
     | SchedulerTickSuccess
@@ -3579,7 +4635,7 @@ function writeResponse(
     | WindowResizeSuccess
     | WindowMoveSuccess
     | WindowStateRequestSuccess
-    | PointerMoveAsyncSuccess
+    | NativeInteractionSuccess
     | GetEffectConfigSuccess
     | EvaluateLayerEffectsSuccess
     | EvaluatePopupEffectsSuccess
@@ -3589,68 +4645,662 @@ function writeResponse(
     | WindowDecorationPolicySuccess
     | RuntimeFailure,
 ): Promise<void> {
-  const envUpdates = drainPendingEnvUpdates();
-  const cursorConfig = takePendingCursorConfig();
-  const responseWithRuntimeUpdates = {
-    ...response,
-    ...(envUpdates ? { envUpdates } : {}),
-    ...(cursorConfig ? { cursorConfig } : {}),
-  };
-  const payload = Buffer.from(JSON.stringify(responseWithRuntimeUpdates), "utf8");
-  if (payload.length > 0xffff_ffff) {
-    throw new Error("runtime response too large");
-  }
-  const header = Buffer.allocUnsafe(4);
-  header.writeUInt32LE(payload.length, 0);
-
-  return new Promise((resolveWrite, rejectWrite) => {
-    const onError = (error: Error) => {
-      cleanup();
-      rejectWrite(error);
-    };
-    const cleanup = () => {
-      output.off("error", onError);
-    };
-
-    output.on("error", onError);
-    output.write(header);
-    output.write(payload, (error) => {
-      cleanup();
-      if (error) {
-        rejectWrite(error);
-      } else {
-        resolveWrite();
-      }
-    });
-  });
+  return writeResponseWithRuntimeUpdates(
+    output,
+    response,
+    takeRuntimeResponseUpdates(),
+  );
 }
 
-async function* readFramedMessages(
-  input: NodeJS.ReadableStream,
-): AsyncGenerator<Buffer> {
-  let buffered = Buffer.alloc(0);
+function writeInteractionEventResponse(
+  output: EmbeddedRuntimeBridge,
+  response: NativeInteractionSuccess,
+): Promise<void> {
+  const updates = takeRuntimeResponseUpdates();
+  if (
+    !hasRuntimeResponseUpdates(updates) &&
+    response.displayConfig === undefined &&
+    response.workspaceConfig === undefined &&
+    response.keyBindingConfig === undefined &&
+    response.pointerConfig === undefined &&
+    response.inputConfig === undefined &&
+    response.eventConfig === undefined &&
+    response.processConfig === undefined &&
+    (response.processActions?.length ?? 0) === 0
+  ) {
+    output.writeInteractionResponse(response);
+    return Promise.resolve();
+  }
+  return writeResponseWithRuntimeUpdates(output, response, updates);
+}
 
-  for await (const chunk of input) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    buffered = Buffer.concat([buffered, bytes]);
+function writeResponseWithRuntimeUpdates(
+  output: EmbeddedRuntimeBridge,
+  response: Parameters<typeof writeResponse>[1],
+  updates: PendingRuntimeResponseUpdates,
+): Promise<void> {
+  const responseWithoutEffects = writeNativeEffectUpdate(output, response);
+  const responseWithRuntimeUpdates = {
+    ...responseWithoutEffects,
+    ...(updates.envUpdates ? { envUpdates: updates.envUpdates } : {}),
+    ...(updates.cursorConfig ? { cursorConfig: updates.cursorConfig } : {}),
+  };
+  output.writeResponse(JSON.stringify(responseWithRuntimeUpdates));
+  return Promise.resolve();
+}
 
-    while (buffered.length >= 4) {
-      const frameLength = buffered.readUInt32LE(0);
-      if (buffered.length < 4 + frameLength) {
+function writeNativeEffectUpdate(
+  output: EmbeddedRuntimeBridge,
+  response: Parameters<typeof writeResponse>[1],
+): Record<string, unknown> {
+  const responseWithoutEffects = {
+    ...response,
+  } as Record<string, unknown>;
+  if (!response.ok) {
+    return responseWithoutEffects;
+  }
+  if (Object.prototype.hasOwnProperty.call(response, "windowEffects")) {
+    const windowResponse = response as
+      | EvaluateSuccess
+      | StartCloseSuccess
+      | InvokeHandlerSuccess;
+    const windowId = windowResponse.effectTargetId;
+    if (windowId === undefined) {
+      throw new Error(
+        `native window effect response ${response.kind} has no target id`,
+      );
+    }
+    writeNativeWindowEffectUpdate(
+      output,
+      response.requestId,
+      windowId,
+      windowResponse.windowEffects ?? null,
+    );
+    delete responseWithoutEffects.windowEffects;
+    delete responseWithoutEffects.effectTargetId;
+  } else if (response.kind === "getEffectConfig") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_BACKGROUND,
+      [
+        {
+          targetKind: NATIVE_EFFECT_TARGET_BACKGROUND,
+          targetId: "",
+          value: response.backgroundEffect ?? null,
+        },
+      ],
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "background",
+          effect: response.backgroundEffect ?? null,
+        }),
+    );
+    delete responseWithoutEffects.backgroundEffect;
+  } else if (response.kind === "evaluateLayerEffects") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_LAYERS,
+      response.effects.map((assignment) => ({
+        targetKind: NATIVE_EFFECT_TARGET_LAYER,
+        targetId: assignment.layerId,
+        value: assignment.effects,
+      })),
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "layers",
+          assignments: response.effects,
+        }),
+    );
+    delete responseWithoutEffects.effects;
+  } else if (response.kind === "evaluatePopupEffects") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_POPUPS,
+      response.effects.map((assignment) => ({
+        targetKind: NATIVE_EFFECT_TARGET_POPUP,
+        targetId: assignment.popupId,
+        value: assignment.effects,
+        structure: {
+          effects: assignment.effects,
+          surfacePolicy: assignment.surfacePolicy ?? null,
+        },
+      })),
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "popups",
+          assignments: response.effects,
+        }),
+    );
+    delete responseWithoutEffects.effects;
+  }
+  return responseWithoutEffects;
+}
+
+const NATIVE_EFFECT_UPDATE_BACKGROUND = 0;
+const NATIVE_EFFECT_UPDATE_WINDOW = 1;
+const NATIVE_EFFECT_UPDATE_LAYERS = 2;
+const NATIVE_EFFECT_UPDATE_POPUPS = 3;
+const NATIVE_EFFECT_TARGET_BACKGROUND = 0;
+const NATIVE_EFFECT_TARGET_WINDOW = 1;
+const NATIVE_EFFECT_TARGET_LAYER = 2;
+const NATIVE_EFFECT_TARGET_POPUP = 3;
+const NATIVE_EFFECT_SLOT_BACKGROUND = 0;
+const NATIVE_EFFECT_SLOT_BEHIND = 1;
+const NATIVE_EFFECT_SLOT_BEHIND_ROOT_SURFACE = 2;
+const NATIVE_EFFECT_SLOT_IN_FRONT = 3;
+const NATIVE_EFFECT_SLOT_REPLACE = 4;
+
+interface NativeEffectTarget {
+  targetKind: number;
+  targetId: string;
+  value: unknown;
+  structure?: unknown;
+}
+
+type NativeEffectShaderPathSegment =
+  | { kind: "input" }
+  | { kind: "pipeline"; index: number }
+  | { kind: "texture"; name: string };
+
+interface NativeEffectUniformBinding {
+  key: string;
+  effectSlot: number;
+  shaderPath: NativeEffectShaderPathSegment[];
+  name: string;
+  values: number[];
+  arrayElementWidth?: number;
+}
+
+function writeNativeWindowEffectUpdate(
+  output: EmbeddedRuntimeBridge,
+  requestId: number,
+  windowId: string,
+  effects: WindowEffectAssignment | null,
+): void {
+  writeNativeEffectTargets(
+    output,
+    requestId,
+    NATIVE_EFFECT_UPDATE_WINDOW,
+    [
+      {
+        targetKind: NATIVE_EFFECT_TARGET_WINDOW,
+        targetId: windowId,
+        value: effects,
+      },
+    ],
+    () =>
+      output.writeEffectUpdate(requestId, {
+        kind: "window",
+        windowId,
+        effects,
+      }),
+  );
+}
+
+function writeNativeEffectTargets(
+  output: EmbeddedRuntimeBridge,
+  requestId: number,
+  updateKind: number,
+  targets: NativeEffectTarget[],
+  writeFullUpdate: () => void,
+): void {
+  const changes: Array<{
+    slotId: number;
+    values: number[];
+    arrayElementWidth?: number;
+  }> = [];
+  let canPatch = targets.length > 0;
+  for (const target of targets) {
+    const targetKey = nativeEffectTargetKey(
+      target.targetKind,
+      target.targetId,
+    );
+    const previous = lastNativeEffectByTarget.get(targetKey);
+    const previousStructure =
+      lastNativeEffectStructureByTarget.get(targetKey);
+    const slots = effectUniformSlotIdsByTarget.get(targetKey);
+    if (
+      previous === undefined ||
+      previousStructure === undefined ||
+      slots === undefined ||
+      !sameEffectStructure(
+        previousStructure,
+        target.structure ?? target.value,
+      )
+    ) {
+      canPatch = false;
+      break;
+    }
+    const previousBindings = collectNativeEffectUniformBindings(previous);
+    const nextBindings = collectNativeEffectUniformBindings(target.value);
+    if (
+      previousBindings.length !== nextBindings.length ||
+      previousBindings.some(
+        (binding, index) => binding.key !== nextBindings[index]?.key,
+      )
+    ) {
+      canPatch = false;
+      break;
+    }
+    for (let index = 0; index < nextBindings.length; index++) {
+      const previousBinding = previousBindings[index];
+      const nextBinding = nextBindings[index];
+      if (sameUniformValues(previousBinding.values, nextBinding.values)) {
+        continue;
+      }
+      const slotId = slots.get(nextBinding.key);
+      if (slotId === undefined) {
+        canPatch = false;
         break;
       }
-
-      yield buffered.subarray(4, 4 + frameLength);
-      buffered = buffered.subarray(4 + frameLength);
+      changes.push({
+        slotId,
+        values: nextBinding.values,
+        arrayElementWidth: nextBinding.arrayElementWidth,
+      });
+    }
+    if (!canPatch) {
+      break;
     }
   }
 
-  if (buffered.length !== 0) {
-    throw new Error("incomplete framed runtime message at EOF");
+  if (canPatch) {
+    output.beginEffectShaderUniformSlotPatches(requestId, updateKind);
+    for (const target of targets) {
+      output.addEffectShaderUniformPatchTarget(requestId, target.targetId);
+    }
+    for (const change of changes) {
+      if (change.arrayElementWidth !== undefined) {
+        output.writeEffectShaderUniformArraySlotPatch(
+          requestId,
+          change.slotId,
+          change.arrayElementWidth,
+          new Float32Array(change.values),
+        );
+        continue;
+      }
+      const [x = 0, y = 0, z = 0, w = 0] = change.values;
+      output.writeEffectShaderUniformSlotPatch(
+        requestId,
+        change.slotId,
+        change.values.length,
+        x,
+        y,
+        z,
+        w,
+      );
+    }
+  } else {
+    writeFullUpdate();
+    for (const target of targets) {
+      syncNativeEffectUniformSlots(output, target);
+    }
+  }
+
+  for (const target of targets) {
+    lastNativeEffectByTarget.set(
+      nativeEffectTargetKey(target.targetKind, target.targetId),
+      target.value,
+    );
+    lastNativeEffectStructureByTarget.set(
+      nativeEffectTargetKey(target.targetKind, target.targetId),
+      target.structure ?? target.value,
+    );
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+function syncNativeEffectUniformSlots(
+  output: EmbeddedRuntimeBridge,
+  target: NativeEffectTarget,
+): void {
+  const targetKey = nativeEffectTargetKey(
+    target.targetKind,
+    target.targetId,
+  );
+  output.clearEffectShaderUniformSlots(target.targetKind, target.targetId);
+  const slotIds = new Map<string, number>();
+  for (const binding of collectNativeEffectUniformBindings(target.value)) {
+    const slotId = nextEffectUniformSlotId++;
+    if (nextEffectUniformSlotId > 0xffff_ffff) {
+      nextEffectUniformSlotId = 1;
+    }
+    slotIds.set(binding.key, slotId);
+    output.registerEffectShaderUniformSlot(
+      slotId,
+      target.targetKind,
+      target.targetId,
+      binding.effectSlot,
+      JSON.stringify(binding.shaderPath),
+      binding.name,
+    );
+  }
+  effectUniformSlotIdsByTarget.set(targetKey, slotIds);
+}
+
+function clearNativeEffectTarget(
+  output: EmbeddedRuntimeBridge,
+  targetKind: number,
+  targetId: string,
+): void {
+  output.clearEffectShaderUniformSlots(targetKind, targetId);
+  const targetKey = nativeEffectTargetKey(targetKind, targetId);
+  effectUniformSlotIdsByTarget.delete(targetKey);
+  lastNativeEffectByTarget.delete(targetKey);
+  lastNativeEffectStructureByTarget.delete(targetKey);
+}
+
+function nativeEffectTargetKey(targetKind: number, targetId: string): string {
+  return `${targetKind}\u0000${targetId}`;
+}
+
+function collectNativeEffectUniformBindings(
+  value: unknown,
+): NativeEffectUniformBinding[] {
+  const bindings: NativeEffectUniformBinding[] = [];
+  if (isCompiledEffect(value)) {
+    collectCompiledEffectUniformBindings(
+      value,
+      NATIVE_EFFECT_SLOT_BACKGROUND,
+      [],
+      bindings,
+    );
+    return bindings;
+  }
+  if (!isRecord(value)) {
+    return bindings;
+  }
+  const slots: Array<[string, number]> = [
+    ["behind", NATIVE_EFFECT_SLOT_BEHIND],
+    ["behindRootSurface", NATIVE_EFFECT_SLOT_BEHIND_ROOT_SURFACE],
+    ["inFront", NATIVE_EFFECT_SLOT_IN_FRONT],
+    ["replace", NATIVE_EFFECT_SLOT_REPLACE],
+  ];
+  for (const [name, effectSlot] of slots) {
+    const handle = value[name];
+    if (!isRecord(handle) || !isCompiledEffect(handle.effect)) {
+      continue;
+    }
+    collectCompiledEffectUniformBindings(
+      handle.effect,
+      effectSlot,
+      [],
+      bindings,
+    );
+  }
+  return bindings;
+}
+
+function collectCompiledEffectUniformBindings(
+  effect: Record<string, unknown>,
+  effectSlot: number,
+  prefix: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  collectEffectInputUniformBindings(
+    effect.input,
+    effectSlot,
+    [...prefix, { kind: "input" }],
+    bindings,
+  );
+  const pipeline = effect.pipeline;
+  if (!Array.isArray(pipeline)) {
+    return;
+  }
+  for (let index = 0; index < pipeline.length; index++) {
+    const stage = pipeline[index];
+    if (!isRecord(stage)) {
+      continue;
+    }
+    const path = [...prefix, { kind: "pipeline" as const, index }];
+    if (stage.kind === "shader-stage") {
+      collectShaderStageUniformBindings(stage, effectSlot, path, bindings);
+    } else if (stage.kind === "blend") {
+      collectEffectInputUniformBindings(
+        stage.input,
+        effectSlot,
+        path,
+        bindings,
+      );
+    } else if (stage.kind === "unit" && isCompiledEffect(stage.effect)) {
+      collectCompiledEffectUniformBindings(
+        stage.effect,
+        effectSlot,
+        path,
+        bindings,
+      );
+    }
+  }
+}
+
+function collectEffectInputUniformBindings(
+  input: unknown,
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  if (!isRecord(input) || input.kind !== "shader-input") {
+    return;
+  }
+  collectShaderStageUniformBindings(input, effectSlot, path, bindings);
+}
+
+function collectShaderStageUniformBindings(
+  shader: Record<string, unknown>,
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  const uniforms = shader.uniforms;
+  if (isRecord(uniforms)) {
+    for (const name of Object.keys(uniforms).sort()) {
+      const snapshot = numericUniformSnapshot(uniforms[name]);
+      if (snapshot === null) {
+        continue;
+      }
+      bindings.push({
+        key: nativeEffectUniformBindingKey(effectSlot, path, name),
+        effectSlot,
+        shaderPath: path,
+        name,
+        values: snapshot.values,
+        arrayElementWidth: snapshot.arrayElementWidth,
+      });
+    }
+  }
+  const textures = shader.textures;
+  if (!isRecord(textures)) {
+    return;
+  }
+  for (const name of Object.keys(textures).sort()) {
+    collectEffectInputUniformBindings(
+      textures[name],
+      effectSlot,
+      [...path, { kind: "texture", name }],
+      bindings,
+    );
+  }
+}
+
+function nativeEffectUniformBindingKey(
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  name: string,
+): string {
+  const encodedPath = path
+    .map((segment) => {
+      if (segment.kind === "input") {
+        return "i";
+      }
+      if (segment.kind === "pipeline") {
+        return `p${segment.index}`;
+      }
+      return `t${segment.name.length}:${segment.name}`;
+    })
+    .join("/");
+  return `${effectSlot}|${encodedPath}|u${name.length}:${name}`;
+}
+
+function sameEffectStructure(previous: unknown, next: unknown): boolean {
+  if (Object.is(previous, next)) {
+    return true;
+  }
+  if (Array.isArray(previous) || Array.isArray(next)) {
+    return (
+      Array.isArray(previous) &&
+      Array.isArray(next) &&
+      previous.length === next.length &&
+      previous.every((entry, index) =>
+        sameEffectStructure(entry, next[index]),
+      )
+    );
+  }
+  if (!isRecord(previous) || !isRecord(next)) {
+    return false;
+  }
+  const previousKeys = Object.keys(previous).sort();
+  const nextKeys = Object.keys(next).sort();
+  if (
+    previousKeys.length !== nextKeys.length ||
+    previousKeys.some((key, index) => key !== nextKeys[index])
+  ) {
+    return false;
+  }
+  const isShader =
+    (previous.kind === "shader-stage" ||
+      previous.kind === "shader-input") &&
+    previous.kind === next.kind;
+  for (const key of previousKeys) {
+    if (isShader && key === "uniforms") {
+      if (!sameShaderUniformStructure(previous[key], next[key])) {
+        return false;
+      }
+      continue;
+    }
+    if (!sameEffectStructure(previous[key], next[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameShaderUniformStructure(
+  previous: unknown,
+  next: unknown,
+): boolean {
+  if (!isRecord(previous) || !isRecord(next)) {
+    return previous === next;
+  }
+  const previousNames = Object.keys(previous).sort();
+  const nextNames = Object.keys(next).sort();
+  return (
+    previousNames.length === nextNames.length &&
+    previousNames.every(
+      (name, index) =>
+        name === nextNames[index] &&
+        sameShaderUniformShape(
+          numericUniformSnapshot(previous[name]),
+          numericUniformSnapshot(next[name]),
+        ),
+    )
+  );
+}
+
+function sameShaderUniformShape(
+  previous: NativeShaderUniformSnapshot | null,
+  next: NativeShaderUniformSnapshot | null,
+): boolean {
+  return (
+    previous !== null &&
+    next !== null &&
+    previous.values.length === next.values.length &&
+    previous.arrayElementWidth === next.arrayElementWidth
+  );
+}
+
+function sameUniformValues(previous: number[], next: number[]): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((value, index) => Object.is(value, next[index]))
+  );
+}
+
+function isCompiledEffect(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.kind === "compiled-effect";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function* readEmbeddedMessages(
+  bridge: EmbeddedRuntimeBridge,
+): AsyncGenerator<RuntimeRequest> {
+  while (true) {
+    const envelope = await bridge.readRequest();
+    if (envelope === null) {
+      return;
+    }
+    const composition = envelope.composition();
+    if (composition !== null) {
+      yield composition;
+      continue;
+    }
+    const effect = envelope.effect();
+    if (effect !== null) {
+      yield effect;
+      continue;
+    }
+    const interaction = envelope.interaction();
+    if (interaction !== null) {
+      yield interaction;
+      continue;
+    }
+    const scheduler = envelope.scheduler();
+    if (scheduler !== null) {
+      yield scheduler;
+      continue;
+    }
+    const fastKind = envelope.fastKind();
+    if (fastKind === 1) {
+      const request: EvaluateCachedRequest = {
+        requestId: envelope.fastRequestId(),
+        kind: "evaluateCached",
+        windowId: envelope.fastWindowId(),
+        forceFullReevaluation: envelope.fastForceFullReevaluation(),
+        nowMs: envelope.fastNowMs(),
+      };
+      envelope.finishFast();
+      yield request;
+      continue;
+    }
+    if (fastKind === 2) {
+      const request: SchedulerTickRequest = {
+        requestId: envelope.fastRequestId(),
+        kind: "schedulerTick",
+        nowMs: envelope.fastNowMs(),
+      };
+      envelope.finishFast();
+      yield request;
+      continue;
+    }
+    const json = envelope.json();
+    if (json === null) {
+      throw new Error("runtime request envelope contains no request");
+    }
+    yield JSON.parse(json) as RuntimeRequest;
+  }
+}
+
+export async function runEmbeddedRuntime(
+  configPath: string,
+  bridgeId: number,
+): Promise<void> {
+  const Bridge = runtimeGlobal.ShojiRuntimeBridge;
+  if (!Bridge) {
+    throw new Error("embedded ShojiWM runtime bridge is unavailable");
+  }
+  await main(configPath, new Bridge(bridgeId));
+}

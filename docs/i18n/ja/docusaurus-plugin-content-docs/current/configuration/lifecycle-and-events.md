@@ -92,22 +92,24 @@ COMPOSITOR.event.onFocus((window, focused) => {
 
 | イベント | 発火タイミング |
 | --- | --- |
-| `onPointerMoveAsync(event)` | ポインターが移動したとき（非同期、下記参照） |
-| `onGestureSwipeAsync(event)` | マルチフィンガースワイプが進行したとき |
+| `onPointerMove(event)` / `onPointerMoveAsync(event)` | ポインターが移動したとき |
+| `onGestureSwipe(event)` / `onGestureSwipeAsync(event)` | マルチフィンガースワイプが進行したとき |
 | `onOutputChange(event)` | 出力が追加／削除／再構成されたとき |
 | `onInputDeviceChange(...)` | 入力デバイスのセットが変わったとき（ホットプラグ） |
 | `onCreateLayer(...)` / `onUpdateLayer(...)` / `onDestroyLayer(...)` | レイヤーシェルサーフェス（バー／ドック／壁紙）がマップ／更新／アンマップされたとき |
 
-### 非同期リスナー
+### 同期・非同期の入力リスナー
 
-ポインター移動とジェスチャーのイベントには**非同期**版
-（`onPointerMoveAsync`・`onGestureSwipeAsync`）があります。リスナーは `Promise` を
-返すことができ、コンポジターはそれを await してから処理を続けます。`false`（または
-`Promise<false>`）を返すとそれ以降の処理を抑制します。1イベントごとに重い処理を行う
-ハンドラでは、入力経路をブロックしないようこちらを使ってください。
+`onPointerMove` と `onGestureSwipe` は、ネイティブランタイムブリッジを通じて
+コンポジターの入力経路上で同期実行されます。ウィンドウ管理状態を最小遅延で更新する
+短いハンドラではこちらを推奨します。ブロッキング I/O や重い処理は行わないでください。
+
+`onPointerMoveAsync` と `onGestureSwipeAsync` はランタイムワーカーで実行され、
+`Promise` を返せます。ランタイムが処理中の場合、高頻度な入力は途中のサンプルが
+まとめられます。重い処理を行い、中間サンプルの欠落を許容できる場合に使用してください。
 
 ```ts
-COMPOSITOR.event.onPointerMoveAsync((event) => {
+COMPOSITOR.event.onPointerMove((event) => {
   hybridWM.onPointerMove(event);
 });
 ```
