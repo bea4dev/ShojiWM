@@ -69,13 +69,48 @@ struct Inner {
 impl Inner {
     /// Tear down everything a session owns. Dropping the stream handle stops
     /// the capture thread and removes the PipeWire node.
-    fn cleanup_session(&self, session_key: &str) {
-        let stream = self.streams.lock().unwrap().remove(session_key);
-        let had_stream = stream.is_some();
-        drop(stream);
-        self.sessions.lock().unwrap().remove(session_key);
-        self.cursor_visibility.lock().unwrap().remove(session_key);
-        self.persist_modes.lock().unwrap().remove(session_key);
+    fn cleanup_session(
+        &self,
+        session_key: &str,
+    ) {
+        // Remove the session FIRST, the stream second. Start() does the
+        // opposite (insert stream, then verify the session still exists), so
+        // every interleaving of a Close racing a Start ends with the stream
+        // dropped exactly once — either here or by Start's verify step.
+        // Chromium's Go Live churns sessions fast enough to Close one while
+        // its Start is still spawning the capture thread; before this
+        // ordering the freshly started stream could land in the map after
+        // cleanup had already run, leaving an unowned PipeWire node that
+        // delivered zero frames to the app forever.
+        self.sessions
+            .lock()
+            .unwrap()
+            .remove(
+                session_key,
+            );
+        let stream = self.streams
+            .lock()
+            .unwrap()
+            .remove(
+                session_key,
+            );
+        let had_stream = stream
+            .is_some();
+        drop(
+            stream,
+        );
+        self.cursor_visibility
+            .lock()
+            .unwrap()
+            .remove(
+                session_key,
+            );
+        self.persist_modes
+            .lock()
+            .unwrap()
+            .remove(
+                session_key,
+            );
         tracing::info!(session_key, had_stream, "session closed and cleaned up");
     }
 }
@@ -500,7 +535,39 @@ impl ScreenCast {
                     .streams
                     .lock()
                     .unwrap()
-                    .insert(session_key, AnyStreamHandle::Output(handle_owned));
+                    .insert(
+                        session_key.clone(),
+                        AnyStreamHandle::Output(
+                            handle_owned,
+                        ),
+                    );
+                // In testing the stream took hundreds of ms to start; the frontend may
+                // have Closed the session in that window (Chromium's Go Live
+                // does). Returning success would hand the app a node backed
+                // by a stream nothing owns — it sits suspended and the app's
+                // capture shows 0x0 forever. Verify AFTER inserting: if the
+                // session is gone, either cleanup_session already dropped our
+                // insert or we drop it here, and the app gets "cancelled".
+                if !self.inner.sessions.lock().unwrap().contains_key(&session_key) {
+                    drop(
+                        self.inner.streams
+                            .lock()
+                            .unwrap()
+                            .remove(
+                                &session_key,
+                            ),
+                    );
+                    tracing::warn!(
+                        session_key,
+                        "session closed during Start; dropped fresh stream and cancelled",
+                    );
+                    return Ok(
+                        (
+                            1, 
+                            HashMap::new(),
+                        ),
+                    );
+                }
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();
                 stream_props.insert(
@@ -548,7 +615,34 @@ impl ScreenCast {
                     .streams
                     .lock()
                     .unwrap()
-                    .insert(session_key, AnyStreamHandle::Toplevel(handle_owned));
+                    .insert(
+                        session_key.
+                            clone(), 
+                        AnyStreamHandle::Toplevel(
+                            handle_owned,
+                        ),
+                    );
+                // Same closed-during-Start guard as the Output arm above.
+                if !self.inner.sessions.lock().unwrap().contains_key(&session_key) {
+                    drop(
+                        self.inner.streams
+                            .lock()
+                            .unwrap()
+                            .remove(
+                                &session_key,
+                            ),
+                    );
+                    tracing::warn!(
+                        session_key,
+                        "session closed during Start; dropped fresh stream and cancelled",
+                    );
+                    return Ok(
+                        (
+                            1,
+                            HashMap::new(),
+                        ),
+                    );
+                }
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();
                 stream_props.insert("source_type".to_string(), Value::from(source_types::WINDOW));

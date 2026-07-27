@@ -14,7 +14,13 @@ use smithay::{
     backend::{
         allocator::{Fourcc, format::FormatSet, gbm::GbmAllocator},
         drm::{
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+            DrmDevice,
+            DrmDeviceFd, 
+            DrmError,
+            DrmEvent,
+            DrmEventMetadata,
+            DrmEventTime,
+            DrmNode,
             compositor::{FrameFlags, PrimaryPlaneElement},
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
@@ -221,6 +227,32 @@ fn error_chain_has_permission_denied(error: &(dyn std::error::Error + 'static)) 
             return true;
         }
         current = error.source();
+    }
+    false
+}
+
+/// Whether a render/commit error chain bottoms out in a failed DRM atomic
+/// test (`DrmError::TestFailed`). That means the kernel rejected the screen
+/// configuration itself — expected after suspend/resume when the connector
+/// topology changed during sleep — and the surface should be rebuilt rather
+/// than treated as a fatal render failure.
+fn error_chain_has_drm_test_failed(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(
+        error,
+    );
+    while let Some(
+        error,
+    ) = current {
+        if matches!(
+            error.downcast_ref::<DrmError>(),
+            Some(
+                DrmError::TestFailed(_),
+            )
+        ) {
+            return true;
+        }
+        current = error
+            .source();
     }
     false
 }
@@ -694,9 +726,46 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
             reset_surface_after_tty_resume(surface);
         }
     }
+    // Connector changes that arrived while the session was paused were
+    // deferred (scanning a paused device half-applies them and leaves stale
+    // output state); re-run them now that the devices accept commits again.
+    for node in std::mem::take(
+        &mut state.pending_tty_device_changes,
+    ) {
+        info!(
+            ?node,
+            "processing deferred drm device change after tty resume",
+        );
+        if let Err(
+            err,
+        ) = device_changed(
+            state,
+            node,
+        ) {
+            warn!(
+                ?node,
+                ?err, 
+                "failed to process deferred drm device change",
+            );
+        }
+    }
     state.force_full_damage = true;
     state.request_tty_maintenance("tty-session-resume");
     state.schedule_redraw();
+}
+
+/// Record a mid-session config evaluation failure for the error overlay.
+///
+/// The render path retries every frame, so a persistently broken config would
+/// rebuild this report ~60 times a second. Keep the first failure instead: it is
+/// the one that names the original cause, later frames usually repeat it, and
+/// the existing reload paths clear the field once a config loads cleanly again.
+/// That mirrors `scheduler_tick`, which also reports once rather than per tick.
+fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
+    if state.config_error_report.is_none() {
+        state.config_error_report = Some(crate::config_error::ConfigErrorReport::runtime(error));
+        state.schedule_redraw();
+    }
 }
 
 fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
@@ -719,6 +788,10 @@ fn reset_surface_after_tty_resume(surface: &mut SurfaceData) {
 enum RenderSurfaceOutcome {
     Skipped,
     Processed,
+    /// The DRM atomic test rejected the current screen configuration
+    /// (`DrmError::TestFailed`). The caller must rebuild this CRTC's surface
+    /// via `reset_surface_after_commit_failure` instead of exiting.
+    CommitFailed,
 }
 
 struct TtyRenderFrameResult {
@@ -789,6 +862,16 @@ pub struct BackendData {
     >,
     pub renderer: GlesRenderer,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
+    /// Per-CRTC (window start, count) of recent surface rebuilds after failed
+    /// atomic commit tests. Bounds the recovery path: a configuration the
+    /// kernel keeps rejecting must not turn into an endless reset loop.
+    surface_reset_attempts: HashMap<
+        crtc::Handle, 
+        (
+            Instant, 
+            u32,
+        ),
+    >,
 }
 
 pub fn device_added(
@@ -907,6 +990,7 @@ pub fn device_added(
         drm_output_manager,
         renderer,
         surfaces: HashMap::new(),
+        surface_reset_attempts: HashMap::new(),
     };
     state.tty_backends.insert(node.clone(), backend);
     info!(?node, "drm backend stored in state");
@@ -1131,6 +1215,24 @@ fn render_queued_surface_after_frame_finish(
                 "queued tty follow-up redraw was skipped after frame_finish"
             );
         }
+        Ok(RenderSurfaceOutcome::CommitFailed) => {
+            if let Err(
+                err,
+            ) = reset_surface_after_commit_failure(
+                state,
+                node,
+                crtc,
+            ) {
+                // This path was never fatal; stay consistent and let the
+                // main render loop decide when a reset storm ends the session.
+                warn!(
+                    ?node,
+                    ?crtc,
+                    error = ?err,
+                    "surface reset after follow-up commit failure did not recover",
+                );
+            }
+        }
         Err(err) => {
             warn!(
                 ?node,
@@ -1211,6 +1313,18 @@ pub fn render_if_needed(
         for crtc in crtcs {
             match render_surface(state, loop_handle, node, crtc)? {
                 RenderSurfaceOutcome::Skipped => {}
+                RenderSurfaceOutcome::CommitFailed => {
+                    // An invalid screen configuration is expected right after
+                    // resume when the connector topology changed during
+                    // sleep. Rebuild the surface instead of exiting the
+                    // session; only a repeated reset storm propagates as
+                    // fatal.
+                    reset_surface_after_commit_failure(
+                        state,
+                        node,
+                        crtc,
+                    )?;
+                }
                 RenderSurfaceOutcome::Processed => {
                     let output_name = state
                         .tty_backends
@@ -1862,7 +1976,26 @@ fn render_surface(
     let decoration_refresh_started_at = Instant::now();
     {
         timescope::scope!("tty refresh_window_decorations");
-        state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
+        // A config that fails to evaluate mid-session must not end the session.
+        // This `?` propagated out of `render_if_needed` into `main() -> Result`,
+        // so one bad evaluation tore the whole compositor down and dropped the
+        // user back at the display manager. That is a live tripwire whenever
+        // `$SHOJI_CONFIG` points into a working tree: an ordinary `git checkout`
+        // across a revision that changed the config is enough to trigger it,
+        // with no way to read the error afterwards. Degrade the way the winit
+        // backend already does — keep the previous decorations for this frame —
+        // and surface the failure through the config-error overlay so it is
+        // legible and recoverable in place.
+        if let Err(err) =
+            state.refresh_window_decorations_for_output(Some(output.name().as_str()))
+        {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh window decorations for tty; keeping previous decorations"
+            );
+            report_tty_config_error(state, err);
+        }
     }
     // Output configuration is reactive. Evaluating the TypeScript runtime above can unmap this
     // output (for example, disabling the internal panel when a dock output appears). Do not carry
@@ -1878,8 +2011,25 @@ fn render_surface(
     let layer_effects_started_at = Instant::now();
     {
         timescope::scope!("tty refresh_layer_and_popup_effects");
-        state.refresh_layer_effects_for_output(output.name().as_str())?;
-        state.refresh_popup_effects_for_output(output.name().as_str())?;
+        // Same reasoning as the decoration refresh above: layer and popup
+        // effects come from the same runtime evaluation, so a broken config
+        // fails here too and must not be fatal either.
+        if let Err(err) = state.refresh_layer_effects_for_output(output.name().as_str()) {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh layer effects for tty; keeping previous effects"
+            );
+            report_tty_config_error(state, err);
+        }
+        if let Err(err) = state.refresh_popup_effects_for_output(output.name().as_str()) {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh popup effects for tty; keeping previous effects"
+            );
+            report_tty_config_error(state, err);
+        }
     }
     let layer_effects_elapsed_ms = layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -2040,6 +2190,7 @@ fn render_surface(
         let window_source_damage_snapshot = state.window_source_damage.clone();
         let ShojiWM {
             space,
+            tty_session_active,
             tty_backends,
             start_time,
             cursor_status,
@@ -5247,7 +5398,7 @@ fn render_surface(
         // alternating async game frames with vblank-bound cursor frames produces visibly uneven
         // cursor motion even when both the game and the output are otherwise running fast.
         let mut fullscreen_root_buffer_details = None;
-        let result = {
+        let render_frame_result = {
             timescope::scope!("tty render_frame");
             crate::backend::shader_effect::with_gpu_timing_renderer_span(
                 &mut backend.renderer,
@@ -5390,7 +5541,32 @@ fn render_surface(
                             })
                     }
                 },
-            )?
+            )
+        };
+        let result = match render_frame_result {
+            Ok(
+                result,
+            ) => result,
+            Err(
+                err,
+            ) => {
+                if error_chain_has_drm_test_failed(
+                    &err,
+                ) {
+                    warn!(
+                        output = %output.name(),
+                        ?err,
+                        "tty render_frame failed its atomic test; requesting surface reset",
+                    );
+                    return Ok(
+                        RenderSurfaceOutcome::CommitFailed,
+                    );
+                }
+                return Err(
+                    err
+                        .into(),
+                );
+            }
         };
         fps_counter.record_present(output.name().as_str());
         if direct_scanout_debug_enabled() {
@@ -5795,8 +5971,31 @@ fn render_surface(
                             ?err,
                             "tty queue_frame lost drm access; waiting for session resume"
                         );
+                        // A permission-denied commit means DRM master is already gone,
+                        // but logind's `PauseSession` has not been dispatched yet —
+                        // measured ~20ms wide on resume from suspend. Until the flag
+                        // flips, `run_tty_udev` still treats `UdevEvent::Changed` as a
+                        // live hotplug, so a connector event landing inside that window
+                        // half-applies exactly as its comment warns: the scanner records
+                        // the new topology while every CRTC commit fails with EACCES, and
+                        // the post-resume replay then skips the output because it is
+                        // already recorded as connected. Nothing re-arms it and the panel
+                        // stays dark for the rest of the session. Drop the flag where the
+                        // loss is first observed so the existing deferral covers the gap;
+                        // `ActivateSession` restores it.
+                        *tty_session_active = false;
                         reset_surface_after_tty_pause(surface);
                         return Ok(RenderSurfaceOutcome::Skipped);
+                    }
+                    if error_chain_has_drm_test_failed(&err) {
+                        warn!(
+                            output = %output.name(),
+                            ?err,
+                            "tty queue_frame failed its atomic test; requesting surface reset",
+                        );
+                        return Ok(
+                            RenderSurfaceOutcome::CommitFailed,
+                        );
                     }
                     return Err(Box::new(err));
                 }
@@ -11534,6 +11733,118 @@ pub fn device_changed(
     if changed {
         state.notify_runtime_outputs_changed();
     }
+    Ok(())
+}
+
+/// Rebuild one CRTC's DRM surface after the kernel rejected its screen
+/// configuration (`DrmError::TestFailed` from a render/queue commit). This is
+/// the expected shape of the first post-resume frame when the connector
+/// topology changed during sleep: the stale surface carries state the new
+/// topology cannot satisfy, so tear it down and reconnect the output through
+/// the normal hotplug path instead of exiting the session.
+///
+/// Returns `Err` only when the same CRTC keeps failing in a tight window —
+/// the last-resort fatal path so a configuration the kernel
+/// always rejects cannot spin the render loop forever.
+fn reset_surface_after_commit_failure(
+    state: &mut ShojiWM,
+    node: DrmNode,
+    crtc: crtc::Handle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const MAX_RESETS_PER_WINDOW: u32 = 3;
+    const RESET_WINDOW: Duration = Duration::from_secs(10);
+
+    let Some(backend) = state.tty_backends.get_mut(&node) else {
+        return Ok(());
+    };
+    let now = Instant::now();
+    let entry = backend
+        .surface_reset_attempts
+        .entry(
+            crtc,
+        )
+        .or_insert(
+            (
+                now, 
+                0,
+            ),
+        );
+    if now.duration_since(
+        entry.0,
+    ) > RESET_WINDOW {
+        *entry = (
+            now,
+            0,
+        );
+    }
+    entry.1 += 1;
+    if entry.1 > MAX_RESETS_PER_WINDOW {
+        return Err(format!(
+            "giving up on crtc {crtc:?}: {MAX_RESETS_PER_WINDOW} surface resets within \
+             {RESET_WINDOW:?} did not produce a working configuration"
+        )
+        .into());
+    }
+
+    let connector = backend
+        .drm_scanner
+        .crtcs()
+        .find(|(_, scanned_crtc)| *scanned_crtc == crtc)
+        .map(|(info, _)| info.clone());
+    let Some(
+        connector,
+    ) = connector else {
+        // The scanner no longer maps a connector to this CRTC — the surface
+        // is left over from a change that never fully applied. A rescan emits
+        // the missing disconnect/connect events through the hotplug path.
+        warn!(
+            ?node,
+            ?crtc,
+            "no connector mapped to failing crtc; rescanning device"
+        );
+        return device_changed(
+            state,
+            node,
+        );
+    };
+
+    info!(
+        ?node,
+        ?crtc,
+        connector = %format!(
+            "{}-{}",
+            connector.interface().as_str(),
+            connector.interface_id()
+        ),
+        "resetting tty surface after failed atomic commit test"
+    );
+    connector_disconnected(
+        state,
+        node,
+        crtc,
+        connector
+            .clone(),
+    );
+    if let Err(
+        err,
+    ) = connector_connected(
+        state,
+        node,
+        crtc,
+        connector,
+    ) {
+        // Leave this output disconnected rather than killing the session:
+        // other outputs keep working, and a later hotplug event retries.
+        warn!(
+            ?node,
+            ?crtc,
+            ?err,
+            "failed to reconnect output after surface reset",
+        );
+    }
+    state.force_full_damage = true;
+    state
+        .schedule_redraw();
     Ok(())
 }
 

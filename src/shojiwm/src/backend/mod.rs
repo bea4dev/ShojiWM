@@ -246,6 +246,24 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
                         warn!(?device_id, "failed to resolve changed drm node");
                         return;
                     };
+                    if !state.tty_session_active {
+                        // Scanning connectors on a paused device half-applies
+                        // the change: the scanner records the new topology but
+                        // CRTC setup fails with DeviceInactive, and the first
+                        // post-resume commit then fails its atomic test
+                        // against the stale state. Re-run after resume.
+                        info!(
+                            ?node, 
+                            "tty session paused; deferring drm device change",
+                        );
+                        if !state.pending_tty_device_changes
+                            .contains(
+                                &node,
+                            ) {
+                            state.pending_tty_device_changes.push(node);
+                        }
+                        return;
+                    }
                     if let Err(err) = device_changed(state, node) {
                         warn!(?node, ?err, "failed to process drm device change");
                     }

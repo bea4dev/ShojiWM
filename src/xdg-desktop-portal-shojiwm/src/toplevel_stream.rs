@@ -36,6 +36,12 @@ use pw::spa::pod::{ChoiceValue, Object, Pod, Property, Value};
 use pw::spa::support::system::IoFlags;
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 use spa::sys as spa_sys;
+
+use crate::pipewire_stream::{
+    build_header_meta_param,
+    fill_header_meta,
+    parse_pipewire_max_framerate,
+};
 use wayland_client::protocol::{wl_buffer, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
@@ -150,6 +156,21 @@ struct AppState {
     /// Whether the PW stream is currently in Streaming state. Gates capture
     /// kicks from `on_add_buffer` so we don't capture into a paused stream.
     is_streaming: bool,
+    /// True from a consumer-initiated Format renegotiation until the
+    /// replacement buffer pool starts arriving — same quiesce as the output
+    /// path, so we never push frames into a stream whose consumer is mid-way
+    /// through a buffer-pool rebuild.
+    renegotiating: bool,
+    /// Frame interval from the negotiated `maxFramerate`; frames are queued
+    /// no faster than this (capture stays event-paced, early frames are held
+    /// in `spare_buffer` and recaptured).
+    frame_interval: Option<std::time::Duration>,
+    last_queue_at: Option<std::time::Instant>,
+    /// A dequeued-but-unqueued pw_buffer held back by the framerate
+    /// throttle; the next kick reuses it instead of dequeuing another slot.
+    spare_buffer: Option<usize>,
+    /// Monotonic per-stream frame counter for `spa_meta_header.seq`.
+    frame_sequence: u64,
 
     // Set when the PW stream transitions to Error/Unconnected (consumer
     // disconnected, etc.). Every callback short-circuits afterwards so we
@@ -240,6 +261,11 @@ fn run(
         frames_completed: 0,
         last_log_at: std::time::Instant::now(),
         is_streaming: false,
+        renegotiating: false,
+        frame_interval: None,
+        last_queue_at: None,
+        spare_buffer: None,
+        frame_sequence: 0,
         dying: false,
         stop_flag: Some(stop.clone()),
         needs_renegotiate: false,
@@ -348,10 +374,21 @@ fn run(
     let s_state = state_rc.clone();
     let s_add = state_rc.clone();
     let s_remove = state_rc.clone();
+    let s_param = state_rc
+        .clone();
     let _listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |stream, _ud, old, new| {
             s_state.borrow_mut().on_state_changed(stream, old, new);
+        })
+        .param_changed(move |stream, _ud, id, param| {
+            s_param
+                .borrow_mut()
+                .on_param_changed(
+                    stream,
+                    id,
+                    param,
+                );
         })
         .add_buffer(move |stream, _ud, buffer| {
             s_add.borrow_mut().on_add_buffer(stream, buffer);
@@ -370,10 +407,21 @@ fn run(
     };
     let format_bytes = build_video_format_param(adv_width, adv_height, spec.framerate)?;
     let buffers_bytes = build_buffers_param(adv_width, adv_height)?;
+    let meta_bytes = build_header_meta_param()?;
     let format_pod = Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
     let buffers_pod =
         Pod::from_bytes(&buffers_bytes).ok_or("buffers POD parse failed".to_string())?;
-    let mut params = [format_pod, buffers_pod];
+    let meta_pod = Pod::from_bytes(
+        &meta_bytes,
+    ).ok_or(
+        "meta POD parse failed"
+            .to_string(),
+    )?;
+    let mut params = [
+        format_pod,
+        buffers_pod,
+        meta_pod,
+    ];
     stream.connect(
         spa::utils::Direction::Output,
         None,
@@ -424,12 +472,45 @@ fn run(
                 match (
                     build_video_format_param(new_w, new_h, framerate),
                     build_buffers_param(new_w, new_h),
+                    build_header_meta_param(),
                 ) {
-                    (Ok(fbytes), Ok(bbytes)) => {
-                        if let (Some(fpod), Some(bpod)) =
-                            (Pod::from_bytes(&fbytes), Pod::from_bytes(&bbytes))
-                        {
-                            let mut params = [fpod, bpod];
+                    (
+                        Ok(
+                            fbytes,
+                        ),
+                        Ok(
+                            bbytes,
+                        ),
+                        Ok(
+                            mbytes,
+                        ),
+                    ) => {
+                        if let (
+                            Some(
+                                fpod,
+                            ),
+                            Some(
+                                bpod,
+                            ),
+                            Some(
+                                mpod,
+                            ),
+                        ) = (
+                            Pod::from_bytes(
+                                &fbytes,
+                            ),
+                            Pod::from_bytes(
+                                &bbytes,
+                            ),
+                            Pod::from_bytes(
+                                &mbytes,
+                            ),
+                        ) {
+                            let mut params = [
+                                fpod,
+                                bpod,
+                                mpod,
+                            ];
                             if let Err(e) = stream.update_params(&mut params) {
                                 tracing::warn!("update_params failed: {e:?}");
                             }
@@ -438,8 +519,17 @@ fn run(
                             // reallocated buffers land (pending_frame is None).
                         }
                     }
-                    (e1, e2) => {
-                        tracing::warn!(?e1, ?e2, "build params failed during renegotiate");
+                    (
+                        e1,
+                        e2,
+                        e3,
+                    ) => {
+                        tracing::warn!(
+                            ?e1,
+                            ?e2,
+                            ?e3,
+                            "build params failed during renegotiate",
+                        );
                     }
                 }
             }
@@ -678,7 +768,15 @@ impl AppState {
         {
             let _ = tx.send(Ok(stream.node_id()));
         }
+
         self.is_streaming = matches!(new, pw::stream::StreamState::Streaming,);
+
+        // Entering Streaming means the renegotiation (if any) has concluded
+        // from the graph's point of view — never leave the quiesce flag stuck.
+        if self.is_streaming {
+            self.renegotiating = false;
+        }
+
         // Kick a capture whenever we (re-)enter Streaming with no frame in
         // flight. The old one-shot `capture_kicked` latch only covered our own
         // size renegotiations; a consumer-initiated renegotiation (Chromium
@@ -706,7 +804,47 @@ impl AppState {
         }
     }
 
+    fn on_param_changed(
+        &mut self,
+        _stream: &pw::stream::Stream,
+        id: u32,
+        param: Option<&Pod>,
+    ) {
+        if id != spa_sys::SPA_PARAM_Format {
+            return;
+        }
+        let Some(
+            param,
+        ) = param else {
+            return;
+        };
+        // Same quiesce as the output path: a Format change while a buffer
+        // pool exists means the consumer is renegotiating mid-stream, and
+        // frames must not be pushed into the half-rebuilt stream.
+        if !self.pw_buffer_slots.is_empty() && !self.renegotiating {
+            tracing::info!(
+                "toplevel: format renegotiation started; \
+                pausing capture until the new buffer pool arrives"
+            );
+            self.renegotiating = true;
+        }
+        self.frame_interval = parse_pipewire_max_framerate(
+            param
+        )
+            .filter(
+                |framerate| framerate.num > 0 && framerate.denom > 0,
+            )
+            .map(|framerate| {
+                std::time::Duration::from_secs_f64(
+                    framerate.denom as f64 / framerate.num as f64,
+                )
+            });
+    }
+
     fn on_add_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
+        // The replacement pool from a renegotiation is arriving — capture may
+        // resume (the kick at the end of this function restarts the cycle).
+        self.renegotiating = false;
         let stride = (self.adv_width * 4) as i32;
         let size = stride as usize * self.adv_height as usize;
         let memfd =
@@ -766,6 +904,7 @@ impl AppState {
             chunk.offset = 0;
             chunk.stride = stride;
             chunk.size = size as u32;
+            chunk.flags = spa_sys::SPA_CHUNK_FLAG_NONE as i32;
         }
 
         let key = buffer as usize;
@@ -794,6 +933,12 @@ impl AppState {
             slot.wl_buffer.destroy();
         }
         self.pw_buffer_stride.remove(&key);
+        // A throttle-held buffer from the outgoing pool must not be reused.
+        if self.spare_buffer == Some(
+            key
+        ) {
+            self.spare_buffer = None;
+        }
         // Abandon any in-flight frame that pointed at this buffer so a late
         // Ready doesn't dereference freed PipeWire state (the consumer
         // disconnect SEGV path).
@@ -820,13 +965,28 @@ impl AppState {
         if !self.is_streaming {
             return;
         }
+        // Likewise while a format renegotiation is in flight: the cycle
+        // restarts from `on_add_buffer` when the replacement pool arrives.
+        if self.renegotiating {
+            return;
+        }
         let Some(session) = self.session.clone() else {
             return;
         };
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
+        // Reuse a throttle-held buffer if one exists, else dequeue a fresh
+        // PW buffer.
+        let pw_buf = match self.spare_buffer.take() {
+            Some(
+                key,
+            ) => key as *mut pw::sys::pw_buffer,
+            None => unsafe {
+                stream
+                    .dequeue_raw_buffer()
+            },
+        };
         if pw_buf.is_null() {
             // Consumer hasn't returned a buffer yet. Same situation as the
             // output path: small backoff and let the natural cycle re-kick.
@@ -867,34 +1027,65 @@ impl AppState {
         // it was in flight — queueing into a paused driver stream is exactly
         // the wake-up that restarts the pause/rebuild churn. The buffer stays
         // dequeued until the next pool rebuild, which is fine.
+        // If the frame landed before the negotiated frame interval elapsed,
+        // hold the buffer in `spare_buffer` instead of queueing — the next
+        // kick recaptures into it, so the consumer sees at most the
+        // negotiated framerate.
+        // Compare against 3/4 of the interval, not the full interval: when
+        // the negotiated rate equals the capture rate, scheduling jitter
+        // would otherwise flag ~every frame as early and halve the throughput.
+        let throttled = match (
+            self.frame_interval,
+            self.last_queue_at,
+        ) {
+            (
+                Some(
+                    interval,
+                ),
+                Some(
+                    last_queue_at,
+                ),
+            ) => last_queue_at
+                .elapsed() < interval
+                * 3 / 4,
+            _ => false,
+        };
         if let Some(stream) = self.stream.clone()
             && pending.pw_buffer != 0
             && !self.dying
             && self.is_streaming
+            && !self.renegotiating
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
-            let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
-            unsafe {
-                if !pw_buf.is_null()
-                    && !(*pw_buf).buffer.is_null()
-                    && (*(*pw_buf).buffer).n_datas > 0
-                {
-                    let datas = std::slice::from_raw_parts_mut(
-                        (*(*pw_buf).buffer).datas,
-                        (*(*pw_buf).buffer).n_datas as usize,
-                    );
-                    let data = &mut datas[0];
-                    let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
-                    let chunk = &mut *data.chunk;
-                    chunk.offset = 0;
-                    chunk.stride = stride;
-                    chunk.size = (stride as u32) * self.adv_height;
+            if throttled {
+                self.spare_buffer = Some(pending.pw_buffer);
+            } else {
+                let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
+                unsafe {
+                    if !pw_buf.is_null()
+                        && !(*pw_buf).buffer.is_null()
+                        && (*(*pw_buf).buffer).n_datas > 0
+                    {
+                        let datas = std::slice::from_raw_parts_mut(
+                            (*(*pw_buf).buffer).datas,
+                            (*(*pw_buf).buffer).n_datas as usize,
+                        );
+                        let data = &mut datas[0];
+                        let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
+                        let chunk = &mut *data.chunk;
+                        chunk.offset = 0;
+                        chunk.stride = stride;
+                        chunk.size = (stride as u32) * self.adv_height;
+                        chunk.flags = spa_sys::SPA_CHUNK_FLAG_NONE as i32;
+                        fill_header_meta(pw_buf, self.frame_sequence);
+                    }
+                    stream.queue_raw_buffer(pw_buf);
                 }
-                stream.queue_raw_buffer(pw_buf);
+                self.frame_sequence += 1;
+                self.last_queue_at = Some(std::time::Instant::now());
+                self.frames_completed += 1;
             }
         }
-
-        self.frames_completed += 1;
         if self.last_log_at.elapsed() >= std::time::Duration::from_secs(2) {
             tracing::info!(
                 frames = self.frames_completed,
@@ -913,11 +1104,30 @@ impl AppState {
         tracing::warn!("toplevel screencast frame failed");
         if let Some(pending) = self.pending_frame.take() {
             pending.frame.destroy();
+            // PW expects the dequeued buffer back, but its content is stale —
+            // mark the chunk empty and corrupted so consumers skip it instead
+            // of re-showing whatever the buffer held last.
             if pending.pw_buffer != 0
                 && let Some(stream) = self.stream.clone()
             {
                 let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
-                unsafe { stream.queue_raw_buffer(pw_buf) };
+                unsafe {
+                    if !pw_buf.is_null()
+                        && !(*pw_buf).buffer.is_null()
+                        && (*(*pw_buf).buffer).n_datas > 0
+                    {
+                        let datas = std::slice::from_raw_parts_mut(
+                            (*(*pw_buf).buffer).datas,
+                            (*(*pw_buf).buffer).n_datas as usize,
+                        );
+                        let chunk = &mut *datas[0].chunk;
+                        chunk.size = 0;
+                        chunk.flags = spa_sys::SPA_CHUNK_FLAG_CORRUPTED as i32;
+                    }
+                    stream.queue_raw_buffer(
+                        pw_buf,
+                    );
+                }
             }
         }
         thread::sleep(std::time::Duration::from_millis(50));

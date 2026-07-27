@@ -1311,11 +1311,12 @@ export interface KeyBindingOptions {
 }
 
 /**
- * Registers compositor-level keyboard shortcuts.
- * コンポジターレベルのキーボードショートカットを登録します。
+ * Registers compositor-level keyboard and discrete mouse-wheel shortcuts.
+ * コンポジターレベルのキーボードおよびマウスホイールショートカットを登録します。
  *
  * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
- * string uses modifier+key notation such as `"Super+T"` or `"Super+Shift+Left"`.
+ * string uses modifier+key notation such as `"Super+T"`, `"Super+Shift+Left"`,
+ * or `"Super+WheelScrollUp"`.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
  * `shortcut` は `"Super+T"` や `"Super+Shift+Left"` のような記法を使います。
  *
@@ -1331,8 +1332,8 @@ export interface KeyBindingOptions {
  */
 export interface KeyBindingController {
   /**
-   * Register a shortcut. `id` must be unique; registering the same id twice
-   * replaces the previous binding.
+   * Register a keyboard or mouse-wheel shortcut. `id` must be unique;
+   * registering the same id twice replaces the previous binding.
    * ショートカットを登録します。`id` は一意である必要があります。
    * 同じ `id` を2回登録すると前のバインドが上書きされます。
    */

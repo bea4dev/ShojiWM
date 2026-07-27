@@ -20,7 +20,15 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-rustix = { version = "1.1", features = ["fs", "mm", "shm"] }
+rustix = {
+    version = "1.1", 
+    features = [
+        "fs",
+        "mm",
+        "shm",
+        "time",
+    ],
+}
 toml = "0.8"
 pipewire = { version = "0.9", features = ["v0_3_77"] }
 libspa = { version = "0.9", features = ["v0_3_65"] }

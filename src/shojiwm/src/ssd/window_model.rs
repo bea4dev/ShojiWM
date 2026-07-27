@@ -816,7 +816,7 @@ impl ShojiWM {
         let is_resizable = window_constraints_are_resizable(min_size, max_size);
         let transient_for = x11.is_transient_for();
         let parent_id = transient_for.map(|parent| format!("x11:{parent}"));
-        let is_transient = parent_id.is_some() || x11.is_popup();
+        let is_transient = parent_id.is_some() || x11.is_modal();
 
         let focused_surface = self
             .seat

@@ -404,6 +404,14 @@ pub struct ShojiWM {
     pub popup_lifecycle_debug_entries: BTreeMap<u32, PopupLifecycleDebugEntry>,
     pub right_click_debug: RightClickDebugState,
     pub tty_session_active: bool,
+    /// DRM nodes whose udev change events arrived while the tty session was
+    /// paused (VT switch / suspend). Scanning connectors on a paused device
+    /// consumes the scanner's connect/disconnect events but cannot touch the
+    /// CRTCs (`DeviceInactive`), leaving stale output state that the first
+    /// post-resume atomic commit then trips over. The udev handler queues the
+    /// node here instead and `resume_tty_session` re-runs the scan once the
+    /// device accepts commits again.
+    pub pending_tty_device_changes: Vec<DrmNode>,
 
     pub is_running: bool,
     pub needs_redraw: bool,
@@ -1296,6 +1304,7 @@ impl ShojiWM {
                 location: None,
             },
             tty_session_active: true,
+            pending_tty_device_changes: Vec::new(),
 
             is_running: true,
             needs_redraw: true,

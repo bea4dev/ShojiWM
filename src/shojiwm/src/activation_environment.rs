@@ -9,6 +9,13 @@ const ACTIVATION_ENV_KEYS: &[&str] = &[
     "XDG_SESSION_DESKTOP",
     "XDG_SESSION_TYPE",
     "DESKTOP_SESSION",
+    // freedesktop menu-spec variable selecting ${prefix}applications.menu.
+    // D-Bus/systemd-activated helpers that build application menus or
+    // databases resolve the menu with THIS environment, not the session's;
+    // without the prefix they fall back to a menu file the distro may not
+    // ship. Filtered out below like every other key when the session does
+    // not set it.
+    "XDG_MENU_PREFIX",
 ];
 
 pub fn publish_activation_environment(reason: &'static str) {
