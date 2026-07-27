@@ -10,8 +10,8 @@ use tracing::{debug, info, warn};
 
 use super::embedded_runtime::{
     EmbeddedRuntime, EmbeddedRuntimeResponse, NativeCachedResponse, NativeCompositionPatch,
-    NativeCompositionRequest, NativeCompositionUpdate, NativeSchedulerRequest,
-    NativeSchedulerResponse,
+    NativeCompositionRequest, NativeCompositionUpdate, NativeEffectRequest, NativeEffectUpdate,
+    NativeSchedulerRequest, NativeSchedulerResponse,
 };
 use super::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowAnimationSnapshot,
@@ -24,8 +24,7 @@ use super::window_model::{
 };
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
-    DecorationTree, EffectInput, WindowEffectConfig, WindowTransform, WireCompiledEffect,
-    WireWindowEffectConfig, decode_tree_json,
+    DecorationTree, EffectInput, WindowEffectConfig, WindowTransform, decode_tree_json,
 };
 use crate::{
     activation_environment::{RuntimeEnvUpdates, apply_runtime_env_updates},
@@ -238,6 +237,7 @@ pub struct DecorationCachedEvaluationResult {
     pub transform: WindowTransform,
     pub managed_window: ManagedWindowState,
     pub window_effects: Option<WindowEffectConfig>,
+    pub window_effect_uniform_only: bool,
     pub dirty_node_ids: Vec<String>,
     pub managed_window_only: bool,
     pub next_poll_in_ms: Option<u64>,
@@ -261,6 +261,7 @@ impl From<DecorationEvaluationResult> for DecorationCachedEvaluationResult {
             transform: result.transform,
             managed_window: result.managed_window,
             window_effects: result.window_effects,
+            window_effect_uniform_only: false,
             dirty_node_ids: result.dirty_node_ids,
             managed_window_only: false,
             next_poll_in_ms: result.next_poll_in_ms,
@@ -904,40 +905,6 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "inputState")]
         input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     },
-    GetEffectConfig {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluateLayerEffects {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "outputName")]
-        output_name: &'a str,
-        layers: &'a [WaylandLayerSnapshot],
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    EvaluatePopupEffects {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "outputName")]
-        output_name: &'a str,
-        popups: &'a [WaylandPopupSnapshot],
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
     LifecycleEnable {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -970,8 +937,6 @@ struct RuntimeEvaluateResponse {
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyNodeIds")]
     dirty_node_ids: Option<Vec<String>>,
     #[serde(rename = "managedWindowOnly")]
@@ -1098,7 +1063,6 @@ fn runtime_evaluate_response_from_native(
         ok: true,
         transform: Some(response.transform),
         managed_window: Some(response.managed_window),
-        window_effects: None,
         dirty_node_ids: Some(response.dirty_node_ids),
         managed_window_only: Some(response.managed_window_only),
         next_poll_in_ms: response.next_poll_in_ms,
@@ -1151,8 +1115,6 @@ struct RuntimeInvokeHandlerResponse {
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyManagedWindowIds")]
@@ -1192,8 +1154,6 @@ struct RuntimeStartCloseResponse {
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
     managed_window: Option<ManagedWindowState>,
-    #[serde(rename = "windowEffects")]
-    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyManagedWindowIds")]
@@ -1228,8 +1188,6 @@ struct RuntimeEffectConfigResponse {
     request_id: u64,
     kind: String,
     ok: bool,
-    #[serde(rename = "backgroundEffect")]
-    background_effect: Option<WireCompiledEffect>,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
     #[serde(rename = "workspaceConfig")]
@@ -1248,43 +1206,11 @@ struct RuntimeEffectConfigResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RuntimeLayerEffectAssignmentResponse {
-    #[serde(rename = "layerId")]
-    layer_id: String,
-    effects: Option<WireWindowEffectConfig>,
-}
-
-#[derive(serde::Deserialize)]
-struct WireSurfacePolicy {
-    #[serde(rename = "opaqueRegion")]
-    opaque_region: Option<String>,
-}
-
-fn surface_policy_from_wire(wire: WireSurfacePolicy) -> crate::ssd::SurfacePolicy {
-    crate::ssd::SurfacePolicy {
-        opaque_region: match wire.opaque_region.as_deref() {
-            Some("ignore") => crate::ssd::OpaqueRegionPolicy::Ignore,
-            _ => crate::ssd::OpaqueRegionPolicy::Trust,
-        },
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct RuntimePopupEffectAssignmentResponse {
-    #[serde(rename = "popupId")]
-    popup_id: String,
-    effects: Option<WireWindowEffectConfig>,
-    #[serde(rename = "surfacePolicy")]
-    surface_policy: Option<WireSurfacePolicy>,
-}
-
-#[derive(serde::Deserialize)]
 struct RuntimePopupEffectsResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
     kind: String,
     ok: bool,
-    effects: Option<Vec<RuntimePopupEffectAssignmentResponse>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
@@ -1312,7 +1238,6 @@ struct RuntimeLayerEffectsResponse {
     request_id: u64,
     kind: String,
     ok: bool,
-    effects: Option<Vec<RuntimeLayerEffectAssignmentResponse>>,
     #[serde(rename = "nextPollInMs")]
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
@@ -1901,13 +1826,11 @@ impl EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::GetEffectConfig {
+        runtime.write_effect_request(NativeEffectRequest::GetEffectConfig {
             request_id,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeEffectConfigResponse =
             if let Some(response) = runtime.read_response()? {
@@ -1949,11 +1872,18 @@ impl EmbeddedDecorationEvaluator {
             ));
         }
 
-        response
-            .background_effect
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(DecorationEvaluationError::Bridge)
+        match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Background(effect)) => Ok(effect),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "mismatched native effect update for getEffectConfig".into(),
+            )),
+            None => Err(DecorationEvaluationError::RuntimeProtocol(
+                "missing native background effect update".into(),
+            )),
+        }
     }
 
     fn enqueue_pointer_move_async(&self, event: PointerMoveEventSnapshot, now_ms: u64) {
@@ -2280,6 +2210,16 @@ impl EmbeddedDecorationRuntime {
             .map_err(DecorationEvaluationError::RuntimeProtocol)
     }
 
+    fn write_effect_request(
+        &mut self,
+        request: NativeEffectRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write effect request");
+        self.child
+            .write_effect_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
     fn write_scheduler_request(
         &mut self,
         request: NativeSchedulerRequest,
@@ -2321,6 +2261,19 @@ impl EmbeddedDecorationRuntime {
         timescope::scope!("runtime take composition update");
         self.child
             .take_composition_update(request_id)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn take_effect_update(
+        &self,
+        request_id: u64,
+    ) -> Result<
+        Option<super::embedded_runtime::ResolvedNativeEffectUpdate>,
+        DecorationEvaluationError,
+    > {
+        timescope::scope!("runtime take effect update");
+        self.child
+            .take_effect_update(request_id)
             .map_err(DecorationEvaluationError::RuntimeProtocol)
     }
 
@@ -2452,6 +2405,42 @@ impl EmbeddedDecorationRuntime {
                 ))
             })
         }
+    }
+}
+
+fn take_native_window_effects(
+    runtime: &EmbeddedDecorationRuntime,
+    request_id: u64,
+    expected_window_id: &str,
+) -> Result<Option<WindowEffectConfig>, DecorationEvaluationError> {
+    take_native_window_effect_update(runtime, request_id, expected_window_id)
+        .map(|(effects, _)| effects)
+}
+
+fn take_native_window_effect_update(
+    runtime: &EmbeddedDecorationRuntime,
+    request_id: u64,
+    expected_window_id: &str,
+) -> Result<(Option<WindowEffectConfig>, bool), DecorationEvaluationError> {
+    timescope::scope!("runtime take native window effect update");
+    match runtime.take_effect_update(request_id)? {
+        Some(resolved)
+            if matches!(
+                &resolved.update,
+                NativeEffectUpdate::Window { window_id, .. } if expected_window_id == window_id
+            ) =>
+        {
+            let NativeEffectUpdate::Window { effects, .. } = resolved.update else {
+                unreachable!();
+            };
+            Ok((effects, resolved.uniform_only))
+        }
+        Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+            "mismatched native window effect update".into(),
+        )),
+        None => Err(DecorationEvaluationError::RuntimeProtocol(
+            "missing native window effect update".into(),
+        )),
     }
 }
 
@@ -2728,14 +2717,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
                 ));
             }
         };
-        let window_effects = {
-            timescope::scope!("runtime convert window effects");
-            response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?
-        };
+        let window_effects = take_native_window_effects(runtime, request_id, &window.id)?;
         Ok(DecorationEvaluationResult {
             node,
             transform: response.transform.unwrap_or_default(),
@@ -2866,14 +2848,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             node,
             transform: response.transform.unwrap_or_default(),
             managed_window: response.managed_window.unwrap_or_default(),
-            window_effects: {
-                timescope::scope!("runtime convert window effects");
-                response
-                    .window_effects
-                    .map(TryInto::try_into)
-                    .transpose()
-                    .map_err(DecorationEvaluationError::Bridge)?
-            },
+            window_effects: take_native_window_effects(runtime, request_id, &window.id)?,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             actions: response.actions.unwrap_or_default(),
@@ -3098,20 +3073,15 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
                 ));
             }
         };
-        let window_effects = {
-            timescope::scope!("runtime convert window effects");
-            response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?
-        };
+        let (window_effects, window_effect_uniform_only) =
+            take_native_window_effect_update(runtime, request_id, window_id)?;
         Ok(DecorationCachedEvaluationResult {
             node,
             node_patches,
             transform: response.transform.unwrap_or_default(),
             managed_window: response.managed_window.unwrap_or_default(),
             window_effects,
+            window_effect_uniform_only,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             managed_window_only,
             next_poll_in_ms: response.next_poll_in_ms,
@@ -3406,11 +3376,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: take_native_window_effects(runtime, request_id, window_id)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -3616,11 +3582,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: None,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -4315,11 +4277,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             node,
             transform: response.transform,
             managed_window: response.managed_window,
-            window_effects: response
-                .window_effects
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(DecorationEvaluationError::Bridge)?,
+            window_effects: take_native_window_effects(runtime, request_id, window_id)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
@@ -4359,16 +4317,14 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::EvaluateLayerEffects {
+        runtime.write_effect_request(NativeEffectRequest::EvaluateLayerEffects {
             request_id,
-            output_name,
-            layers,
+            output_name: output_name.to_owned(),
+            layers: layers.to_vec(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeLayerEffectsResponse =
             if let Some(response) = runtime.read_response()? {
@@ -4410,24 +4366,37 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             ));
         }
 
-        Ok(LayerEffectEvaluationResult {
-            effects: response
-                .effects
-                .unwrap_or_default()
+        let effects = match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Layers(assignments)) => assignments
                 .into_iter()
                 .map(|assignment| {
                     Ok(RuntimeLayerEffectAssignment {
                         layer_id: assignment.layer_id,
                         effects: assignment
                             .effects
-                            .map(TryInto::try_into)
-                            .transpose()?
                             .map(validate_layer_effect_config)
                             .transpose()?,
                     })
                 })
                 .collect::<Result<Vec<_>, DecorationBridgeError>>()
                 .map_err(DecorationEvaluationError::Bridge)?,
+            Some(_) => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "mismatched native layer effect update".into(),
+                ));
+            }
+            None => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native layer effect update".into(),
+                ));
+            }
+        };
+
+        Ok(LayerEffectEvaluationResult {
+            effects,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
             workspace_config: response.workspace_config,
@@ -4463,16 +4432,14 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::EvaluatePopupEffects {
+        runtime.write_effect_request(NativeEffectRequest::EvaluatePopupEffects {
             request_id,
-            output_name,
-            popups,
+            output_name: output_name.to_owned(),
+            popups: popups.to_vec(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimePopupEffectsResponse =
             if let Some(response) = runtime.read_response()? {
@@ -4514,25 +4481,38 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             ));
         }
 
-        Ok(PopupEffectEvaluationResult {
-            effects: response
-                .effects
-                .unwrap_or_default()
+        let effects = match runtime
+            .take_effect_update(request_id)?
+            .map(|resolved| resolved.update)
+        {
+            Some(NativeEffectUpdate::Popups(assignments)) => assignments
                 .into_iter()
                 .map(|assignment| {
                     Ok(RuntimePopupEffectAssignment {
                         popup_id: assignment.popup_id,
                         effects: assignment
                             .effects
-                            .map(TryInto::try_into)
-                            .transpose()?
                             .map(validate_popup_effect_config)
                             .transpose()?,
-                        surface_policy: assignment.surface_policy.map(surface_policy_from_wire),
+                        surface_policy: assignment.surface_policy,
                     })
                 })
                 .collect::<Result<Vec<_>, DecorationBridgeError>>()
                 .map_err(DecorationEvaluationError::Bridge)?,
+            Some(_) => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "mismatched native popup effect update".into(),
+                ));
+            }
+            None => {
+                return Err(DecorationEvaluationError::RuntimeProtocol(
+                    "missing native popup effect update".into(),
+                ));
+            }
+        };
+
+        Ok(PopupEffectEvaluationResult {
+            effects,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
             workspace_config: response.workspace_config,
@@ -4645,6 +4625,162 @@ COMPOSITOR.window.composition = () => <Box />;
         let _ = std::fs::remove_dir_all(&test_dir);
 
         result.expect("embedded runtime should load and evaluate a TSX config");
+    }
+
+    #[test]
+    fn embedded_runtime_transfers_all_effect_configs_through_native_bridge() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-native-effects-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  backdropSource,
+  Box,
+  compileEffect,
+  compileLayerEffect,
+  compilePopupEffect,
+  compileWindowEffect,
+  COMPOSITOR,
+  layerSource,
+  noise,
+  popupSource,
+  windowSource,
+} from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.effect.background_effect = compileEffect({
+  input: backdropSource(),
+  pipeline: [noise()],
+});
+COMPOSITOR.effect.window = () => ({
+  behind: compileWindowEffect({
+    input: windowSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.effect.layer = () => ({
+  replace: compileLayerEffect({
+    input: layerSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.effect.popup = () => ({
+  inFront: compilePopupEffect({
+    input: popupSource(),
+    pipeline: [noise()],
+  }),
+});
+COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+
+        let background = evaluator
+            .background_effect_config()
+            .expect("native background effect should evaluate")
+            .expect("background effect should be present");
+        assert!(matches!(background.effect.input, EffectInput::Backdrop));
+
+        let window = evaluator
+            .evaluate_window(&make_window(false), 0)
+            .expect("native window effect should evaluate");
+        assert!(window.window_effects.is_some_and(|effects| {
+            effects
+                .behind
+                .is_some_and(|slot| matches!(slot.effect.input, EffectInput::WindowSource(_)))
+        }));
+        let cached_window = evaluator
+            .evaluate_cached_window(&make_window(false).id, None, 16, false)
+            .expect("native cached response should support a non-null window effect");
+        assert!(cached_window.window_effects.is_some_and(|effects| {
+            effects
+                .behind
+                .is_some_and(|slot| matches!(slot.effect.input, EffectInput::WindowSource(_)))
+        }));
+
+        let layer = WaylandLayerSnapshot {
+            id: "layer-1".into(),
+            namespace: Some("test".into()),
+            layer: crate::ssd::window_model::LayerKindSnapshot::Top,
+            output_name: "output-1".into(),
+            position: crate::ssd::window_model::LayerPositionSnapshot {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 32,
+            },
+            anchor: crate::ssd::window_model::LayerAnchorSnapshot {
+                top: true,
+                bottom: false,
+                left: true,
+                right: true,
+            },
+            exclusive_zone: crate::ssd::window_model::LayerExclusiveZoneSnapshot::Exclusive {
+                size: 32,
+            },
+            exclusive_edge: Some(crate::ssd::window_model::LayerEdgeSnapshot::Top),
+            margin: crate::ssd::window_model::LayerMarginSnapshot::default(),
+            keyboard_interactivity: crate::ssd::window_model::KeyboardInteractivitySnapshot::None,
+            desired_size: crate::ssd::window_model::LayerDesiredSizeSnapshot {
+                width: 800,
+                height: 32,
+            },
+        };
+        let layers = evaluator
+            .evaluate_layer_effects("output-1", &[layer], 0)
+            .expect("native layer effect should evaluate");
+        assert!(layers.effects.first().is_some_and(|assignment| {
+            assignment.effects.as_ref().is_some_and(|effects| {
+                effects
+                    .replace
+                    .as_ref()
+                    .is_some_and(|slot| matches!(slot.effect.input, EffectInput::LayerSource(_)))
+            })
+        }));
+
+        let popup = WaylandPopupSnapshot {
+            id: "popup-1".into(),
+            parent_id: "layer-1".into(),
+            parent_kind: crate::ssd::window_model::PopupParentKindSnapshot::Layer,
+            output_name: "output-1".into(),
+            position: crate::ssd::window_model::LayerPositionSnapshot {
+                x: 10,
+                y: 10,
+                width: 200,
+                height: 100,
+            },
+        };
+        let popups = evaluator
+            .evaluate_popup_effects("output-1", &[popup], 0)
+            .expect("native popup effect should evaluate");
+        assert!(popups.effects.first().is_some_and(|assignment| {
+            assignment.effects.as_ref().is_some_and(|effects| {
+                effects
+                    .in_front
+                    .as_ref()
+                    .is_some_and(|slot| matches!(slot.effect.input, EffectInput::PopupSource(_)))
+            }) && assignment.surface_policy.is_some_and(|policy| {
+                policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
+            })
+        }));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 
     #[test]
@@ -4871,6 +5007,118 @@ COMPOSITOR.window.composition = (window) => {
                 ..
             } if name == "phase_01"
         )));
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_uses_direct_effect_uniform_patches_for_animation() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-effect-uniform-patch-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        std::fs::write(
+            test_dir.join("animated.frag"),
+            "#version 100\nprecision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+        )
+        .expect("test shader should be written");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import {
+  animationVariable,
+  Box,
+  compileWindowEffect,
+  COMPOSITOR,
+  loadShader,
+  shaderStage,
+  windowSource,
+} from "shoji_wm";
+
+const phase = animationVariable("native-effect-uniform-patch-test");
+COMPOSITOR.window.composition = (window) => {
+  if (!window.animation.running(phase)) {
+    window.animation.start(phase, {
+      duration: 1000,
+      from: 0,
+      to: 1,
+    });
+  }
+  return <Box />;
+};
+COMPOSITOR.effect.window = (window) => ({
+  behind: compileWindowEffect({
+    input: windowSource(),
+    pipeline: [
+      shaderStage(loadShader("./animated.frag"), {
+        uniforms: { phase_01: window.animation.variable(phase) },
+      }),
+    ],
+  }),
+});
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&test_dir);
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 0)
+            .expect("initial native effect should evaluate");
+        let patches_before = evaluator
+            .runtime
+            .lock()
+            .expect("runtime lock should be available")
+            .as_ref()
+            .expect("runtime should be initialized")
+            .child
+            .effect_uniform_patch_count();
+
+        evaluator
+            .scheduler_tick(16)
+            .expect("animation scheduler should advance");
+        let cached = evaluator
+            .evaluate_cached_window(&window.id, None, 16, false)
+            .expect("cached native effect should evaluate");
+        let patches_after = evaluator
+            .runtime
+            .lock()
+            .expect("runtime lock should be available")
+            .as_ref()
+            .expect("runtime should remain initialized")
+            .child
+            .effect_uniform_patch_count();
+
+        assert!(
+            patches_after > patches_before,
+            "effect animation must use the direct uniform slot path"
+        );
+        assert!(
+            cached.window_effect_uniform_only,
+            "cached effect animation must remain marked as uniform-only"
+        );
+        let phase = cached
+            .window_effects
+            .and_then(|effects| effects.behind)
+            .and_then(|slot| slot.effect.pipeline.into_iter().next())
+            .and_then(|stage| match stage {
+                EffectStage::Shader(shader) => shader.uniforms.get("phase_01").cloned(),
+                _ => None,
+            });
+        assert!(
+            matches!(phase, Some(super::super::ShaderUniformValue::Float(value)) if value > 0.0)
+        );
 
         drop(evaluator);
         let _ = std::fs::remove_dir_all(&test_dir);

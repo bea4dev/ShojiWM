@@ -3507,14 +3507,19 @@ impl ShojiWM {
                             processed_runtime_dirty_window_ids.insert(snapshot_id);
                             continue;
                         }
+                        let composition_uniform_only = is_shader_uniform_only_update(
+                            &evaluation.node,
+                            &evaluation.node_patches,
+                        );
+                        let composition_unchanged =
+                            evaluation.node.is_none() && evaluation.node_patches.is_empty();
                         let shader_uniform_fast_path = !force_async_asset_refresh
-                            && is_shader_uniform_only_update(
-                                &evaluation.node,
-                                &evaluation.node_patches,
-                            )
+                            && (composition_uniform_only || evaluation.window_effect_uniform_only)
+                            && (composition_uniform_only || composition_unchanged)
                             && evaluation.transform == cached.static_visual_transform
                             && evaluation.managed_window == cached.static_managed_window
-                            && evaluation.window_effects == cached.window_effects;
+                            && (evaluation.window_effect_uniform_only
+                                || evaluation.window_effects == cached.window_effects);
                         if shader_uniform_fast_path {
                             let update = {
                                 timescope::scope!("ssd window shader uniform fast update");
@@ -3526,7 +3531,11 @@ impl ShojiWM {
                                 )?
                             };
                             cached.snapshot = snapshot;
-                            let rendered_changed = update.rendered_changed;
+                            if evaluation.window_effect_uniform_only {
+                                cached.window_effects = evaluation.window_effects;
+                            }
+                            let rendered_changed =
+                                update.rendered_changed || evaluation.window_effect_uniform_only;
                             if rendered_changed {
                                 self.pending_decoration_damage.extend(
                                     update.damage_rects.into_iter().map(|rect| {

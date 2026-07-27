@@ -30,11 +30,12 @@ use rustyscript::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DecorationNode,
-    bridge::WireDecorationNode,
+    BackgroundEffectConfig, CompiledEffect, DecorationNode, EffectInput, EffectStage,
+    OpaqueRegionPolicy, ShaderStage, SurfacePolicy, WindowEffectConfig,
+    bridge::{WireCompiledEffect, WireDecorationNode, WireWindowEffectConfig},
     window_model::{
-        ManagedWindowRectSnapshot, ManagedWindowState, TransformOrigin, WaylandOutputSnapshot,
-        WaylandWindowSnapshot, WindowTransform,
+        ManagedWindowRectSnapshot, ManagedWindowState, TransformOrigin, WaylandLayerSnapshot,
+        WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot, WindowTransform,
     },
 };
 use crate::runtime_input::RuntimeInputDeviceSnapshot;
@@ -84,6 +85,48 @@ pub enum NativeCompositionRequest {
     },
 }
 
+/// Effect requests use the same CppGC request envelope as composition
+/// requests. The snapshots cross V8 once through serde_v8; no JSON frame is
+/// created or parsed on either side.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeEffectRequest {
+    GetEffectConfig {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    EvaluateLayerEffects {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "outputName")]
+        output_name: String,
+        layers: Vec<WaylandLayerSnapshot>,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    EvaluatePopupEffects {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "outputName")]
+        output_name: String,
+        popups: Vec<WaylandPopupSnapshot>,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeSchedulerRequest {
@@ -97,6 +140,7 @@ pub struct NativeSchedulerRequest {
 enum BridgeRequest {
     Json(String),
     Composition(NativeCompositionRequest),
+    Effect(NativeEffectRequest),
     Scheduler(NativeSchedulerRequest),
     CachedFast {
         request_id: u64,
@@ -157,6 +201,87 @@ pub enum NativeCompositionUpdate {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeLayerEffectAssignment {
+    pub layer_id: String,
+    pub effects: Option<WindowEffectConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativePopupEffectAssignment {
+    pub popup_id: String,
+    pub effects: Option<WindowEffectConfig>,
+    pub surface_policy: Option<SurfacePolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeEffectUpdateKind {
+    Background,
+    Window,
+    Layers,
+    Popups,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeEffectTargetKind {
+    Background,
+    Window,
+    Layer,
+    Popup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeEffectSlotKind {
+    Background,
+    Behind,
+    BehindRootSurface,
+    InFront,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum NativeEffectShaderPathSegment {
+    Input,
+    Pipeline { index: usize },
+    Texture { name: String },
+}
+
+#[derive(Debug, Clone)]
+struct NativeEffectUniformPatch {
+    target_kind: NativeEffectTargetKind,
+    target_id: String,
+    effect_slot: NativeEffectSlotKind,
+    shader_path: Vec<NativeEffectShaderPathSegment>,
+    name: String,
+    value: super::ShaderUniformValue,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NativeEffectUniformPatchBatch {
+    kind: NativeEffectUpdateKind,
+    target_ids: Vec<String>,
+    patches: Vec<NativeEffectUniformPatch>,
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeEffectUpdate {
+    Background(Option<BackgroundEffectConfig>),
+    Window {
+        window_id: String,
+        effects: Option<WindowEffectConfig>,
+    },
+    Layers(Vec<NativeLayerEffectAssignment>),
+    Popups(Vec<NativePopupEffectAssignment>),
+    UniformPatches(NativeEffectUniformPatchBatch),
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedNativeEffectUpdate {
+    pub update: NativeEffectUpdate,
+    pub uniform_only: bool,
+}
+
 #[derive(Debug)]
 pub struct NativeSchedulerResponse {
     pub request_id: u64,
@@ -208,6 +333,46 @@ enum WireNativeCompositionUpdate {
         window_id: String,
         patches: Vec<WireNativeCompositionPatch>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum WireNativeEffectUpdate {
+    Background {
+        effect: Option<WireCompiledEffect>,
+    },
+    Window {
+        #[serde(rename = "windowId")]
+        window_id: String,
+        effects: Option<WireWindowEffectConfig>,
+    },
+    Layers {
+        assignments: Vec<WireNativeLayerEffectAssignment>,
+    },
+    Popups {
+        assignments: Vec<WireNativePopupEffectAssignment>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireNativeLayerEffectAssignment {
+    layer_id: String,
+    effects: Option<WireWindowEffectConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireNativePopupEffectAssignment {
+    popup_id: String,
+    effects: Option<WireWindowEffectConfig>,
+    surface_policy: Option<WireNativeSurfacePolicy>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireNativeSurfacePolicy {
+    opaque_region: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +435,8 @@ struct BridgeRegistration {
     requests: tokio::sync::mpsc::UnboundedReceiver<BridgeRequest>,
     responses: Sender<EmbeddedRuntimeResponse>,
     composition_updates: Arc<Mutex<HashMap<u64, NativeCompositionUpdate>>>,
+    effect_updates: Arc<Mutex<HashMap<u64, NativeEffectUpdate>>>,
+    effect_uniform_patch_count: Arc<AtomicU32>,
 }
 
 static NEXT_BRIDGE_ID: AtomicU32 = AtomicU32::new(1);
@@ -284,7 +451,10 @@ struct ShojiRuntimeBridge {
     requests: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<BridgeRequest>>,
     responses: Sender<EmbeddedRuntimeResponse>,
     composition_updates: Arc<Mutex<HashMap<u64, NativeCompositionUpdate>>>,
+    effect_updates: Arc<Mutex<HashMap<u64, NativeEffectUpdate>>>,
     composition_uniform_slots: Mutex<HashMap<u32, NativeShaderUniformSlot>>,
+    effect_uniform_slots: Mutex<HashMap<u32, NativeEffectUniformSlot>>,
+    effect_uniform_patch_count: Arc<AtomicU32>,
     pending_native_response: Mutex<Option<EmbeddedRuntimeResponse>>,
 }
 
@@ -293,6 +463,15 @@ struct NativeShaderUniformSlot {
     window_id: String,
     node_id: String,
     stage_index: usize,
+    name: String,
+}
+
+#[derive(Debug, Clone)]
+struct NativeEffectUniformSlot {
+    target_kind: NativeEffectTargetKind,
+    target_id: String,
+    effect_slot: NativeEffectSlotKind,
+    shader_path: Vec<NativeEffectShaderPathSegment>,
     name: String,
 }
 
@@ -339,6 +518,18 @@ impl RuntimeRequestEnvelope {
         }
         match request.take() {
             Some(BridgeRequest::Composition(request)) => Some(request),
+            _ => None,
+        }
+    }
+
+    #[serde]
+    fn effect(&self) -> Option<NativeEffectRequest> {
+        let mut request = self.request.lock().ok()?;
+        if !matches!(request.as_ref(), Some(BridgeRequest::Effect(_))) {
+            return None;
+        }
+        match request.take() {
+            Some(BridgeRequest::Effect(request)) => Some(request),
             _ => None,
         }
     }
@@ -451,7 +642,10 @@ impl ShojiRuntimeBridge {
             requests: tokio::sync::Mutex::new(registration.requests),
             responses: registration.responses,
             composition_updates: registration.composition_updates,
+            effect_updates: registration.effect_updates,
             composition_uniform_slots: Mutex::new(HashMap::new()),
+            effect_uniform_slots: Mutex::new(HashMap::new()),
+            effect_uniform_patch_count: registration.effect_uniform_patch_count,
             pending_native_response: Mutex::new(None),
         })
     }
@@ -811,6 +1005,239 @@ impl ShojiRuntimeBridge {
         Ok(())
     }
 
+    fn write_effect_update(
+        &self,
+        request_id: f64,
+        #[serde] update: WireNativeEffectUpdate,
+    ) -> Result<(), std::io::Error> {
+        timescope::scope!("runtime native effect decode");
+        let request_id = checked_request_id(request_id)?;
+        let bridge_error = |error: super::DecorationBridgeError| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        };
+        let update = match update {
+            WireNativeEffectUpdate::Background { effect } => NativeEffectUpdate::Background(
+                effect
+                    .map(TryInto::try_into)
+                    .transpose()
+                    .map_err(bridge_error)?,
+            ),
+            WireNativeEffectUpdate::Window { window_id, effects } => NativeEffectUpdate::Window {
+                window_id,
+                effects: effects
+                    .map(TryInto::try_into)
+                    .transpose()
+                    .map_err(bridge_error)?,
+            },
+            WireNativeEffectUpdate::Layers { assignments } => NativeEffectUpdate::Layers(
+                assignments
+                    .into_iter()
+                    .map(|assignment| {
+                        Ok(NativeLayerEffectAssignment {
+                            layer_id: assignment.layer_id,
+                            effects: assignment
+                                .effects
+                                .map(TryInto::try_into)
+                                .transpose()
+                                .map_err(bridge_error)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, std::io::Error>>()?,
+            ),
+            WireNativeEffectUpdate::Popups { assignments } => NativeEffectUpdate::Popups(
+                assignments
+                    .into_iter()
+                    .map(|assignment| {
+                        Ok(NativePopupEffectAssignment {
+                            popup_id: assignment.popup_id,
+                            effects: assignment
+                                .effects
+                                .map(TryInto::try_into)
+                                .transpose()
+                                .map_err(bridge_error)?,
+                            surface_policy: assignment.surface_policy.map(|policy| SurfacePolicy {
+                                opaque_region: match policy.opaque_region.as_deref() {
+                                    Some("ignore") => OpaqueRegionPolicy::Ignore,
+                                    _ => OpaqueRegionPolicy::Trust,
+                                },
+                            }),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, std::io::Error>>()?,
+            ),
+        };
+        let mut updates = self
+            .effect_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("effect update store is poisoned"))?;
+        match updates.entry(request_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(update);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "effect update was already written for this request",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[fast]
+    fn begin_effect_shader_uniform_slot_patches(
+        &self,
+        request_id: f64,
+        update_kind: u32,
+    ) -> Result<(), std::io::Error> {
+        let request_id = checked_request_id(request_id)?;
+        let kind = native_effect_update_kind(update_kind)?;
+        let mut updates = self
+            .effect_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("effect update store is poisoned"))?;
+        match updates.entry(request_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(NativeEffectUpdate::UniformPatches(
+                    NativeEffectUniformPatchBatch {
+                        kind,
+                        target_ids: Vec::new(),
+                        patches: Vec::new(),
+                    },
+                ));
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "effect update was already written for this request",
+            )),
+        }
+    }
+
+    #[fast]
+    fn add_effect_shader_uniform_patch_target(
+        &self,
+        request_id: f64,
+        #[string] target_id: &str,
+    ) -> Result<(), std::io::Error> {
+        let request_id = checked_request_id(request_id)?;
+        let mut updates = self
+            .effect_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("effect update store is poisoned"))?;
+        let Some(NativeEffectUpdate::UniformPatches(batch)) = updates.get_mut(&request_id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "effect uniform patch batch was not started",
+            ));
+        };
+        batch.target_ids.push(target_id.to_owned());
+        Ok(())
+    }
+
+    #[fast]
+    fn register_effect_shader_uniform_slot(
+        &self,
+        slot_id: u32,
+        target_kind: u32,
+        #[string] target_id: &str,
+        effect_slot: u32,
+        #[string] shader_path_json: &str,
+        #[string] name: &str,
+    ) -> Result<(), std::io::Error> {
+        let shader_path = serde_json::from_str(shader_path_json).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid effect shader path: {error}"),
+            )
+        })?;
+        self.effect_uniform_slots
+            .lock()
+            .map_err(|_| std::io::Error::other("effect uniform slot store is poisoned"))?
+            .insert(
+                slot_id,
+                NativeEffectUniformSlot {
+                    target_kind: native_effect_target_kind(target_kind)?,
+                    target_id: target_id.to_owned(),
+                    effect_slot: native_effect_slot_kind(effect_slot)?,
+                    shader_path,
+                    name: name.to_owned(),
+                },
+            );
+        Ok(())
+    }
+
+    #[fast]
+    fn clear_effect_shader_uniform_slots(
+        &self,
+        target_kind: u32,
+        #[string] target_id: &str,
+    ) -> Result<(), std::io::Error> {
+        let target_kind = native_effect_target_kind(target_kind)?;
+        self.effect_uniform_slots
+            .lock()
+            .map_err(|_| std::io::Error::other("effect uniform slot store is poisoned"))?
+            .retain(|_, slot| {
+                slot.target_kind != target_kind || slot.target_id.as_str() != target_id
+            });
+        Ok(())
+    }
+
+    #[fast]
+    fn write_effect_shader_uniform_slot_patch(
+        &self,
+        request_id: f64,
+        slot_id: u32,
+        value_len: u32,
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    ) -> Result<(), std::io::Error> {
+        timescope::scope!("runtime native effect uniform slot patch");
+        let request_id = checked_request_id(request_id)?;
+        let value = native_shader_uniform_value(value_len, x, y, z, w)?;
+        let slot = self
+            .effect_uniform_slots
+            .lock()
+            .map_err(|_| std::io::Error::other("effect uniform slot store is poisoned"))?
+            .get(&slot_id)
+            .cloned()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "effect shader uniform slot is not registered",
+                )
+            })?;
+        let mut updates = self
+            .effect_updates
+            .lock()
+            .map_err(|_| std::io::Error::other("effect update store is poisoned"))?;
+        let Some(NativeEffectUpdate::UniformPatches(batch)) = updates.get_mut(&request_id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "effect uniform patch batch was not started",
+            ));
+        };
+        if !native_effect_update_accepts_target(batch.kind, slot.target_kind) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "effect uniform slot target does not match the update kind",
+            ));
+        }
+        batch.patches.push(NativeEffectUniformPatch {
+            target_kind: slot.target_kind,
+            target_id: slot.target_id,
+            effect_slot: slot.effect_slot,
+            shader_path: slot.shader_path,
+            name: slot.name,
+            value,
+        });
+        self.effect_uniform_patch_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     #[fast]
     fn begin_composition_patches(
         &self,
@@ -1079,6 +1506,100 @@ fn checked_flags(value: f64) -> Result<u64, std::io::Error> {
     checked_request_id(value)
 }
 
+fn native_effect_update_kind(value: u32) -> Result<NativeEffectUpdateKind, std::io::Error> {
+    match value {
+        0 => Ok(NativeEffectUpdateKind::Background),
+        1 => Ok(NativeEffectUpdateKind::Window),
+        2 => Ok(NativeEffectUpdateKind::Layers),
+        3 => Ok(NativeEffectUpdateKind::Popups),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unknown native effect update kind",
+        )),
+    }
+}
+
+fn native_effect_target_kind(value: u32) -> Result<NativeEffectTargetKind, std::io::Error> {
+    match value {
+        0 => Ok(NativeEffectTargetKind::Background),
+        1 => Ok(NativeEffectTargetKind::Window),
+        2 => Ok(NativeEffectTargetKind::Layer),
+        3 => Ok(NativeEffectTargetKind::Popup),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unknown native effect target kind",
+        )),
+    }
+}
+
+fn native_effect_slot_kind(value: u32) -> Result<NativeEffectSlotKind, std::io::Error> {
+    match value {
+        0 => Ok(NativeEffectSlotKind::Background),
+        1 => Ok(NativeEffectSlotKind::Behind),
+        2 => Ok(NativeEffectSlotKind::BehindRootSurface),
+        3 => Ok(NativeEffectSlotKind::InFront),
+        4 => Ok(NativeEffectSlotKind::Replace),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unknown native effect slot kind",
+        )),
+    }
+}
+
+fn native_effect_update_accepts_target(
+    update: NativeEffectUpdateKind,
+    target: NativeEffectTargetKind,
+) -> bool {
+    matches!(
+        (update, target),
+        (
+            NativeEffectUpdateKind::Background,
+            NativeEffectTargetKind::Background
+        ) | (
+            NativeEffectUpdateKind::Window,
+            NativeEffectTargetKind::Window
+        ) | (
+            NativeEffectUpdateKind::Layers,
+            NativeEffectTargetKind::Layer
+        ) | (
+            NativeEffectUpdateKind::Popups,
+            NativeEffectTargetKind::Popup
+        )
+    )
+}
+
+fn native_shader_uniform_value(
+    value_len: u32,
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+) -> Result<super::ShaderUniformValue, std::io::Error> {
+    let values = [x, y, z, w].map(|value| value as f32);
+    if values
+        .iter()
+        .take(value_len as usize)
+        .any(|value| !value.is_finite())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "shader uniform values must be finite",
+        ));
+    }
+    match value_len {
+        1 => Ok(super::ShaderUniformValue::Float(values[0])),
+        2 => Ok(super::ShaderUniformValue::Vec2([values[0], values[1]])),
+        3 => Ok(super::ShaderUniformValue::Vec3([
+            values[0], values[1], values[2],
+        ])),
+        4 => Ok(super::ShaderUniformValue::Vec4(values)),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "shader uniform length must be between 1 and 4",
+        )),
+    }
+}
+
 fn set_pending_native_response(
     slot: &Mutex<Option<EmbeddedRuntimeResponse>>,
     response: EmbeddedRuntimeResponse,
@@ -1235,8 +1756,260 @@ pub struct EmbeddedRuntime {
     requests: Option<tokio::sync::mpsc::UnboundedSender<BridgeRequest>>,
     responses: Receiver<EmbeddedRuntimeResponse>,
     composition_updates: Arc<Mutex<HashMap<u64, NativeCompositionUpdate>>>,
+    effect_updates: Arc<Mutex<HashMap<u64, NativeEffectUpdate>>>,
+    effect_state_cache: Mutex<NativeEffectStateCache>,
+    effect_uniform_patch_count: Arc<AtomicU32>,
     worker: Option<JoinHandle<()>>,
     worker_error: Arc<Mutex<Option<String>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedPopupEffect {
+    effects: Option<WindowEffectConfig>,
+    surface_policy: Option<SurfacePolicy>,
+}
+
+#[derive(Debug, Default)]
+struct NativeEffectStateCache {
+    background: Option<BackgroundEffectConfig>,
+    windows: HashMap<String, Option<WindowEffectConfig>>,
+    layers: HashMap<String, Option<WindowEffectConfig>>,
+    popups: HashMap<String, CachedPopupEffect>,
+}
+
+fn resolve_native_effect_update(
+    cache: &mut NativeEffectStateCache,
+    update: NativeEffectUpdate,
+) -> Result<ResolvedNativeEffectUpdate, String> {
+    match update {
+        NativeEffectUpdate::Background(effect) => {
+            cache.background = effect.clone();
+            Ok(ResolvedNativeEffectUpdate {
+                update: NativeEffectUpdate::Background(effect),
+                uniform_only: false,
+            })
+        }
+        NativeEffectUpdate::Window { window_id, effects } => {
+            cache.windows.insert(window_id.clone(), effects.clone());
+            Ok(ResolvedNativeEffectUpdate {
+                update: NativeEffectUpdate::Window { window_id, effects },
+                uniform_only: false,
+            })
+        }
+        NativeEffectUpdate::Layers(assignments) => {
+            for assignment in &assignments {
+                cache
+                    .layers
+                    .insert(assignment.layer_id.clone(), assignment.effects.clone());
+            }
+            Ok(ResolvedNativeEffectUpdate {
+                update: NativeEffectUpdate::Layers(assignments),
+                uniform_only: false,
+            })
+        }
+        NativeEffectUpdate::Popups(assignments) => {
+            for assignment in &assignments {
+                cache.popups.insert(
+                    assignment.popup_id.clone(),
+                    CachedPopupEffect {
+                        effects: assignment.effects.clone(),
+                        surface_policy: assignment.surface_policy,
+                    },
+                );
+            }
+            Ok(ResolvedNativeEffectUpdate {
+                update: NativeEffectUpdate::Popups(assignments),
+                uniform_only: false,
+            })
+        }
+        NativeEffectUpdate::UniformPatches(batch) => {
+            for patch in &batch.patches {
+                apply_native_effect_uniform_patch(cache, patch)?;
+            }
+            Ok(ResolvedNativeEffectUpdate {
+                update: materialize_native_effect_patch_batch(cache, batch)?,
+                uniform_only: true,
+            })
+        }
+    }
+}
+
+fn materialize_native_effect_patch_batch(
+    cache: &NativeEffectStateCache,
+    batch: NativeEffectUniformPatchBatch,
+) -> Result<NativeEffectUpdate, String> {
+    match batch.kind {
+        NativeEffectUpdateKind::Background => {
+            Ok(NativeEffectUpdate::Background(cache.background.clone()))
+        }
+        NativeEffectUpdateKind::Window => {
+            let window_id = batch
+                .target_ids
+                .first()
+                .ok_or_else(|| "window effect patch batch has no target".to_owned())?
+                .clone();
+            let effects = cache
+                .windows
+                .get(&window_id)
+                .cloned()
+                .ok_or_else(|| format!("window effect cache is missing: {window_id}"))?;
+            Ok(NativeEffectUpdate::Window { window_id, effects })
+        }
+        NativeEffectUpdateKind::Layers => batch
+            .target_ids
+            .into_iter()
+            .map(|layer_id| {
+                let effects = cache
+                    .layers
+                    .get(&layer_id)
+                    .cloned()
+                    .ok_or_else(|| format!("layer effect cache is missing: {layer_id}"))?;
+                Ok(NativeLayerEffectAssignment { layer_id, effects })
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(NativeEffectUpdate::Layers),
+        NativeEffectUpdateKind::Popups => batch
+            .target_ids
+            .into_iter()
+            .map(|popup_id| {
+                let cached = cache
+                    .popups
+                    .get(&popup_id)
+                    .cloned()
+                    .ok_or_else(|| format!("popup effect cache is missing: {popup_id}"))?;
+                Ok(NativePopupEffectAssignment {
+                    popup_id,
+                    effects: cached.effects,
+                    surface_policy: cached.surface_policy,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(NativeEffectUpdate::Popups),
+    }
+}
+
+fn apply_native_effect_uniform_patch(
+    cache: &mut NativeEffectStateCache,
+    patch: &NativeEffectUniformPatch,
+) -> Result<(), String> {
+    let effect = match patch.target_kind {
+        NativeEffectTargetKind::Background => {
+            if patch.effect_slot != NativeEffectSlotKind::Background {
+                return Err("background effect patch has a window effect slot".to_owned());
+            }
+            &mut cache
+                .background
+                .as_mut()
+                .ok_or_else(|| "background effect cache is missing".to_owned())?
+                .effect
+        }
+        NativeEffectTargetKind::Window => {
+            let effects = cache
+                .windows
+                .get_mut(&patch.target_id)
+                .and_then(Option::as_mut)
+                .ok_or_else(|| format!("window effect cache is missing: {}", patch.target_id))?;
+            effect_for_window_slot_mut(effects, patch.effect_slot)?
+        }
+        NativeEffectTargetKind::Layer => {
+            let effects = cache
+                .layers
+                .get_mut(&patch.target_id)
+                .and_then(Option::as_mut)
+                .ok_or_else(|| format!("layer effect cache is missing: {}", patch.target_id))?;
+            effect_for_window_slot_mut(effects, patch.effect_slot)?
+        }
+        NativeEffectTargetKind::Popup => {
+            let effects = cache
+                .popups
+                .get_mut(&patch.target_id)
+                .and_then(|cached| cached.effects.as_mut())
+                .ok_or_else(|| format!("popup effect cache is missing: {}", patch.target_id))?;
+            effect_for_window_slot_mut(effects, patch.effect_slot)?
+        }
+    };
+    let shader = effect_shader_stage_mut(effect, &patch.shader_path)
+        .ok_or_else(|| "effect shader uniform path no longer exists".to_owned())?;
+    let current = shader
+        .uniforms
+        .get_mut(&patch.name)
+        .ok_or_else(|| format!("effect shader uniform is missing: {}", patch.name))?;
+    if std::mem::discriminant(current) != std::mem::discriminant(&patch.value) {
+        return Err(format!(
+            "effect shader uniform shape changed without a structural update: {}",
+            patch.name
+        ));
+    }
+    *current = patch.value.clone();
+    Ok(())
+}
+
+fn effect_for_window_slot_mut(
+    effects: &mut WindowEffectConfig,
+    slot: NativeEffectSlotKind,
+) -> Result<&mut CompiledEffect, String> {
+    let slot = match slot {
+        NativeEffectSlotKind::Behind => effects.behind.as_mut(),
+        NativeEffectSlotKind::BehindRootSurface => effects.behind_root_surface.as_mut(),
+        NativeEffectSlotKind::InFront => effects.in_front.as_mut(),
+        NativeEffectSlotKind::Replace => effects.replace.as_mut(),
+        NativeEffectSlotKind::Background => {
+            return Err("window effect patch has a background effect slot".to_owned());
+        }
+    }
+    .ok_or_else(|| "effect assignment slot no longer exists".to_owned())?;
+    Ok(&mut slot.effect)
+}
+
+fn effect_shader_stage_mut<'a>(
+    effect: &'a mut CompiledEffect,
+    path: &[NativeEffectShaderPathSegment],
+) -> Option<&'a mut ShaderStage> {
+    let (head, tail) = path.split_first()?;
+    match head {
+        NativeEffectShaderPathSegment::Input => {
+            effect_input_shader_stage_mut(&mut effect.input, tail)
+        }
+        NativeEffectShaderPathSegment::Pipeline { index } => {
+            effect_stage_shader_stage_mut(effect.pipeline.get_mut(*index)?, tail)
+        }
+        NativeEffectShaderPathSegment::Texture { .. } => None,
+    }
+}
+
+fn effect_stage_shader_stage_mut<'a>(
+    stage: &'a mut EffectStage,
+    path: &[NativeEffectShaderPathSegment],
+) -> Option<&'a mut ShaderStage> {
+    match stage {
+        EffectStage::Shader(shader) => shader_stage_shader_stage_mut(shader, path),
+        EffectStage::Blend { input, .. } => effect_input_shader_stage_mut(input, path),
+        EffectStage::Unit(effect) => effect_shader_stage_mut(effect, path),
+        _ => None,
+    }
+}
+
+fn effect_input_shader_stage_mut<'a>(
+    input: &'a mut EffectInput,
+    path: &[NativeEffectShaderPathSegment],
+) -> Option<&'a mut ShaderStage> {
+    match input {
+        EffectInput::Shader(shader) => shader_stage_shader_stage_mut(shader, path),
+        _ => None,
+    }
+}
+
+fn shader_stage_shader_stage_mut<'a>(
+    shader: &'a mut ShaderStage,
+    path: &[NativeEffectShaderPathSegment],
+) -> Option<&'a mut ShaderStage> {
+    let Some((head, tail)) = path.split_first() else {
+        return Some(shader);
+    };
+    let NativeEffectShaderPathSegment::Texture { name } = head else {
+        return None;
+    };
+    effect_input_shader_stage_mut(shader.textures.get_mut(name)?, tail)
 }
 
 pub struct EmbeddedRuntimeExitStatus {
@@ -1262,6 +2035,8 @@ impl EmbeddedRuntime {
         let worker_error = Arc::new(Mutex::new(None));
         let worker_error_for_thread = Arc::clone(&worker_error);
         let composition_updates = Arc::new(Mutex::new(HashMap::new()));
+        let effect_updates = Arc::new(Mutex::new(HashMap::new()));
+        let effect_uniform_patch_count = Arc::new(AtomicU32::new(0));
 
         bridge_registrations()
             .lock()
@@ -1272,6 +2047,8 @@ impl EmbeddedRuntime {
                     requests: request_rx,
                     responses: response_tx,
                     composition_updates: Arc::clone(&composition_updates),
+                    effect_updates: Arc::clone(&effect_updates),
+                    effect_uniform_patch_count: Arc::clone(&effect_uniform_patch_count),
                 },
             );
 
@@ -1309,6 +2086,9 @@ impl EmbeddedRuntime {
                 requests: Some(request_tx),
                 responses: response_rx,
                 composition_updates,
+                effect_updates,
+                effect_state_cache: Mutex::new(NativeEffectStateCache::default()),
+                effect_uniform_patch_count,
                 worker: Some(worker),
                 worker_error,
             }),
@@ -1339,6 +2119,14 @@ impl EmbeddedRuntime {
             .as_ref()
             .ok_or_else(|| "embedded runtime is closed".to_owned())?
             .send(BridgeRequest::Composition(request))
+            .map_err(|_| self.failure_message("embedded runtime request channel closed"))
+    }
+
+    pub fn write_effect_request(&self, request: NativeEffectRequest) -> Result<(), String> {
+        self.requests
+            .as_ref()
+            .ok_or_else(|| "embedded runtime is closed".to_owned())?
+            .send(BridgeRequest::Effect(request))
             .map_err(|_| self.failure_message("embedded runtime request channel closed"))
     }
 
@@ -1385,6 +2173,30 @@ impl EmbeddedRuntime {
             .lock()
             .map_err(|_| "composition update store is poisoned".to_owned())
             .map(|mut updates| updates.remove(&request_id))
+    }
+
+    pub fn take_effect_update(
+        &self,
+        request_id: u64,
+    ) -> Result<Option<ResolvedNativeEffectUpdate>, String> {
+        let update = self
+            .effect_updates
+            .lock()
+            .map_err(|_| "effect update store is poisoned".to_owned())
+            .map(|mut updates| updates.remove(&request_id))?;
+        let Some(update) = update else {
+            return Ok(None);
+        };
+        let mut cache = self
+            .effect_state_cache
+            .lock()
+            .map_err(|_| "effect state cache is poisoned".to_owned())?;
+        resolve_native_effect_update(&mut cache, update).map(Some)
+    }
+
+    #[cfg(test)]
+    pub fn effect_uniform_patch_count(&self) -> u32 {
+        self.effect_uniform_patch_count.load(Ordering::Relaxed)
     }
 
     pub fn read_response(&self) -> Result<Option<EmbeddedRuntimeResponse>, String> {

@@ -5,6 +5,36 @@ interface EmbeddedRuntimeBridge {
     requestId: number,
     update: NativeCompositionUpdate,
   ): void;
+  writeEffectUpdate(requestId: number, update: NativeEffectUpdate): void;
+  beginEffectShaderUniformSlotPatches(
+    requestId: number,
+    updateKind: number,
+  ): void;
+  addEffectShaderUniformPatchTarget(
+    requestId: number,
+    targetId: string,
+  ): void;
+  registerEffectShaderUniformSlot(
+    slotId: number,
+    targetKind: number,
+    targetId: string,
+    effectSlot: number,
+    shaderPathJson: string,
+    name: string,
+  ): void;
+  clearEffectShaderUniformSlots(
+    targetKind: number,
+    targetId: string,
+  ): void;
+  writeEffectShaderUniformSlotPatch(
+    requestId: number,
+    slotId: number,
+    valueLength: number,
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+  ): void;
   beginCompositionPatches(requestId: number, windowId: string): void;
   writeCompositionShaderUniformPatch(
     requestId: number,
@@ -60,6 +90,7 @@ interface EmbeddedRuntimeBridge {
 interface EmbeddedRuntimeRequest {
   json(): string | null;
   composition(): RuntimeRequest | null;
+  effect(): RuntimeRequest | null;
   scheduler(): SchedulerTickRequest | null;
   fastKind(): number;
   fastRequestId(): number;
@@ -79,6 +110,25 @@ type NativeCompositionUpdate =
       kind: "patches";
       windowId: string;
       patches: Array<{ nodeId: string; node: unknown }>;
+    };
+
+type NativeEffectUpdate =
+  | {
+      kind: "background";
+      effect: CompiledEffectHandle | null;
+    }
+  | {
+      kind: "window";
+      windowId: string;
+      effects: WindowEffectAssignment | null;
+    }
+  | {
+      kind: "layers";
+      assignments: RuntimeLayerEffectAssignment[];
+    }
+  | {
+      kind: "popups";
+      assignments: RuntimePopupEffectAssignment[];
     };
 
 interface EmbeddedRuntimeBridgeConstructor {
@@ -646,6 +696,7 @@ interface EvaluateSuccess {
   transform: WindowTransform;
   managedWindow: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyNodeIds?: string[];
   managedWindowOnly?: boolean;
   nextPollInMs?: number;
@@ -784,6 +835,7 @@ interface InvokeHandlerSuccess {
   transform?: WindowTransform;
   managedWindow?: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -898,6 +950,7 @@ interface StartCloseSuccess {
   transform?: WindowTransform;
   managedWindow?: ManagedWindowState;
   windowEffects?: WindowEffectAssignment | null;
+  effectTargetId?: string;
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
@@ -1135,6 +1188,10 @@ const dirtyLayerIds = new Set<string>();
 const lastNativeCompositionByWindowId = new Map<string, unknown>();
 const shaderUniformSlotIdsByWindow = new Map<string, Map<string, number>>();
 let nextShaderUniformSlotId = 1;
+const lastNativeEffectByTarget = new Map<string, unknown>();
+const lastNativeEffectStructureByTarget = new Map<string, unknown>();
+const effectUniformSlotIdsByTarget = new Map<string, Map<string, number>>();
+let nextEffectUniformSlotId = 1;
 let runtimeDirty = false;
 let immediateDirtyPoll: PollHandle | null = null;
 let nextPollId = 1;
@@ -1591,6 +1648,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               result.managedWindow ??
               identityManagedWindow(),
             windowEffects: result.windowEffects,
+            effectTargetId: request.snapshot.id,
             dirtyNodeIds:
               request.kind === "evaluate"
                 ? cached
@@ -1680,6 +1738,11 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               request.windowId,
             );
             shaderUniformSlotIdsByWindow.delete(request.windowId);
+            clearNativeEffectTarget(
+              embeddedBridge,
+              NATIVE_EFFECT_TARGET_WINDOW,
+              request.windowId,
+            );
             closeWindow(events, request.windowId);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
@@ -1710,6 +1773,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               ok: true,
               kind: "startClose",
               ...result,
+              effectTargetId: request.windowId,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -1724,6 +1788,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
                 embeddedBridge,
                 response,
                 runtimeUpdates,
+                request.windowId,
               )
             ) {
               await writeResponseWithRuntimeUpdates(
@@ -1770,6 +1835,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               transform: result.transform,
               managedWindow: result.managedWindow,
               windowEffects: result.windowEffects,
+              effectTargetId: request.windowId,
               dirtyNodeIds: result.dirtyNodeIds,
               managedWindowOnly: result.managedWindowOnly,
               nextPollInMs: hasWindowAnimations(request.windowId)
@@ -1790,6 +1856,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
                 embeddedBridge,
                 response,
                 runtimeUpdates,
+                request.windowId,
               )
             ) {
               await writeResponseWithRuntimeUpdates(
@@ -2104,6 +2171,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               ok: true,
               kind: "invokeHandler",
               ...result,
+              effectTargetId: request.windowId,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -4345,11 +4413,11 @@ function tryWriteNativeCachedResponse(
   output: EmbeddedRuntimeBridge,
   response: EvaluateSuccess,
   updates: PendingRuntimeResponseUpdates,
+  windowId: string,
 ): boolean {
   if (
     response.kind !== "evaluateCached" ||
     hasRuntimeResponseUpdates(updates) ||
-    response.windowEffects !== null ||
     (response.actions?.length ?? 0) > 0 ||
     response.displayConfig !== undefined ||
     response.workspaceConfig !== undefined ||
@@ -4421,6 +4489,12 @@ function tryWriteNativeCachedResponse(
     nativeCachedResponseView.setFloat64(index * 8, fields[index], true);
   }
 
+  writeNativeWindowEffectUpdate(
+    output,
+    response.requestId,
+    windowId,
+    response.windowEffects ?? null,
+  );
   output.beginCachedResponse(nativeCachedResponsePayload);
   for (const nodeId of response.dirtyNodeIds ?? []) {
     output.addCachedDirtyNode(nodeId);
@@ -4471,13 +4545,540 @@ function writeResponseWithRuntimeUpdates(
   response: Parameters<typeof writeResponse>[1],
   updates: PendingRuntimeResponseUpdates,
 ): Promise<void> {
+  const responseWithoutEffects = writeNativeEffectUpdate(output, response);
   const responseWithRuntimeUpdates = {
-    ...response,
+    ...responseWithoutEffects,
     ...(updates.envUpdates ? { envUpdates: updates.envUpdates } : {}),
     ...(updates.cursorConfig ? { cursorConfig: updates.cursorConfig } : {}),
   };
   output.writeResponse(JSON.stringify(responseWithRuntimeUpdates));
   return Promise.resolve();
+}
+
+function writeNativeEffectUpdate(
+  output: EmbeddedRuntimeBridge,
+  response: Parameters<typeof writeResponse>[1],
+): Record<string, unknown> {
+  const responseWithoutEffects = {
+    ...response,
+  } as Record<string, unknown>;
+  if (!response.ok) {
+    return responseWithoutEffects;
+  }
+  if (Object.prototype.hasOwnProperty.call(response, "windowEffects")) {
+    const windowResponse = response as
+      | EvaluateSuccess
+      | StartCloseSuccess
+      | InvokeHandlerSuccess;
+    const windowId = windowResponse.effectTargetId;
+    if (windowId === undefined) {
+      throw new Error(
+        `native window effect response ${response.kind} has no target id`,
+      );
+    }
+    writeNativeWindowEffectUpdate(
+      output,
+      response.requestId,
+      windowId,
+      windowResponse.windowEffects ?? null,
+    );
+    delete responseWithoutEffects.windowEffects;
+    delete responseWithoutEffects.effectTargetId;
+  } else if (response.kind === "getEffectConfig") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_BACKGROUND,
+      [
+        {
+          targetKind: NATIVE_EFFECT_TARGET_BACKGROUND,
+          targetId: "",
+          value: response.backgroundEffect ?? null,
+        },
+      ],
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "background",
+          effect: response.backgroundEffect ?? null,
+        }),
+    );
+    delete responseWithoutEffects.backgroundEffect;
+  } else if (response.kind === "evaluateLayerEffects") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_LAYERS,
+      response.effects.map((assignment) => ({
+        targetKind: NATIVE_EFFECT_TARGET_LAYER,
+        targetId: assignment.layerId,
+        value: assignment.effects,
+      })),
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "layers",
+          assignments: response.effects,
+        }),
+    );
+    delete responseWithoutEffects.effects;
+  } else if (response.kind === "evaluatePopupEffects") {
+    writeNativeEffectTargets(
+      output,
+      response.requestId,
+      NATIVE_EFFECT_UPDATE_POPUPS,
+      response.effects.map((assignment) => ({
+        targetKind: NATIVE_EFFECT_TARGET_POPUP,
+        targetId: assignment.popupId,
+        value: assignment.effects,
+        structure: {
+          effects: assignment.effects,
+          surfacePolicy: assignment.surfacePolicy ?? null,
+        },
+      })),
+      () =>
+        output.writeEffectUpdate(response.requestId, {
+          kind: "popups",
+          assignments: response.effects,
+        }),
+    );
+    delete responseWithoutEffects.effects;
+  }
+  return responseWithoutEffects;
+}
+
+const NATIVE_EFFECT_UPDATE_BACKGROUND = 0;
+const NATIVE_EFFECT_UPDATE_WINDOW = 1;
+const NATIVE_EFFECT_UPDATE_LAYERS = 2;
+const NATIVE_EFFECT_UPDATE_POPUPS = 3;
+const NATIVE_EFFECT_TARGET_BACKGROUND = 0;
+const NATIVE_EFFECT_TARGET_WINDOW = 1;
+const NATIVE_EFFECT_TARGET_LAYER = 2;
+const NATIVE_EFFECT_TARGET_POPUP = 3;
+const NATIVE_EFFECT_SLOT_BACKGROUND = 0;
+const NATIVE_EFFECT_SLOT_BEHIND = 1;
+const NATIVE_EFFECT_SLOT_BEHIND_ROOT_SURFACE = 2;
+const NATIVE_EFFECT_SLOT_IN_FRONT = 3;
+const NATIVE_EFFECT_SLOT_REPLACE = 4;
+
+interface NativeEffectTarget {
+  targetKind: number;
+  targetId: string;
+  value: unknown;
+  structure?: unknown;
+}
+
+type NativeEffectShaderPathSegment =
+  | { kind: "input" }
+  | { kind: "pipeline"; index: number }
+  | { kind: "texture"; name: string };
+
+interface NativeEffectUniformBinding {
+  key: string;
+  effectSlot: number;
+  shaderPath: NativeEffectShaderPathSegment[];
+  name: string;
+  values: number[];
+}
+
+function writeNativeWindowEffectUpdate(
+  output: EmbeddedRuntimeBridge,
+  requestId: number,
+  windowId: string,
+  effects: WindowEffectAssignment | null,
+): void {
+  writeNativeEffectTargets(
+    output,
+    requestId,
+    NATIVE_EFFECT_UPDATE_WINDOW,
+    [
+      {
+        targetKind: NATIVE_EFFECT_TARGET_WINDOW,
+        targetId: windowId,
+        value: effects,
+      },
+    ],
+    () =>
+      output.writeEffectUpdate(requestId, {
+        kind: "window",
+        windowId,
+        effects,
+      }),
+  );
+}
+
+function writeNativeEffectTargets(
+  output: EmbeddedRuntimeBridge,
+  requestId: number,
+  updateKind: number,
+  targets: NativeEffectTarget[],
+  writeFullUpdate: () => void,
+): void {
+  const changes: Array<{ slotId: number; values: number[] }> = [];
+  let canPatch = targets.length > 0;
+  for (const target of targets) {
+    const targetKey = nativeEffectTargetKey(
+      target.targetKind,
+      target.targetId,
+    );
+    const previous = lastNativeEffectByTarget.get(targetKey);
+    const previousStructure =
+      lastNativeEffectStructureByTarget.get(targetKey);
+    const slots = effectUniformSlotIdsByTarget.get(targetKey);
+    if (
+      previous === undefined ||
+      previousStructure === undefined ||
+      slots === undefined ||
+      !sameEffectStructure(
+        previousStructure,
+        target.structure ?? target.value,
+      )
+    ) {
+      canPatch = false;
+      break;
+    }
+    const previousBindings = collectNativeEffectUniformBindings(previous);
+    const nextBindings = collectNativeEffectUniformBindings(target.value);
+    if (
+      previousBindings.length !== nextBindings.length ||
+      previousBindings.some(
+        (binding, index) => binding.key !== nextBindings[index]?.key,
+      )
+    ) {
+      canPatch = false;
+      break;
+    }
+    for (let index = 0; index < nextBindings.length; index++) {
+      const previousBinding = previousBindings[index];
+      const nextBinding = nextBindings[index];
+      if (sameUniformValues(previousBinding.values, nextBinding.values)) {
+        continue;
+      }
+      const slotId = slots.get(nextBinding.key);
+      if (slotId === undefined) {
+        canPatch = false;
+        break;
+      }
+      changes.push({ slotId, values: nextBinding.values });
+    }
+    if (!canPatch) {
+      break;
+    }
+  }
+
+  if (canPatch) {
+    output.beginEffectShaderUniformSlotPatches(requestId, updateKind);
+    for (const target of targets) {
+      output.addEffectShaderUniformPatchTarget(requestId, target.targetId);
+    }
+    for (const change of changes) {
+      const [x = 0, y = 0, z = 0, w = 0] = change.values;
+      output.writeEffectShaderUniformSlotPatch(
+        requestId,
+        change.slotId,
+        change.values.length,
+        x,
+        y,
+        z,
+        w,
+      );
+    }
+  } else {
+    writeFullUpdate();
+    for (const target of targets) {
+      syncNativeEffectUniformSlots(output, target);
+    }
+  }
+
+  for (const target of targets) {
+    lastNativeEffectByTarget.set(
+      nativeEffectTargetKey(target.targetKind, target.targetId),
+      target.value,
+    );
+    lastNativeEffectStructureByTarget.set(
+      nativeEffectTargetKey(target.targetKind, target.targetId),
+      target.structure ?? target.value,
+    );
+  }
+}
+
+function syncNativeEffectUniformSlots(
+  output: EmbeddedRuntimeBridge,
+  target: NativeEffectTarget,
+): void {
+  const targetKey = nativeEffectTargetKey(
+    target.targetKind,
+    target.targetId,
+  );
+  output.clearEffectShaderUniformSlots(target.targetKind, target.targetId);
+  const slotIds = new Map<string, number>();
+  for (const binding of collectNativeEffectUniformBindings(target.value)) {
+    const slotId = nextEffectUniformSlotId++;
+    if (nextEffectUniformSlotId > 0xffff_ffff) {
+      nextEffectUniformSlotId = 1;
+    }
+    slotIds.set(binding.key, slotId);
+    output.registerEffectShaderUniformSlot(
+      slotId,
+      target.targetKind,
+      target.targetId,
+      binding.effectSlot,
+      JSON.stringify(binding.shaderPath),
+      binding.name,
+    );
+  }
+  effectUniformSlotIdsByTarget.set(targetKey, slotIds);
+}
+
+function clearNativeEffectTarget(
+  output: EmbeddedRuntimeBridge,
+  targetKind: number,
+  targetId: string,
+): void {
+  output.clearEffectShaderUniformSlots(targetKind, targetId);
+  const targetKey = nativeEffectTargetKey(targetKind, targetId);
+  effectUniformSlotIdsByTarget.delete(targetKey);
+  lastNativeEffectByTarget.delete(targetKey);
+  lastNativeEffectStructureByTarget.delete(targetKey);
+}
+
+function nativeEffectTargetKey(targetKind: number, targetId: string): string {
+  return `${targetKind}\u0000${targetId}`;
+}
+
+function collectNativeEffectUniformBindings(
+  value: unknown,
+): NativeEffectUniformBinding[] {
+  const bindings: NativeEffectUniformBinding[] = [];
+  if (isCompiledEffect(value)) {
+    collectCompiledEffectUniformBindings(
+      value,
+      NATIVE_EFFECT_SLOT_BACKGROUND,
+      [],
+      bindings,
+    );
+    return bindings;
+  }
+  if (!isRecord(value)) {
+    return bindings;
+  }
+  const slots: Array<[string, number]> = [
+    ["behind", NATIVE_EFFECT_SLOT_BEHIND],
+    ["behindRootSurface", NATIVE_EFFECT_SLOT_BEHIND_ROOT_SURFACE],
+    ["inFront", NATIVE_EFFECT_SLOT_IN_FRONT],
+    ["replace", NATIVE_EFFECT_SLOT_REPLACE],
+  ];
+  for (const [name, effectSlot] of slots) {
+    const handle = value[name];
+    if (!isRecord(handle) || !isCompiledEffect(handle.effect)) {
+      continue;
+    }
+    collectCompiledEffectUniformBindings(
+      handle.effect,
+      effectSlot,
+      [],
+      bindings,
+    );
+  }
+  return bindings;
+}
+
+function collectCompiledEffectUniformBindings(
+  effect: Record<string, unknown>,
+  effectSlot: number,
+  prefix: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  collectEffectInputUniformBindings(
+    effect.input,
+    effectSlot,
+    [...prefix, { kind: "input" }],
+    bindings,
+  );
+  const pipeline = effect.pipeline;
+  if (!Array.isArray(pipeline)) {
+    return;
+  }
+  for (let index = 0; index < pipeline.length; index++) {
+    const stage = pipeline[index];
+    if (!isRecord(stage)) {
+      continue;
+    }
+    const path = [...prefix, { kind: "pipeline" as const, index }];
+    if (stage.kind === "shader-stage") {
+      collectShaderStageUniformBindings(stage, effectSlot, path, bindings);
+    } else if (stage.kind === "blend") {
+      collectEffectInputUniformBindings(
+        stage.input,
+        effectSlot,
+        path,
+        bindings,
+      );
+    } else if (stage.kind === "unit" && isCompiledEffect(stage.effect)) {
+      collectCompiledEffectUniformBindings(
+        stage.effect,
+        effectSlot,
+        path,
+        bindings,
+      );
+    }
+  }
+}
+
+function collectEffectInputUniformBindings(
+  input: unknown,
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  if (!isRecord(input) || input.kind !== "shader-input") {
+    return;
+  }
+  collectShaderStageUniformBindings(input, effectSlot, path, bindings);
+}
+
+function collectShaderStageUniformBindings(
+  shader: Record<string, unknown>,
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  bindings: NativeEffectUniformBinding[],
+): void {
+  const uniforms = shader.uniforms;
+  if (isRecord(uniforms)) {
+    for (const name of Object.keys(uniforms).sort()) {
+      const values = shaderUniformValues(uniforms[name]);
+      if (values === null) {
+        continue;
+      }
+      bindings.push({
+        key: nativeEffectUniformBindingKey(effectSlot, path, name),
+        effectSlot,
+        shaderPath: path,
+        name,
+        values,
+      });
+    }
+  }
+  const textures = shader.textures;
+  if (!isRecord(textures)) {
+    return;
+  }
+  for (const name of Object.keys(textures).sort()) {
+    collectEffectInputUniformBindings(
+      textures[name],
+      effectSlot,
+      [...path, { kind: "texture", name }],
+      bindings,
+    );
+  }
+}
+
+function nativeEffectUniformBindingKey(
+  effectSlot: number,
+  path: NativeEffectShaderPathSegment[],
+  name: string,
+): string {
+  const encodedPath = path
+    .map((segment) => {
+      if (segment.kind === "input") {
+        return "i";
+      }
+      if (segment.kind === "pipeline") {
+        return `p${segment.index}`;
+      }
+      return `t${segment.name.length}:${segment.name}`;
+    })
+    .join("/");
+  return `${effectSlot}|${encodedPath}|u${name.length}:${name}`;
+}
+
+function sameEffectStructure(previous: unknown, next: unknown): boolean {
+  if (Object.is(previous, next)) {
+    return true;
+  }
+  if (Array.isArray(previous) || Array.isArray(next)) {
+    return (
+      Array.isArray(previous) &&
+      Array.isArray(next) &&
+      previous.length === next.length &&
+      previous.every((entry, index) =>
+        sameEffectStructure(entry, next[index]),
+      )
+    );
+  }
+  if (!isRecord(previous) || !isRecord(next)) {
+    return false;
+  }
+  const previousKeys = Object.keys(previous).sort();
+  const nextKeys = Object.keys(next).sort();
+  if (
+    previousKeys.length !== nextKeys.length ||
+    previousKeys.some((key, index) => key !== nextKeys[index])
+  ) {
+    return false;
+  }
+  const isShader =
+    (previous.kind === "shader-stage" ||
+      previous.kind === "shader-input") &&
+    previous.kind === next.kind;
+  for (const key of previousKeys) {
+    if (isShader && key === "uniforms") {
+      if (!sameShaderUniformStructure(previous[key], next[key])) {
+        return false;
+      }
+      continue;
+    }
+    if (!sameEffectStructure(previous[key], next[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameShaderUniformStructure(
+  previous: unknown,
+  next: unknown,
+): boolean {
+  if (!isRecord(previous) || !isRecord(next)) {
+    return previous === next;
+  }
+  const previousNames = Object.keys(previous).sort();
+  const nextNames = Object.keys(next).sort();
+  return (
+    previousNames.length === nextNames.length &&
+    previousNames.every(
+      (name, index) =>
+        name === nextNames[index] &&
+        shaderUniformValues(previous[name])?.length ===
+          shaderUniformValues(next[name])?.length,
+    )
+  );
+}
+
+function shaderUniformValues(value: unknown): number[] | null {
+  const values =
+    typeof value === "number"
+      ? [value]
+      : Array.isArray(value) &&
+          value.length >= 2 &&
+          value.length <= 4 &&
+          value.every((entry) => typeof entry === "number")
+        ? (value as number[])
+        : null;
+  return values?.every(Number.isFinite) ? values : null;
+}
+
+function sameUniformValues(previous: number[], next: number[]): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((value, index) => Object.is(value, next[index]))
+  );
+}
+
+function isCompiledEffect(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.kind === "compiled-effect";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function* readEmbeddedMessages(
@@ -4491,6 +5092,11 @@ async function* readEmbeddedMessages(
     const composition = envelope.composition();
     if (composition !== null) {
       yield composition;
+      continue;
+    }
+    const effect = envelope.effect();
+    if (effect !== null) {
+      yield effect;
       continue;
     }
     const scheduler = envelope.scheduler();
