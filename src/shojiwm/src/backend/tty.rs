@@ -754,6 +754,20 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
     state.schedule_redraw();
 }
 
+/// Record a mid-session config evaluation failure for the error overlay.
+///
+/// The render path retries every frame, so a persistently broken config would
+/// rebuild this report ~60 times a second. Keep the first failure instead: it is
+/// the one that names the original cause, later frames usually repeat it, and
+/// the existing reload paths clear the field once a config loads cleanly again.
+/// That mirrors `scheduler_tick`, which also reports once rather than per tick.
+fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
+    if state.config_error_report.is_none() {
+        state.config_error_report = Some(crate::config_error::ConfigErrorReport::runtime(error));
+        state.schedule_redraw();
+    }
+}
+
 fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
     surface.frame_pending = false;
     surface.queued_at = None;
@@ -1962,7 +1976,26 @@ fn render_surface(
     let decoration_refresh_started_at = Instant::now();
     {
         timescope::scope!("tty refresh_window_decorations");
-        state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
+        // A config that fails to evaluate mid-session must not end the session.
+        // This `?` propagated out of `render_if_needed` into `main() -> Result`,
+        // so one bad evaluation tore the whole compositor down and dropped the
+        // user back at the display manager. That is a live tripwire whenever
+        // `$SHOJI_CONFIG` points into a working tree: an ordinary `git checkout`
+        // across a revision that changed the config is enough to trigger it,
+        // with no way to read the error afterwards. Degrade the way the winit
+        // backend already does — keep the previous decorations for this frame —
+        // and surface the failure through the config-error overlay so it is
+        // legible and recoverable in place.
+        if let Err(err) =
+            state.refresh_window_decorations_for_output(Some(output.name().as_str()))
+        {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh window decorations for tty; keeping previous decorations"
+            );
+            report_tty_config_error(state, err);
+        }
     }
     // Output configuration is reactive. Evaluating the TypeScript runtime above can unmap this
     // output (for example, disabling the internal panel when a dock output appears). Do not carry
@@ -1978,8 +2011,25 @@ fn render_surface(
     let layer_effects_started_at = Instant::now();
     {
         timescope::scope!("tty refresh_layer_and_popup_effects");
-        state.refresh_layer_effects_for_output(output.name().as_str())?;
-        state.refresh_popup_effects_for_output(output.name().as_str())?;
+        // Same reasoning as the decoration refresh above: layer and popup
+        // effects come from the same runtime evaluation, so a broken config
+        // fails here too and must not be fatal either.
+        if let Err(err) = state.refresh_layer_effects_for_output(output.name().as_str()) {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh layer effects for tty; keeping previous effects"
+            );
+            report_tty_config_error(state, err);
+        }
+        if let Err(err) = state.refresh_popup_effects_for_output(output.name().as_str()) {
+            warn!(
+                output = %output.name(),
+                error = ?err,
+                "failed to refresh popup effects for tty; keeping previous effects"
+            );
+            report_tty_config_error(state, err);
+        }
     }
     let layer_effects_elapsed_ms = layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
 
