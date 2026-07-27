@@ -5160,6 +5160,76 @@ COMPOSITOR.window.composition = () => <Label text={text:?} />;
     }
 
     #[test]
+    fn embedded_runtime_reseeds_multiple_windows_after_lifecycle_restore() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-lifecycle-reseed-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+
+let restored = "missing";
+COMPOSITOR.onEnable((event) => {
+  if (event.isReloading) {
+    restored = event.restore("test.state")?.value ?? "missing";
+  }
+});
+COMPOSITOR.onDisable((event) => {
+  if (event.isReloading) {
+    event.persist("test.state", { value: "restored" });
+  }
+});
+COMPOSITOR.window.composition = () => <Label text={restored} />;
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should enable");
+        let persisted = evaluator
+            .lifecycle_disable("reload")
+            .expect("reload lifecycle should persist state");
+
+        let reloaded = evaluator.fresh_like();
+        reloaded
+            .lifecycle_enable("reload", Some(&persisted))
+            .expect("reload lifecycle should restore state");
+
+        for index in 0..2 {
+            let mut window = make_window(false);
+            window.id = format!("reload-window-{index}");
+            let result = reloaded
+                .evaluate_cached_window(&window.id, Some(&window), 0, true)
+                .expect("empty runtime cache should be re-seeded from the snapshot");
+            let node = result
+                .node
+                .expect("forced cache re-seed should return a full tree");
+            match node.kind {
+                DecorationNodeKind::Label(label) => assert_eq!(label.text, "restored"),
+                other => panic!("expected label root, got {other:?}"),
+            }
+        }
+
+        drop(reloaded);
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
     fn embedded_runtime_returns_native_composition_patches_for_signal_updates() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

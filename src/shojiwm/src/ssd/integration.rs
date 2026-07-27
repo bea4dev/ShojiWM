@@ -3338,7 +3338,8 @@ impl ShojiWM {
                             } else {
                                 match self.decoration_evaluator.evaluate_cached_window(
                                     &snapshot.id,
-                                    runtime_state_changed.then_some(&snapshot),
+                                    (runtime_state_changed || force_full_cached_reevaluation)
+                                        .then_some(&snapshot),
                                     now_ms,
                                     force_full_cached_reevaluation,
                                 ) {
