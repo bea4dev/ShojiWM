@@ -238,6 +238,8 @@ export interface PointerMoveEvent {
   timestamp: number;
 }
 
+export type PointerMoveListener = (event: PointerMoveEvent) => void;
+
 export type PointerMoveAsyncListener = (
   event: PointerMoveEvent,
 ) => void | Promise<void>;
@@ -259,12 +261,16 @@ export interface GestureSwipeEvent {
   timestamp: number;
 }
 
+export type GestureSwipeListener = (event: GestureSwipeEvent) => void;
+
 export type GestureSwipeAsyncListener = (
   event: GestureSwipeEvent,
 ) => void | Promise<void>;
 
 export interface RuntimeEventConfig {
+  pointerMove: boolean;
   pointerMoveAsync: boolean;
+  gestureSwipe: boolean;
   gestureSwipeAsync: boolean;
 }
 
@@ -443,12 +449,17 @@ export interface CompositorEventController {
    */
   onInputDeviceChange(listener: InputDeviceChangeListener): () => void;
   /**
+   * Fires synchronously on every pointer move event.
+   * Keep the listener short: input processing waits for it to return.
+   * ポインター移動イベントのたびに同期的に発火します。
+   * 入力処理はリスナーの完了を待つため、短い処理に留めてください。
+   */
+  onPointerMove(listener: PointerMoveListener): () => void;
+  /**
    * Fires asynchronously on every pointer move event.
    * The listener may return a `Promise`; the compositor awaits it before
-   * continuing. Return `false` (or resolve with `false`) to suppress further
-   * handling.
+   * completing the runtime dispatch.
    * ポインター移動イベントのたびに非同期で発火します。リスナーは `Promise` を返せます。
-   * `false`（または `Promise<false>`）を返すとそれ以降の処理を抑制します。
    *
    * @example
    * ```ts
@@ -458,6 +469,13 @@ export interface CompositorEventController {
    * ```
    */
   onPointerMoveAsync(listener: PointerMoveAsyncListener): () => void;
+  /**
+   * Fires synchronously on each phase of a multi-finger touchpad swipe.
+   * Keep the listener short: input processing waits for it to return.
+   * マルチフィンガータッチパッドスワイプの各フェーズで同期的に発火します。
+   * 入力処理はリスナーの完了を待つため、短い処理に留めてください。
+   */
+  onGestureSwipe(listener: GestureSwipeListener): () => void;
   /**
    * Fires asynchronously on each phase of a multi-finger touchpad swipe gesture.
    * マルチフィンガータッチパッドスワイプジェスチャーの各フェーズで非同期に発火します。
@@ -531,7 +549,11 @@ export interface CompositorEventController {
   /** @internal */
   emitInputDeviceChange(event: InputDeviceChangeEvent): void;
   /** @internal */
+  emitPointerMove(event: PointerMoveEvent): boolean;
+  /** @internal */
   emitPointerMoveAsync(event: PointerMoveEvent): Promise<boolean>;
+  /** @internal */
+  emitGestureSwipe(event: GestureSwipeEvent): boolean;
   /** @internal */
   emitGestureSwipeAsync(event: GestureSwipeEvent): Promise<boolean>;
   /** @internal */
@@ -569,7 +591,9 @@ export function createCompositorEventController(): CompositorEventController {
   const activateRequestListeners = new Set<WindowActivateRequestListener>();
   const outputChangeListeners = new Set<OutputChangeListener>();
   const inputDeviceChangeListeners = new Set<InputDeviceChangeListener>();
+  const pointerMoveListeners = new Set<PointerMoveListener>();
   const pointerMoveAsyncListeners = new Set<PointerMoveAsyncListener>();
+  const gestureSwipeListeners = new Set<GestureSwipeListener>();
   const gestureSwipeAsyncListeners = new Set<GestureSwipeAsyncListener>();
   const createLayerListeners = new Set<LayerCreateListener>();
   const updateLayerListeners = new Set<LayerUpdateListener>();
@@ -645,11 +669,27 @@ export function createCompositorEventController(): CompositorEventController {
       inputDeviceChangeListeners.add(listener);
       return () => inputDeviceChangeListeners.delete(listener);
     },
+    onPointerMove(listener) {
+      pointerMoveListeners.add(listener);
+      markEventConfigDirty();
+      return () => {
+        pointerMoveListeners.delete(listener);
+        markEventConfigDirty();
+      };
+    },
     onPointerMoveAsync(listener) {
       pointerMoveAsyncListeners.add(listener);
       markEventConfigDirty();
       return () => {
         pointerMoveAsyncListeners.delete(listener);
+        markEventConfigDirty();
+      };
+    },
+    onGestureSwipe(listener) {
+      gestureSwipeListeners.add(listener);
+      markEventConfigDirty();
+      return () => {
+        gestureSwipeListeners.delete(listener);
         markEventConfigDirty();
       };
     },
@@ -767,12 +807,30 @@ export function createCompositorEventController(): CompositorEventController {
         listener(event);
       }
     },
+    emitPointerMove(event) {
+      if (pointerMoveListeners.size === 0) {
+        return false;
+      }
+      for (const listener of pointerMoveListeners) {
+        listener(event);
+      }
+      return true;
+    },
     async emitPointerMoveAsync(event) {
       if (pointerMoveAsyncListeners.size === 0) {
         return false;
       }
       for (const listener of pointerMoveAsyncListeners) {
         await listener(event);
+      }
+      return true;
+    },
+    emitGestureSwipe(event) {
+      if (gestureSwipeListeners.size === 0) {
+        return false;
+      }
+      for (const listener of gestureSwipeListeners) {
+        listener(event);
       }
       return true;
     },
@@ -839,7 +897,9 @@ export function createCompositorEventController(): CompositorEventController {
       }
       pendingEventConfig = false;
       return {
+        pointerMove: pointerMoveListeners.size > 0,
         pointerMoveAsync: pointerMoveAsyncListeners.size > 0,
+        gestureSwipe: gestureSwipeListeners.size > 0,
         gestureSwipeAsync: gestureSwipeAsyncListeners.size > 0,
       };
     },

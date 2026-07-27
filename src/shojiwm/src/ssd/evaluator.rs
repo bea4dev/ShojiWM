@@ -11,7 +11,8 @@ use tracing::{debug, info, warn};
 use super::embedded_runtime::{
     EmbeddedRuntime, EmbeddedRuntimeResponse, NativeCachedResponse, NativeCompositionPatch,
     NativeCompositionRequest, NativeCompositionUpdate, NativeEffectRequest, NativeEffectUpdate,
-    NativeSchedulerRequest, NativeSchedulerResponse,
+    NativeInteractionRequest, NativeInteractionResponse, NativeSchedulerRequest,
+    NativeSchedulerResponse,
 };
 use super::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowAnimationSnapshot,
@@ -183,7 +184,23 @@ pub trait DecorationEvaluator {
         Ok(DecorationWindowStateRequestInvocation::default())
     }
 
+    fn pointer_move(
+        &self,
+        _event: &PointerMoveEventSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        Ok(DecorationPointerMoveAsyncInvocation::default())
+    }
+
     fn pointer_move_async(&self, _event: PointerMoveEventSnapshot, _now_ms: u64) {}
+
+    fn gesture_swipe(
+        &self,
+        _event: &GestureSwipeEventSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        Ok(DecorationGestureSwipeAsyncInvocation::default())
+    }
 
     fn gesture_swipe_async(&self, _event: GestureSwipeEventSnapshot, _now_ms: u64) {}
 
@@ -435,7 +452,12 @@ pub enum DecorationRuntimeAsyncInvocation {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeEventConfigUpdate {
+    #[serde(default)]
+    pub pointer_move: bool,
+    #[serde(default)]
     pub pointer_move_async: bool,
+    #[serde(default)]
+    pub gesture_swipe: bool,
     #[serde(default)]
     pub gesture_swipe_async: bool,
 }
@@ -789,32 +811,6 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "inputState")]
         input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     },
-    WindowResize {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "windowId")]
-        window_id: &'a str,
-        event: &'a WindowResizeEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    WindowMove {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        #[serde(rename = "windowId")]
-        window_id: &'a str,
-        event: &'a WindowMoveEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
     WindowMaximizeRequest {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -864,28 +860,6 @@ enum RuntimeRequest<'a> {
         window_id: &'a str,
         snapshot: &'a WaylandWindowSnapshot,
         event: &'a WindowActivateRequestEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    PointerMoveAsync {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        event: &'a PointerMoveEventSnapshot,
-        #[serde(rename = "nowMs")]
-        now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
-    },
-    GestureSwipeAsync {
-        #[serde(rename = "requestId")]
-        request_id: u64,
-        event: &'a GestureSwipeEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -1336,44 +1310,6 @@ struct RuntimeInvokeKeyBindingResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct RuntimeWindowResizeResponse {
-    #[serde(rename = "requestId")]
-    request_id: u64,
-    kind: String,
-    ok: bool,
-    invoked: Option<bool>,
-    dirty: Option<bool>,
-    #[serde(rename = "dirtyWindowIds")]
-    dirty_window_ids: Option<Vec<String>>,
-    #[serde(rename = "dirtyManagedWindowIds")]
-    dirty_managed_window_ids: Option<Vec<String>>,
-    #[serde(rename = "dirtyWindowNodeIds")]
-    dirty_window_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
-    #[serde(rename = "dirtyLayerNodeIds")]
-    dirty_layer_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
-    actions: Option<Vec<RuntimeWindowAction>>,
-    #[serde(rename = "nextPollInMs")]
-    next_poll_in_ms: Option<u64>,
-    #[serde(rename = "displayConfig")]
-    display_config: Option<RuntimeDisplayConfigUpdate>,
-    #[serde(rename = "workspaceConfig")]
-    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
-    #[serde(rename = "keyBindingConfig")]
-    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
-    #[serde(rename = "pointerConfig")]
-    pointer_config: Option<RuntimePointerConfigUpdate>,
-    #[serde(rename = "inputConfig")]
-    input_config: Option<RuntimeInputConfigUpdate>,
-    #[serde(rename = "eventConfig")]
-    event_config: Option<RuntimeEventConfigUpdate>,
-    #[serde(rename = "processConfig")]
-    process_config: Option<RuntimeProcessConfigUpdate>,
-    #[serde(rename = "processActions")]
-    process_actions: Option<Vec<RuntimeProcessAction>>,
-    error: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
 struct RuntimeWindowMoveResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
@@ -1452,6 +1388,100 @@ struct RuntimePointerMoveAsyncResponse {
 }
 
 type RuntimeGestureSwipeAsyncResponse = RuntimePointerMoveAsyncResponse;
+
+fn runtime_interaction_response_from_native(
+    response: NativeInteractionResponse,
+) -> RuntimePointerMoveAsyncResponse {
+    RuntimePointerMoveAsyncResponse {
+        request_id: response.request_id,
+        kind: response.kind.as_str().to_owned(),
+        ok: true,
+        invoked: Some(response.invoked),
+        dirty: Some(response.dirty),
+        dirty_window_ids: Some(response.dirty_window_ids),
+        dirty_managed_window_ids: Some(response.dirty_managed_window_ids),
+        dirty_window_node_ids: Some(response.dirty_window_node_ids),
+        dirty_layer_node_ids: Some(response.dirty_layer_node_ids),
+        actions: Some(response.actions),
+        next_poll_in_ms: response.next_poll_in_ms,
+        display_config: None,
+        workspace_config: None,
+        key_binding_config: None,
+        pointer_config: None,
+        input_config: None,
+        event_config: None,
+        process_config: None,
+        process_actions: None,
+        error: None,
+    }
+}
+
+fn validate_interaction_response(
+    response: &RuntimePointerMoveAsyncResponse,
+    request_id: u64,
+    expected_kind: &str,
+) -> Result<(), DecorationEvaluationError> {
+    if response.request_id != request_id {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "mismatched response id: expected {request_id}, got {}",
+            response.request_id
+        )));
+    }
+    if response.kind != expected_kind {
+        return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+            "mismatched response kind for {expected_kind}: {}",
+            response.kind
+        )));
+    }
+    if !response.ok {
+        return Err(DecorationEvaluationError::RuntimeProtocol(
+            response
+                .error
+                .clone()
+                .unwrap_or_else(|| "runtime returned failure".into()),
+        ));
+    }
+    Ok(())
+}
+
+fn interaction_invocation_from_response(
+    response: RuntimePointerMoveAsyncResponse,
+) -> DecorationPointerMoveAsyncInvocation {
+    DecorationPointerMoveAsyncInvocation {
+        invoked: response.invoked.unwrap_or(false),
+        dirty: response.dirty.unwrap_or(false),
+        dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+        dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
+        dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+        dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+        actions: response.actions.unwrap_or_default(),
+        next_poll_in_ms: response.next_poll_in_ms,
+        display_config: response.display_config,
+        workspace_config: response.workspace_config,
+        key_binding_config: response.key_binding_config,
+        pointer_config: response.pointer_config,
+        input_config: response.input_config,
+        event_config: response.event_config,
+        process_config: response.process_config,
+        process_actions: response.process_actions.unwrap_or_default(),
+    }
+}
+
+fn runtime_failed_error(runtime: &mut EmbeddedDecorationRuntime) -> DecorationEvaluationError {
+    let status = runtime
+        .child
+        .try_wait()
+        .ok()
+        .flatten()
+        .and_then(|status| status.code())
+        .unwrap_or(-1);
+    let stderr = runtime
+        .stderr_log
+        .lock()
+        .map(|stderr| stderr.clone())
+        .unwrap_or_default();
+    DecorationEvaluationError::RuntimeFailed { status, stderr }
+}
 
 impl std::fmt::Debug for EmbeddedDecorationEvaluator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1984,6 +2014,82 @@ impl EmbeddedDecorationEvaluator {
         }
     }
 
+    fn dispatch_pointer_move(
+        &self,
+        event: &PointerMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        runtime.write_interaction_request(NativeInteractionRequest::PointerMove {
+            request_id,
+            event: event.clone(),
+            now_ms,
+            display_state,
+            input_state,
+        })?;
+        let response = if let Some(response) = runtime.read_interaction_response()? {
+            response
+        } else {
+            return Err(runtime_failed_error(runtime));
+        };
+        validate_interaction_response(&response, request_id, "pointerMove")?;
+        Ok(interaction_invocation_from_response(response))
+    }
+
+    fn dispatch_gesture_swipe(
+        &self,
+        event: &GestureSwipeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        runtime.write_interaction_request(NativeInteractionRequest::GestureSwipe {
+            request_id,
+            event: event.clone(),
+            now_ms,
+            display_state,
+            input_state,
+        })?;
+        let response = if let Some(response) = runtime.read_interaction_response()? {
+            response
+        } else {
+            return Err(runtime_failed_error(runtime));
+        };
+        validate_interaction_response(&response, request_id, "gestureSwipe")?;
+        Ok(interaction_invocation_from_response(response))
+    }
+
     fn dispatch_pointer_move_async(
         &self,
         event: &PointerMoveEventSnapshot,
@@ -2008,18 +2114,16 @@ impl EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::PointerMoveAsync {
+        runtime.write_interaction_request(NativeInteractionRequest::PointerMoveAsync {
             request_id,
-            event,
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimePointerMoveAsyncResponse =
-            if let Some(response) = runtime.read_response()? {
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -2100,18 +2204,16 @@ impl EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::GestureSwipeAsync {
+        runtime.write_interaction_request(NativeInteractionRequest::GestureSwipeAsync {
             request_id,
-            event,
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
         let response: RuntimeGestureSwipeAsyncResponse =
-            if let Some(response) = runtime.read_response()? {
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -2217,6 +2319,16 @@ impl EmbeddedDecorationRuntime {
         timescope::scope!("runtime write effect request");
         self.child
             .write_effect_request(request)
+            .map_err(DecorationEvaluationError::RuntimeProtocol)
+    }
+
+    fn write_interaction_request(
+        &mut self,
+        request: NativeInteractionRequest,
+    ) -> Result<(), DecorationEvaluationError> {
+        timescope::scope!("runtime write interaction request");
+        self.child
+            .write_interaction_request(request)
             .map_err(DecorationEvaluationError::RuntimeProtocol)
     }
 
@@ -2334,6 +2446,26 @@ impl EmbeddedDecorationRuntime {
             Some(EmbeddedRuntimeResponse::Json(payload)) => self.decode_json_response(payload),
             Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
                 "received mismatched native response for evaluateCached".into(),
+            )),
+        }
+    }
+
+    fn read_interaction_response(
+        &mut self,
+    ) -> Result<Option<RuntimePointerMoveAsyncResponse>, DecorationEvaluationError> {
+        timescope::scope!("runtime read interaction response");
+        let response = self
+            .child
+            .read_response()
+            .map_err(DecorationEvaluationError::RuntimeProtocol)?;
+        match response {
+            None => Ok(None),
+            Some(EmbeddedRuntimeResponse::Interaction(response)) => {
+                Ok(Some(runtime_interaction_response_from_native(response)))
+            }
+            Some(EmbeddedRuntimeResponse::Json(payload)) => self.decode_json_response(payload),
+            Some(_) => Err(DecorationEvaluationError::RuntimeProtocol(
+                "received mismatched native response for interaction event".into(),
             )),
         }
     }
@@ -3627,19 +3759,17 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::WindowResize {
+        runtime.write_interaction_request(NativeInteractionRequest::WindowResize {
             request_id,
-            window_id,
-            event,
+            window_id: window_id.to_owned(),
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
-        let response: RuntimeWindowResizeResponse =
-            if let Some(response) = runtime.read_response()? {
+        let response: RuntimePointerMoveAsyncResponse =
+            if let Some(response) = runtime.read_interaction_response()? {
                 response
             } else {
                 let status = runtime
@@ -3726,33 +3856,32 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
-        let request = serde_json::to_string(&RuntimeRequest::WindowMove {
+        runtime.write_interaction_request(NativeInteractionRequest::WindowMove {
             request_id,
-            window_id,
-            event,
+            window_id: window_id.to_owned(),
+            event: event.clone(),
             now_ms,
-            display_state: &display_state,
-            input_state: &input_state,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
-        runtime.write_request(&request)?;
+            display_state,
+            input_state,
+        })?;
 
-        let response: RuntimeWindowMoveResponse = if let Some(response) = runtime.read_response()? {
-            response
-        } else {
-            let status = runtime
-                .child
-                .try_wait()?
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            let stderr = runtime
-                .stderr_log
-                .lock()
-                .map(|stderr| stderr.clone())
-                .unwrap_or_default();
-            *runtime_guard = None;
-            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
-        };
+        let response: RuntimePointerMoveAsyncResponse =
+            if let Some(response) = runtime.read_interaction_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
         if response.request_id != request_id {
             *runtime_guard = None;
             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -4180,8 +4309,24 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         })
     }
 
+    fn pointer_move(
+        &self,
+        event: &PointerMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        self.dispatch_pointer_move(event, now_ms)
+    }
+
     fn pointer_move_async(&self, event: PointerMoveEventSnapshot, now_ms: u64) {
         self.enqueue_pointer_move_async(event, now_ms);
+    }
+
+    fn gesture_swipe(
+        &self,
+        event: &GestureSwipeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        self.dispatch_gesture_swipe(event, now_ms)
     }
 
     fn gesture_swipe_async(&self, event: GestureSwipeEventSnapshot, now_ms: u64) {
@@ -4625,6 +4770,171 @@ COMPOSITOR.window.composition = () => <Box />;
         let _ = std::fs::remove_dir_all(&test_dir);
 
         result.expect("embedded runtime should load and evaluate a TSX config");
+    }
+
+    #[test]
+    fn embedded_runtime_dispatches_interactions_through_native_bridge() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, PointerHitTargetSnapshot,
+            PointerModifierStateSnapshot, PointerMoveEventSnapshot, PointerMovePointSnapshot,
+            WindowMoveEventSnapshot, WindowMovePhaseSnapshot, WindowMoveSourceSnapshot,
+            WindowResizeEdgesSnapshot, WindowResizeEventSnapshot, WindowResizePhaseSnapshot,
+            WindowResizePointSnapshot, WindowResizeSourceSnapshot,
+        };
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-native-interactions-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.event.onPointerMove(() => {});
+COMPOSITOR.event.onPointerMoveAsync(() => {});
+COMPOSITOR.event.onGestureSwipe(() => {});
+COMPOSITOR.event.onGestureSwipeAsync(() => {});
+COMPOSITOR.event.onWindowMove(() => {});
+COMPOSITOR.event.onWindowResize(() => {});
+"#,
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let lifecycle = evaluator
+            .lifecycle_enable("test", None)
+            .expect("runtime should load interaction listeners");
+        let event_config = lifecycle
+            .event_config
+            .expect("runtime should publish interaction listener configuration");
+        assert!(event_config.pointer_move);
+        assert!(event_config.pointer_move_async);
+        assert!(event_config.gesture_swipe);
+        assert!(event_config.gesture_swipe_async);
+
+        let pointer = PointerMoveEventSnapshot {
+            position: PointerMovePointSnapshot { x: 10.0, y: 20.0 },
+            delta: PointerMovePointSnapshot { x: 1.0, y: -1.0 },
+            target: PointerHitTargetSnapshot::None,
+            output_name: Some("output-1".into()),
+            modifiers: PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 1,
+        };
+        assert!(
+            evaluator
+                .pointer_move(&pointer, 1)
+                .expect("native pointer event should complete")
+                .invoked
+        );
+        assert!(
+            evaluator
+                .dispatch_pointer_move_async(&pointer, 1)
+                .expect("native async pointer event should complete")
+                .expect("runtime should be available")
+                .invoked
+        );
+
+        let gesture = GestureSwipeEventSnapshot {
+            phase: GestureSwipePhaseSnapshot::Update,
+            fingers: 3,
+            position: Some(pointer.position),
+            delta_x: 2.0,
+            delta_y: 3.0,
+            total_x: 4.0,
+            total_y: 5.0,
+            velocity_x: 6.0,
+            velocity_y: 7.0,
+            output_name: Some("output-1".into()),
+            device: None,
+            timestamp: 2,
+        };
+        assert!(
+            evaluator
+                .gesture_swipe(&gesture, 2)
+                .expect("native gesture event should complete")
+                .invoked
+        );
+        assert!(
+            evaluator
+                .dispatch_gesture_swipe_async(&gesture, 2)
+                .expect("native async gesture event should complete")
+                .expect("runtime should be available")
+                .invoked
+        );
+
+        let window = make_window(false);
+        evaluator
+            .evaluate_window(&window, 3)
+            .expect("window cache should be initialized");
+        let point = WindowResizePointSnapshot { x: 10, y: 20 };
+        let modifiers = PointerModifierStateSnapshot {
+            logo: true,
+            alt: false,
+            ctrl: false,
+            shift: false,
+        };
+        let move_event = WindowMoveEventSnapshot {
+            source: WindowMoveSourceSnapshot::Modifier,
+            phase: WindowMovePhaseSnapshot::Update,
+            start_pointer: point,
+            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
+            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            start_rect: window.rect,
+            current_rect: window.rect,
+            output_name: Some("output-1".into()),
+            modifiers,
+            timestamp: 3,
+        };
+        assert!(
+            evaluator
+                .window_move(&window.id, &move_event, 3)
+                .expect("native window move should complete")
+                .invoked
+        );
+
+        let resize_event = WindowResizeEventSnapshot {
+            source: WindowResizeSourceSnapshot::Modifier,
+            phase: WindowResizePhaseSnapshot::Update,
+            edges: WindowResizeEdgesSnapshot {
+                left: false,
+                right: true,
+                top: false,
+                bottom: true,
+            },
+            start_pointer: point,
+            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
+            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            start_rect: window.rect,
+            current_rect: window.rect,
+            output_name: Some("output-1".into()),
+            timestamp: 4,
+        };
+        assert!(
+            evaluator
+                .window_resize(&window.id, &resize_event, 4)
+                .expect("native window resize should complete")
+                .invoked
+        );
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 
     #[test]

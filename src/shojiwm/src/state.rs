@@ -350,7 +350,9 @@ pub struct ShojiWM {
     pub runtime_active_keyboard_device: Option<RuntimeInputDeviceSnapshot>,
     pub runtime_input_devices: BTreeMap<String, RuntimeInputDeviceSnapshot>,
     pub runtime_libinput_devices: HashMap<String, input::Device>,
+    pub runtime_pointer_move_enabled: bool,
     pub runtime_pointer_move_async_enabled: bool,
+    pub runtime_gesture_swipe_enabled: bool,
     pub runtime_gesture_swipe_async_enabled: bool,
     pub runtime_gesture_swipe: Option<RuntimeGestureSwipeState>,
     pub current_keyboard_modifiers: ModifiersState,
@@ -1244,7 +1246,9 @@ impl ShojiWM {
             runtime_active_keyboard_device: None,
             runtime_input_devices: Default::default(),
             runtime_libinput_devices: Default::default(),
+            runtime_pointer_move_enabled: false,
             runtime_pointer_move_async_enabled: false,
+            runtime_gesture_swipe_enabled: false,
             runtime_gesture_swipe_async_enabled: false,
             runtime_gesture_swipe: None,
             current_keyboard_modifiers: ModifiersState::default(),
@@ -2579,7 +2583,9 @@ impl ShojiWM {
     }
 
     pub fn apply_runtime_event_config_update(&mut self, update: RuntimeEventConfigUpdate) {
+        self.runtime_pointer_move_enabled = update.pointer_move;
         self.runtime_pointer_move_async_enabled = update.pointer_move_async;
+        self.runtime_gesture_swipe_enabled = update.gesture_swipe;
         self.runtime_gesture_swipe_async_enabled = update.gesture_swipe_async;
     }
 
@@ -2674,13 +2680,33 @@ impl ShojiWM {
         invocation: DecorationPointerMoveAsyncInvocation,
         loop_handle: &LoopHandle<'_, Self>,
     ) {
+        self.handle_runtime_pointer_invocation(invocation, loop_handle, "async");
+    }
+
+    pub fn handle_runtime_pointer_move_invocation(
+        &mut self,
+        invocation: DecorationPointerMoveAsyncInvocation,
+    ) {
+        let loop_handle = self.loop_handle.clone();
+        self.handle_runtime_pointer_invocation(invocation, &loop_handle, "sync");
+    }
+
+    fn handle_runtime_pointer_invocation(
+        &mut self,
+        invocation: DecorationPointerMoveAsyncInvocation,
+        loop_handle: &LoopHandle<'_, Self>,
+        dispatch_mode: &'static str,
+    ) {
         if invocation.dirty {
             self.runtime_poll_dirty = true;
             self.mark_runtime_dirty_windows(
                 invocation.dirty_window_ids,
                 invocation.dirty_managed_window_ids,
             );
-            self.request_tty_maintenance("runtime-pointer-move-async-dirty");
+            self.request_tty_maintenance(match dispatch_mode {
+                "sync" => "runtime-pointer-move-dirty",
+                _ => "runtime-pointer-move-async-dirty",
+            });
             self.schedule_redraw();
         }
 
@@ -2696,7 +2722,10 @@ impl ShojiWM {
         }
 
         if !invocation.actions.is_empty() {
-            self.request_tty_maintenance("runtime-pointer-move-async-actions");
+            self.request_tty_maintenance(match dispatch_mode {
+                "sync" => "runtime-pointer-move-actions",
+                _ => "runtime-pointer-move-async-actions",
+            });
             self.apply_runtime_window_actions(invocation.actions);
             self.schedule_redraw();
         }
@@ -2704,9 +2733,9 @@ impl ShojiWM {
         if invocation.next_poll_in_ms.is_some() {
             self.runtime_scheduler_enabled = true;
             // Pointer motion already coalesces to the latest event. Do not also restart the
-            // animation timer for every completed motion request: repeatedly replacing its
-            // generation makes animation progress depend on pointer traffic and leaves a short
-            // gap while the final async response hands control back to the timer.
+            // animation timer for every completed sync or async motion request: repeatedly
+            // replacing its generation makes animation progress depend on pointer traffic and
+            // leaves a short gap when the final response hands control back to the timer.
             let requested_interval = self.runtime_scheduler_interval_ms(invocation.next_poll_in_ms);
             let existing_is_fast_enough = self.runtime_scheduler_kick_active
                 && self

@@ -1,6 +1,7 @@
 interface EmbeddedRuntimeBridge {
   readRequest(): Promise<EmbeddedRuntimeRequest | null>;
   writeResponse(response: string): void;
+  writeInteractionResponse(response: NativeInteractionSuccess): void;
   writeCompositionUpdate(
     requestId: number,
     update: NativeCompositionUpdate,
@@ -91,6 +92,7 @@ interface EmbeddedRuntimeRequest {
   json(): string | null;
   composition(): RuntimeRequest | null;
   effect(): RuntimeRequest | null;
+  interaction(): RuntimeRequest | null;
   scheduler(): SchedulerTickRequest | null;
   fastKind(): number;
   fastRequestId(): number;
@@ -588,18 +590,18 @@ interface WindowActivateRequest {
   inputState?: Record<string, InputDeviceInfo>;
 }
 
-interface PointerMoveAsyncRequest {
+interface PointerMoveRequest {
   requestId: number;
-  kind: "pointerMoveAsync";
+  kind: "pointerMove" | "pointerMoveAsync";
   event: PointerMoveEvent;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
-interface GestureSwipeAsyncRequest {
+interface GestureSwipeRequest {
   requestId: number;
-  kind: "gestureSwipeAsync";
+  kind: "gestureSwipe" | "gestureSwipeAsync";
   event: GestureSwipeEvent;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
@@ -677,8 +679,8 @@ type RuntimeRequest =
   | WindowMinimizeRequest
   | WindowFullscreenRequest
   | WindowActivateRequest
-  | PointerMoveAsyncRequest
-  | GestureSwipeAsyncRequest
+  | PointerMoveRequest
+  | GestureSwipeRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest
   | EvaluatePopupEffectsRequest
@@ -965,10 +967,16 @@ interface StartCloseSuccess {
   processActions?: RuntimeProcessSpawnAction[];
 }
 
-interface PointerMoveAsyncSuccess {
+interface NativeInteractionSuccess {
   requestId: number;
   ok: true;
-  kind: "pointerMoveAsync" | "gestureSwipeAsync";
+  kind:
+    | "pointerMove"
+    | "pointerMoveAsync"
+    | "gestureSwipe"
+    | "gestureSwipeAsync"
+    | "windowMove"
+    | "windowResize";
   invoked: boolean;
   dirty: boolean;
   dirtyWindowIds: string[];
@@ -1433,9 +1441,11 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           case "windowActivateRequest":
             stats.windowActivateRequest++;
             break;
+          case "pointerMove":
           case "pointerMoveAsync":
             stats.pointerMoveAsync++;
             break;
+          case "gestureSwipe":
           case "gestureSwipeAsync":
             stats.gestureSwipeAsync++;
             break;
@@ -1960,7 +1970,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(embeddedBridge, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowResize",
@@ -1985,7 +1995,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(embeddedBridge, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
               kind: "windowMove",
@@ -2111,18 +2121,24 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               processConfig,
               processActions,
             });
-          } else if (request.kind === "pointerMoveAsync") {
-            const result = await invokePointerMoveAsync(events, request.event);
+          } else if (
+            request.kind === "pointerMove" ||
+            request.kind === "pointerMoveAsync"
+          ) {
+            const result =
+              request.kind === "pointerMove"
+                ? invokePointerMove(events, request.event)
+                : await invokePointerMoveAsync(events, request.event);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(embeddedBridge, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
-              kind: "pointerMoveAsync",
+              kind: request.kind,
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -2133,18 +2149,24 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               processConfig,
               processActions,
             });
-          } else if (request.kind === "gestureSwipeAsync") {
-            const result = await invokeGestureSwipeAsync(events, request.event);
+          } else if (
+            request.kind === "gestureSwipe" ||
+            request.kind === "gestureSwipeAsync"
+          ) {
+            const result =
+              request.kind === "gestureSwipe"
+                ? invokeGestureSwipe(events, request.event)
+                : await invokeGestureSwipeAsync(events, request.event);
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();
             const eventConfig = pendingEventConfigPayload(events);
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            await writeResponse(embeddedBridge, {
+            await writeInteractionEventResponse(embeddedBridge, {
               requestId: request.requestId,
               ok: true,
-              kind: "gestureSwipeAsync",
+              kind: request.kind,
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
@@ -3983,11 +4005,9 @@ function emptyWindowStateRequestResult(): Omit<
   };
 }
 
-async function invokePointerMoveAsync(
-  events: CompositorEventController,
-  event: PointerMoveEvent,
-): Promise<Omit<PointerMoveAsyncSuccess, "requestId" | "ok" | "kind">> {
-  const invoked = await events.emitPointerMoveAsync(event);
+function interactionMutationResult(
+  invoked: boolean,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
   if (!invoked) {
     return {
       invoked: false,
@@ -4011,32 +4031,32 @@ async function invokePointerMoveAsync(
   };
 }
 
+function invokePointerMove(
+  events: CompositorEventController,
+  event: PointerMoveEvent,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
+  return interactionMutationResult(events.emitPointerMove(event));
+}
+
+function invokeGestureSwipe(
+  events: CompositorEventController,
+  event: GestureSwipeEvent,
+): Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind"> {
+  return interactionMutationResult(events.emitGestureSwipe(event));
+}
+
+async function invokePointerMoveAsync(
+  events: CompositorEventController,
+  event: PointerMoveEvent,
+): Promise<Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind">> {
+  return interactionMutationResult(await events.emitPointerMoveAsync(event));
+}
+
 async function invokeGestureSwipeAsync(
   events: CompositorEventController,
   event: GestureSwipeEvent,
-): Promise<Omit<PointerMoveAsyncSuccess, "requestId" | "ok" | "kind">> {
-  const invoked = await events.emitGestureSwipeAsync(event);
-  if (!invoked) {
-    return {
-      invoked: false,
-      dirty: false,
-      dirtyWindowIds: [],
-      actions: [],
-      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
-    };
-  }
-
-  const result = collectRuntimeMutationState();
-  return {
-    invoked: true,
-    dirty: result.dirty,
-    dirtyWindowIds: result.dirtyWindowIds,
-    dirtyManagedWindowIds: result.dirtyManagedWindowIds,
-    dirtyWindowNodeIds: result.dirtyWindowNodeIds,
-    dirtyLayerNodeIds: result.dirtyLayerNodeIds,
-    actions: result.actions,
-    nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
-  };
+): Promise<Omit<NativeInteractionSuccess, "requestId" | "ok" | "kind">> {
+  return interactionMutationResult(await events.emitGestureSwipeAsync(event));
 }
 
 function closeWindow(
@@ -4523,7 +4543,7 @@ function writeResponse(
     | WindowResizeSuccess
     | WindowMoveSuccess
     | WindowStateRequestSuccess
-    | PointerMoveAsyncSuccess
+    | NativeInteractionSuccess
     | GetEffectConfigSuccess
     | EvaluateLayerEffectsSuccess
     | EvaluatePopupEffectsSuccess
@@ -4538,6 +4558,28 @@ function writeResponse(
     response,
     takeRuntimeResponseUpdates(),
   );
+}
+
+function writeInteractionEventResponse(
+  output: EmbeddedRuntimeBridge,
+  response: NativeInteractionSuccess,
+): Promise<void> {
+  const updates = takeRuntimeResponseUpdates();
+  if (
+    !hasRuntimeResponseUpdates(updates) &&
+    response.displayConfig === undefined &&
+    response.workspaceConfig === undefined &&
+    response.keyBindingConfig === undefined &&
+    response.pointerConfig === undefined &&
+    response.inputConfig === undefined &&
+    response.eventConfig === undefined &&
+    response.processConfig === undefined &&
+    (response.processActions?.length ?? 0) === 0
+  ) {
+    output.writeInteractionResponse(response);
+    return Promise.resolve();
+  }
+  return writeResponseWithRuntimeUpdates(output, response, updates);
 }
 
 function writeResponseWithRuntimeUpdates(
@@ -5097,6 +5139,11 @@ async function* readEmbeddedMessages(
     const effect = envelope.effect();
     if (effect !== null) {
       yield effect;
+      continue;
+    }
+    const interaction = envelope.interaction();
+    if (interaction !== null) {
+      yield interaction;
       continue;
     }
     const scheduler = envelope.scheduler();

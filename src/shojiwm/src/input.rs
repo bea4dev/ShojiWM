@@ -233,13 +233,13 @@ impl ShojiWM {
         }
     }
 
-    fn dispatch_pointer_move_async_event(
+    fn dispatch_pointer_move_events(
         &mut self,
         previous_pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         time_msec: u32,
     ) {
-        if !self.runtime_pointer_move_async_enabled {
+        if !self.runtime_pointer_move_enabled && !self.runtime_pointer_move_async_enabled {
             return;
         }
 
@@ -262,7 +262,17 @@ impl ShojiWM {
             timestamp: u64::from(time_msec),
         };
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
-        self.decoration_evaluator.pointer_move_async(event, now_ms);
+        if self.runtime_pointer_move_enabled {
+            match self.decoration_evaluator.pointer_move(&event, now_ms) {
+                Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
+                Err(error) => {
+                    tracing::warn!(?error, "runtime pointer move event failed");
+                }
+            }
+        }
+        if self.runtime_pointer_move_async_enabled {
+            self.decoration_evaluator.pointer_move_async(event, now_ms);
+        }
     }
 
     fn pointer_hit_target_snapshot(
@@ -298,12 +308,22 @@ impl ShojiWM {
         })
     }
 
-    fn dispatch_gesture_swipe_async_event(&mut self, event: GestureSwipeEventSnapshot) {
-        if !self.runtime_gesture_swipe_async_enabled {
+    fn dispatch_gesture_swipe_events(&mut self, event: GestureSwipeEventSnapshot) {
+        if !self.runtime_gesture_swipe_enabled && !self.runtime_gesture_swipe_async_enabled {
             return;
         }
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
-        self.decoration_evaluator.gesture_swipe_async(event, now_ms);
+        if self.runtime_gesture_swipe_enabled {
+            match self.decoration_evaluator.gesture_swipe(&event, now_ms) {
+                Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
+                Err(error) => {
+                    tracing::warn!(?error, "runtime gesture swipe event failed");
+                }
+            }
+        }
+        if self.runtime_gesture_swipe_async_enabled {
+            self.decoration_evaluator.gesture_swipe_async(event, now_ms);
+        }
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -640,7 +660,7 @@ impl ShojiWM {
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
 
-                self.dispatch_pointer_move_async_event(previous_pos, pos, event.time_msec());
+                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
                 self.update_decoration_hover_target(pos);
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);
@@ -682,7 +702,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
-                self.dispatch_pointer_move_async_event(previous_pos, pos, event.time_msec());
+                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
                 self.update_decoration_hover_target(pos);
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);
@@ -1413,7 +1433,8 @@ impl ShojiWM {
                 pointer.frame(self);
             }
             InputEvent::GestureSwipeBegin { event, .. } => {
-                if !self.runtime_gesture_swipe_async_enabled {
+                if !self.runtime_gesture_swipe_enabled && !self.runtime_gesture_swipe_async_enabled
+                {
                     return;
                 }
                 let timestamp = u64::from(event.time_msec());
@@ -1442,7 +1463,7 @@ impl ShojiWM {
                     velocity_x: 0.0,
                     velocity_y: 0.0,
                 });
-                self.dispatch_gesture_swipe_async_event(GestureSwipeEventSnapshot {
+                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
                     phase: GestureSwipePhaseSnapshot::Begin,
                     fingers,
                     position,
@@ -1458,7 +1479,8 @@ impl ShojiWM {
                 });
             }
             InputEvent::GestureSwipeUpdate { event, .. } => {
-                if !self.runtime_gesture_swipe_async_enabled {
+                if !self.runtime_gesture_swipe_enabled && !self.runtime_gesture_swipe_async_enabled
+                {
                     return;
                 }
                 let timestamp = u64::from(event.time_msec());
@@ -1495,7 +1517,7 @@ impl ShojiWM {
                 let total_y = gesture.total_y;
                 let velocity_x = gesture.velocity_x;
                 let velocity_y = gesture.velocity_y;
-                self.dispatch_gesture_swipe_async_event(GestureSwipeEventSnapshot {
+                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
                     phase: GestureSwipePhaseSnapshot::Update,
                     fingers,
                     position,
@@ -1511,7 +1533,8 @@ impl ShojiWM {
                 });
             }
             InputEvent::GestureSwipeEnd { event, .. } => {
-                if !self.runtime_gesture_swipe_async_enabled {
+                if !self.runtime_gesture_swipe_enabled && !self.runtime_gesture_swipe_async_enabled
+                {
                     self.runtime_gesture_swipe = None;
                     return;
                 }
@@ -1535,7 +1558,7 @@ impl ShojiWM {
                 let Some(gesture) = self.runtime_gesture_swipe.take() else {
                     return;
                 };
-                self.dispatch_gesture_swipe_async_event(GestureSwipeEventSnapshot {
+                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
                     phase: if event.cancelled() {
                         GestureSwipePhaseSnapshot::Cancel
                     } else {

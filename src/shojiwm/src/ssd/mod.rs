@@ -26,13 +26,13 @@ pub use bridge::{
 };
 pub use evaluator::{
     DecorationCachedEvaluationResult, DecorationEvaluationError, DecorationEvaluationResult,
-    DecorationEvaluator, DecorationHandlerInvocation, DecorationKeyBindingInvocation,
-    DecorationPointerMoveAsyncInvocation, DecorationRuntimeAsyncInvocation,
-    DecorationSchedulerTick, DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
-    DecorationWindowStateRequestInvocation, EmbeddedDecorationEvaluator,
-    LayerEffectEvaluationResult, PopupEffectEvaluationResult, RuntimeEventConfigUpdate,
-    RuntimeLayerEffectAssignment, RuntimePopupEffectAssignment, RuntimeWindowAction,
-    StaticDecorationEvaluator, evaluate_dynamic_decoration,
+    DecorationEvaluator, DecorationGestureSwipeAsyncInvocation, DecorationHandlerInvocation,
+    DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation,
+    DecorationRuntimeAsyncInvocation, DecorationSchedulerTick, DecorationWindowMoveInvocation,
+    DecorationWindowResizeInvocation, DecorationWindowStateRequestInvocation,
+    EmbeddedDecorationEvaluator, LayerEffectEvaluationResult, PopupEffectEvaluationResult,
+    RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment, RuntimePopupEffectAssignment,
+    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
 };
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, EffectEvaluationCacheEntry,

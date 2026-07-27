@@ -989,9 +989,31 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn pointer_move(
+        &self,
+        event: &super::PointerMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<super::DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationPointerMoveAsyncInvocation::default()),
+            Self::Embedded(evaluator) => evaluator.pointer_move(event, now_ms),
+        }
+    }
+
     fn pointer_move_async(&self, event: super::PointerMoveEventSnapshot, now_ms: u64) {
         if let Self::Embedded(evaluator) = self {
             evaluator.pointer_move_async(event, now_ms);
+        }
+    }
+
+    fn gesture_swipe(
+        &self,
+        event: &super::GestureSwipeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<super::DecorationGestureSwipeAsyncInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationGestureSwipeAsyncInvocation::default()),
+            Self::Embedded(evaluator) => evaluator.gesture_swipe(event, now_ms),
         }
     }
 

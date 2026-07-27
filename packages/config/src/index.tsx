@@ -639,7 +639,7 @@ COMPOSITOR.event.onFocus((window, focused) => {
   }
 });
 
-COMPOSITOR.event.onPointerMoveAsync((event) => {
+COMPOSITOR.event.onPointerMove((event) => {
   HYBRID_WINDOW_MANAGER.onPointerMove(event);
 
   // Dock proximity: update only the monitor the pointer is currently on,
@@ -658,7 +658,7 @@ COMPOSITOR.event.onPointerMoveAsync((event) => {
   }
 });
 
-COMPOSITOR.event.onGestureSwipeAsync((event) => {
+COMPOSITOR.event.onGestureSwipe((event) => {
   HYBRID_WINDOW_MANAGER.onGestureSwipe(event);
   scheduleWorkspaceBroadcast();
 });

@@ -34,8 +34,10 @@ use super::{
     OpaqueRegionPolicy, ShaderStage, SurfacePolicy, WindowEffectConfig,
     bridge::{WireCompiledEffect, WireDecorationNode, WireWindowEffectConfig},
     window_model::{
-        ManagedWindowRectSnapshot, ManagedWindowState, TransformOrigin, WaylandLayerSnapshot,
-        WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot, WindowTransform,
+        GestureSwipeEventSnapshot, ManagedWindowRectSnapshot, ManagedWindowState,
+        PointerMoveEventSnapshot, TransformOrigin, WaylandLayerSnapshot, WaylandOutputSnapshot,
+        WaylandPopupSnapshot, WaylandWindowSnapshot, WindowMoveEventSnapshot,
+        WindowResizeEventSnapshot, WindowTransform,
     },
 };
 use crate::runtime_input::RuntimeInputDeviceSnapshot;
@@ -127,6 +129,84 @@ pub enum NativeEffectRequest {
     },
 }
 
+/// High-frequency pointer, gesture, move and resize events cross the CppGC
+/// bridge as V8 values. This avoids allocating and parsing JSON frames while
+/// retaining the existing TypeScript event shapes.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeInteractionRequest {
+    PointerMove {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: PointerMoveEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    PointerMoveAsync {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: PointerMoveEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    GestureSwipe {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: GestureSwipeEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    GestureSwipeAsync {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: GestureSwipeEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    WindowMove {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "windowId")]
+        window_id: String,
+        event: WindowMoveEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    WindowResize {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "windowId")]
+        window_id: String,
+        event: WindowResizeEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeSchedulerRequest {
@@ -141,6 +221,7 @@ enum BridgeRequest {
     Json(String),
     Composition(NativeCompositionRequest),
     Effect(NativeEffectRequest),
+    Interaction(NativeInteractionRequest),
     Scheduler(NativeSchedulerRequest),
     CachedFast {
         request_id: u64,
@@ -305,11 +386,67 @@ pub struct NativeCachedResponse {
     pub next_poll_in_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeInteractionKind {
+    PointerMove,
+    PointerMoveAsync,
+    GestureSwipe,
+    GestureSwipeAsync,
+    WindowMove,
+    WindowResize,
+}
+
+impl NativeInteractionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PointerMove => "pointerMove",
+            Self::PointerMoveAsync => "pointerMoveAsync",
+            Self::GestureSwipe => "gestureSwipe",
+            Self::GestureSwipeAsync => "gestureSwipeAsync",
+            Self::WindowMove => "windowMove",
+            Self::WindowResize => "windowResize",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeInteractionResponse {
+    pub request_id: u64,
+    pub kind: NativeInteractionKind,
+    pub invoked: bool,
+    pub dirty: bool,
+    pub dirty_window_ids: Vec<String>,
+    pub dirty_managed_window_ids: Vec<String>,
+    pub dirty_window_node_ids: HashMap<String, Vec<String>>,
+    pub dirty_layer_node_ids: HashMap<String, Vec<String>>,
+    pub actions: Vec<super::evaluator::RuntimeWindowAction>,
+    pub next_poll_in_ms: Option<u64>,
+}
+
 #[derive(Debug)]
 pub enum EmbeddedRuntimeResponse {
     Json(Vec<u8>),
     Scheduler(NativeSchedulerResponse),
     Cached(NativeCachedResponse),
+    Interaction(NativeInteractionResponse),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireNativeInteractionResponse {
+    request_id: u64,
+    kind: String,
+    invoked: bool,
+    dirty: bool,
+    dirty_window_ids: Vec<String>,
+    #[serde(default)]
+    dirty_managed_window_ids: Vec<String>,
+    #[serde(default)]
+    dirty_window_node_ids: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    dirty_layer_node_ids: HashMap<String, Vec<String>>,
+    actions: Vec<super::evaluator::RuntimeWindowAction>,
+    next_poll_in_ms: Option<u64>,
 }
 
 impl NativeCompositionUpdate {
@@ -535,6 +672,18 @@ impl RuntimeRequestEnvelope {
     }
 
     #[serde]
+    fn interaction(&self) -> Option<NativeInteractionRequest> {
+        let mut request = self.request.lock().ok()?;
+        if !matches!(request.as_ref(), Some(BridgeRequest::Interaction(_))) {
+            return None;
+        }
+        match request.take() {
+            Some(BridgeRequest::Interaction(request)) => Some(request),
+            _ => None,
+        }
+    }
+
+    #[serde]
     fn scheduler(&self) -> Option<NativeSchedulerRequest> {
         let mut request = self.request.lock().ok()?;
         if !matches!(request.as_ref(), Some(BridgeRequest::Scheduler(_))) {
@@ -667,6 +816,29 @@ impl ShojiRuntimeBridge {
     fn write_response(&self, #[string] response: String) -> Result<(), std::io::Error> {
         self.responses
             .send(EmbeddedRuntimeResponse::Json(response.into_bytes()))
+            .map_err(|_| std::io::Error::other("runtime response receiver was dropped"))
+    }
+
+    fn write_interaction_response(
+        &self,
+        #[serde] response: WireNativeInteractionResponse,
+    ) -> Result<(), std::io::Error> {
+        let kind = native_interaction_kind(&response.kind)?;
+        self.responses
+            .send(EmbeddedRuntimeResponse::Interaction(
+                NativeInteractionResponse {
+                    request_id: response.request_id,
+                    kind,
+                    invoked: response.invoked,
+                    dirty: response.dirty,
+                    dirty_window_ids: response.dirty_window_ids,
+                    dirty_managed_window_ids: response.dirty_managed_window_ids,
+                    dirty_window_node_ids: response.dirty_window_node_ids,
+                    dirty_layer_node_ids: response.dirty_layer_node_ids,
+                    actions: response.actions,
+                    next_poll_in_ms: response.next_poll_in_ms,
+                },
+            ))
             .map_err(|_| std::io::Error::other("runtime response receiver was dropped"))
     }
 
@@ -1532,6 +1704,21 @@ fn native_effect_target_kind(value: u32) -> Result<NativeEffectTargetKind, std::
     }
 }
 
+fn native_interaction_kind(value: &str) -> Result<NativeInteractionKind, std::io::Error> {
+    match value {
+        "pointerMove" => Ok(NativeInteractionKind::PointerMove),
+        "pointerMoveAsync" => Ok(NativeInteractionKind::PointerMoveAsync),
+        "gestureSwipe" => Ok(NativeInteractionKind::GestureSwipe),
+        "gestureSwipeAsync" => Ok(NativeInteractionKind::GestureSwipeAsync),
+        "windowMove" => Ok(NativeInteractionKind::WindowMove),
+        "windowResize" => Ok(NativeInteractionKind::WindowResize),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown native interaction response kind: {value}"),
+        )),
+    }
+}
+
 fn native_effect_slot_kind(value: u32) -> Result<NativeEffectSlotKind, std::io::Error> {
     match value {
         0 => Ok(NativeEffectSlotKind::Background),
@@ -2127,6 +2314,17 @@ impl EmbeddedRuntime {
             .as_ref()
             .ok_or_else(|| "embedded runtime is closed".to_owned())?
             .send(BridgeRequest::Effect(request))
+            .map_err(|_| self.failure_message("embedded runtime request channel closed"))
+    }
+
+    pub fn write_interaction_request(
+        &self,
+        request: NativeInteractionRequest,
+    ) -> Result<(), String> {
+        self.requests
+            .as_ref()
+            .ok_or_else(|| "embedded runtime is closed".to_owned())?
+            .send(BridgeRequest::Interaction(request))
             .map_err(|_| self.failure_message("embedded runtime request channel closed"))
     }
 
