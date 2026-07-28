@@ -5,7 +5,7 @@ use std::{
     ffi::{CStr, CString},
     fs,
     io::Cursor,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -119,6 +119,7 @@ pub struct ShaderEffectElementState {
     id: Id,
     commit_counter: CommitCounter,
     last_spec: Option<ShaderEffectSpec>,
+    backdrop_pipeline: Arc<Mutex<EffectInstancePipelineCache>>,
 }
 
 impl Default for ShaderEffectElementState {
@@ -127,6 +128,7 @@ impl Default for ShaderEffectElementState {
             id: Id::new(),
             commit_counter: CommitCounter::default(),
             last_spec: None,
+            backdrop_pipeline: Arc::new(Mutex::new(EffectInstancePipelineCache::default())),
         }
     }
 }
@@ -158,6 +160,7 @@ pub struct StableBackdropFramebufferElement {
     clip_rect: Option<SnappedLogicalRect>,
     clip_radius: f32,
     popup_source: Option<GlesTexture>,
+    pipeline: Arc<Mutex<EffectInstancePipelineCache>>,
     kind: Kind,
 }
 
@@ -666,7 +669,6 @@ struct BackdropFramebufferCache {
     framebuffer: Option<GlesTexture>,
     rendered: Option<GlesTexture>,
     sample_src: Option<Rectangle<f64, Buffer>>,
-    pipeline: EffectPipelineCache,
 }
 
 /// Per-element render targets for a compiled effect pipeline. Slots are
@@ -681,6 +683,24 @@ struct EffectPipelineCache {
     next_blur_pyramid: usize,
     states: HashMap<String, EffectStateSlot>,
     target_format: Option<Fourcc>,
+}
+
+#[derive(Debug, Default)]
+struct EffectInstancePipelineCache {
+    renderer_context_id: Option<ContextId<GlesTexture>>,
+    pipeline: EffectPipelineCache,
+}
+
+impl EffectInstancePipelineCache {
+    fn begin_frame(&mut self, renderer: &GlesRenderer) -> &mut EffectPipelineCache {
+        let renderer_context_id = renderer.context_id();
+        if self.renderer_context_id.as_ref() != Some(&renderer_context_id) {
+            self.renderer_context_id = Some(renderer_context_id);
+            self.pipeline = EffectPipelineCache::default();
+        }
+        self.pipeline.begin_frame();
+        &mut self.pipeline
+    }
 }
 
 #[derive(Debug)]
@@ -1017,6 +1037,14 @@ pub enum ShaderEffectError {
     },
     #[error("persistent effect state requires an instance pipeline cache")]
     StateRequiresCache,
+    #[error("effect input `{input}` is not available in this effect placement")]
+    UnavailableInput { input: &'static str },
+    #[error("named texture `{name}` was not written by a save() stage before get()")]
+    MissingNamedTexture { name: String },
+    #[error("effect shader program was compiled for a different renderer context")]
+    RendererContextMismatch,
+    #[error("failed to decode effect image `{path}`")]
+    ImageDecode { path: String },
     #[error(transparent)]
     Gles(#[from] GlesError),
 }
@@ -1081,6 +1109,7 @@ impl ShaderEffectElementState {
             clip_rect: spec.clip_rect,
             clip_radius: spec.clip_radius,
             popup_source: None,
+            pipeline: self.backdrop_pipeline.clone(),
             kind: Kind::Unspecified,
         })
     }
@@ -1484,9 +1513,13 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
         })?;
 
         let sample_src = inner.sample_src;
-        inner.pipeline.begin_frame();
         let mut guard = frame.renderer();
         let renderer = guard.as_mut();
+        let mut pipeline = self
+            .pipeline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pipeline = pipeline.begin_frame(renderer);
         let result = if let Some(popup_source) = self.popup_source.clone() {
             apply_effect_pipeline_cached_with_popup_source_and_finish_mode(
                 renderer,
@@ -1497,7 +1530,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 sample_src,
                 Some((dst.size.w, dst.size.h)),
                 &self.shader,
-                &mut inner.pipeline,
+                pipeline,
                 BackdropFinishMode::DeferToDisplay,
             )
         } else {
@@ -1509,7 +1542,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 sample_src,
                 Some((dst.size.w, dst.size.h)),
                 &self.shader,
-                &mut inner.pipeline,
+                pipeline,
                 BackdropFinishMode::DeferToDisplay,
             )
         };
@@ -3120,6 +3153,49 @@ fn apply_effect_pipeline_with_cache(
     })
 }
 
+/// Variant for the capture-based `replace` / `inFront` / `behindRootSurface`
+/// slots: the captured subject (window, layer, or popup) is the pipeline
+/// input, so it is exposed through every subject alias. Only the alias
+/// matching the slot's input kind is required by the slot gate; the others
+/// are populated so `layerSource()` / `popupSource()` also resolve as extra
+/// shader textures inside these slots.
+pub fn apply_effect_pipeline_cached_for_key_with_captured_subject(
+    renderer: &mut GlesRenderer,
+    cache_key: String,
+    subject: GlesTexture,
+    size: (i32, i32),
+    sample_region: Option<Rectangle<f64, Buffer>>,
+    output_size: Option<(i32, i32)>,
+    effect: &CompiledEffect,
+) -> Result<GlesTexture, ShaderEffectError> {
+    SHARED_EFFECT_PIPELINE_CACHES.with(|caches| {
+        let mut caches = caches.borrow_mut();
+        let cache = caches.pipeline(renderer, cache_key);
+        timescope::scope!("effect pipeline");
+        let mut ctx = EffectExecutionContext {
+            backdrop: subject.clone(),
+            xray_backdrop: None,
+            layer_source: Some(subject.clone()),
+            popup_source: Some(subject),
+            size,
+            state_base_size: size,
+            content_rect: effect_content_rect(size, sample_region),
+            named: HashMap::new(),
+        };
+        with_gpu_timing_renderer_span(renderer, "effect-pipeline-total", size, |renderer| {
+            run_effect_pipeline(
+                renderer,
+                effect,
+                &mut ctx,
+                sample_region,
+                output_size,
+                Some(cache),
+                BackdropFinishMode::Materialize,
+            )
+        })
+    })
+}
+
 pub fn apply_effect_pipeline_cached_for_key_with_layer_source(
     renderer: &mut GlesRenderer,
     cache_key: String,
@@ -3747,15 +3823,21 @@ fn resolve_effect_input(
         EffectInput::LayerSource(_) => ctx
             .layer_source
             .clone()
-            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+            .ok_or(ShaderEffectError::UnavailableInput {
+                input: "layerSource",
+            }),
         EffectInput::PopupSource(_) => ctx
             .popup_source
             .clone()
-            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+            .ok_or(ShaderEffectError::UnavailableInput {
+                input: "popupSource",
+            }),
         EffectInput::XrayBackdrop => ctx
             .xray_backdrop
             .clone()
-            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+            .ok_or(ShaderEffectError::UnavailableInput {
+                input: "xrayBackdropSource",
+            }),
         EffectInput::Shader(stage) if !stage.textures.is_empty() => {
             let texture = solid_white_texture(renderer)?;
             apply_texture_shader_stage(renderer, texture, requested_size, stage, ctx, cache)
@@ -3763,11 +3845,14 @@ fn resolve_effect_input(
         EffectInput::Shader(stage) => {
             apply_shader_input_stage(renderer, requested_size, stage, cache)
         }
-        EffectInput::Named(name) => ctx
-            .named
-            .get(name)
-            .cloned()
-            .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError)),
+        EffectInput::Named(name) => {
+            ctx.named
+                .get(name)
+                .cloned()
+                .ok_or_else(|| ShaderEffectError::MissingNamedTexture {
+                    name: name.clone(),
+                })
+        }
         EffectInput::State(_) => unreachable!("state inputs return above"),
         EffectInput::Image(path) => load_image_texture(renderer, path, requested_size),
     }?;
@@ -3931,7 +4016,7 @@ fn apply_multi_texture_shader_stage(
 ) -> Result<GlesTexture, ShaderEffectError> {
     let program = multi_texture_stage_program(renderer, stage)?;
     if program.renderer_context_id != renderer.context_id() {
-        return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
+        return Err(ShaderEffectError::RendererContextMismatch);
     }
     let target = effect_pipeline_target(renderer, size, cache)?;
     renderer.with_context(|gl| unsafe {
@@ -4122,7 +4207,7 @@ fn apply_blend_stage(
     timescope::scope!("effect blend stage");
     let programs = blend_shader_programs(renderer)?;
     if programs.renderer_context_id != renderer.context_id() {
-        return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
+        return Err(ShaderEffectError::RendererContextMismatch);
     }
 
     let target = effect_pipeline_target(renderer, size, cache)?;
@@ -4344,7 +4429,9 @@ fn load_image_texture(
         Some("svg") => decode_svg_and_scale(&bytes, size.0, size.1),
         _ => decode_png_and_scale(&bytes, size.0, size.1),
     }
-    .ok_or(ShaderEffectError::Gles(GlesError::FramebufferBindingError))?;
+    .ok_or_else(|| ShaderEffectError::ImageDecode {
+        path: path.to_string(),
+    })?;
 
     let texture = renderer.import_memory(&rgba, Fourcc::Abgr8888, size.into(), false)?;
     renderer
@@ -4493,7 +4580,7 @@ pub fn preblur_backdrop_texture(
     let passes = passes.clamp(1, 8) as usize;
     let offset = radius.max(1) as f32;
     if programs.renderer_context_id != renderer.context_id() {
-        return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
+        return Err(ShaderEffectError::RendererContextMismatch);
     }
 
     if let Some(pyramid) = pyramid_cache {

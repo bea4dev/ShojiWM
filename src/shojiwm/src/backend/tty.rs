@@ -7537,21 +7537,24 @@ fn window_effect_elements(
             "window effect debug: source captured"
         );
     }
-    let texture = crate::backend::shader_effect::apply_effect_pipeline_cached_for_key(
-        renderer,
-        format!(
-            "tty:window-effect:{}:{}:{}",
-            output.name(),
-            window_id,
-            placement
-        ),
-        source.texture,
-        None,
-        (texture_size.w, texture_size.h),
-        None,
-        Some((texture_size.w, texture_size.h)),
-        &effect.effect,
-    )?;
+    // The captured subject feeds every subject alias (backdrop/windowSource,
+    // layerSource, popupSource) so the slot's declared input kind — and any
+    // extra subject-sampling shader textures — resolve inside these slots.
+    let texture =
+        crate::backend::shader_effect::apply_effect_pipeline_cached_for_key_with_captured_subject(
+            renderer,
+            format!(
+                "tty:window-effect:{}:{}:{}",
+                output.name(),
+                window_id,
+                placement
+            ),
+            source.texture,
+            (texture_size.w, texture_size.h),
+            None,
+            Some((texture_size.w, texture_size.h)),
+            &effect.effect,
+        )?;
     if window_effect_debug_enabled() {
         info!(
             output = %output.name(),
