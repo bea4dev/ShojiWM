@@ -1,3 +1,4 @@
+/// <reference path="./runtime-globals.d.ts" />
 import type {
   AppIconProps,
   ImageProps,
