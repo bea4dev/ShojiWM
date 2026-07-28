@@ -1188,8 +1188,11 @@ export class HybridWindowManager {
 
       window.state[WINDOW_STATE_RESTORE_RECT].set(null);
       window.state[WINDOW_STATE_MAXIMIZED].set(true);
-      workspace.focusWindow(window);
-      workspace.applyLayout();
+      // Maximizing changes this tile's effective width to the viewport width.
+      // Recenter it even when it is already active; focusWindow() intentionally
+      // skips active windows and would otherwise leave the old, narrower
+      // tile's scroll offset in place.
+      workspace.panToWindow(window);
       this.applyWorkspaceStackPolicy(workspace);
       window.focus();
       return;
