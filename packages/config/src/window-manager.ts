@@ -713,24 +713,30 @@ export class HybridWindowManager {
     if (this.findWorkspaceRestoringWindow(window)) {
       return false;
     }
-    // With no min/max constraints, Wayland cannot distinguish an unconstrained
-    // window from a client that will declare a fixed size on its first frame.
-    return (
-      this.getCurrentWorkspace()?.isTiled === true &&
-      !this.hasInitialTileabilityDecision(window)
-    );
-  }
 
-  private hasInitialTileabilityDecision(window: WaylandWindow): boolean {
-    if (
-      !window.isResizable.peek() ||
-      window.isTransient.peek() ||
-      window.isMaximized.peek() ||
-      window.isFullscreen.peek()
-    ) {
+    if (this.getCurrentWorkspace()?.isTiled !== true) {
+      return false;
+    }
+
+    // Maximized/fullscreen windows need an output-sized initial configure.
+    if (window.isMaximized.peek() || window.isFullscreen.peek()) {
+      return false;
+    }
+
+    // A floating window must commit its natural client size before it can be
+    // centered. Using the pre-commit geometry here feeds the degenerate-size
+    // fallback into the initial configure and makes fixed-size dialogs huge.
+    if (!window.isResizable.peek() || window.isTransient.peek()) {
       return true;
     }
 
+    // With no min/max constraints, Wayland cannot yet distinguish an
+    // unconstrained tiled window from a client that will declare a fixed size
+    // on its first frame.
+    return !this.hasInitialTileabilityDecision(window);
+  }
+
+  private hasInitialTileabilityDecision(window: WaylandWindow): boolean {
     const constraints = window.sizeConstraints.peek();
     return constraints.min != null || constraints.max != null;
   }
