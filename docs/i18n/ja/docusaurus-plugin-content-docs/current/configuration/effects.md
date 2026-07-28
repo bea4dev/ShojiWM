@@ -98,6 +98,7 @@ COMPOSITOR.effect.popup = (popup) => {
 | `imageSource(path)` | 静的な画像ファイル |
 | `shaderInput(shader, opts)` | シェーダーが生成する入力テクスチャ |
 | `get(name)` | `save(name)`で先に保存した中間結果 |
+| `stateSource(state)` | 永続状態テクスチャの最新値 |
 
 `windowSource`、`layerSource`、`popupSource`には
 `{include: 'full' | 'root-surface'}`を指定できます。デフォルトは`'full'`です。
@@ -111,6 +112,7 @@ COMPOSITOR.effect.popup = (popup) => {
 | `noise({...})` | フィルムグレイン風のノイズを追加 |
 | `save(name)` / `blend(input, {...})` | 中間結果の保存／合成 |
 | `unit(effect)` | コンパイル済みの再利用可能なサブエフェクトを埋め込む |
+| `renderTo(state, {...})` | 永続状態へサイドパイプラインを実行 |
 
 `dualKawaseBlur`の`radius`はデフォルト`8`でサンプリング間隔を制御し、`passes`は
 デフォルト`2`でダウン／アップサンプルの深さを制御します（`0`〜`8`に制限）。どちらを
@@ -143,6 +145,63 @@ const liquidGlass = compileEffect({
   ],
 });
 ```
+
+### 永続状態テクスチャ
+
+`save()`と`get()`は同じフレーム内で使う中間保存です。シミュレーション、残像、蓄積
+マスクなど、フレームを跨いでGPU上の値を保持するエフェクトには`stateTexture()`を
+宣言し、`renderTo()`で更新します。
+
+```ts
+const velocity = stateTexture('velocity', {
+  scale: 0.5,
+  format: 'rg16f',
+  resize: 'clear',
+});
+const dye = stateTexture('dye', {
+  scale: 0.5,
+  format: 'rgba16f',
+  resize: 'stretch',
+});
+
+const fluid = compileLayerEffect({
+  input: layerSource(),
+  invalidate: {kind: 'manual', dirtyWhen: fluidActive},
+  pipeline: [
+    renderTo(velocity, {
+      input: stateSource(velocity),
+      pipeline: [
+        shaderStage(loadShader('./velocity.frag'), {
+          textures: {dye: stateSource(dye)},
+          uniforms: {dt: frameDelta},
+        }),
+      ],
+    }),
+    renderTo(dye, {
+      input: stateSource(dye),
+      pipeline: [
+        shaderStage(loadShader('./dye.frag'), {
+          textures: {velocity: stateSource(velocity)},
+        }),
+      ],
+    }),
+    shaderStage(loadShader('./fluid-compose.frag'), {
+      textures: {dye: stateSource(dye)},
+    }),
+  ],
+});
+```
+
+同じハンドルを共有しても、各ウィンドウ／レイヤー／ポップアップのエフェクトインスタンスは
+別々の状態を所有します。`renderTo()`は外側のパイプラインの現在テクスチャを置き換えません。
+`stateSource()`は最初の書き込み前には前フレームの値を、書き込み後にはその時点の最新値を
+読みます。同じ状態の読み書きも、内部でping-pongテクスチャを使うため安全です。
+
+`scale`はエフェクト処理解像度に対する倍率です。形式は`rgba8`、`rg16f`、`rgba16f`で、
+現在の`rg16f`は内部的にはRGBA16Fを確保し、R/Gチャンネルを状態として使います。リサイズ時は
+`clear`なら透明黒から再開し、`stretch`なら直前の状態を新しい大きさへ引き伸ばします。
+互換性のあるホットリロードでは状態を維持し、所有するエフェクトインスタンスのキャッシュが
+破棄または追い出されたときに解放します。
 
 ### 無効化ポリシー
 

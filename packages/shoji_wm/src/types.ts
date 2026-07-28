@@ -604,6 +604,27 @@ export interface NamedTextureHandle {
   name: string;
 }
 
+export type EffectStateTextureFormat = "rgba8" | "rg16f" | "rgba16f";
+export type EffectStateResizePolicy = "clear" | "stretch";
+
+/**
+ * Descriptor for a persistent texture owned by each effect instance.
+ * Sharing this handle does not share its GPU storage between surfaces.
+ */
+export interface StateTextureHandle {
+  kind: "state-texture";
+  name: string;
+  scale: number;
+  format: EffectStateTextureFormat;
+  resize: EffectStateResizePolicy;
+}
+
+/** Read the latest value of a persistent state texture at this pipeline point. */
+export interface StateTextureSourceHandle {
+  kind: "state-source";
+  state: StateTextureHandle;
+}
+
 export interface NoiseStageHandle {
   kind: "noise";
   noiseKind: NoiseKind;
@@ -633,12 +654,20 @@ export interface UnitStageHandle {
   effect: CompiledEffectHandle;
 }
 
+/** Render a side pipeline into persistent state without replacing `current`. */
+export interface RenderToStageHandle {
+  kind: "render-to";
+  target: StateTextureHandle;
+  effect: CompiledEffectHandle;
+}
+
 export type EffectInputHandle =
   | BackdropSourceHandle
   | XrayBackdropSourceHandle
   | ShaderInputHandle
   | ImageSourceHandle
   | NamedTextureHandle
+  | StateTextureSourceHandle
   | WindowSourceHandle
   | LayerSourceHandle
   | PopupSourceHandle;
@@ -649,7 +678,8 @@ export type EffectStageHandle =
   | DualKawaseBlurStageHandle
   | SaveStageHandle
   | BlendStageHandle
-  | UnitStageHandle;
+  | UnitStageHandle
+  | RenderToStageHandle;
 
 /**
  * How the alpha channel of the effect's output is treated when the result is

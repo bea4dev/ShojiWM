@@ -2341,6 +2341,7 @@ fn effect_stage_shader_stage_mut<'a>(
         EffectStage::Shader(shader) => shader_stage_shader_stage_mut(shader, path),
         EffectStage::Blend { input, .. } => effect_input_shader_stage_mut(input, path),
         EffectStage::Unit(effect) => effect_shader_stage_mut(effect, path),
+        EffectStage::RenderTo { effect, .. } => effect_shader_stage_mut(effect, path),
         _ => None,
     }
 }

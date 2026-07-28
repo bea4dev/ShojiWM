@@ -99,6 +99,7 @@ Options:
 | `imageSource(path)` | A static image file |
 | `shaderInput(shader, opts)` | A shader-generated input texture |
 | `get(name)` | An intermediate previously stored by `save(name)` |
+| `stateSource(state)` | The latest value of a persistent state texture |
 
 `windowSource`, `layerSource`, and `popupSource` accept
 `{include: 'full' | 'root-surface'}`. The default is `'full'`.
@@ -112,6 +113,7 @@ Options:
 | `noise({...})` | Add film-grain style noise |
 | `save(name)` / `blend(input, {...})` | Save/composite intermediate results |
 | `unit(effect)` | Embed a compiled reusable sub-effect |
+| `renderTo(state, {...})` | Run a side pipeline into persistent state |
 
 For `dualKawaseBlur`, `radius` defaults to `8` and controls the sampling offset;
 `passes` defaults to `2` and controls the downsample/upsample depth (clamped to
@@ -146,6 +148,65 @@ const liquidGlass = compileEffect({
   ],
 });
 ```
+
+### Persistent state textures
+
+`save()` and `get()` are frame-local intermediate storage. For simulations,
+trails, accumulated masks, and other effects that must retain GPU data between
+frames, declare a `stateTexture()` and update it with `renderTo()`.
+
+```ts
+const velocity = stateTexture('velocity', {
+  scale: 0.5,
+  format: 'rg16f',
+  resize: 'clear',
+});
+const dye = stateTexture('dye', {
+  scale: 0.5,
+  format: 'rgba16f',
+  resize: 'stretch',
+});
+
+const fluid = compileLayerEffect({
+  input: layerSource(),
+  invalidate: {kind: 'manual', dirtyWhen: fluidActive},
+  pipeline: [
+    renderTo(velocity, {
+      input: stateSource(velocity),
+      pipeline: [
+        shaderStage(loadShader('./velocity.frag'), {
+          textures: {dye: stateSource(dye)},
+          uniforms: {dt: frameDelta},
+        }),
+      ],
+    }),
+    renderTo(dye, {
+      input: stateSource(dye),
+      pipeline: [
+        shaderStage(loadShader('./dye.frag'), {
+          textures: {velocity: stateSource(velocity)},
+        }),
+      ],
+    }),
+    shaderStage(loadShader('./fluid-compose.frag'), {
+      textures: {dye: stateSource(dye)},
+    }),
+  ],
+});
+```
+
+Each window/layer/popup effect instance owns separate state even when it shares
+the same handle. `renderTo()` does not replace the outer pipeline's current
+texture. `stateSource()` reads the previous frame before the first write, then
+the newest value after each write. Reading and writing the same state is safe:
+the compositor uses ping-pong textures internally.
+
+`scale` is relative to the effect processing size. Formats are `rgba8`,
+`rg16f`, and `rgba16f`; `rg16f` currently uses an RGBA16F allocation internally
+and exposes the meaningful state in the R/G channels. On resize, `clear`
+restarts from transparent black while `stretch` preserves and scales the latest
+state. State survives compatible hot reloads and is released with or evicted
+from the owning effect-instance cache.
 
 ### Invalidation policy
 

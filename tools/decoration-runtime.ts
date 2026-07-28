@@ -5064,7 +5064,10 @@ function collectCompiledEffectUniformBindings(
         path,
         bindings,
       );
-    } else if (stage.kind === "unit" && isCompiledEffect(stage.effect)) {
+    } else if (
+      (stage.kind === "unit" || stage.kind === "render-to") &&
+      isCompiledEffect(stage.effect)
+    ) {
       collectCompiledEffectUniformBindings(
         stage.effect,
         effectSlot,

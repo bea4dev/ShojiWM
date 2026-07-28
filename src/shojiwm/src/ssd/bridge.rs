@@ -123,6 +123,7 @@ pub enum WireEffectStage {
     Save(WireSaveStageFields),
     Blend(WireBlendStageFields),
     Unit(WireUnitStageFields),
+    RenderTo(WireRenderToStageFields),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -180,6 +181,7 @@ pub enum WireEffectInput {
     ShaderInput(WireShaderStageFields),
     ImageSource { path: String },
     NamedTexture { name: String },
+    StateSource { state: WireStateTexture },
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -206,6 +208,23 @@ pub struct WireBlendStageFields {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireUnitStageFields {
+    pub effect: WireCompiledEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireStateTexture {
+    pub kind: String,
+    pub name: String,
+    pub scale: f32,
+    pub format: String,
+    pub resize: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireRenderToStageFields {
+    pub target: WireStateTexture,
     pub effect: WireCompiledEffect,
 }
 
@@ -589,6 +608,12 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                 WireEffectStage::Unit(stage) => {
                     stages.push(EffectStage::Unit(Box::new(stage.effect.try_into()?)));
                 }
+                WireEffectStage::RenderTo(stage) => {
+                    stages.push(EffectStage::RenderTo {
+                        target: decode_state_texture(stage.target)?,
+                        effect: Box::new(stage.effect.try_into()?),
+                    });
+                }
             }
         }
 
@@ -621,13 +646,15 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
             Some(_) => return Err(DecorationBridgeError::InvalidShaderDescriptor),
         };
 
-        Ok(CompiledEffect {
+        let effect = CompiledEffect {
             input,
             capture_padding: value.capture_padding.max(0),
             invalidate,
             pipeline: stages,
             alpha,
-        })
+        };
+        validate_effect_state_descriptors(&effect)?;
+        Ok(effect)
     }
 }
 
@@ -779,7 +806,96 @@ fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, Decoration
             }
             EffectInput::Named(name)
         }
+        WireEffectInput::StateSource { state } => EffectInput::State(decode_state_texture(state)?),
     })
+}
+
+fn decode_state_texture(
+    value: WireStateTexture,
+) -> Result<crate::ssd::EffectStateTexture, DecorationBridgeError> {
+    if value.kind != "state-texture"
+        || value.name.is_empty()
+        || !value.scale.is_finite()
+        || value.scale <= 0.0
+        || value.scale > 8.0
+    {
+        return Err(DecorationBridgeError::InvalidShaderDescriptor);
+    }
+    let format = match value.format.as_str() {
+        "rgba8" => crate::ssd::EffectStateTextureFormat::Rgba8,
+        "rg16f" => crate::ssd::EffectStateTextureFormat::Rg16f,
+        "rgba16f" => crate::ssd::EffectStateTextureFormat::Rgba16f,
+        _ => return Err(DecorationBridgeError::InvalidShaderDescriptor),
+    };
+    let resize = match value.resize.as_str() {
+        "clear" => crate::ssd::EffectStateResizePolicy::Clear,
+        "stretch" => crate::ssd::EffectStateResizePolicy::Stretch,
+        _ => return Err(DecorationBridgeError::InvalidShaderDescriptor),
+    };
+    Ok(crate::ssd::EffectStateTexture {
+        name: value.name,
+        scale: value.scale,
+        format,
+        resize,
+    })
+}
+
+fn validate_effect_state_descriptors(effect: &CompiledEffect) -> Result<(), DecorationBridgeError> {
+    fn insert(
+        descriptors: &mut std::collections::BTreeMap<String, crate::ssd::EffectStateTexture>,
+        descriptor: &crate::ssd::EffectStateTexture,
+    ) -> Result<(), DecorationBridgeError> {
+        if descriptors
+            .get(&descriptor.name)
+            .is_some_and(|existing| existing != descriptor)
+        {
+            return Err(DecorationBridgeError::InvalidShaderDescriptor);
+        }
+        descriptors.insert(descriptor.name.clone(), descriptor.clone());
+        Ok(())
+    }
+
+    fn visit_input(
+        input: &EffectInput,
+        descriptors: &mut std::collections::BTreeMap<String, crate::ssd::EffectStateTexture>,
+    ) -> Result<(), DecorationBridgeError> {
+        match input {
+            EffectInput::State(descriptor) => insert(descriptors, descriptor),
+            EffectInput::Shader(shader) => {
+                for input in shader.textures.values() {
+                    visit_input(input, descriptors)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn visit_effect(
+        effect: &CompiledEffect,
+        descriptors: &mut std::collections::BTreeMap<String, crate::ssd::EffectStateTexture>,
+    ) -> Result<(), DecorationBridgeError> {
+        visit_input(&effect.input, descriptors)?;
+        for stage in &effect.pipeline {
+            match stage {
+                EffectStage::Shader(shader) => {
+                    for input in shader.textures.values() {
+                        visit_input(input, descriptors)?;
+                    }
+                }
+                EffectStage::Blend { input, .. } => visit_input(input, descriptors)?,
+                EffectStage::Unit(effect) => visit_effect(effect, descriptors)?,
+                EffectStage::RenderTo { target, effect } => {
+                    insert(descriptors, target)?;
+                    visit_effect(effect, descriptors)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    visit_effect(effect, &mut std::collections::BTreeMap::new())
 }
 
 fn decode_shader_uniform(value: WireShaderUniformValue) -> Option<ShaderUniformValue> {
@@ -1403,6 +1519,67 @@ mod tests {
             stage.uniforms.get("points"),
             Some(&ShaderUniformValue::Vec2Array(vec![[1.0, 2.0], [3.0, 4.0]]))
         );
+    }
+
+    #[test]
+    fn decode_persistent_state_render_pass() {
+        let wire: WireCompiledEffect = serde_json::from_str(
+            r#"{
+                "kind": "compiled-effect",
+                "input": { "kind": "layer-source", "include": "full" },
+                "pipeline": [{
+                    "kind": "render-to",
+                    "target": {
+                        "kind": "state-texture",
+                        "name": "velocity",
+                        "scale": 0.5,
+                        "format": "rg16f",
+                        "resize": "clear"
+                    },
+                    "effect": {
+                        "kind": "compiled-effect",
+                        "input": {
+                            "kind": "state-source",
+                            "state": {
+                                "kind": "state-texture",
+                                "name": "velocity",
+                                "scale": 0.5,
+                                "format": "rg16f",
+                                "resize": "clear"
+                            }
+                        },
+                        "invalidate": { "kind": "always" },
+                        "pipeline": [{
+                            "kind": "shader-stage",
+                            "shader": {
+                                "kind": "shader-module",
+                                "path": "/tmp/velocity.frag"
+                            }
+                        }]
+                    }
+                }]
+            }"#,
+        )
+        .expect("persistent state effect should deserialize");
+
+        let effect: CompiledEffect = wire.try_into().expect("state effect should decode");
+        let EffectStage::RenderTo { target, effect } = &effect.pipeline[0] else {
+            panic!("expected render-to stage");
+        };
+        assert_eq!(target.name, "velocity");
+        assert_eq!(target.scale, 0.5);
+        assert!(matches!(
+            target.format,
+            crate::ssd::EffectStateTextureFormat::Rg16f
+        ));
+        assert!(matches!(
+            effect.input,
+            EffectInput::State(crate::ssd::EffectStateTexture {
+                ref name,
+                scale: 0.5,
+                ..
+            }) if name == "velocity"
+        ));
     }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]

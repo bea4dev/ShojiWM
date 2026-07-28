@@ -16,6 +16,11 @@ import type {
   UnitStageHandle,
   ImageSourceHandle,
   NamedTextureHandle,
+  StateTextureHandle,
+  StateTextureSourceHandle,
+  EffectStateTextureFormat,
+  EffectStateResizePolicy,
+  RenderToStageHandle,
   ShaderUniformArrayElement,
   ShaderUniformArrayHandle,
   ShaderUniformArrayValues,
@@ -51,6 +56,7 @@ export interface CompileEffectOptions {
     | SaveStageHandle
     | BlendStageHandle
     | UnitStageHandle
+    | RenderToStageHandle
   >;
   /**
    * Output alpha handling. Defaults to `"opaque"`, which forces the result
@@ -286,6 +292,41 @@ export function get(name: string): NamedTextureHandle {
 }
 
 /**
+ * Declare a persistent texture owned independently by every effect instance.
+ * The returned handle is a descriptor; GPU storage is allocated lazily.
+ */
+export function stateTexture(
+  name: string,
+  options: {
+    scale?: number;
+    format?: EffectStateTextureFormat;
+    resize?: EffectStateResizePolicy;
+  } = {},
+): StateTextureHandle {
+  return {
+    kind: "state-texture",
+    name,
+    scale: options.scale ?? 1,
+    format: options.format ?? "rgba8",
+    resize: options.resize ?? "clear",
+  };
+}
+
+/**
+ * Read the latest value of persistent state. Before the first `renderTo()` in
+ * a frame this is the previous frame's value; afterwards it is the newest
+ * value written during the current frame.
+ */
+export function stateSource(
+  state: StateTextureHandle,
+): StateTextureSourceHandle {
+  return {
+    kind: "state-source",
+    state,
+  };
+}
+
+/**
  * Create a GLSL shader **pipeline stage** that reads the previous stage's output
  * (or the effect input) and writes to the next stage.
  * Accepts a path string or a pre-loaded `ShaderModuleHandle`.
@@ -436,6 +477,24 @@ export function unit(effect: CompiledEffectHandle): UnitStageHandle {
   return {
     kind: "unit",
     effect,
+  };
+}
+
+/**
+ * Run a side pipeline into persistent state while leaving the outer
+ * pipeline's current texture unchanged.
+ */
+export function renderTo(
+  target: StateTextureHandle,
+  options: Omit<CompileEffectOptions, "invalidate">,
+): RenderToStageHandle {
+  return {
+    kind: "render-to",
+    target,
+    effect: compileEffect({
+      ...options,
+      invalidate: { kind: "always" },
+    }),
   };
 }
 

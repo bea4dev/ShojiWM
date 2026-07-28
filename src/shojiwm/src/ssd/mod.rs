@@ -744,6 +744,27 @@ pub struct ShaderStage {
     pub textures: std::collections::BTreeMap<String, EffectInput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectStateTextureFormat {
+    Rgba8,
+    Rg16f,
+    Rgba16f,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectStateResizePolicy {
+    Clear,
+    Stretch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectStateTexture {
+    pub name: String,
+    pub scale: f32,
+    pub format: EffectStateTextureFormat,
+    pub resize: EffectStateResizePolicy,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectInput {
     Backdrop,
@@ -754,6 +775,7 @@ pub enum EffectInput {
     Shader(ShaderStage),
     Image(String),
     Named(String),
+    State(EffectStateTexture),
 }
 
 impl EffectInput {
@@ -847,6 +869,10 @@ pub enum EffectStage {
         alpha: f32,
     },
     Unit(Box<CompiledEffect>),
+    RenderTo {
+        target: EffectStateTexture,
+        effect: Box<CompiledEffect>,
+    },
 }
 
 /// How the alpha channel of an effect's output is treated when the pipeline
@@ -961,6 +987,7 @@ impl CompiledEffect {
                 | EffectInput::LayerSource(_)
                 | EffectInput::PopupSource(_)
                 | EffectInput::Shader(_)
+                | EffectInput::State(_)
         )
     }
 
@@ -972,6 +999,7 @@ impl CompiledEffect {
                     shader.textures.values().any(EffectInput::uses_backdrop)
                 }
                 EffectStage::Unit(effect) => effect.uses_backdrop_input(),
+                EffectStage::RenderTo { effect, .. } => effect.uses_backdrop_input(),
                 _ => false,
             })
     }
@@ -985,6 +1013,7 @@ impl CompiledEffect {
                     .values()
                     .any(EffectInput::uses_xray_backdrop),
                 EffectStage::Unit(effect) => effect.uses_xray_backdrop_input(),
+                EffectStage::RenderTo { effect, .. } => effect.uses_xray_backdrop_input(),
                 _ => false,
             })
     }
@@ -998,6 +1027,7 @@ impl CompiledEffect {
                     .values()
                     .any(EffectInput::uses_window_source),
                 EffectStage::Unit(effect) => effect.uses_window_source_input(),
+                EffectStage::RenderTo { effect, .. } => effect.uses_window_source_input(),
                 _ => false,
             })
     }
@@ -1010,6 +1040,7 @@ impl CompiledEffect {
                     shader.textures.values().any(EffectInput::uses_layer_source)
                 }
                 EffectStage::Unit(effect) => effect.uses_layer_source_input(),
+                EffectStage::RenderTo { effect, .. } => effect.uses_layer_source_input(),
                 _ => false,
             })
     }
@@ -1022,6 +1053,7 @@ impl CompiledEffect {
                     shader.textures.values().any(EffectInput::uses_popup_source)
                 }
                 EffectStage::Unit(effect) => effect.uses_popup_source_input(),
+                EffectStage::RenderTo { effect, .. } => effect.uses_popup_source_input(),
                 _ => false,
             })
     }
