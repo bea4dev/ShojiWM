@@ -217,7 +217,9 @@ fn sanitize_next_frame_target(
     }
 }
 
-fn error_chain_has_permission_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+pub(super) fn error_chain_has_permission_denied(
+    error: &(dyn std::error::Error + 'static),
+) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
         if error

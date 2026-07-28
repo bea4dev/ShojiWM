@@ -265,6 +265,33 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
                         return;
                     }
                     if let Err(err) = device_changed(state, node) {
+                        if tty::error_chain_has_permission_denied(err.as_ref()) {
+                            // The flag above said the session was still active,
+                            // but DRM master was in fact already gone — logind
+                            // had not dispatched `PauseSession` yet. So this
+                            // scan half-applied exactly as the comment above
+                            // warns, and merely warning here would leave the
+                            // new topology recorded with no working CRTC and
+                            // nothing to re-arm it: both panels stay dark for
+                            // the rest of the session.
+                            //
+                            // `render_surface` already drops the flag when it
+                            // observes the loss first, but the loss can just as
+                            // easily surface here — a connector event arriving
+                            // at suspend entry reaches the scanner before any
+                            // frame is queued. Close that door too: drop the
+                            // flag and queue the node so the post-resume replay
+                            // rebuilds this device from scratch.
+                            info!(
+                                ?node,
+                                "drm device change lost drm access mid-scan; deferring until session resume",
+                            );
+                            state.tty_session_active = false;
+                            if !state.pending_tty_device_changes.contains(&node) {
+                                state.pending_tty_device_changes.push(node);
+                            }
+                            return;
+                        }
                         warn!(?node, ?err, "failed to process drm device change");
                     }
                 }
