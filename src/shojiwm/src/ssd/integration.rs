@@ -7,6 +7,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size},
 };
 use std::{
+    collections::BTreeMap,
     hash::{Hash, Hasher},
     time::{Duration, Instant},
 };
@@ -698,10 +699,11 @@ pub struct WindowDecorationState {
     /// the entire animation — sending the animated intermediate size each
     /// frame would make the client buffer chase a moving target and the
     /// compositor would scale the lagging buffer up to fit, producing the
-    /// "buffer stretched" visual. By pinning the configure size to the static
-    /// target we only need to send one configure for the resize, while the
-    /// visual rect still animates smoothly (the client buffer is rendered at
-    /// its committed size and our viewporter / SSD layout handles the rest).
+    /// "buffer stretched" visual. By pinning the configure size to the
+    /// animation's composed final target we only need to send one configure
+    /// for the resize, while the visual rect still animates smoothly (the
+    /// client buffer is rendered at its committed size and our viewporter /
+    /// SSD layout handles the rest).
     pub last_configured_client_size: Option<(i32, i32)>,
     /// Composition-declared transform from the most recent TS evaluation,
     /// **without** any animation deltas applied. `advance_managed_window_animations`
@@ -4850,7 +4852,7 @@ impl ShojiWM {
                 current_root,
                 current_client,
                 window_id,
-                static_root,
+                static_managed_window,
                 last_configured_client_size,
             )) = ({
                 timescope::scope!("ssd apply managed window state");
@@ -4873,10 +4875,7 @@ impl ShojiWM {
                 let current_root = decoration.layout.root.rect;
                 let current_client = decoration.client_rect;
                 let window_id = decoration.snapshot.id.clone();
-                let static_root = decoration
-                    .static_managed_window
-                    .rect
-                    .map(managed_rect_snapshot_to_logical_rect);
+                let static_managed_window = decoration.static_managed_window.clone();
                 let last_configured_client_size = decoration.last_configured_client_size;
                 Some((
                     managed.force_rect_size,
@@ -4888,7 +4887,7 @@ impl ShojiWM {
                     current_root,
                     current_client,
                     window_id,
-                    static_root,
+                    static_managed_window,
                     last_configured_client_size,
                 ))
             })
@@ -4903,17 +4902,14 @@ impl ShojiWM {
             // SSD layout instead of by stretching a lagging buffer. The
             // visual rect (relocate, SSD layout) still uses the animated
             // `desired_client`; only the size we hand the client deviates.
-            let active_rect_override = {
+            let active_rect_override_target = {
                 timescope::scope!("ssd apply managed active override");
                 self.managed_window_animations
                     .get(&window_id)
-                    .is_some_and(|channels| {
-                        channels.values().any(|active| {
-                            active.animation.rect.as_ref().is_some_and(|rect_anim| {
-                                matches!(rect_anim.mode, ManagedWindowAnimationMode::Override)
-                            })
-                        })
+                    .and_then(|channels| {
+                        final_override_rect_animation_target(&static_managed_window, channels)
                     })
+                    .map(managed_rect_snapshot_to_logical_rect)
             };
 
             let tiled_state_changed = {
@@ -4941,7 +4937,29 @@ impl ShojiWM {
                 })
             };
 
-            if desired_root == current_root && !needs_xdg_state_configure && !tiled_state_changed {
+            let configure_client_size = {
+                timescope::scope!("ssd apply managed configure size");
+                if let Some(final_root) = active_rect_override_target {
+                    let final_client = managed_client_rect_from_current_insets(
+                        current_root,
+                        current_client,
+                        final_root,
+                    );
+                    (final_client.width, final_client.height)
+                } else {
+                    let desired_client = managed_client_rect_from_current_insets(
+                        current_root,
+                        current_client,
+                        desired_root,
+                    );
+                    (desired_client.width, desired_client.height)
+                }
+            };
+            let configure_size_changed = last_configured_client_size != Some(configure_client_size);
+            let should_configure =
+                configure_size_changed || needs_xdg_state_configure || tiled_state_changed;
+
+            if desired_root == current_root && !should_configure {
                 record_managed_rect_path_event(ManagedRectPathEvent::ApplyNoop);
                 if managed_rect_debug_enabled() {
                     info!(
@@ -4949,6 +4967,7 @@ impl ShojiWM {
                         desired_root = %format_rect(desired_root),
                         current_root = %format_rect(current_root),
                         needs_xdg_state_configure,
+                        configure_size_changed,
                         "managed rect debug: apply noop root"
                     );
                 }
@@ -4981,10 +5000,7 @@ impl ShojiWM {
                 }
             };
 
-            if desired_client == current_client
-                && !needs_xdg_state_configure
-                && !tiled_state_changed
-            {
+            if desired_client == current_client && !should_configure {
                 record_managed_rect_path_event(ManagedRectPathEvent::ApplyNoop);
                 if managed_rect_debug_enabled() {
                     info!(
@@ -4994,6 +5010,7 @@ impl ShojiWM {
                         desired_client = %format_rect(desired_client),
                         current_client = %format_rect(current_client),
                         needs_xdg_state_configure,
+                        configure_size_changed,
                         "managed rect debug: apply noop client"
                     );
                 }
@@ -5056,31 +5073,9 @@ impl ShojiWM {
                 }
             }
 
-            // Pick the size we'll send to the client. During an active rect
-            // Override animation, lock this to the static target's client
-            // size (computed via the same inset logic as the animated
-            // desired_client) so we issue exactly one resize-configure and
-            // the buffer doesn't have to chase intermediate sizes.
-            let configure_client_size = {
-                timescope::scope!("ssd apply managed configure size");
-                if active_rect_override && let Some(static_root) = static_root {
-                    let static_client = managed_client_rect_from_current_insets(
-                        current_root,
-                        current_client,
-                        static_root,
-                    );
-                    (static_client.width, static_client.height)
-                } else {
-                    (desired_client.width, desired_client.height)
-                }
-            };
             // Only push a configure when the size actually changes from what
             // the client was last told. `needs_xdg_state_configure` still
             // forces one through for non-size state updates (maximize, etc.).
-            let configure_size_changed = last_configured_client_size != Some(configure_client_size);
-            let should_configure =
-                configure_size_changed || needs_xdg_state_configure || tiled_state_changed;
-
             if should_configure {
                 timescope::scope!("ssd apply managed configure client");
                 if let Some(toplevel) = window.toplevel() {
@@ -5704,6 +5699,35 @@ fn animation_mode_priority(animation: &ManagedWindowAnimationSnapshot) -> u8 {
         })
         .unwrap_or(false);
     if is_override { 0 } else { 1 }
+}
+
+fn final_override_rect_animation_target(
+    static_managed_window: &ManagedWindowState,
+    channels: &BTreeMap<String, ActiveManagedWindowAnimation>,
+) -> Option<ManagedWindowRectSnapshot> {
+    if !channels.values().any(|active| {
+        active
+            .animation
+            .rect
+            .as_ref()
+            .is_some_and(|rect| rect.mode == ManagedWindowAnimationMode::Override)
+    }) {
+        return None;
+    }
+
+    let mut animations = channels.values().collect::<Vec<_>>();
+    animations.sort_by_key(|active| (animation_mode_priority(&active.animation), active.sequence));
+
+    let mut final_managed_window = static_managed_window.clone();
+    for active in animations {
+        let Some(rect_animation) = active.animation.rect.as_ref() else {
+            continue;
+        };
+        let rect = sample_rect_animation(rect_animation, 1.0, final_managed_window.rect);
+        apply_rect_animation_value(&mut final_managed_window, rect, rect_animation.mode);
+    }
+
+    final_managed_window.rect
 }
 
 fn managed_client_rect_for_state(
@@ -8807,6 +8831,103 @@ mod tests {
         BorderStyle, BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, Edges,
         LayoutDirection, Overflow, StylePosition,
     };
+
+    fn test_rect(x: f64, y: f64, width: f64, height: f64) -> ManagedWindowRectSnapshot {
+        ManagedWindowRectSnapshot {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn test_rect_animation(
+        channel: &str,
+        sequence: u64,
+        mode: ManagedWindowAnimationMode,
+        from: ManagedWindowRectSnapshot,
+        to: ManagedWindowRectSnapshot,
+    ) -> ActiveManagedWindowAnimation {
+        ActiveManagedWindowAnimation {
+            sequence,
+            started_at_ms: 0,
+            animation: ManagedWindowAnimationSnapshot {
+                channel: channel.into(),
+                rect: Some(ManagedWindowRectAnimationSnapshot {
+                    from: Some(from),
+                    to,
+                    duration: 250,
+                    easing: ManagedWindowAnimationEasingSnapshot::Linear,
+                    mode,
+                }),
+                offset: None,
+                opacity: None,
+            },
+        }
+    }
+
+    #[test]
+    fn final_override_target_composes_the_animation_end_state() {
+        let old_rect = test_rect(8.0, 8.0, 390.0, 984.0);
+        let override_target = test_rect(8.0, 8.0, 522.666, 984.0);
+        let mut static_managed_window = ManagedWindowState {
+            rect: Some(old_rect),
+            ..ManagedWindowState::default()
+        };
+        static_managed_window.managed = true;
+
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "reflow".into(),
+            test_rect_animation(
+                "reflow",
+                2,
+                ManagedWindowAnimationMode::Override,
+                old_rect,
+                override_target,
+            ),
+        );
+        channels.insert(
+            "offset".into(),
+            test_rect_animation(
+                "offset",
+                1,
+                ManagedWindowAnimationMode::Add,
+                test_rect(0.0, 0.0, 0.0, 0.0),
+                test_rect(4.0, 2.0, 0.0, 0.0),
+            ),
+        );
+
+        assert_eq!(
+            final_override_rect_animation_target(&static_managed_window, &channels),
+            Some(test_rect(12.0, 10.0, 522.666, 984.0))
+        );
+    }
+
+    #[test]
+    fn additive_only_animation_does_not_pin_client_configure_size() {
+        let old_rect = test_rect(8.0, 8.0, 390.0, 984.0);
+        let static_managed_window = ManagedWindowState {
+            rect: Some(old_rect),
+            ..ManagedWindowState::default()
+        };
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "offset".into(),
+            test_rect_animation(
+                "offset",
+                1,
+                ManagedWindowAnimationMode::Add,
+                test_rect(0.0, 0.0, 0.0, 0.0),
+                test_rect(4.0, 2.0, 0.0, 0.0),
+            ),
+        );
+
+        assert_eq!(
+            final_override_rect_animation_target(&static_managed_window, &channels),
+            None
+        );
+    }
 
     #[test]
     fn cached_tree_patch_replaces_only_the_target_subtree() {
