@@ -4,10 +4,21 @@ use std::{
     backtrace::Backtrace,
     fs::{self, OpenOptions},
     panic,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{
+        Path, 
+        PathBuf
+    },
+    time::{
+        Duration, 
+        SystemTime, 
+        UNIX_EPOCH
+    },
 };
-use tracing::{error, info};
+use tracing::{
+    error, 
+    info,
+    warn
+};
 use tracing_subscriber::EnvFilter;
 
 pub mod activation_environment;
@@ -286,7 +297,172 @@ fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(env_filter)
         .init();
 
+    // After the subscriber is installed, so the summary lands in the log it
+    // just pruned around.
+    prune_rotated_logs(&log_dir, &LogRetention::from_env());
+
     Ok(())
+}
+
+/// Retention policy for rotated session logs.
+///
+/// Rotation renames `latest.log` to `<epoch-ms>.log` on every start and
+/// nothing ever removed the result, so the directory grew without bound: it
+/// reached 71 GB / 112 files, one runaway session having left a single 54 GB
+/// file behind. Ordinary tty sessions are 50 KB–900 KB, so the default budget
+/// holds hundreds of them.
+struct LogRetention {
+    /// Newest rotated logs kept unconditionally, so one oversized session
+    /// cannot evict the recent history that is actually worth having.
+    min_keep: usize,
+    /// Budget for all rotated logs combined, `latest.log` excluded.
+    /// `None` disables the size check.
+    max_total_bytes: Option<u64>,
+    /// Age limit for rotated logs. `None` disables the age check.
+    max_age: Option<Duration>,
+}
+
+impl Default for LogRetention {
+    fn default() -> Self {
+        Self {
+            min_keep: 5,
+            max_total_bytes: Some(512 * 1024 * 1024),
+            max_age: Some(
+                Duration::from_secs(
+                    30 * 24 * 60 * 60
+                )
+            ),
+        }
+    }
+}
+
+impl LogRetention {
+    /// `SHOJI_LOG_KEEP_BYTES` and `SHOJI_LOG_KEEP_DAYS` override the defaults;
+    /// `0` or `off` disables that check. Matches how `SHOJI_LOG` and
+    /// `SHOJI_LOG_ROTATE` gate the rest of the logging setup.
+    fn from_env() -> Self {
+        let mut retention = Self::default();
+        if let Some(bytes) = parse_retention_env(
+            "SHOJI_LOG_KEEP_BYTES",
+        ) {
+            retention.max_total_bytes = (bytes > 0)
+                .then_some(bytes);
+        }
+        if let Some(days) = parse_retention_env(
+            "SHOJI_LOG_KEEP_DAYS",
+        ) {
+            retention.max_age =
+                (days > 0).then(|| Duration::from_secs(days.saturating_mul(24 * 60 * 60)));
+        }
+        retention
+    }
+}
+
+fn parse_retention_env(
+    name: &str
+) -> Option<u64> {
+    let value = std::env::var(name)
+        .ok()?;
+    let value = value
+        .trim();
+    if value.eq_ignore_ascii_case("off") {
+        return Some(0);
+    }
+    value
+        .parse()
+        .ok()
+}
+
+/// Drop rotated logs that fall outside `retention`.
+///
+/// Only files this rotation produced (`<epoch-ms>.log`) are considered, so
+/// `latest.log` and anything a human put here are left alone. Failures are
+/// reported and swallowed: a log directory we cannot tidy is not a reason to
+/// refuse to start a session.
+fn prune_rotated_logs(
+    log_dir: &Path,
+    retention: &LogRetention,
+) {
+    let entries = match fs::read_dir(log_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(
+                ?err,
+                "could not read log directory to apply retention",
+            );
+            return;
+        }
+    };
+
+    let mut rotated: Vec<(u128, u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry
+            .path();
+        let Some(stamp) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".log"))
+            .and_then(|stem| stem.parse::<u128>().ok())
+        else {
+            continue;
+        };
+        let size = entry
+            .metadata()
+            .map(|metadata| metadata.len()).unwrap_or(0);
+        rotated
+            .push(
+                (
+                    stamp,
+                    size, 
+                    path,
+                ),
+            );
+    }
+
+    // Newest first. The rotation timestamp is a better ordering key than
+    // mtime, which a copy or a backup pass can rewrite.
+    rotated.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+
+    let now = startup_timestamp_millis();
+    let mut kept_bytes = 0_u64;
+    let mut removed_files = 0_usize;
+    let mut removed_bytes = 0_u64;
+
+    for (index, (stamp, size, path)) in rotated.iter().enumerate() {
+        let too_old = retention
+            .max_age
+            .is_some_and(|max_age| now.saturating_sub(*stamp) > max_age.as_millis());
+        let over_budget = retention
+            .max_total_bytes
+            .is_some_and(|budget| kept_bytes.saturating_add(*size) > budget);
+
+        if index < retention.min_keep || !(too_old || over_budget) {
+            kept_bytes = kept_bytes.saturating_add(*size);
+            continue;
+        }
+
+        match fs::remove_file(path) {
+            Ok(()) => {
+                removed_files += 1;
+                removed_bytes = removed_bytes.saturating_add(*size);
+            }
+            Err(err) => {
+                // Keep counting it against the budget: it is still on disk.
+                warn!(?path, ?err, "could not remove expired session log");
+                kept_bytes = kept_bytes.saturating_add(*size);
+            }
+        }
+    }
+
+    if removed_files > 0 {
+        info!(
+            removed_files,
+            removed_mib = removed_bytes / (1024 * 1024),
+            kept_files = rotated.len() - removed_files,
+            kept_mib = kept_bytes / (1024 * 1024),
+            "pruned rotated session logs"
+        );
+    }
 }
 
 fn shoji_log_dir() -> PathBuf {
