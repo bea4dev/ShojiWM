@@ -1644,7 +1644,7 @@ impl ShojiWM {
         let pointer_location = self
             .seat
             .get_pointer()
-            .map(|pointer| pointer.current_location().to_i32_round());
+            .map(|pointer| pointer.current_location().to_i32_floor());
         let preferred_output_geometry = pointer_location
             .and_then(|pointer_location| {
                 self.space

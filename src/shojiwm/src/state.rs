@@ -509,7 +509,7 @@ impl ShojiWM {
         let output = self.space.outputs().find(|output| {
             self.space
                 .output_geometry(output)
-                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_floor()))
         })?;
         let output_geo = self.space.output_geometry(output)?;
         let lock_surface = self.session_lock_surface_for_output(output)?;
@@ -1528,7 +1528,7 @@ impl ShojiWM {
             .find(|output| {
                 self.space
                     .output_geometry(output)
-                    .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                    .is_some_and(|geometry| geometry.contains(pos.to_i32_floor()))
             })
             .cloned()
     }
@@ -3047,7 +3047,7 @@ impl ShojiWM {
         let output = self.space.outputs().find(|output| {
             self.space
                 .output_geometry(output)
-                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_floor()))
         })?;
         let output_geo = self.space.output_geometry(output).unwrap();
         let layers = layer_map_for_output(output);
@@ -3481,7 +3481,7 @@ impl ShojiWM {
         let output = self.space.outputs().find(|output| {
             self.space
                 .output_geometry(output)
-                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_floor()))
         })?;
         let output_geo = self.space.output_geometry(output)?;
         let layers = layer_map_for_output(output);
@@ -3891,7 +3891,7 @@ impl ShojiWM {
         self.space.outputs().find_map(|output| {
             self.space
                 .output_geometry(output)
-                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_floor()))
                 .then(|| output.name())
         })
     }

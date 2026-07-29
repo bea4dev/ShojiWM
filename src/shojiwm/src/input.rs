@@ -549,7 +549,11 @@ impl ShojiWM {
                                 return;
                             };
                             if !constraint.region().is_none_or(|region| {
-                                region.contains((previous_pos - *surface_origin).to_i32_round())
+                                // Floor, not round: the pointer clamp above can
+                                // sit half a logical pixel inside the trailing
+                                // edge, and rounding would carry that back out
+                                // of the region it is actually within.
+                                region.contains((previous_pos - *surface_origin).to_i32_floor())
                             }) {
                                 return;
                             }
@@ -587,13 +591,30 @@ impl ShojiWM {
 
                 let mut pos = previous_pos + event.delta();
 
+                // `output_layout_bounds` is `Logical`, so clamping to `size - 1`
+                // discarded a whole logical pixel — i.e. `scale` *physical*
+                // pixels. On a scale-2 output the last two columns and rows were
+                // unreachable, which breaks anything that targets the final
+                // pixel: edge-scrolling in games, 1px resize handles, and the
+                // Fitts's-law property that makes screen edges worth aiming at.
+                //
+                // Sit on the midpoint between the last logical pixel and the true
+                // edge, `((size - 1) + size) / 2`, so the position floors onto the
+                // last pixel while staying strictly inside the bounds.
+                //
+                // This depends on the `to_i32_floor` hit-tests elsewhere in this
+                // file (and in `state.rs`): with `to_i32_round`, a `.5` here would
+                // round *outward* past every containment check and the pointer
+                // would read as having left the layout entirely. The two changes
+                // must stay together.
+                const TRAILING_EDGE_INSET: f64 = 0.5;
                 pos.x = pos.x.clamp(
                     output_bounds.loc.x as f64,
-                    (output_bounds.loc.x + output_bounds.size.w - 1) as f64,
+                    (output_bounds.loc.x + output_bounds.size.w) as f64 - TRAILING_EDGE_INSET,
                 );
                 pos.y = pos.y.clamp(
                     output_bounds.loc.y as f64,
-                    (output_bounds.loc.y + output_bounds.size.h - 1) as f64,
+                    (output_bounds.loc.y + output_bounds.size.h) as f64 - TRAILING_EDGE_INSET,
                 );
 
                 if self.session_lock_active {
@@ -613,7 +634,7 @@ impl ShojiWM {
                     };
                     let remains_in_region = confine_region.as_ref().is_none_or(|region| {
                         under.as_ref().is_some_and(|(_, surface_origin)| {
-                            region.contains((pos - *surface_origin).to_i32_round())
+                            region.contains((pos - *surface_origin).to_i32_floor())
                         })
                     });
                     if !remains_on_surface || !remains_in_region {
@@ -2630,7 +2651,7 @@ impl ShojiWM {
                     && matches!(&*constraint, PointerConstraint::Locked(_))
                     && constraint
                         .region()
-                        .is_none_or(|region| region.contains((location - focus.1).to_i32_round()))
+                        .is_none_or(|region| region.contains((location - focus.1).to_i32_floor()))
             })
         });
         locked.then_some(focus)
@@ -2654,7 +2675,7 @@ impl ShojiWM {
             let Some(constraint) = constraint.filter(|constraint| !constraint.is_active()) else {
                 return;
             };
-            let local = (location - surface_origin).to_i32_round();
+            let local = (location - surface_origin).to_i32_floor();
             if constraint
                 .region()
                 .is_none_or(|region| region.contains(local))

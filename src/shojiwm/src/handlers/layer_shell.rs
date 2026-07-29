@@ -44,7 +44,7 @@ impl WlrLayerShellHandler for ShojiWM {
             .and_then(Output::from_resource)
             .or_else(|| {
                 let pos = self.seat.get_pointer()?.current_location();
-                let pos_i = pos.to_i32_round();
+                let pos_i = pos.to_i32_floor();
                 self.space
                     .outputs()
                     .find(|output| {
