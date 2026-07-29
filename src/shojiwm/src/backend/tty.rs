@@ -731,13 +731,32 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
     // Connector changes that arrived while the session was paused were
     // deferred (scanning a paused device half-applies them and leaves stale
     // output state); re-run them now that the devices accept commits again.
-    for node in std::mem::take(
-        &mut state.pending_tty_device_changes,
-    ) {
-        info!(
-            ?node,
-            "processing deferred drm device change after tty resume",
-        );
+    //
+    // Rescan *every* device though, not only the ones a deferral queued.
+    // Detecting mid-suspend master loss is structurally incomplete: smithay
+    // maps EACCES during a `TEST_ONLY` commit to `Error::TestFailed` and drops
+    // the errno, so a loss can go unnoticed, nothing is queued, and the
+    // half-applied topology is never repaired — panels stay dark for the rest
+    // of the session. Recovery must not depend on having noticed.
+    //
+    // This is cheap because `DrmScanner` is diff-based: a device whose
+    // topology is unchanged emits no events, so the pass costs one connector
+    // scan and touches no surfaces. The deferral queue is still drained and
+    // still worth keeping — it records which nodes were *known* to need this,
+    // which is the difference between a handled race and a silent one.
+    let deferred = std::mem::take(&mut state.pending_tty_device_changes);
+    let nodes: Vec<DrmNode> = state
+        .tty_backends
+        .keys()
+        .copied()
+        .collect();
+    for node in nodes {
+        if deferred.contains(&node) {
+            info!(
+                ?node,
+                "processing deferred drm device change after tty resume",
+            );
+        }
         if let Err(
             err,
         ) = device_changed(
@@ -746,8 +765,8 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
         ) {
             warn!(
                 ?node,
-                ?err, 
-                "failed to process deferred drm device change",
+                ?err,
+                "failed to rescan drm device after tty resume",
             );
         }
     }
