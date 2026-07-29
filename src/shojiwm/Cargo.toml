@@ -20,6 +20,11 @@ smithay-drm-extras = {
 }
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
+wayland-server = { version = "0.31.13", features = ["libwayland_1_23"] }
+# Preserve libwayland-server diagnostics (including internal protocol and
+# client I/O errors) in ShojiWM's tracing log when using Smithay's system-lib
+# backend.
+wayland-backend = { version = "0.3.15", features = ["log"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 bumpalo = { version = "3.20.2", features = ["allocator-api2"] }

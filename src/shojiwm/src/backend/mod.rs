@@ -328,7 +328,11 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         // and with an unconditional `flush_clients()` the spin became a 10k-iter/sec CPU
         // spike under Firefox. The redraw state machine + VBlank/frame-callback throttling
         // naturally rate-limit real work, so we don't need a non-blocking poll here.
-        if event_loop.dispatch(None, &mut state).is_err() {
+        if let Err(error) = event_loop.dispatch(None, &mut state) {
+            error!(
+                error = ?error,
+                "tty event loop dispatch failed; shutting down"
+            );
             break;
         }
 
@@ -405,7 +409,13 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         // server→client messages (pointer events, frame callbacks, protocol replies) that
         // don't themselves trigger `schedule_redraw`, which showed up as a small but
         // perceptible lag when opening the noctalia shell right-click menu.
-        let _ = state.display_handle.flush_clients();
+        if let Err(error) = state.display_handle.flush_clients() {
+            warn!(
+                error = ?error,
+                raw_os_error = ?error.raw_os_error(),
+                "failed to flush pending wayland client events"
+            );
+        }
         if ran_pre_render_maintenance && !rendered_this_iteration && !state.needs_redraw {
             last_idle_maintenance_at = Instant::now();
         }

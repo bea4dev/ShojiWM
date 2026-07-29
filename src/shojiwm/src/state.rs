@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     fs,
-    os::fd::AsFd,
+    os::unix::net::UnixStream,
     sync::{
         Arc,
         atomic::{AtomicI32, Ordering},
@@ -30,7 +30,10 @@ use smithay::{
             generic::Generic,
             timer::{TimeoutAction, Timer},
         },
-        rustix::net::sockopt::socket_peercred,
+        rustix::net::{
+            RecvFlags, recv,
+            sockopt::{socket_error, socket_peercred},
+        },
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_server::{
             Display, DisplayHandle, Resource,
@@ -130,7 +133,9 @@ use crate::{
     cursor::Cursor,
     drawing::PointerElement,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+
+const WAYLAND_CLIENT_MAX_BUFFER_SIZE: usize = 1024 * 1024;
 
 fn runtime_dirty_debug_enabled() -> bool {
     use std::sync::OnceLock;
@@ -949,6 +954,14 @@ impl ShojiWM {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
+        // libwayland defaults to a 4 KiB per-client outgoing buffer. A briefly stalled UI client
+        // can fill that with high-rate pointer events and get disconnected while it is still
+        // alive. Keep the limit bounded, but large enough to absorb a short scheduling stall.
+        dh.set_default_max_buffer_size(WAYLAND_CLIENT_MAX_BUFFER_SIZE);
+        info!(
+            max_buffer_size = WAYLAND_CLIENT_MAX_BUFFER_SIZE,
+            "configured default wayland client buffer size"
+        );
 
         // Here we initialize implementations of some wayland protocols
         // Some of them require us to implement traits on the Smallvil state,
@@ -1659,7 +1672,8 @@ impl ShojiWM {
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
                 state.record_event_source_wake("wayland-listener");
-                let client_is_xwayland_bridge = is_xwayland_bridge_client(&client_stream);
+                let client_identity = WaylandClientIdentity::from_socket(&client_stream);
+                let client_is_xwayland_bridge = is_xwayland_bridge_client(&client_identity);
                 if client_is_xwayland_bridge {
                     // xwayland-satellite connects as an ordinary Wayland client, so Smithay's
                     // built-in XWaylandClientData is not available. Mark it at accept time based
@@ -1670,6 +1684,8 @@ impl ShojiWM {
                 }
                 info!(
                     client_is_xwayland_bridge,
+                    client_pid = ?client_identity.pid,
+                    client_command = client_identity.command.as_deref().unwrap_or("<unknown>"),
                     "accepted new wayland client connection"
                 );
                 // Inside the callback, you should insert the client into the display.
@@ -1680,6 +1696,7 @@ impl ShojiWM {
                     Arc::new(ClientState {
                         compositor_state: CompositorClientState::default(),
                         xwayland_refresh_override: client_is_xwayland_bridge,
+                        identity: client_identity,
                     }),
                 ) {
                     warn!(
@@ -1708,7 +1725,17 @@ impl ShojiWM {
                     // or more requests. The TTY main loop then decides when to perform the
                     // pre-render refresh/cleanup work.
                     // Safety: we don't drop the display
-                    let dispatched = unsafe { display.get_mut().dispatch_clients(state).unwrap() };
+                    let dispatched = match unsafe { display.get_mut().dispatch_clients(state) } {
+                        Ok(dispatched) => dispatched,
+                        Err(error) => {
+                            error!(
+                                error = ?error,
+                                raw_os_error = ?error.raw_os_error(),
+                                "failed to dispatch wayland client requests"
+                            );
+                            return Err(error);
+                        }
+                    };
                     if dispatched > 0 {
                         state.record_wayland_display_dispatched_requests(dispatched);
                         state.request_tty_maintenance("wayland-display-requests");
@@ -4131,27 +4158,120 @@ impl ShojiWM {
 }
 
 /// One instance of this type per client.
-#[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub xwayland_refresh_override: bool,
+    identity: WaylandClientIdentity,
 }
 
 impl ClientData for ClientState {
-    fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn initialized(&self, client_id: ClientId) {
+        debug!(
+            client_id = ?client_id,
+            client_pid = ?self.identity.pid,
+            client_command = self.identity.command.as_deref().unwrap_or("<unknown>"),
+            client_is_xwayland_bridge = self.xwayland_refresh_override,
+            "wayland client initialized"
+        );
+    }
+
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        let connected_for_ms = self.identity.connected_at.elapsed().as_millis();
+        let (socket_peer_state, pending_socket_error) =
+            self.identity.socket_disconnect_diagnostic();
+        match reason {
+            DisconnectReason::ConnectionClosed => {
+                info!(
+                    client_id = ?client_id,
+                    client_pid = ?self.identity.pid,
+                    client_command = self.identity.command.as_deref().unwrap_or("<unknown>"),
+                    client_is_xwayland_bridge = self.xwayland_refresh_override,
+                    connected_for_ms,
+                    socket_peer_state,
+                    pending_socket_error = ?pending_socket_error,
+                    reason = "connection-closed",
+                    "wayland client disconnected without a server protocol error"
+                );
+            }
+            DisconnectReason::ProtocolError(protocol_error) => {
+                error!(
+                    client_id = ?client_id,
+                    client_pid = ?self.identity.pid,
+                    client_command = self.identity.command.as_deref().unwrap_or("<unknown>"),
+                    client_is_xwayland_bridge = self.xwayland_refresh_override,
+                    connected_for_ms,
+                    socket_peer_state,
+                    pending_socket_error = ?pending_socket_error,
+                    protocol_interface = %protocol_error.object_interface,
+                    protocol_object_id = protocol_error.object_id,
+                    protocol_error_code = protocol_error.code,
+                    protocol_error_message = %protocol_error.message,
+                    "wayland client disconnected after server protocol error"
+                );
+            }
+        }
+    }
 }
 
-fn is_xwayland_bridge_client<Fd: AsFd>(fd: Fd) -> bool {
+struct WaylandClientIdentity {
+    pid: Option<i32>,
+    command: Option<String>,
+    connected_at: Instant,
+    socket_probe: Option<UnixStream>,
+}
+
+impl WaylandClientIdentity {
+    fn from_socket(fd: &UnixStream) -> Self {
+        let pid = socket_peercred(fd)
+            .ok()
+            .map(|credentials| credentials.pid.as_raw_pid());
+        let command = pid.and_then(process_command_for_pid);
+        Self {
+            pid,
+            command,
+            connected_at: Instant::now(),
+            socket_probe: fd.try_clone().ok(),
+        }
+    }
+
+    fn socket_disconnect_diagnostic(&self) -> (String, Option<String>) {
+        let Some(socket) = self.socket_probe.as_ref() else {
+            return ("probe-unavailable".to_owned(), None);
+        };
+
+        let pending_error = match socket_error(socket) {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(format!("{error:?}")),
+            Err(error) => Some(format!("SO_ERROR query failed: {error:?}")),
+        };
+
+        let mut byte = [0_u8; 1];
+        let peer_state = match recv(
+            socket,
+            &mut byte,
+            RecvFlags::PEEK | RecvFlags::DONTWAIT,
+        ) {
+            Ok((_, 0)) => "peer-closed".to_owned(),
+            Ok((_, count)) => format!("peer-open-pending-data:{count}"),
+            Err(error) if error == smithay::reexports::rustix::io::Errno::AGAIN => {
+                "peer-open-no-pending-data".to_owned()
+            }
+            Err(error) => format!("probe-error:{error:?}"),
+        };
+
+        (peer_state, pending_error)
+    }
+}
+
+fn is_xwayland_bridge_client(identity: &WaylandClientIdentity) -> bool {
     // There is no protocol-level "this client is an Xwayland bridge" bit. For the refresh
     // workaround we need the decision before global binding, so peer credentials are the least
     // invasive option available here. Keep the match intentionally narrow: this path changes
     // advertised output refresh and must not catch arbitrary Wayland clients.
-    let Ok(credentials) = socket_peercred(fd) else {
+    let Some(pid) = identity.pid else {
         return false;
     };
-    let pid = credentials.pid.as_raw_pid();
-    let Some(command) = process_command_for_pid(pid) else {
+    let Some(command) = identity.command.as_deref() else {
         return false;
     };
 
@@ -4179,4 +4299,32 @@ fn process_command_for_pid(pid: i32) -> Option<String> {
     fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
         .map(|value| value.trim().to_owned())
+}
+
+#[cfg(test)]
+mod wayland_client_identity_tests {
+    use super::WaylandClientIdentity;
+    use std::{io::Write, os::unix::net::UnixStream};
+
+    #[test]
+    fn socket_diagnostic_identifies_peer_close() {
+        let (server, client) = UnixStream::pair().expect("create socket pair");
+        let identity = WaylandClientIdentity::from_socket(&server);
+        drop(client);
+
+        let (peer_state, pending_error) = identity.socket_disconnect_diagnostic();
+        assert_eq!(peer_state, "peer-closed");
+        assert_eq!(pending_error, None);
+    }
+
+    #[test]
+    fn socket_diagnostic_identifies_live_peer_with_pending_data() {
+        let (server, mut client) = UnixStream::pair().expect("create socket pair");
+        let identity = WaylandClientIdentity::from_socket(&server);
+        client.write_all(&[1]).expect("write peer byte");
+
+        let (peer_state, pending_error) = identity.socket_disconnect_diagnostic();
+        assert_eq!(peer_state, "peer-open-pending-data:1");
+        assert_eq!(pending_error, None);
+    }
 }
