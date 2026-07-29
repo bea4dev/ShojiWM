@@ -206,6 +206,10 @@ fn send_supported(manager: &WpColorManagerV1) {
         manager.supported_primaries_named(Primaries::Bt2020);
         manager.supported_tf_named(TransferFunction::St2084Pq);
         manager.supported_tf_named(TransferFunction::ExtLinear);
+        // Gamescope >= 3.16.4 requires this and checks the feature before
+        // using it; without it the client either errors out on
+        // `create_windows_scrgb` or silently drops to SDR.
+        manager.supported_feature(Feature::WindowsScrgb);
     }
     manager.done();
 }
@@ -244,6 +248,11 @@ pub struct FeedbackData {
 #[derive(Debug)]
 pub struct ImageDescriptionData {
     description: Option<ImageDescription>,
+    /// Whether `get_information` may be answered. Windows-scRGB descriptions
+    /// are usable but not introspectable: the protocol forbids the request on
+    /// them because the encoding's reference white and target colour volume
+    /// are undefined, not merely unknown to us.
+    allow_information: bool,
 }
 
 /// Accumulator for `wp_image_description_creator_params_v1`.
@@ -266,6 +275,7 @@ fn init_ready_description<D>(
     data_init: &mut DataInit<'_, D>,
     id: New<WpImageDescriptionV1>,
     description: ImageDescription,
+    allow_information: bool,
 ) -> WpImageDescriptionV1
 where
     D: Dispatch<WpImageDescriptionV1, ImageDescriptionData> + 'static,
@@ -274,6 +284,7 @@ where
         id,
         ImageDescriptionData {
             description: Some(description),
+            allow_information,
         },
     );
     object.ready(next_identity());
@@ -438,15 +449,48 @@ where
                 );
             }
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
-                data_init.init(
+                // Advertised alongside the other HDR entries, so refuse it on
+                // the same terms: without the gate there is no extended-linear
+                // path through the render pipeline to honour it with.
+                if !hdr_experiment_enabled() {
+                    data_init.init(
+                        image_description,
+                        ImageDescriptionData {
+                            description: None,
+                            allow_information: false,
+                        },
+                    );
+                    manager.post_error(
+                        wp_color_manager_v1::Error::UnsupportedFeature,
+                        "windows_scrgb is not supported",
+                    );
+                    return;
+                }
+                // Wholly fixed by the protocol: sRGB/BT.709 primaries and
+                // white point, extended-linear transfer, nominal R=G=B=1.0 at
+                // 80 cd/m² rising to 125.0 at 10k cd/m². The luminances have
+                // to be stated rather than defaulted — `ExtLinear`'s own
+                // defaults are the SDR 80 cd/m² set, which would silently
+                // clamp the whole point of the encoding. Reference white is
+                // formally *unknown* for Windows-scRGB; the protocol says to
+                // assume BT.2408's 203 cd/m² where one is needed, and the
+                // compositing path needs one.
+                init_ready_description(
+                    data_init,
                     image_description,
-                    ImageDescriptionData {
-                        description: None
-                    }
-                );
-                manager.post_error(
-                    wp_color_manager_v1::Error::UnsupportedFeature,
-                    "windows_scrgb is not supported",
+                    ImageDescription {
+                        primaries: ColorPrimaries::Srgb,
+                        tf: TransferCharacteristics::ExtLinear,
+                        luminances: Some(Luminances {
+                            min: 0.0,
+                            max: 10_000.0,
+                            reference: 203.0,
+                        }),
+                        max_cll: None,
+                        max_fall: None,
+                    },
+                    // The protocol disallows `get_information` on the result.
+                    false,
                 );
             }
             wp_color_manager_v1::Request::Destroy => {}
@@ -476,7 +520,8 @@ where
                 init_ready_description(
                     data_init,
                     image_description,
-                    description
+                    description,
+                    true,
                 );
             }
             wp_color_management_output_v1::Request::Destroy => {}
@@ -589,7 +634,13 @@ where
             } => {
                 if !data.surface.is_alive() {
                     data_init
-                        .init(image_description, ImageDescriptionData { description: None });
+                        .init(
+                            image_description,
+                            ImageDescriptionData {
+                                description: None,
+                                allow_information: false,
+                            },
+                        );
                     feedback.post_error(
                         wp_color_management_surface_feedback_v1::Error::Inert,
                         "the wl_surface has been destroyed",
@@ -602,7 +653,8 @@ where
                 init_ready_description(
                     data_init,
                     image_description,
-                    description
+                    description,
+                    true,
                 );
             }
             wp_color_management_surface_feedback_v1::Request::Destroy => {}
@@ -805,13 +857,15 @@ where
                                 max_cll: params.max_cll,
                                 max_fall: params.max_fall,
                             },
+                            true,
                         );
                     }
                     _ => {
                         data_init.init(
                             image_description,
                             ImageDescriptionData {
-                                description: None
+                                description: None,
+                                allow_information: false,
                             },
                         );
                         creator.post_error(
@@ -847,14 +901,14 @@ where
                     // it must not be sent from inside this dispatch (which
                     // created `info`) or wayland-backend writes the new
                     // object's data through a freed pointer afterwards.
-                    Some(description) => {
+                    Some(description) if data.allow_information => {
                         state
                             .defer_image_description_info(
                                 info,
                                 *description,
                             );
                     }
-                    None => {
+                    _ => {
                         description_obj.post_error(
                             wp_image_description_v1::Error::NoInformation,
                             "image description has no information",
