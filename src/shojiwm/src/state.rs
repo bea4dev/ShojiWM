@@ -3,6 +3,7 @@ use std::{
     ffi::OsString,
     fs,
     os::unix::net::UnixStream,
+    process::Child,
     sync::{
         Arc,
         atomic::{AtomicI32, Ordering},
@@ -346,6 +347,11 @@ pub struct ShojiWM {
     pub runtime_process_once_runs: HashMap<String, u64>,
     pub runtime_process_suppressed_services: HashMap<String, u64>,
     pub runtime_managed_services: BTreeMap<String, ManagedRuntimeService>,
+    // Fire-and-forget children (Once/spawn) that aren't tracked anywhere
+    // else. We don't need their exit status, just to reap them so they
+    // don't sit around as zombies — polled alongside the managed services
+    // in refresh_runtime_processes.
+    pub runtime_pending_reap: Vec<Child>,
     pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
@@ -1258,6 +1264,7 @@ impl ShojiWM {
             runtime_process_once_runs: Default::default(),
             runtime_process_suppressed_services: Default::default(),
             runtime_managed_services: Default::default(),
+            runtime_pending_reap: Default::default(),
             runtime_key_binding_entries: Default::default(),
             runtime_key_bindings: Vec::new(),
             runtime_window_move_modifier: None,
@@ -2806,10 +2813,11 @@ impl ShojiWM {
                 warn!(?action, "ignoring invalid runtime process action");
                 continue;
             }
-            if let Err(error) =
-                spawn_runtime_process(&action.launch, action.cwd.as_deref(), &action.env)
-            {
-                warn!(?error, ?action, "failed to spawn runtime process action");
+            match spawn_runtime_process(&action.launch, action.cwd.as_deref(), &action.env) {
+                Ok(child) => self.runtime_pending_reap.push(child),
+                Err(error) => {
+                    warn!(?error, ?action, "failed to spawn runtime process action");
+                }
             }
         }
     }
@@ -2860,6 +2868,18 @@ impl ShojiWM {
                 );
             }
         }
+
+        // Reap fire-and-forget Once/spawn children as they exit. We don't
+        // care about their exit status, just that they don't sit around as
+        // zombies — same try_wait() polling as the Service loop above.
+        self.runtime_pending_reap.retain_mut(|child| match child.try_wait() {
+            Ok(Some(_status)) => false,
+            Ok(None) => true,
+            Err(error) => {
+                warn!(?error, "failed to poll fire-and-forget runtime process");
+                false
+            }
+        });
 
         self.reconcile_runtime_processes();
     }
@@ -2944,9 +2964,10 @@ impl ShojiWM {
                     }
 
                     match spawn_runtime_process(&launch, cwd.as_deref(), &env) {
-                        Ok(_child) => {
+                        Ok(child) => {
                             self.runtime_process_once_runs
                                 .insert(id.clone(), generation);
+                            self.runtime_pending_reap.push(child);
                             info!(process_id = %id, run_policy = ?run_policy, "started runtime once process");
                         }
                         Err(error) => {
