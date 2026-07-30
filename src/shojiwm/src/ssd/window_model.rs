@@ -746,7 +746,7 @@ impl ShojiWM {
         let runtime_id = if let Some(existing) = self.window_decorations.get(window) {
             existing.snapshot.id.clone()
         } else {
-            runtime_id_for_window(window, toplevel.wl_surface().id().protocol_id())
+            runtime_id_for_window(window)
         };
         let rect = self
             .window_decorations
@@ -843,7 +843,7 @@ impl ShojiWM {
         let runtime_id = if let Some(existing) = self.window_decorations.get(window) {
             existing.snapshot.id.clone()
         } else {
-            runtime_id_for_x11_window(&x11)
+            runtime_id_for_window(window)
         };
         let rect = self
             .window_decorations
@@ -897,7 +897,7 @@ impl ShojiWM {
                 self.window_decorations
                     .get(window)
                     .map(|decoration| decoration.snapshot.id.clone())
-                    .unwrap_or_else(|| runtime_id_for_window(window, surface.id().protocol_id()))
+                    .unwrap_or_else(|| runtime_id_for_window(window))
             })
         })
     }
@@ -1093,20 +1093,12 @@ fn window_constraints_are_resizable(
     !(width_fixed || height_fixed)
 }
 
-fn runtime_id_for_window(window: &Window, protocol_id: u32) -> String {
-    window
-        .toplevel()
-        .and_then(|toplevel| {
-            toplevel
-                .wl_surface()
-                .client()
-                .map(|client| format!("{:?}:{}", client.id(), protocol_id))
-        })
-        .unwrap_or_else(|| format!("unknown-client:{protocol_id}"))
-}
-
-fn runtime_id_for_x11_window(surface: &smithay::xwayland::X11Surface) -> String {
-    format!("x11:{}", surface.window_id())
+/// Stable runtime id for a toplevel window (Wayland or X11). Backed by
+/// `smithay::desktop::Window::id()`, a process-lifetime-unique counter, so
+/// unlike the wl_surface protocol id / X11 XID it can't be recycled onto an
+/// unrelated window after the original closes.
+fn runtime_id_for_window(window: &Window) -> String {
+    format!("0x{:x}", window.id())
 }
 
 pub fn layer_runtime_id(layer: &LayerSurface) -> String {
