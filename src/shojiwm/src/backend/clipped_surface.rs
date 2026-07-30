@@ -749,6 +749,10 @@ impl ClippedSurfaceElement {
                 "sample_uv_compensation_enabled",
                 self.sample_uv_compensation_enabled,
             ),
+            Uniform::new("src_transfer", self.src_transfer),
+            Uniform::new("src_primaries", self.src_primaries),
+            Uniform::new("src_ref_nits", self.src_ref_nits),
+            Uniform::new("src_max_nits", self.src_max_nits),
         ]
     }
 }
