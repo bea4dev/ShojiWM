@@ -214,6 +214,7 @@ impl ClippedSurfaceElement {
         clip: ContentClip,
         forced_geometry: Option<Rectangle<i32, Physical>>,
         debug_label: Option<String>,
+        image_description: Option<crate::color::ImageDescription>,
     ) -> Result<Self, GlesError> {
         if renderer
             .egl_context()
@@ -540,6 +541,37 @@ impl ClippedSurfaceElement {
             }
         }
 
+        // Resolve the surface's color-management tag into shader uniforms once,
+        // here, rather than per-fragment. `src_transfer == 0.0` is the untagged
+        // path and makes the shader skip the conversion, so sRGB clients are
+        // byte-identical to before.
+        let (src_transfer, src_primaries, src_ref_nits, src_max_nits) = match image_description {
+            Some(description) => {
+                let primaries = match description.primaries {
+                    crate::color::ColorPrimaries::Srgb => 0.0,
+                    crate::color::ColorPrimaries::Bt2020 => 1.0,
+                };
+                let transfer = match description.tf {
+                    // sRGB in sRGB primaries already *is* the compositing
+                    // space. In a wider gamut it still needs the matrix, so it
+                    // takes the decode-only branch instead of the fast path.
+                    crate::color::TransferCharacteristics::Srgb if primaries == 0.0 => 0.0,
+                    crate::color::TransferCharacteristics::Srgb => 3.0,
+                    crate::color::TransferCharacteristics::St2084Pq => 1.0,
+                    crate::color::TransferCharacteristics::ExtLinear => 2.0,
+                };
+                let luminances = description.effective_luminances();
+                // MaxCLL is the measured peak of the content; fall back to the
+                // description's declared maximum when the client didn't send it.
+                let max_nits = description
+                    .max_cll
+                    .map(|cll| cll as f32)
+                    .unwrap_or(luminances.max);
+                (transfer, primaries, luminances.reference, max_nits)
+            }
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+
         Ok(Self {
             inner,
             geometry: render_geometry,
@@ -565,6 +597,10 @@ impl ClippedSurfaceElement {
             } else {
                 0.0
             },
+            src_transfer,
+            src_primaries,
+            src_ref_nits,
+            src_max_nits,
         })
     }
 
