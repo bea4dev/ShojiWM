@@ -90,10 +90,27 @@ vec3 tonemap_to_sdr(vec3 nits) {
     return n * (vec3(1.0) + n / vec3(peak * peak)) / (vec3(1.0) + n);
 }
 
+// sRGB EOTF (IEC 61966-2-1 piecewise decode).
+vec3 srgb_eotf(vec3 c) {
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((max(c, vec3(0.0)) + vec3(0.055)) / 1.055, vec3(2.4));
+    return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.04045))));
+}
+
 // Convert one sampled, *unpremultiplied* texel into the compositing space.
 vec3 to_compositing_space(vec3 c) {
-    // Extended linear (scRGB) defines 1.0 as 80 cd/m²; PQ is absolute.
-    vec3 linear = (src_transfer > 1.5) ? c * 80.0 : pq_eotf(c);
+    vec3 linear;
+    if (src_transfer > 2.5) {
+        // sRGB transfer, but non-sRGB primaries — decode only so the gamut
+        // matrix below has linear light to work on.
+        linear = srgb_eotf(c) * max(src_ref_nits, 0.0001);
+    } else if (src_transfer > 1.5) {
+        // Extended linear (scRGB): 1.0 is defined as 80 cd/m².
+        linear = c * 80.0;
+    } else {
+        // PQ is absolute luminance.
+        linear = pq_eotf(c);
+    }
     if (src_primaries > 0.5) {
         linear = BT2020_TO_BT709 * linear;
     }
