@@ -127,7 +127,7 @@ impl PointerConstraintsHandler for ShojiWM {
             let Some(constraint) = constraint else {
                 return;
             };
-            let local = (location - *surface_origin).to_i32_round();
+            let local = (location - *surface_origin).to_i32_floor();
             if constraint
                 .region()
                 .is_none_or(|region| region.contains(local))

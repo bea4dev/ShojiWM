@@ -153,7 +153,7 @@ impl ResizeSurfaceGrab {
             .find(|output| {
                 data.space
                     .output_geometry(output)
-                    .is_some_and(|geometry| geometry.contains(current_pointer.to_i32_round()))
+                    .is_some_and(|geometry| geometry.contains(current_pointer.to_i32_floor()))
             })
             .map(|output| output.name());
 
