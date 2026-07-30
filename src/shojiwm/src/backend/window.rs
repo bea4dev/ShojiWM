@@ -1062,6 +1062,13 @@ pub fn clipped_surface_elements(
                         "gap debug clipped surface candidate",
                     );
                 }
+                // Resolve before the move: `element` is consumed below.
+                let element_description = surface_descriptions
+                    .get(
+                        Element::id(
+                            &element,
+                        )
+                    ).copied();
                 if geometry_override.is_some() {
                     ClippedSurfaceElement::new(
                         renderer,
@@ -1072,7 +1079,7 @@ pub fn clipped_surface_elements(
                         clip,
                         geometry_override,
                         debug_label.clone(),
-                        image_description,
+                        element_description,
                     )
                     .map(WindowClipElement::Clipped)
                 } else {
