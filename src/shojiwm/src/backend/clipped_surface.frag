@@ -28,6 +28,78 @@ uniform vec2 sample_buffer_size;
 uniform vec2 sample_uv_snap_axes;
 uniform float sample_uv_compensation_enabled;
 
+// Per-surface color management. Compositing happens on sRGB-encoded BT.709
+// values, so content tagged with any other transfer/primaries via
+// `wp_color_management_v1` has to be converted on the way in — otherwise it is
+// decoded as if it were sRGB (which it never was) and again by
+// `output_encode.frag`, which is what makes PQ video look washed out.
+//
+// This is the SDR-correct conversion: HDR content is tone-mapped down into the
+// compositing range rather than carried at HDR luminance, because the encode
+// pass clamps to [0,1] before its own transfer. Carrying real HDR through
+// needs linear compositing and is a separate change.
+//
+// 0 = passthrough (untagged, already sRGB/BT.709), 1 = ST 2084 PQ, 2 = extended linear.
+uniform float src_transfer;
+// 0 = BT.709/sRGB primaries, 1 = BT.2020.
+uniform float src_primaries;
+// Content reference white and peak in cd/m², from the surface's `Luminances`
+// (or the protocol's per-transfer-function defaults when unset).
+uniform float src_ref_nits;
+uniform float src_max_nits;
+
+// BT.2020 -> BT.709 linear-light gamut matrix, column-major. Inverse of the
+// BT.2087 matrix in `output_encode.frag`; both are cross-checked against the
+// CPU derivation in `color/colorimetry.rs`.
+const mat3 BT2020_TO_BT709 = mat3(
+     1.660491, -0.124550, -0.018151,
+    -0.587641,  1.132900, -0.100579,
+    -0.072850, -0.008349,  1.118730
+);
+
+// SMPTE ST 2084 (PQ) EOTF: PQ signal -> absolute cd/m². Inverse of
+// `pq_inv_eotf` in `output_encode.frag`.
+vec3 pq_eotf(vec3 e) {
+    const float m1 = 0.1593017578125;  // 1305/8192
+    const float m2 = 78.84375;         // 2523/32
+    const float c1 = 0.8359375;        // 107/128
+    const float c2 = 18.8515625;       // 2413/128
+    const float c3 = 18.6875;          // 2392/128
+    vec3 ep = pow(clamp(e, 0.0, 1.0), vec3(1.0 / m2));
+    vec3 num = max(ep - vec3(c1), vec3(0.0));
+    vec3 den = max(vec3(c2) - c3 * ep, vec3(0.000001));
+    return 10000.0 * pow(num / den, vec3(1.0 / m1));
+}
+
+// sRGB inverse EOTF (IEC 61966-2-1 piecewise encode).
+vec3 srgb_inv_eotf(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.0031308))));
+}
+
+// Roll the content's luminance range down so its reference white lands on
+// compositing-space 1.0. Extended Reinhard: linear near the reference white,
+// asymptotically approaching 1.0 at the content peak. Deliberately simple —
+// tone mapping is where perceptual quality lives and this is the knob to
+// iterate on with real content.
+vec3 tonemap_to_sdr(vec3 nits) {
+    float ref_nits = max(src_ref_nits, 0.0001);
+    float peak = max(src_max_nits, ref_nits) / ref_nits;
+    vec3 n = nits / ref_nits;
+    return n * (vec3(1.0) + n / vec3(peak * peak)) / (vec3(1.0) + n);
+}
+
+// Convert one sampled, *unpremultiplied* texel into the compositing space.
+vec3 to_compositing_space(vec3 c) {
+    // Extended linear (scRGB) defines 1.0 as 80 cd/m²; PQ is absolute.
+    vec3 linear = (src_transfer > 1.5) ? c * 80.0 : pq_eotf(c);
+    if (src_primaries > 0.5) {
+        linear = BT2020_TO_BT709 * linear;
+    }
+    return srgb_inv_eotf(clamp(tonemap_to_sdr(linear), 0.0, 1.0));
+}
+
 float rounded_alpha(vec2 coords, vec2 size) {
     if (coords.x < 0.0 || coords.y < 0.0 || coords.x > size.x || coords.y > size.y) {
         return 0.0;
