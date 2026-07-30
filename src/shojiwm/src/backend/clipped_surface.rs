@@ -556,7 +556,14 @@ impl ClippedSurfaceElement {
         // here, rather than per-fragment. `src_transfer == 0.0` is the untagged
         // path and makes the shader skip the conversion, so sRGB clients are
         // byte-identical to before.
-        let (src_transfer, src_primaries, src_ref_nits, src_max_nits) = match image_description {
+        let (
+            src_transfer, 
+            src_primaries,
+            src_ref_nits, 
+            src_pq_lo,
+            src_pq_hi, 
+            dst_pq_hi,
+        ) = match image_description {
             Some(description) => {
                 let primaries = match description.primaries {
                     crate::color::ColorPrimaries::Srgb => 0.0,
@@ -578,9 +585,24 @@ impl ClippedSurfaceElement {
                     .max_cll
                     .map(|cll| cll as f32)
                     .unwrap_or(luminances.max);
-                (transfer, primaries, luminances.reference, max_nits)
+                // BT.2390 operates on PQ signals, so encode the knee here
+                // rather than paying four pow() calls per fragment for values
+                // that are constant across the surface. The target peak is the
+                // content's own reference white, which is what compositing-space
+                // 1.0 represents.
+                let to_pq = |nits: f32| {
+                    crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32
+                };
+                (
+                    transfer,
+                    primaries,
+                    luminances.reference,
+                    to_pq(luminances.min),
+                    to_pq(max_nits),
+                    to_pq(luminances.reference),
+                )
             }
-            None => (0.0, 0.0, 0.0, 0.0),
+            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         };
 
         Ok(Self {
