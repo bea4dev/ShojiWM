@@ -44,10 +44,17 @@ uniform float sample_uv_compensation_enabled;
 uniform float src_transfer;
 // 0 = BT.709/sRGB primaries, 1 = BT.2020.
 uniform float src_primaries;
-// Content reference white and peak in cd/m², from the surface's `Luminances`
-// (or the protocol's per-transfer-function defaults when unset).
+// Content reference white in cd/m², from the surface's `Luminances` (or the
+// protocol's per-transfer-function defaults when unset). Doubles as the
+// compositing space's white point: 1.0 here means this many nits.
 uniform float src_ref_nits;
-uniform float src_max_nits;
+// Tone-mapping knee parameters, already in the PQ domain because that is where
+// BT.2390 operates. Precomputed on the CPU via `color::colorimetry::
+// pq_inverse_eotf` — deriving them here would cost four extra pow-heavy calls
+// per fragment for values that are constant across the whole surface.
+uniform float src_pq_lo;   // content black
+uniform float src_pq_hi;   // content peak
+uniform float dst_pq_hi;   // what compositing-space 1.0 can represent
 
 // BT.2020 -> BT.709 linear-light gamut matrix, column-major. Inverse of the
 // BT.2087 matrix in `output_encode.frag`; both are cross-checked against the
@@ -79,16 +86,52 @@ vec3 srgb_inv_eotf(vec3 c) {
     return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.0031308))));
 }
 
-// Roll the content's luminance range down so its reference white lands on
-// compositing-space 1.0. Extended Reinhard: linear near the reference white,
-// asymptotically approaching 1.0 at the content peak. Deliberately simple —
-// tone mapping is where perceptual quality lives and this is the knob to
-// iterate on with real content.
-vec3 tonemap_to_sdr(vec3 nits) {
-    float ref_nits = max(src_ref_nits, 0.0001);
-    float peak = max(src_max_nits, ref_nits) / ref_nits;
-    vec3 n = nits / ref_nits;
-    return n * (vec3(1.0) + n / vec3(peak * peak)) / (vec3(1.0) + n);
+// SMPTE ST 2084 (PQ) inverse EOTF: absolute cd/m² -> PQ signal. Mirrors the
+// one in `output_encode.frag`; needed here to lift non-PQ sources into the
+// domain BT.2390 works in.
+vec3 pq_inv_eotf(vec3 nits) {
+    const float m1 = 0.1593017578125;
+    const float m2 = 78.84375;
+    const float c1 = 0.8359375;
+    const float c2 = 18.8515625;
+    const float c3 = 18.6875;
+    vec3 y = clamp(nits / 10000.0, 0.0, 1.0);
+    vec3 ym = pow(y, vec3(m1));
+    return pow((vec3(c1) + c2 * ym) / (vec3(1.0) + c3 * ym), vec3(m2));
+}
+
+// ITU-R BT.2390 EETF, applied per channel on a PQ signal.
+//
+// Below the knee this is the *identity*, so content already inside the target
+// range passes through untouched — the decisive advantage over a global curve
+// like Reinhard, which pulls midtones down alongside highlights and leaves the
+// whole image flat. Above the knee a Hermite spline rolls smoothly off to the
+// target peak. Operating in PQ rather than linear light spreads the
+// compression error evenly across *perceived* brightness.
+float bt2390_channel(float e) {
+    float range = max(src_pq_hi - src_pq_lo, 0.000001);
+    float e1 = clamp((e - src_pq_lo) / range, 0.0, 1.0);
+    float max_lum = clamp((dst_pq_hi - src_pq_lo) / range, 0.0, 1.0);
+    float ks = 1.5 * max_lum - 0.5;
+
+    float e2 = e1;
+    if (ks < 1.0 && e1 > ks) {
+        float t = (e1 - ks) / (1.0 - ks);
+        float t2 = t * t;
+        float t3 = t2 * t;
+        e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks
+           + (t3 - 2.0 * t2 + t) * (1.0 - ks)
+           + (-2.0 * t3 + 3.0 * t2) * max_lum;
+    }
+    return e2 * range + src_pq_lo;
+}
+
+vec3 bt2390_eetf(vec3 pq) {
+    return vec3(
+        bt2390_channel(pq.r),
+        bt2390_channel(pq.g),
+        bt2390_channel(pq.b)
+    );
 }
 
 // sRGB EOTF (IEC 61966-2-1 piecewise decode).
