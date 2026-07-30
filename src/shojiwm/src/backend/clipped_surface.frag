@@ -1,11 +1,18 @@
-precision highp float;
+// Smithay substitutes the variant defines here via a plain
+// `src.replace("//_DEFINES_", ...)` (gles/shaders/mod.rs). Without this marker
+// the replace is a no-op and all three compiled variants get identical source
+// with EXTERNAL and NO_ALPHA *undefined* — so an external-OES buffer would be
+// sampled through a `sampler2D` declaration, and NO_ALPHA (which smithay
+// documents as mandatory for custom texture shaders) would never be honoured.
+//_DEFINES_
 
-uniform float alpha;
-varying vec2 v_coords;
-
+// `#extension` must precede every non-preprocessor token in GLSL ES 1.00, so
+// it has to come before `precision` and any declaration.
 #if defined(EXTERNAL)
 #extension GL_OES_EGL_image_external : require
 #endif
+
+precision highp float;
 
 #if defined(EXTERNAL)
 uniform samplerExternalOES tex;
@@ -13,6 +20,8 @@ uniform samplerExternalOES tex;
 uniform sampler2D tex;
 #endif
 
+uniform float alpha;
+varying vec2 v_coords;
 uniform float clip_scale;
 uniform vec2 slot_size;
 uniform vec2 slot_origin;
