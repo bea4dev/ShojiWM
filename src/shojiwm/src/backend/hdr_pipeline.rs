@@ -84,7 +84,7 @@ pub fn probe_fp16_render_support(
 /// Luminance that sRGB full white maps to on the PQ signal (cd/m²).
 /// ITU-R BT.2408 reference white by default; `SHOJI_SDR_NITS` overrides
 /// for taste/testing.
-fn sdr_reference_nits() -> f32 {
+pub(crate) fn sdr_reference_nits() -> f32 {
     static NITS: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *NITS.get_or_init(|| {
         std::env::var(
