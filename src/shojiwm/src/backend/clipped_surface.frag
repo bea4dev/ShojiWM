@@ -1,9 +1,13 @@
-// Smithay substitutes the variant defines here via a plain
-// `src.replace("//_DEFINES_", ...)` (gles/shaders/mod.rs). Without this marker
-// the replace is a no-op and all three compiled variants get identical source
-// with EXTERNAL and NO_ALPHA *undefined* — so an external-OES buffer would be
-// sampled through a `sampler2D` declaration, and NO_ALPHA (which smithay
-// documents as mandatory for custom texture shaders) would never be honoured.
+// Smithay substitutes the variant defines at the marker below, by plain string
+// replacement (see gles/shaders/mod.rs). Without it the replacement is a no-op
+// and all three compiled variants get identical source with EXTERNAL and
+// NO_ALPHA *undefined* — an external-OES buffer would then be sampled through a
+// `sampler2D` declaration, and NO_ALPHA (which smithay documents as mandatory
+// for custom texture shaders) would never be honoured.
+//
+// Do not write the marker's name anywhere else in this file: the replacement is
+// global, so a second occurrence — even inside a comment — would inject a
+// `#define` mid-line and break the following line out of its comment.
 //_DEFINES_
 
 // `#extension` must precede every non-preprocessor token in GLSL ES 1.00, so
