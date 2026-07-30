@@ -39,7 +39,8 @@ uniform float sample_uv_compensation_enabled;
 // pass clamps to [0,1] before its own transfer. Carrying real HDR through
 // needs linear compositing and is a separate change.
 //
-// 0 = passthrough (untagged, already sRGB/BT.709), 1 = ST 2084 PQ, 2 = extended linear.
+// 0 = passthrough (untagged, or already sRGB in sRGB primaries), 1 = ST 2084 PQ,
+// 2 = extended linear (scRGB), 3 = sRGB transfer needing only a gamut change.
 uniform float src_transfer;
 // 0 = BT.709/sRGB primaries, 1 = BT.2020.
 uniform float src_primaries;
