@@ -31,7 +31,13 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         background_effect::BackgroundEffectSurfaceCachedState,
-        compositor::{RectangleKind, RegionAttributes, with_states},
+        compositor::{
+            RectangleKind, 
+            RegionAttributes, 
+            TraversalAction, 
+            with_states,
+            with_surface_tree_downward,
+        },
         session_lock::LockSurface,
         shell::wlr_layer::Layer as WlrLayer,
         shell::xdg::XdgToplevelSurfaceData,
@@ -870,14 +876,41 @@ pub fn clipped_surface_elements(
     // surfaces and may carry their own descriptions, so a player that puts
     // video on a subsurface while leaving the toplevel untagged is not handled
     // yet. The common case — a client tagging its main surface — is.
-    let image_description = match window.underlying_surface() {
-        WindowSurface::Wayland(surface) => {
-            crate::protocols::color_management::surface_image_description(surface.wl_surface())
-        }
-        // X11 has no color-management protocol, so XWayland clients are always
-        // untagged and take the passthrough path.
-        _ => None,
-    };
+    // Color-management tags, keyed by the element id `WaylandSurfaceRenderElement`
+    // derives from each surface. Collected per-surface rather than taken from the
+    // toplevel, because a subsurface carries its own description — players that
+    // put video on a subsurface leave the toplevel untagged.
+    //
+    // Pairing by id rather than rebuilding the element list ourselves keeps
+    // smithay's surface-tree walk (and its view-offset handling) as the single
+    // source of truth for positioning.
+    let surface_descriptions: std::collections::HashMap<Id, crate::color::ImageDescription> =
+        match window.underlying_surface() {
+            // Skipped entirely until something in the session has ever been
+            // tagged, which is one relaxed atomic load in the common case.
+            WindowSurface::Wayland(toplevel)
+                if crate::protocols::color_management::any_surface_tagged() =>
+            {
+                let mut found = std::collections::HashMap::new();
+                with_surface_tree_downward(
+                    toplevel.wl_surface(),
+                    (),
+                    |_, _, _| TraversalAction::DoChildren(()),
+                    |surface, _, _| {
+                        if let Some(description) =
+                            crate::protocols::color_management::surface_image_description(surface)
+                        {
+                            found.insert(Id::from_wayland_resource(surface), description);
+                        }
+                    },
+                    |_, _, _| true,
+                );
+                found
+            }
+            // X11 has no color-management protocol, so XWayland clients are
+            // always untagged and take the passthrough path.
+            _ => std::collections::HashMap::new(),
+        };
 
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
     if clip.is_none() || std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {

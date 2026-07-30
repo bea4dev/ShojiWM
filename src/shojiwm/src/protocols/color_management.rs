@@ -159,6 +159,22 @@ fn with_color_surface_data<T>(
     })
 }
 
+/// Set once any surface is ever tagged, and never cleared.
+///
+/// The render path has to walk a window's surface tree to find per-subsurface
+/// descriptions, and almost no session ever has a tagged surface at all. This
+/// turns that walk into a single relaxed load in the common case. Deliberately
+/// sticky rather than a live count: untagging is rare, the walk is cheap, and a
+/// stale `true` only costs a walk that finds nothing — whereas a stale `false`
+/// would silently skip the conversion.
+static ANY_SURFACE_TAGGED: AtomicBool = AtomicBool::new(false);
+
+/// Whether any surface has ever carried an image description this session.
+/// A `false` return means the render path can skip its per-window tree walk.
+pub fn any_surface_tagged() -> bool {
+    ANY_SURFACE_TAGGED.load(Ordering::Relaxed)
+}
+
 /// Render-side read: the surface's committed image description, or `None`
 /// for untagged content (treat as sRGB).
 pub fn surface_image_description(surface: &WlSurface) -> Option<ImageDescription> {
@@ -585,6 +601,11 @@ where
                 with_color_surface_data(&data.surface, |surface_data| {
                     *surface_data.description.lock().unwrap() = Some(description);
                 });
+                ANY_SURFACE_TAGGED
+                    .store(
+                        true, 
+                        Ordering::Relaxed,
+                    );
             }
             wp_color_management_surface_v1::Request::UnsetImageDescription => {
                 if data.surface.is_alive() {
