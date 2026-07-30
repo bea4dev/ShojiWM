@@ -922,6 +922,20 @@ pub fn clipped_surface_elements(
     // SSD clip is allowed to crop the client surface tree.
     let clip = clip.filter(|clip| clip.clips_surface);
 
+    // Color-management tag for the window's root surface, applied to every
+    // element in its tree. Approximation: subsurfaces are distinct protocol
+    // surfaces and may carry their own descriptions, so a player that puts
+    // video on a subsurface while leaving the toplevel untagged is not handled
+    // yet. The common case — a client tagging its main surface — is.
+    let image_description = match window.underlying_surface() {
+        WindowSurface::Wayland(surface) => {
+            crate::protocols::color_management::surface_image_description(surface.wl_surface())
+        }
+        // X11 has no color-management protocol, so XWayland clients are always
+        // untagged and take the passthrough path.
+        _ => None,
+    };
+
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
     if clip.is_none() || crate::env_flag!("SHOJI_GAP_BYPASS_CLIP") {
         return Ok(elements.into_iter().map(WindowClipElement::Raw).collect());
@@ -1040,6 +1054,7 @@ pub fn clipped_surface_elements(
                         clip,
                         geometry,
                         debug_label.clone(),
+                        image_description,
                     )?));
                 } else {
                     output.push(WindowClipElement::Raw(element));
@@ -1073,6 +1088,7 @@ pub fn clipped_surface_elements(
                         clip,
                         geometry_override,
                         debug_label.clone(),
+                        image_description,
                     )
                     .map(WindowClipElement::Clipped)
                 } else {
@@ -1106,6 +1122,11 @@ pub fn clipped_popup_elements(
                 clip,
                 None,
                 Some("popup clipped by ManagedWindow.forceRectSize".to_owned()),
+                // Popups are separate protocol surfaces with their own
+                // descriptions; inheriting the toplevel's would be wrong. They
+                // are effectively never color-tagged, so leave them untagged
+                // rather than guess.
+                None,
             )
         })
         .collect()
