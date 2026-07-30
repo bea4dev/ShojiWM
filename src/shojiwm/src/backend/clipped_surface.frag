@@ -152,6 +152,13 @@ void main() {
     }
 
     vec4 color = texture2D(tex, sample_coords);
+    if (src_transfer > 0.5) {
+        // Wayland buffers carry premultiplied alpha. A transfer function is
+        // non-linear, so it has to be applied to the unpremultiplied value or
+        // partially transparent edges pick up haloes; re-premultiply after.
+        float a = max(color.a, 0.0001);
+        color.rgb = to_compositing_space(color.rgb / a) * a;
+    }
     vec2 local_coords = (input_to_local * vec3(v_coords, 1.0)).xy;
     if (rect_bounds_enabled > 0.5) {
         vec2 slot_coords = local_coords - slot_origin;
