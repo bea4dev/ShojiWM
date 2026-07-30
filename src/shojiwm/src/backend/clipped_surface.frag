@@ -231,6 +231,12 @@ void main() {
     }
 
     vec4 color = texture2D(tex, sample_coords);
+#if defined(NO_ALPHA)
+    // Buffer carries no alpha channel. Force it here, immediately after the
+    // sample — *not* at the end, where it would overwrite the rounded-corner
+    // coverage written by `rounded_alpha` below and square off every corner.
+    color = vec4(color.rgb, 1.0);
+#endif
     if (src_transfer > 0.5) {
         // Wayland buffers carry premultiplied alpha. A transfer function is
         // non-linear, so it has to be applied to the unpremultiplied value or
