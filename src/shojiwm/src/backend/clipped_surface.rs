@@ -146,6 +146,13 @@ pub struct ClippedSurfaceElement {
     sample_buffer_size: [f32; 2],
     sample_uv_snap_axes: [f32; 2],
     sample_uv_compensation_enabled: f32,
+    /// Per-surface color management, resolved once at element construction.
+    /// `src_transfer == 0.0` is the untagged fast path and makes the shader
+    /// skip the conversion entirely, so nothing changes for sRGB clients.
+    src_transfer: f32,
+    src_primaries: f32,
+    src_ref_nits: f32,
+    src_max_nits: f32,
 }
 
 #[derive(Debug)]
@@ -271,6 +278,22 @@ impl ClippedSurfaceElement {
                     ),
                     UniformName::new(
                         "sample_uv_compensation_enabled",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_transfer",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_primaries",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_ref_nits",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_max_nits",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                 ],
