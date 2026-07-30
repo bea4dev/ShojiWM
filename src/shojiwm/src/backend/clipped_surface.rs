@@ -152,7 +152,10 @@ pub struct ClippedSurfaceElement {
     src_transfer: f32,
     src_primaries: f32,
     src_ref_nits: f32,
-    src_max_nits: f32,
+    /// Tone-mapping knee, already PQ-encoded on the CPU.
+    src_pq_lo: f32,
+    src_pq_hi: f32,
+    dst_pq_hi: f32,
 }
 
 #[derive(Debug)]
@@ -294,7 +297,15 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                     UniformName::new(
-                        "src_max_nits",
+                        "src_pq_lo",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_pq_hi",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "dst_pq_hi",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                 ],
@@ -600,7 +611,9 @@ impl ClippedSurfaceElement {
             src_transfer,
             src_primaries,
             src_ref_nits,
-            src_max_nits,
+            src_pq_lo,
+            src_pq_hi,
+            dst_pq_hi,
         })
     }
 
@@ -752,7 +765,9 @@ impl ClippedSurfaceElement {
             Uniform::new("src_transfer", self.src_transfer),
             Uniform::new("src_primaries", self.src_primaries),
             Uniform::new("src_ref_nits", self.src_ref_nits),
-            Uniform::new("src_max_nits", self.src_max_nits),
+            Uniform::new("src_pq_lo", self.src_pq_lo),
+            Uniform::new("src_pq_hi", self.src_pq_hi),
+            Uniform::new("dst_pq_hi", self.dst_pq_hi),
         ]
     }
 }

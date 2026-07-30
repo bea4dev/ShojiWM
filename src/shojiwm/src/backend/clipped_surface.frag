@@ -143,22 +143,31 @@ vec3 srgb_eotf(vec3 c) {
 
 // Convert one sampled, *unpremultiplied* texel into the compositing space.
 vec3 to_compositing_space(vec3 c) {
-    vec3 linear;
+    float ref_nits = max(src_ref_nits, 0.0001);
+
+    // Lift the source into the PQ domain, which is where the tone curve works.
+    vec3 pq;
     if (src_transfer > 2.5) {
-        // sRGB transfer, but non-sRGB primaries — decode only so the gamut
-        // matrix below has linear light to work on.
-        linear = srgb_eotf(c) * max(src_ref_nits, 0.0001);
+        // sRGB transfer in wider primaries: decode, scale to absolute nits.
+        pq = pq_inv_eotf(srgb_eotf(c) * ref_nits);
     } else if (src_transfer > 1.5) {
         // Extended linear (scRGB): 1.0 is defined as 80 cd/m².
-        linear = c * 80.0;
+        pq = pq_inv_eotf(max(c, vec3(0.0)) * 80.0);
     } else {
-        // PQ is absolute luminance.
-        linear = pq_eotf(c);
+        // Already a PQ signal.
+        pq = clamp(c, 0.0, 1.0);
     }
+
+    // Compress the content's range into what the compositing space can hold.
+    // SDR sources land entirely below the knee and pass through unchanged.
+    vec3 linear = pq_eotf(bt2390_eetf(pq));
+
     if (src_primaries > 0.5) {
         linear = BT2020_TO_BT709 * linear;
     }
-    return srgb_inv_eotf(clamp(tonemap_to_sdr(linear), 0.0, 1.0));
+    // Normalize against the content's own reference white so diffuse white
+    // lands on 1.0 rather than being scaled by an unrelated display value.
+    return srgb_inv_eotf(clamp(linear / ref_nits, 0.0, 1.0));
 }
 
 float rounded_alpha(vec2 coords, vec2 size) {
