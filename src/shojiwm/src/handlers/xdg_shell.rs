@@ -237,9 +237,11 @@ impl XdgShellHandler for ShojiWM {
                     "failed to promote destroyed xdg toplevel to closing snapshot"
                 );
             }
+            self.prune_unpromoted_window_snapshot(window_id);
         }
 
         self.remove_foreign_toplevel(&window);
+        self.prune_window_state(&window);
         self.space.unmap_elem(&window);
         self.remove_window_decoration_negotiation(wl_surface);
         self.request_tty_maintenance("xdg-toplevel-destroyed");

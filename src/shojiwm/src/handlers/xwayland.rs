@@ -117,13 +117,25 @@ impl XwmHandler for ShojiWM {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elem) = self.find_x11_window(&window) {
+            let window_id = self
+                .window_decorations
+                .get(&elem)
+                .map(|decoration| decoration.snapshot.id.clone());
             if let Err(error) = crate::backend::tty::capture_live_snapshot_for_close(self, &elem) {
                 warn!(
                     ?error,
                     "failed to capture unmapped X11 window before closing animation"
                 );
             }
+            // X11 windows never go through promote_window_to_closing_snapshot
+            // (only the xdg_shell toplevel path does), so any snapshot the
+            // capture above just took would otherwise sit in
+            // `live_window_snapshots` forever.
+            if let Some(window_id) = window_id.as_deref() {
+                self.prune_unpromoted_window_snapshot(window_id);
+            }
             self.remove_foreign_toplevel(&elem);
+            self.prune_window_state(&elem);
             self.space.unmap_elem(&elem);
         }
         if !window.is_override_redirect() {
