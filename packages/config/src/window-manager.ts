@@ -714,13 +714,17 @@ export class HybridWindowManager {
       return false;
     }
 
-    if (this.getCurrentWorkspace()?.isTiled !== true) {
-      return false;
-    }
-
     // Maximized/fullscreen windows need an output-sized initial configure.
     if (window.isMaximized.peek() || window.isFullscreen.peek()) {
       return false;
+    }
+
+    // In floating mode, the client must choose its remembered or natural size
+    // before the window can be centered. Applying the fallback rect to the
+    // initial configure would overwrite that size and can make fixed-size
+    // dialogs temporarily huge.
+    if (this.getCurrentWorkspace()?.isTiled !== true) {
+      return true;
     }
 
     // A floating window must commit its natural client size before it can be
