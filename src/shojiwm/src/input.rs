@@ -1865,10 +1865,20 @@ impl ShojiWM {
             source = ?source,
             "runtime window fullscreen request dispatch"
         );
+        // The runtime listener may synchronously focus the window or apply an animation. Those
+        // actions can refresh ManagedWindow immediately, so stage the protocol state first. This
+        // keeps that refresh from sending a configure with the new rect and the old Fullscreen
+        // state. If no listener accepts the request, restore the pending state below.
+        let xdg_state_changed =
+            self.prepare_xdg_fullscreen_hint(window, &snapshot.id, fullscreen);
         let invoked = self.invoke_window_fullscreen_request_event(&snapshot, &event, now_ms);
-        if invoked {
-            self.set_xdg_fullscreen_hint(window, &snapshot.id, fullscreen);
-        }
+        self.finish_xdg_fullscreen_hint(
+            window,
+            &snapshot.id,
+            fullscreen,
+            xdg_state_changed,
+            invoked,
+        );
         tracing::info!(
             window_id = %snapshot.id,
             invoked,
@@ -1877,14 +1887,14 @@ impl ShojiWM {
         invoked
     }
 
-    fn set_xdg_fullscreen_hint(
+    fn prepare_xdg_fullscreen_hint(
         &mut self,
         window: &smithay::desktop::Window,
         window_id: &str,
         fullscreen: bool,
-    ) {
+    ) -> bool {
         let Some(toplevel) = window.toplevel() else {
-            return;
+            return false;
         };
 
         let changed = toplevel.with_pending_state(|state| {
@@ -1900,17 +1910,52 @@ impl ShojiWM {
         if changed {
             self.pending_xdg_state_configure_window_ids
                 .insert(window_id.to_string());
-            // Same deal as set_xdg_maximized_hint: ManagedWindow stays the
-            // geometry source of truth, so the Fullscreen state ships together
-            // with the TS-selected rect in apply_managed_window_rects instead
-            // of an immediate state-only configure.
-            if !self.runtime_poll_dirty {
-                self.pending_xdg_state_configure_window_ids
-                    .remove(window_id);
-                toplevel.send_pending_configure();
-            }
-            self.schedule_redraw();
         }
+
+        changed
+    }
+
+    fn finish_xdg_fullscreen_hint(
+        &mut self,
+        window: &smithay::desktop::Window,
+        window_id: &str,
+        fullscreen: bool,
+        changed: bool,
+        invoked: bool,
+    ) {
+        if !changed {
+            return;
+        }
+        let Some(toplevel) = window.toplevel() else {
+            self.pending_xdg_state_configure_window_ids
+                .remove(window_id);
+            return;
+        };
+
+        if !invoked {
+            toplevel.with_pending_state(|state| {
+                if fullscreen {
+                    state.states.unset(xdg_toplevel::State::Fullscreen);
+                } else {
+                    state.states.set(xdg_toplevel::State::Fullscreen);
+                }
+            });
+            self.pending_xdg_state_configure_window_ids
+                .remove(window_id);
+            return;
+        }
+
+        // ManagedWindow remains the geometry source of truth. Usually its synchronous refresh
+        // consumes this marker and sends one configure containing both state and size. If the
+        // listener changed no geometry, finish with a state-only configure instead.
+        if !self.runtime_poll_dirty
+            && self
+                .pending_xdg_state_configure_window_ids
+                .remove(window_id)
+        {
+            toplevel.send_pending_configure();
+        }
+        self.schedule_redraw();
     }
 
     pub(crate) fn request_window_minimize(
