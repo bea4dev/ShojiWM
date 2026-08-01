@@ -32,6 +32,9 @@ hashbrown = { version = "0.15.5", features = ["allocator-api2"] }
 input = "0.10.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+# Moves log writes off the compositor thread; see `init_logging` for why a
+# synchronous writer is a hazard here.
+tracing-appender = "0.2.3"
 xkbcommon = "0.9.0"
 xcursor = "0.3.10"
 cgmath = "0.18.0"
