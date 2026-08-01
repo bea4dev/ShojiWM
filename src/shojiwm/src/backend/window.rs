@@ -896,9 +896,17 @@ pub fn clipped_surface_elements(
                     toplevel.wl_surface(),
                     (),
                     |_, _, _| TraversalAction::DoChildren(()),
-                    |surface, _, _| {
+                    // Read the description out of the `SurfaceData` smithay
+                    // hands us. Calling `surface_image_description` here instead
+                    // would re-take the surface's user-data lock that the
+                    // traversal is still holding, and that lock is not
+                    // reentrant — it deadlocks the compositor on the first
+                    // window that maps.
+                    |surface, states, _| {
                         if let Some(description) =
-                            crate::protocols::color_management::surface_image_description(surface)
+                            crate::protocols::color_management::image_description_from_states(
+                                states,
+                            )
                         {
                             found.insert(Id::from_wayland_resource(surface), description);
                         }

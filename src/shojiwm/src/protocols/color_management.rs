@@ -73,7 +73,10 @@ use smithay::reexports::wayland_server::{
     protocol::{wl_output::WlOutput,
                wl_surface::WlSurface},
 };
-use smithay::wayland::compositor::with_states;
+use smithay::wayland::compositor::{
+    SurfaceData,
+    with_states,
+};
 
 use crate::color::{
     ColorPrimaries,
@@ -175,23 +178,33 @@ pub fn any_surface_tagged() -> bool {
     ANY_SURFACE_TAGGED.load(Ordering::Relaxed)
 }
 
+/// Render-side read from `SurfaceData` the caller already holds.
+///
+/// Use this — never [`surface_image_description`] — from inside a
+/// `with_surface_tree_downward` (or `with_surface_tree_upward`) processor.
+/// Smithay holds the surface's user-data lock for the whole traversal and calls
+/// the processor while it is held, and that lock is a plain non-reentrant
+/// `std::sync::Mutex`. Taking it again on the same thread deadlocks the
+/// compositor outright: no panic, no error, no log line, just a thread parked in
+/// `futex_wait` forever. The processor is already handed the `&SurfaceData` this
+/// needs, so there is never a reason to lock again.
+pub fn image_description_from_states(states: &SurfaceData) -> Option<ImageDescription> {
+    states
+        .data_map
+        .get::<ColorSurfaceData>()
+        .and_then(|data| *data.description.lock().unwrap())
+}
+
 /// Render-side read: the surface's committed image description, or `None`
 /// for untagged content (treat as sRGB).
+///
+/// Takes the surface's user-data lock. Not safe to call from inside a surface
+/// tree traversal — see [`image_description_from_states`].
 pub fn surface_image_description(surface: &WlSurface) -> Option<ImageDescription> {
     if !surface.is_alive() {
         return None;
     }
-    with_states(surface, |states| {
-        states
-            .data_map
-            .get::<ColorSurfaceData>()
-            .and_then(
-                |data| *data
-                .description
-                .lock()
-                .unwrap()
-            )
-    })
+    with_states(surface, image_description_from_states)
 }
 
 /// Manager state for the `wp_color_manager_v1` global.
