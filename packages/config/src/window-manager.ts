@@ -3142,8 +3142,15 @@ export class Workspace {
     }
     const previousActiveWindowId = this.activeWindowId;
     const previousScrollOffset = this.scrollOffset;
-    this.windows.push(window);
     const restored = this.restoredWindowStateById.get(window.id);
+    const tileInsertionIndex =
+      !restored && this.isTiled && this.shouldTile(window)
+        ? this.tileInsertionIndexAfterFocusedWindow()
+        : null;
+    this.windows.push(window);
+    if (tileInsertionIndex !== null) {
+      this.moveTileWindowToIndex(window, tileInsertionIndex);
+    }
     const isTileableInCurrentMode = !this.isTiled || this.shouldTile(window);
     if (!restored && isTileableInCurrentMode) {
       this.activeWindowId = window.id;
@@ -4318,6 +4325,23 @@ export class Workspace {
     }
 
     return tileable.length;
+  }
+
+  private tileInsertionIndexAfterFocusedWindow(): number {
+    const tileable = this.tileableWindows();
+    const focused = this.focusedWindow();
+    const anchor =
+      focused && this.shouldTile(focused)
+        ? focused
+        : this.activeWindow(tileable);
+    if (!anchor) {
+      return tileable.length;
+    }
+
+    const anchorIndex = tileable.findIndex(
+      (window) => window.id === anchor.id,
+    );
+    return anchorIndex >= 0 ? anchorIndex + 1 : tileable.length;
   }
 
   private moveTileWindowToIndex(window: WaylandWindow, tileIndex: number) {
