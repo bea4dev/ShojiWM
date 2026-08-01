@@ -91,6 +91,12 @@ export const WINDOW_STATE_TILE_DRAGGING = createWindowState<boolean>(
     default: false,
   },
 );
+export const WINDOW_STATE_TILE_REORDERING = createWindowState<boolean>(
+  "tileReordering",
+  {
+    default: false,
+  },
+);
 export const WINDOW_STATE_TILED = createWindowState<boolean>("tiled", {
   default: false,
 });
@@ -3082,6 +3088,8 @@ export class Workspace {
     }
   >();
   private initialTileStateToken = 0;
+  private readonly tileReorderTokenByWindowId = new Map<string, number>();
+  private tileReorderToken = 0;
   private kineticScrollPoll: PollHandle | null = null;
   private kineticScrollToken = 0;
   public monitor: string;
@@ -3263,6 +3271,8 @@ export class Workspace {
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
       this.initialTileStateByWindowId.delete(window.id);
+      this.tileReorderTokenByWindowId.delete(window.id);
+      window.state[WINDOW_STATE_TILE_REORDERING].set(false);
       if (this.draggingWindowId === window.id) {
         this.draggingWindowId = null;
         window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
@@ -3350,11 +3360,25 @@ export class Workspace {
 
     this.stopKineticScroll();
     this.activeWindowId = focused.id;
+    this.markTileReordering(focused);
     this.moveTileWindowToIndex(focused, nextIndex);
     this.scrollToWindow(focused);
     this.applyLayout();
     focused.focus();
     return true;
+  }
+
+  private markTileReordering(window: WaylandWindow): void {
+    const token = ++this.tileReorderToken;
+    this.tileReorderTokenByWindowId.set(window.id, token);
+    window.state[WINDOW_STATE_TILE_REORDERING].set(true);
+    setTimeout(() => {
+      if (this.tileReorderTokenByWindowId.get(window.id) !== token) {
+        return;
+      }
+      this.tileReorderTokenByWindowId.delete(window.id);
+      window.state[WINDOW_STATE_TILE_REORDERING].set(false);
+    }, TILE_ANIMATION_DURATION);
   }
 
   public takeWindowForMove(
