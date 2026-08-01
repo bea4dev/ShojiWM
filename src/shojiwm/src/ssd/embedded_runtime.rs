@@ -2679,11 +2679,20 @@ fn run_runtime(
         .send(Ok(()))
         .map_err(|_| "runtime owner disappeared during initialization".to_owned())?;
 
-    runtime
+    let result = runtime
         .call_function::<()>(
             Some(&handle),
             "runEmbeddedRuntime",
             json_args!(config_path.to_string_lossy(), bridge_id),
         )
-        .map_err(|error| format!("embedded TypeScript runtime failed: {error}"))
+        .map_err(|error| format!("embedded TypeScript runtime failed: {error}"));
+
+    // Hot-reload spins up a brand-new isolate per reload rather than
+    // resetting this one in place, and a plain Drop leaves freed heap pages
+    // in V8's own arena instead of returning them to the OS. Hint V8 to
+    // shrink its heap before `runtime` drops here, so this isolate's peak
+    // doesn't linger past its own teardown.
+    runtime.deno_runtime().v8_isolate().low_memory_notification();
+
+    result
 }

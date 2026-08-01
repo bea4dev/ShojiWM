@@ -498,6 +498,32 @@ impl ShojiWM {
         PointerContents { surface, layer }
     }
 
+    /// Places the pointer at the center of `output`'s geometry. Smithay otherwise leaves the
+    /// pointer at its default (0, 0) location until the first real motion event, which reads as
+    /// the cursor spawning in the top-left corner of the first monitor.
+    pub fn warp_cursor_to_output_center(&mut self, output: &Output) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some(geometry) = self.space.output_geometry(output) else {
+            return;
+        };
+        let center = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
+        let location = center.to_f64();
+        self.pointer_contents = self.pointer_contents_at(location);
+        let under = self.pointer_contents.surface.clone();
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: Duration::from(self.clock.now()).as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+
     pub fn session_lock_surface_for_output(&self, output: &Output) -> Option<LockSurface> {
         self.session_lock_surfaces
             .get(output.name().as_str())

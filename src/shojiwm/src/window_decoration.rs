@@ -435,6 +435,37 @@ impl ShojiWM {
     pub fn remove_window_decoration_negotiation(&mut self, surface: &WlSurface) {
         self.window_decoration_negotiations.remove(surface);
     }
+
+    /// Removes all per-window state that would otherwise leak once a window
+    /// closes: decoration state (including its cached backdrop textures,
+    /// nested in `WindowDecorationState`), per-output tracking, and commit
+    /// timing. None of these are pruned by unmapping the window from the
+    /// `Space` alone. `closing_window_snapshots` is handled separately, via
+    /// `WaylandWindowAction::FinalizeClose` once the close animation itself
+    /// finishes.
+    pub fn prune_window_state(&mut self, window: &Window) {
+        self.window_decorations.remove(window);
+        self.window_primary_output_names.remove(window);
+        self.window_commit_times.remove(window);
+    }
+
+    /// Drops a captured `live_window_snapshots` entry (a real `GlesTexture`)
+    /// left behind when a window closes without ever being promoted to
+    /// `closing_window_snapshots` — either because no close animation was
+    /// invoked for it, or because the caller (X11 unmap) never attempts a
+    /// promotion at all. Once a window IS promoted, its snapshot lives on in
+    /// `closing_window_snapshots` instead and is cleaned up separately via
+    /// `WaylandWindowAction::FinalizeClose`, so this must only run when that
+    /// promotion did not happen.
+    pub fn prune_unpromoted_window_snapshot(&mut self, window_id: &str) {
+        if self.closing_window_snapshots.contains_key(window_id) {
+            return;
+        }
+        self.live_window_snapshots.remove(window_id);
+        self.live_window_snapshot_trackers.remove(window_id);
+        self.complete_window_snapshots.remove(window_id);
+        self.complete_window_snapshot_trackers.remove(window_id);
+    }
 }
 
 pub type WindowDecorationNegotiationMap = HashMap<WlSurface, WindowDecorationNegotiation>;
