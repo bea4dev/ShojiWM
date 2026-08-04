@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 const TMP_UNIX_DIR: &str = "/tmp";
 const X11_TMP_UNIX_DIR: &str = "/tmp/.X11-unix";
@@ -59,8 +59,8 @@ pub fn spawn_satellite() -> Result<SatelliteInstance, Box<dyn std::error::Error>
     }
 
     ensure_x11_unix_dir()?;
-    let (display_number, _lock_fd, lock_guard) = pick_x11_display(0)?;
-    let (abstract_listener, unix_listener, unix_guard) = open_display_sockets(display_number)?;
+    let (display_number, _lock_fd, lock_guard, abstract_listener, unix_listener, unix_guard) =
+        reserve_x11_display(0)?;
     let display_name = format!(":{display_number}");
 
     let child = spawn_satellite_process(
@@ -149,20 +149,59 @@ fn ensure_x11_unix_perms() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn pick_x11_display(start: u32) -> Result<(u32, OwnedFd, UnlinkGuard), Box<dyn std::error::Error>> {
+type ReservedX11Display = (
+    u32,
+    OwnedFd,
+    UnlinkGuard,
+    Option<UnixListener>,
+    UnixListener,
+    UnlinkGuard,
+);
+
+fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::error::Error>> {
     for display_number in start..start + 50 {
         let lock_path = PathBuf::from(format!("/tmp/.X{display_number}-lock"));
         let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
         let Ok(lock_fd) = open(&lock_path, flags, 0o444.into()) else {
             continue;
         };
+        let lock_guard = UnlinkGuard(lock_path);
 
         let pid_string = format!("{:>10}\n", getpid().as_raw_nonzero());
         rustix::io::write(&lock_fd, pid_string.as_bytes())?;
-        return Ok((display_number, lock_fd, UnlinkGuard(lock_path)));
+
+        match open_display_sockets(display_number) {
+            Ok((abstract_listener, unix_listener, unix_guard)) => {
+                return Ok((
+                    display_number,
+                    lock_fd,
+                    lock_guard,
+                    abstract_listener,
+                    unix_listener,
+                    unix_guard,
+                ));
+            }
+            Err(error) if x11_socket_is_in_use(error.as_ref()) => {
+                info!(
+                    display = %format_args!(":{display_number}"),
+                    ?error,
+                    "X11 display socket is already in use; trying the next display"
+                );
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     Err(io::Error::other("no free X11 display found").into())
+}
+
+fn x11_socket_is_in_use(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            io::ErrorKind::AddrInUse | io::ErrorKind::AlreadyExists
+        )
+    })
 }
 
 fn bind_to_socket(addr: &SocketAddr) -> Result<UnixListener, Box<dyn std::error::Error>> {
@@ -191,7 +230,6 @@ fn bind_to_unix_socket(
     display_number: u32,
 ) -> Result<(UnixListener, UnlinkGuard), Box<dyn std::error::Error>> {
     let path = PathBuf::from(format!("/tmp/.X11-unix/X{display_number}"));
-    let _ = unlink(&path);
     let addr = SocketAddr::from_pathname(&path)?;
     let listener = bind_to_socket(&addr)?;
     Ok((listener, UnlinkGuard(path)))
@@ -304,4 +342,82 @@ fn spawn_waiter_thread(path: PathBuf, mut child: Child) {
                 warn!(path = ?path, ?error, "failed waiting for xwayland-satellite");
             }
         });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{
+        X11_TMP_UNIX_DIR, bind_to_abstract_socket, bind_to_unix_socket, ensure_x11_unix_dir,
+        reserve_x11_display,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU32, Ordering},
+    };
+
+    static NEXT_TEST_DISPLAY: AtomicU32 = AtomicU32::new(0);
+
+    struct TestDisplayPaths {
+        display_numbers: [u32; 2],
+    }
+
+    impl TestDisplayPaths {
+        fn new() -> Self {
+            let display_number = 100_000
+                + (std::process::id() % 10_000) * 100
+                + NEXT_TEST_DISPLAY.fetch_add(2, Ordering::Relaxed);
+            let paths = Self {
+                display_numbers: [display_number, display_number + 1],
+            };
+            paths.remove();
+            paths
+        }
+
+        fn start(&self) -> u32 {
+            self.display_numbers[0]
+        }
+
+        fn remove(&self) {
+            for display_number in self.display_numbers {
+                let _ = fs::remove_file(format!("/tmp/.X{display_number}-lock"));
+                let _ = fs::remove_file(format!("{X11_TMP_UNIX_DIR}/X{display_number}"));
+            }
+        }
+    }
+
+    impl Drop for TestDisplayPaths {
+        fn drop(&mut self) {
+            self.remove();
+        }
+    }
+
+    #[test]
+    fn skips_a_display_with_an_occupied_abstract_socket() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        let occupied = bind_to_abstract_socket(paths.start()).expect("occupy abstract socket");
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve next display");
+
+        assert_eq!(reservation.0, paths.start() + 1);
+        drop(reservation);
+        drop(occupied);
+    }
+
+    #[test]
+    fn does_not_unlink_an_occupied_pathname_socket() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        let (occupied, occupied_guard) =
+            bind_to_unix_socket(paths.start()).expect("occupy pathname socket");
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve next display");
+
+        assert_eq!(reservation.0, paths.start() + 1);
+        assert!(PathBuf::from(format!("{X11_TMP_UNIX_DIR}/X{}", paths.start())).exists());
+        drop(reservation);
+        drop(occupied);
+        drop(occupied_guard);
+    }
 }
