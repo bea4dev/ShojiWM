@@ -37,6 +37,7 @@ import {
   WINDOW_STATE_TILE_DRAGGING,
   WINDOW_STATE_TILE_REORDERING,
   WINDOW_STATE_TILED,
+  WINDOW_STATE_WORKSPACE_TILED,
   WINDOW_STATE_VISIBLE_OUTPUTS,
   WINDOW_STATE_RECT,
   WINDOW_STATE_WORKSPACE_VISIBLE,
@@ -86,7 +87,9 @@ COMPOSITOR.window.decoration.configure((window, context) => {
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
-const FOCUSED_TILED_WINDOW_Z_INDEX = FULLSCREEN_Z_INDEX - 1;
+const FLOATING_WINDOW_Z_INDEX_BASE = 1_500_000_000;
+const WINDOW_STACK_Z_INDEX_RANGE = 100_000_000;
+const FOCUSED_TILED_WINDOW_Z_INDEX = 1_000_000_000;
 const REORDERING_TILED_WINDOW_Z_INDEX = -2_000_000_000;
 
 COMPOSITOR.onDisable((event) => {
@@ -751,15 +754,22 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   );
   const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window);
   const zIndex = computed(() => {
-    if (!window.state[WINDOW_STATE_TILED]()) {
+    if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
       return stackZIndex();
+    }
+    const stackOffset = Math.max(
+      -WINDOW_STACK_Z_INDEX_RANGE,
+      Math.min(WINDOW_STACK_Z_INDEX_RANGE, stackZIndex()),
+    );
+    if (!window.state[WINDOW_STATE_TILED]()) {
+      return FLOATING_WINDOW_Z_INDEX_BASE + stackOffset;
     }
     if (window.state[WINDOW_STATE_TILE_REORDERING]()) {
       return REORDERING_TILED_WINDOW_Z_INDEX;
     }
     return window.isFocused()
       ? FOCUSED_TILED_WINDOW_Z_INDEX
-      : stackZIndex();
+      : stackOffset;
   });
   const minimizeVisualIdle = window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE];
   const inactive = computed(

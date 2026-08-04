@@ -100,6 +100,12 @@ export const WINDOW_STATE_TILE_REORDERING = createWindowState<boolean>(
 export const WINDOW_STATE_TILED = createWindowState<boolean>("tiled", {
   default: false,
 });
+export const WINDOW_STATE_WORKSPACE_TILED = createWindowState<boolean>(
+  "workspaceTiled",
+  {
+    default: false,
+  },
+);
 export const WINDOW_STATE_VISIBLE_OUTPUTS = createWindowState<string[] | null>(
   "visibleOutputs",
   {
@@ -4282,6 +4288,7 @@ export class Workspace {
   }
 
   private syncWindowVisibleOutputs(window: WaylandWindow) {
+    window.state[WINDOW_STATE_WORKSPACE_TILED].set(this.isTiled);
     window.state[WINDOW_STATE_TILED].set(
       this.isTiled && this.shouldTile(window),
     );

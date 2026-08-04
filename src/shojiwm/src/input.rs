@@ -19,7 +19,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{Resource, protocol::wl_surface::WlSurface},
     },
-    utils::{Logical, Point, SERIAL_COUNTER, Serial},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint},
 };
 use std::time::Instant;
@@ -67,6 +67,46 @@ fn layer_focus_debug_enabled() -> bool {
 
 fn pointer_button_debug_enabled() -> bool {
     std::env::var_os("SHOJI_POINTER_BUTTON_DEBUG").is_some()
+}
+
+const POINTER_TRAILING_EDGE_INSET: f64 = 0.5;
+
+/// Projects a logical pointer position onto the union of all output rectangles.
+///
+/// The half-pixel inset keeps the projected point strictly inside a trailing
+/// edge while still flooring to its final logical pixel. Pointer hit tests use
+/// `to_i32_floor()` for the corresponding containment rule.
+fn constrain_pointer_location_to_outputs(
+    location: Point<f64, Logical>,
+    output_geometries: impl IntoIterator<Item = Rectangle<i32, Logical>>,
+) -> Option<Point<f64, Logical>> {
+    let mut nearest = None;
+
+    for geometry in output_geometries {
+        if geometry.contains(location.to_i32_floor()) {
+            return Some(location);
+        }
+
+        let min_x = geometry.loc.x as f64;
+        let min_y = geometry.loc.y as f64;
+        let max_x = (geometry.loc.x + geometry.size.w) as f64 - POINTER_TRAILING_EDGE_INSET;
+        let max_y = (geometry.loc.y + geometry.size.h) as f64 - POINTER_TRAILING_EDGE_INSET;
+        let candidate = Point::from((
+            location.x.clamp(min_x, max_x),
+            location.y.clamp(min_y, max_y),
+        ));
+        let delta = location - candidate;
+        let distance_squared = delta.x * delta.x + delta.y * delta.y;
+
+        if nearest
+            .as_ref()
+            .is_none_or(|(_, nearest_distance)| distance_squared < *nearest_distance)
+        {
+            nearest = Some((candidate, distance_squared));
+        }
+    }
+
+    nearest.map(|(location, _)| location)
 }
 
 /// Classify a raw keysym as a modifier key (for modifier-tap detection),
@@ -526,10 +566,6 @@ impl ShojiWM {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
-                let Some(output_bounds) = self.output_layout_bounds() else {
-                    return;
-                };
-
                 let pointer = self.seat.get_pointer().unwrap();
                 let previous_pos = pointer.current_location();
                 // Keep using the last focus while a constraint is active. Re-running hit testing
@@ -589,33 +625,14 @@ impl ShojiWM {
                     return;
                 }
 
-                let mut pos = previous_pos + event.delta();
-
-                // `output_layout_bounds` is `Logical`, so clamping to `size - 1`
-                // discarded a whole logical pixel — i.e. `scale` *physical*
-                // pixels. On a scale-2 output the last two columns and rows were
-                // unreachable, which breaks anything that targets the final
-                // pixel: edge-scrolling in games, 1px resize handles, and the
-                // Fitts's-law property that makes screen edges worth aiming at.
-                //
-                // Sit on the midpoint between the last logical pixel and the true
-                // edge, `((size - 1) + size) / 2`, so the position floors onto the
-                // last pixel while staying strictly inside the bounds.
-                //
-                // This depends on the `to_i32_floor` hit-tests elsewhere in this
-                // file (and in `state.rs`): with `to_i32_round`, a `.5` here would
-                // round *outward* past every containment check and the pointer
-                // would read as having left the layout entirely. The two changes
-                // must stay together.
-                const TRAILING_EDGE_INSET: f64 = 0.5;
-                pos.x = pos.x.clamp(
-                    output_bounds.loc.x as f64,
-                    (output_bounds.loc.x + output_bounds.size.w) as f64 - TRAILING_EDGE_INSET,
-                );
-                pos.y = pos.y.clamp(
-                    output_bounds.loc.y as f64,
-                    (output_bounds.loc.y + output_bounds.size.h) as f64 - TRAILING_EDGE_INSET,
-                );
+                let Some(pos) = constrain_pointer_location_to_outputs(
+                    previous_pos + event.delta(),
+                    self.space
+                        .outputs()
+                        .filter_map(|output| self.space.output_geometry(output)),
+                ) else {
+                    return;
+                };
 
                 if self.session_lock_active {
                     self.forward_locked_pointer_motion(
@@ -693,8 +710,16 @@ impl ShojiWM {
                     return;
                 };
 
-                let pos =
+                let unconstrained_pos =
                     event.position_transformed(output_bounds.size) + output_bounds.loc.to_f64();
+                let Some(pos) = constrain_pointer_location_to_outputs(
+                    unconstrained_pos,
+                    self.space
+                        .outputs()
+                        .filter_map(|output| self.space.output_geometry(output)),
+                ) else {
+                    return;
+                };
 
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -2762,4 +2787,61 @@ fn resize_edges_to_grab(edges: ResizeEdges) -> ResizeEdge {
         converted |= ResizeEdge::RIGHT;
     }
     converted
+}
+
+#[cfg(test)]
+mod pointer_output_constraint_tests {
+    use super::constrain_pointer_location_to_outputs;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    fn outputs_with_vertical_notch() -> [Rectangle<i32, Logical>; 2] {
+        [
+            Rectangle::new((0, 0).into(), (100, 100).into()),
+            Rectangle::new((100, 25).into(), (100, 50).into()),
+        ]
+    }
+
+    #[test]
+    fn preserves_locations_inside_either_output() {
+        let outputs = outputs_with_vertical_notch();
+
+        assert_eq!(
+            constrain_pointer_location_to_outputs(Point::from((20.25, 80.75)), outputs),
+            Some(Point::from((20.25, 80.75)))
+        );
+        assert_eq!(
+            constrain_pointer_location_to_outputs(Point::from((150.25, 30.75)), outputs),
+            Some(Point::from((150.25, 30.75)))
+        );
+    }
+
+    #[test]
+    fn blocks_motion_into_an_uncovered_notch() {
+        let constrained = constrain_pointer_location_to_outputs(
+            Point::from((100.5, 10.0)),
+            outputs_with_vertical_notch(),
+        );
+
+        assert_eq!(constrained, Some(Point::from((99.5, 10.0))));
+    }
+
+    #[test]
+    fn allows_motion_across_a_shared_output_edge() {
+        let constrained = constrain_pointer_location_to_outputs(
+            Point::from((100.5, 30.0)),
+            outputs_with_vertical_notch(),
+        );
+
+        assert_eq!(constrained, Some(Point::from((100.5, 30.0))));
+    }
+
+    #[test]
+    fn projects_to_the_nearest_output_edge_outside_the_union() {
+        let constrained = constrain_pointer_location_to_outputs(
+            Point::from((150.0, 90.0)),
+            outputs_with_vertical_notch(),
+        );
+
+        assert_eq!(constrained, Some(Point::from((150.0, 74.5))));
+    }
 }
