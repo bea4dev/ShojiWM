@@ -11593,11 +11593,7 @@ fn connector_connected(
     output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
     state.seed_xwayland_refresh_override_from_output(&output, "tty-output-connected");
     state.create_output_global(&output);
-    let is_first_output = state.space.outputs().next().is_none();
     state.space.map_output(&output, (0, 0));
-    if is_first_output {
-        state.warp_cursor_to_output_center(&output);
-    }
     info!(
         ?node,
         ?crtc,

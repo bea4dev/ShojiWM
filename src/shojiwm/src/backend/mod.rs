@@ -79,6 +79,7 @@ fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
 
     state.start_xwayland(&event_loop);
     state.enable_initial_decoration_runtime();
+    state.warp_cursor_to_initial_output_center();
     state.warmup_decoration_runtime();
 
     event_loop.run(None, &mut state, |_| {})?;
@@ -314,6 +315,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(socket = ?state.socket_name, "set wayland display for tty backend");
     state.enable_initial_decoration_runtime();
+    state.warp_cursor_to_initial_output_center();
     state.warmup_decoration_runtime();
     std::process::Command::new("weston-terminal").spawn().ok();
     info!("spawned weston-terminal");

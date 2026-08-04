@@ -498,9 +498,11 @@ impl ShojiWM {
         PointerContents { surface, layer }
     }
 
-    /// Places the pointer at the center of `output`'s geometry. Smithay otherwise leaves the
-    /// pointer at its default (0, 0) location until the first real motion event, which reads as
-    /// the cursor spawning in the top-left corner of the first monitor.
+    /// Places the pointer at the center of `output`'s final logical geometry.
+    ///
+    /// Call this only after the initial runtime output configuration has applied its mode, scale,
+    /// transform, and position. Centering against the temporary scale-1 geometry and then applying
+    /// fractional scaling leaves the pointer visibly offset toward the bottom-right.
     pub fn warp_cursor_to_output_center(&mut self, output: &Output) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -508,8 +510,10 @@ impl ShojiWM {
         let Some(geometry) = self.space.output_geometry(output) else {
             return;
         };
-        let center = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
-        let location = center.to_f64();
+        let location = Point::from((
+            f64::from(geometry.loc.x) + f64::from(geometry.size.w) / 2.0,
+            f64::from(geometry.loc.y) + f64::from(geometry.size.h) / 2.0,
+        ));
         self.pointer_contents = self.pointer_contents_at(location);
         let under = self.pointer_contents.surface.clone();
         pointer.motion(
@@ -522,6 +526,13 @@ impl ShojiWM {
             },
         );
         pointer.frame(self);
+    }
+
+    pub fn warp_cursor_to_initial_output_center(&mut self) {
+        let output = self.space.outputs().next().cloned();
+        if let Some(output) = output {
+            self.warp_cursor_to_output_center(&output);
+        }
     }
 
     pub fn session_lock_surface_for_output(&self, output: &Output) -> Option<LockSurface> {

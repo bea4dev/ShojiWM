@@ -794,7 +794,6 @@ pub fn init_winit(
     let _global = state.create_output_global(&output);
 
     state.space.map_output(&output, (0, 0));
-    state.warp_cursor_to_output_center(&output);
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut blink_damage_tracker = OutputDamageTracker::from_output(&output);
