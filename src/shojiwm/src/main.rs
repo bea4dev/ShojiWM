@@ -60,7 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     block_runtime_wake_signal();
 
     let args = CliArgs::parse();
-    init_logging(&args)?;
+    // Bound for the whole of main: dropping this stops the log writer thread,
+    // so it has to outlive `backend.run()`.
+    let _log_guard = init_logging(&args)?;
     profiler::init();
     install_panic_hook();
     apply_runtime_overrides(&args);
@@ -268,9 +270,15 @@ fn parse_option_value(args: &[String], option: &str) -> Option<String> {
     None
 }
 
-fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {
+/// Installs the tracing subscriber, returning the writer's worker guard.
+///
+/// The guard must be held for the lifetime of the process: dropping it flushes
+/// and stops the log writer thread.
+fn init_logging(
+    args: &CliArgs,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, Box<dyn std::error::Error>> {
     if args.log_off {
-        return Ok(());
+        return Ok(None);
     }
 
     let log_dir = shoji_log_dir();
@@ -290,10 +298,22 @@ fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,shoji_wm=info"));
 
+    // The compositor runs a single-threaded event loop, so a synchronous
+    // writer here puts a filesystem write directly in the path of input and
+    // rendering. On a near-full btrfs that write can stall for seconds to
+    // minutes, which surfaces as a frozen cursor with nothing in the
+    // log to explain it: the blocked write is the missing line. Hand the
+    // file to a worker thread instead, and drop records once the queue backs
+    // up — losing log lines always beats stalling the session.
+    let (writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(true)
+        .buffered_lines_limit(64 * 1024)
+        .finish(log_file);
+
     tracing_subscriber::fmt()
         .compact()
         .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(log_file))
+        .with_writer(writer)
         .with_env_filter(env_filter)
         .init();
 
@@ -301,7 +321,7 @@ fn init_logging(args: &CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     // just pruned around.
     prune_rotated_logs(&log_dir, &LogRetention::from_env());
 
-    Ok(())
+    Ok(Some(guard))
 }
 
 /// Retention policy for rotated session logs.
