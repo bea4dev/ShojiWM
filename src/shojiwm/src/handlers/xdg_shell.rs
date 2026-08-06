@@ -19,6 +19,7 @@ use smithay::{
     utils::{Rectangle, Serial, Size},
     wayland::{
         compositor::with_states,
+        input_method::InputMethodSeat,
         shell::xdg::{
             Configure, PopupSurface, PositionerState, ToplevelSurface, XDG_POPUP_ROLE,
             XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
@@ -519,49 +520,74 @@ impl XdgShellHandler for ShojiWM {
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let seat = Seat::from_resource(&seat).unwrap();
         let popup = PopupKind::Xdg(surface);
+        let popup_surface_id = popup.wl_surface().id().protocol_id();
         let Ok(root) = find_popup_root_surface(&popup) else {
+            info!(popup_surface_id, "denied xdg popup grab: no root surface");
             return;
         };
 
-        let ret = self
+        let mut grab = match self
             .popups
-            .grab_popup::<Self>(root.clone(), popup, &seat, serial);
-
-        if let Ok(mut grab) = ret {
-            if let Some(keyboard) = seat.get_keyboard() {
-                let can_receive_keyboard_focus = self
-                    .space
-                    .outputs()
-                    .find_map(|output| {
-                        let map = layer_map_for_output(output);
-                        map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                            .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
-                    })
-                    .unwrap_or(true);
-
-                if can_receive_keyboard_focus {
-                    if keyboard.is_grabbed()
-                        && !(keyboard.has_grab(serial)
-                            || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
-                    {
-                        grab.ungrab(PopupUngrabStrategy::All);
-                        return;
-                    }
-                    keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
-                }
+            .grab_popup::<Self>(root.clone(), popup, &seat, serial)
+        {
+            Ok(grab) => grab,
+            Err(err) => {
+                info!(popup_surface_id, error = ?err, "denied xdg popup grab");
+                return;
             }
+        };
 
-            if let Some(pointer) = seat.get_pointer() {
-                if pointer.is_grabbed()
-                    && !(pointer.has_grab(serial)
-                        || pointer
-                            .has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
-                {
-                    grab.ungrab(PopupUngrabStrategy::All);
-                    return;
-                }
-                pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
-            }
+        // Smithay cannot stack keyboard grabs. While an input method holds the
+        // keyboard grab (fcitx with a focused text field), the previous logic
+        // treated that grab as a conflicting foreign grab and dismissed the
+        // popup: every GTK menu in a text-editing app (gnome-text-editor,
+        // ptyxis, libreoffice, ...) received popup_done before its initial
+        // configure and never appeared. Keep the IME keyboard grab intact and
+        // hand the popup only the pointer grab instead, like niri does.
+        let ime_keyboard_grabbed = seat.input_method().keyboard_grabbed();
+        let can_receive_keyboard_focus = !ime_keyboard_grabbed
+            && self
+                .space
+                .outputs()
+                .find_map(|output| {
+                    let map = layer_map_for_output(output);
+                    map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                        .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
+                })
+                .unwrap_or(true);
+
+        let keyboard = seat.get_keyboard();
+        let pointer = seat.get_pointer();
+        let keyboard_grab_mismatches = keyboard.as_ref().is_some_and(|keyboard| {
+            keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+        });
+        let pointer_grab_mismatches = pointer.as_ref().is_some_and(|pointer| {
+            pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+        });
+
+        if (can_receive_keyboard_focus && keyboard_grab_mismatches) || pointer_grab_mismatches {
+            info!(
+                popup_surface_id,
+                keyboard_grab_mismatches,
+                pointer_grab_mismatches,
+                ime_keyboard_grabbed,
+                "dismissed xdg popup grab: conflicting seat grab"
+            );
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
+
+        if can_receive_keyboard_focus
+            && let Some(keyboard) = keyboard.as_ref()
+        {
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = pointer.as_ref() {
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
     }
 }
