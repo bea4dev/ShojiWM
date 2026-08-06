@@ -818,7 +818,14 @@ impl ShojiWM {
         let Some(decoration) = self.window_decorations.get(window) else {
             return self.wlr_outputs_for_unmanaged_window(window);
         };
-        if !decoration.managed_window.visible || decoration.managed_window.idle {
+        // `idle` (minimized or on an inactive workspace) must NOT clear the
+        // output list: taskbars group wlr-foreign-toplevel entries by output,
+        // so sending output_leave for every output on minimize removed the
+        // window's icon from the bar entirely. Idle windows keep advertising
+        // their home outputs (`visible_outputs` below covers windows whose
+        // rect is parked off-screen); only an explicit `visible = false`
+        // hides the toplevel from per-output consumers.
+        if !decoration.managed_window.visible {
             return Vec::new();
         }
         if let Some(visible_outputs) = decoration.managed_window.visible_outputs.as_ref() {
