@@ -14,10 +14,14 @@ use smithay::{
         gles::GlesRenderer,
         utils::with_renderer_surface_state,
     },
-    desktop::{LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output},
-    reexports::wayland_server::Resource,
+    desktop::{
+        LayerSurface, PopupManager, Window, WindowSurface, layer_map_for_output,
+        utils::bbox_from_surface_tree,
+    },
+    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
+        background_effect::BackgroundEffectSurfaceCachedState,
         compositor::{RectangleKind, RegionAttributes, with_states},
         session_lock::LockSurface,
         shell::wlr_layer::Layer as WlrLayer,
@@ -369,6 +373,8 @@ pub fn layer_surface_popup_groups<R>(
 ) -> Vec<(
     String,
     crate::ssd::LogicalRect,
+    Point<i32, Logical>,
+    WlSurface,
     Vec<WaylandSurfaceRenderElement<R>>,
 )>
 where
@@ -389,8 +395,11 @@ where
                 popup_geometry.size.w,
                 popup_geometry.size.h,
             );
-            let render_origin =
-                (loc + popup_offset - popup_geometry.loc).to_physical_precise_round(scale);
+            // Output-local logical position of the popup's buffer origin —
+            // the coordinate the popup's surface-local blur region rects are
+            // relative to.
+            let buffer_origin = loc + popup_offset - popup_geometry.loc;
+            let render_origin = buffer_origin.to_physical_precise_round(scale);
             let elements = render_elements_from_surface_tree(
                 renderer,
                 popup.wl_surface(),
@@ -402,10 +411,54 @@ where
             (
                 crate::ssd::popup_runtime_id(popup.wl_surface()),
                 rect,
+                buffer_origin,
+                popup.wl_surface().clone(),
                 elements,
             )
         })
         .collect()
+}
+
+/// `ext-background-effect-v1` blur rects a popup surface requested, clamped
+/// to the popup's surface-tree extents and translated so they line up with
+/// where the popup's buffer origin renders. `buffer_origin` must be in the
+/// same coordinate space the returned rects should be in (the popup-group
+/// functions above return it alongside each popup).
+///
+/// This is how fcitx5's candidate window (an input-method popup) asks for
+/// blur — the window/layer protocol paths never see popup surfaces, so
+/// without this the request was silently ignored.
+pub fn protocol_background_effect_rects_for_popup(
+    surface: &WlSurface,
+    buffer_origin: Point<i32, Logical>,
+) -> Vec<crate::ssd::LogicalRect> {
+    let blur_region = with_states(surface, |states| {
+        let mut cached = states
+            .cached_state
+            .get::<BackgroundEffectSurfaceCachedState>();
+        cached.current().blur_region.clone()
+    });
+    let Some(region) = blur_region else {
+        return Vec::new();
+    };
+    let bbox = bbox_from_surface_tree(surface, (0, 0));
+    if bbox.size.w <= 0 || bbox.size.h <= 0 {
+        return Vec::new();
+    }
+    region_rects_within_bounds(
+        &region,
+        crate::ssd::LogicalRect::new(bbox.loc.x, bbox.loc.y, bbox.size.w, bbox.size.h),
+    )
+    .into_iter()
+    .map(|rect| {
+        crate::ssd::LogicalRect::new(
+            buffer_origin.x + rect.x,
+            buffer_origin.y + rect.y,
+            rect.width,
+            rect.height,
+        )
+    })
+    .collect()
 }
 
 pub fn surface_elements<R>(
@@ -741,6 +794,8 @@ pub fn window_popup_groups<R>(
 ) -> Vec<(
     String,
     crate::ssd::LogicalRect,
+    Point<i32, Logical>,
+    WlSurface,
     Vec<WaylandSurfaceRenderElement<R>>,
 )>
 where
@@ -778,9 +833,19 @@ where
                 popup_geometry.size.w,
                 popup_geometry.size.h,
             );
+            // Global logical position of the popup's buffer origin — the
+            // coordinate the popup's surface-local blur region rects are
+            // relative to (window.geometry().loc cancels against
+            // render_origin, so it does not appear here).
+            let buffer_origin = Point::<i32, Logical>::from((
+                output_geo.loc.x + location_logical.x + popup_offset.x - popup_geometry.loc.x,
+                output_geo.loc.y + location_logical.y + popup_offset.y - popup_geometry.loc.y,
+            ));
             (
                 crate::ssd::popup_runtime_id(popup.wl_surface()),
                 rect,
+                buffer_origin,
+                popup.wl_surface().clone(),
                 elements,
             )
         })

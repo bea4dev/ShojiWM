@@ -479,6 +479,7 @@ fn composed_popup_scene_elements(
         String,
         crate::backend::shader_effect::ShaderEffectElementState,
     >,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
 ) -> Vec<WinitRenderElements> {
     let groups =
         window_render::layer_surface_popup_groups(renderer, output, layer_surface, scale, 1.0);
@@ -487,7 +488,7 @@ fn composed_popup_scene_elements(
     }
     let output_loc = output.current_location();
     let mut elements = Vec::new();
-    for (popup_id, local_rect, raw_elements) in groups {
+    for (popup_id, local_rect, local_buffer_origin, popup_surface, raw_elements) in groups {
         // Surface policy applies to the popup's raw surface elements whether
         // or not an effect is configured for it.
         let ignore_opaque = matches!(
@@ -508,8 +509,23 @@ fn composed_popup_scene_elements(
                 }
             })
             .collect::<Vec<_>>();
+        let protocol_background = popup_protocol_background_elements(
+            renderer,
+            output,
+            output_geo,
+            scale,
+            &popup_id,
+            &popup_surface,
+            smithay::utils::Point::from((
+                output_loc.x + local_buffer_origin.x,
+                output_loc.y + local_buffer_origin.y,
+            )),
+            configured_background_effect,
+            popup_framebuffer_effect_states,
+        );
         let Some(effects) = configured_popup_effects.get(&popup_id) else {
             elements.extend(popup_elements);
+            elements.extend(protocol_background);
             continue;
         };
         let popup_rect = crate::ssd::LogicalRect::new(
@@ -530,8 +546,66 @@ fn composed_popup_scene_elements(
             popup_effect_cache,
             popup_framebuffer_effect_states,
         ));
+        elements.extend(protocol_background);
     }
     elements
+}
+
+/// Winit counterpart of the TTY popup protocol-background pass: backdrop
+/// elements for a popup that requested blur via `ext-background-effect-v1`
+/// (fcitx5's candidate window). See the tty implementation for details.
+#[allow(clippy::too_many_arguments)]
+fn popup_protocol_background_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    popup_id: &str,
+    popup_surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    buffer_origin: smithay::utils::Point<i32, Logical>,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
+    popup_framebuffer_effect_states: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::ShaderEffectElementState,
+    >,
+) -> Vec<WinitRenderElements> {
+    let Some(config) = configured_background_effect else {
+        return Vec::new();
+    };
+    let rects =
+        window_render::protocol_background_effect_rects_for_popup(popup_surface, buffer_origin);
+    if rects.is_empty() {
+        return Vec::new();
+    }
+    if !config.effect.supports_popup_framebuffer_backdrop() {
+        return Vec::new();
+    }
+    let stable_key = format!("{}@popup-protocol-background@{}", popup_id, output.name());
+    match crate::backend::shader_effect::framebuffer_backdrop_element_for_output_rects_with_popup_source(
+        renderer,
+        popup_framebuffer_effect_states
+            .entry(stable_key)
+            .or_default(),
+        &rects,
+        config.effect.clone(),
+        output_geo,
+        scale,
+        1.0,
+        None,
+    ) {
+        Ok(Some(element)) => vec![WinitRenderElements::Decoration(
+            decoration::DecorationSceneElements::Backdrop(element),
+        )],
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                popup_id,
+                ?error,
+                "failed to build popup protocol background effect"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Winit counterpart of the TTY layer-popup pass. Layer-shell popup surfaces
@@ -553,6 +627,7 @@ fn layer_popup_scene_elements(
         String,
         crate::backend::shader_effect::ShaderEffectElementState,
     >,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
 ) -> Vec<WinitRenderElements> {
     crate::backend::window::layer_surfaces_for_popup_pass(output, overlay_only)
         .into_iter()
@@ -567,6 +642,7 @@ fn layer_popup_scene_elements(
                 surface_policies,
                 popup_effect_cache,
                 popup_framebuffer_effect_states,
+                configured_background_effect,
             )
         })
         .collect()
@@ -592,6 +668,7 @@ fn composed_window_popup_scene_elements(
         String,
         crate::backend::shader_effect::ShaderEffectElementState,
     >,
+    configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
 ) -> Vec<WinitRenderElements> {
     let groups =
         window_render::window_popup_groups(window, renderer, location, output_geo, scale, alpha);
@@ -599,13 +676,25 @@ fn composed_window_popup_scene_elements(
         return Vec::new();
     }
     let mut elements = Vec::new();
-    for (popup_id, popup_rect, raw_elements) in groups {
+    for (popup_id, popup_rect, buffer_origin, popup_surface, raw_elements) in groups {
         let popup_elements = raw_elements
             .into_iter()
             .map(WinitRenderElements::Window)
             .collect::<Vec<_>>();
+        let protocol_background = popup_protocol_background_elements(
+            renderer,
+            output,
+            output_geo,
+            scale,
+            &popup_id,
+            &popup_surface,
+            buffer_origin,
+            configured_background_effect,
+            popup_framebuffer_effect_states,
+        );
         let Some(effects) = configured_popup_effects.get(&popup_id) else {
             elements.extend(popup_elements);
+            elements.extend(protocol_background);
             continue;
         };
         elements.extend(compose_one_popup_elements(
@@ -620,6 +709,7 @@ fn composed_window_popup_scene_elements(
             popup_effect_cache,
             popup_framebuffer_effect_states,
         ));
+        elements.extend(protocol_background);
     }
     elements
 }
@@ -1659,6 +1749,8 @@ pub fn init_winit(
                                     drop(popup_elements);
                                     let configured_popup_effects =
                                         state.configured_popup_effects.clone();
+                                    let configured_background_effect =
+                                        state.configured_background_effect.clone();
                                     scene_elements.extend(composed_window_popup_scene_elements(
                                         renderer,
                                         &output,
@@ -1670,6 +1762,7 @@ pub fn init_winit(
                                         &configured_popup_effects,
                                         &mut state.popup_effect_cache,
                                         &mut state.popup_framebuffer_effect_states,
+                                        configured_background_effect.as_ref(),
                                     ));
                                 } else {
                                     scene_elements.extend(popup_elements.into_iter());
@@ -1761,6 +1854,8 @@ pub fn init_winit(
                         let configured_popup_effects = state.configured_popup_effects.clone();
                         let configured_popup_surface_policies =
                             state.configured_popup_surface_policies.clone();
+                        let configured_background_effect =
+                            state.configured_background_effect.clone();
                         let mut layer_popup_elements = layer_popup_scene_elements(
                             renderer,
                             &output,
@@ -1771,6 +1866,7 @@ pub fn init_winit(
                             &configured_popup_surface_policies,
                             &mut state.popup_effect_cache,
                             &mut state.popup_framebuffer_effect_states,
+                            configured_background_effect.as_ref(),
                         );
                         layer_popup_elements.append(&mut scene_elements);
                         scene_elements = layer_popup_elements;
