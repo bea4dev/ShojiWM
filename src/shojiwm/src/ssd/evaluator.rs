@@ -320,6 +320,11 @@ pub struct DecorationSchedulerTick {
 #[derive(Debug, Clone, Default)]
 pub struct DecorationHandlerInvocation {
     pub invoked: bool,
+    /// Close-animation duration the config declared via
+    /// `window.setCloseAnimationDuration(...)`. Only populated by
+    /// `start_close` responses; the closing-snapshot watchdog derives its
+    /// per-window finalize deadline from this.
+    pub close_animation_duration_ms: Option<u64>,
     pub node: Option<DecorationNode>,
     pub transform: Option<WindowTransform>,
     pub managed_window: Option<ManagedWindowState>,
@@ -1124,6 +1129,8 @@ struct RuntimeStartCloseResponse {
     kind: String,
     ok: bool,
     invoked: Option<bool>,
+    #[serde(rename = "closeAnimationDurationMs")]
+    close_animation_duration_ms: Option<u64>,
     serialized: Option<serde_json::Value>,
     transform: Option<WindowTransform>,
     #[serde(rename = "managedWindow")]
@@ -3502,6 +3509,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         };
 
         Ok(DecorationHandlerInvocation {
+            close_animation_duration_ms: None,
             invoked: response.invoked.unwrap_or(false),
             node,
             transform: response.transform,
@@ -3708,6 +3716,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         };
 
         Ok(DecorationHandlerInvocation {
+            close_animation_duration_ms: None,
             invoked: response.invoked.unwrap_or(false),
             node,
             transform: response.transform,
@@ -4416,6 +4425,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         };
 
         Ok(DecorationHandlerInvocation {
+            close_animation_duration_ms: response.close_animation_duration_ms,
             invoked: response.invoked.unwrap_or(false),
             node,
             transform: response.transform,

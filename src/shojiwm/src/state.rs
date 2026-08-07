@@ -2045,11 +2045,22 @@ impl ShojiWM {
     }
 
     pub fn reload_decoration_runtime(&mut self) {
-        let Some(current) = self.decoration_evaluator.as_embedded() else {
+        if self.decoration_evaluator.as_embedded().is_none() {
             self.config_error_report = Some(crate::config_error::ConfigErrorReport::hot_reload(
                 "hot reload is only available for the TypeScript runtime",
             ));
             self.schedule_redraw();
+            return;
+        }
+
+        // Windows that are mid-close hold GPU snapshots whose release depends
+        // on the current isolate's close handshake (`closePoll` →
+        // `finalizeClose`). The fresh isolate knows nothing about them, so
+        // finalize deterministically at the reload boundary instead of
+        // leaving the textures to the watchdog deadline.
+        self.finalize_all_closing_snapshots("config-hot-reload");
+
+        let Some(current) = self.decoration_evaluator.as_embedded() else {
             return;
         };
 

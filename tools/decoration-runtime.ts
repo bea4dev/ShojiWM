@@ -968,6 +968,15 @@ interface StartCloseSuccess {
   ok: true;
   kind: "startClose";
   invoked: boolean;
+  /**
+   * The close-animation duration the config declared via
+   * `window.setCloseAnimationDuration(...)` (0 when none was declared).
+   * The compositor uses this to derive a per-window finalize deadline for
+   * its closing-snapshot watchdog, so a stalled close animation is
+   * reclaimed relative to its own declared length instead of a fixed
+   * global timeout.
+   */
+  closeAnimationDurationMs: number;
   serialized?: unknown;
   transform?: WindowTransform;
   managedWindow?: ManagedWindowState;
@@ -4183,6 +4192,7 @@ function startClose(
   if (!entry) {
     return {
       invoked: false,
+      closeAnimationDurationMs: 0,
       dirtyWindowIds: [],
       actions: [],
       windowEffects: null,
@@ -4222,6 +4232,7 @@ function startClose(
   const actions = drainPendingActions();
   return {
     invoked: true,
+    closeAnimationDurationMs: entry.closeAnimationDurationMs,
     serialized: reevaluated?.serialized,
     transform: entry.cache.lastTransform,
     managedWindow: entry.cache.lastManagedWindow,

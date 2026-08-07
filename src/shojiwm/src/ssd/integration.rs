@@ -16,6 +16,16 @@ use tracing::{debug, info, trace, warn};
 use crate::backend::rounded::RoundedElementState;
 use crate::backend::visual::RectSnapMode;
 use crate::backend::visual::{inverse_transform_point, transformed_root_rect};
+
+/// Margin added on top of `closeAnimationDuration × 2` when deriving a
+/// closing snapshot's watchdog deadline; absorbs scheduler jitter around the
+/// TS-side `closePoll` that normally delivers `finalizeClose`.
+const CLOSING_SNAPSHOT_DEADLINE_MARGIN_MS: u64 = 1_000;
+/// Watchdog deadline for closing snapshots whose close-animation duration is
+/// unknown (config declared none, or the isolate died before answering).
+/// Deliberately generous: with a known duration the per-window deadline
+/// applies instead, so this only bounds genuinely broken closes.
+const CLOSING_SNAPSHOT_FALLBACK_DEADLINE_MS: u64 = 30_000;
 use crate::backend::{
     icon::{CachedDecorationIcon, IconSpec},
     shader_effect::CachedShaderEffect,
@@ -1572,6 +1582,76 @@ impl ShojiWM {
             .unwrap_or(fallback)
     }
 
+    /// Force-finalize every closing snapshot whose per-window deadline has
+    /// passed (see `ClosingWindowSnapshot::finalize_deadline_ms`). Normal
+    /// closes never reach this — a firing watchdog means the TS finalize
+    /// handshake was lost, so it warns.
+    fn finalize_closing_snapshots_past_deadline(&mut self, now_ms: u64) {
+        let stale_closing_window_ids: Vec<String> = self
+            .closing_window_snapshots
+            .iter()
+            .filter(|(_, closing)| now_ms >= closing.finalize_deadline_ms)
+            .map(|(window_id, _)| window_id.clone())
+            .collect();
+        if stale_closing_window_ids.is_empty() {
+            return;
+        }
+        if let Some(closing) = stale_closing_window_ids
+            .first()
+            .and_then(|window_id| self.closing_window_snapshots.get(window_id))
+        {
+            warn!(
+                window_ids = ?stale_closing_window_ids,
+                stalled_for_ms = now_ms.saturating_sub(closing.promoted_at_ms),
+                "closing snapshot watchdog: force-finalizing stalled close animation(s)"
+            );
+        }
+        self.force_finalize_closing_snapshots(stale_closing_window_ids);
+    }
+
+    /// Deterministically finalize all closing snapshots right now. Used when
+    /// the TS isolate is about to be replaced (config hot reload): the new
+    /// isolate has no `closePoll` timers or per-window close state for
+    /// windows that were mid-close, so their `finalizeClose` would never
+    /// arrive and the snapshots' `GlesTexture`s would only be reclaimed by
+    /// the watchdog deadline. Cutting the animations short at the reload
+    /// boundary is both deterministic and visually unobjectionable — the
+    /// whole scene re-evaluates anyway.
+    pub fn finalize_all_closing_snapshots(&mut self, reason: &'static str) {
+        let window_ids: Vec<String> = self.closing_window_snapshots.keys().cloned().collect();
+        if window_ids.is_empty() {
+            return;
+        }
+        info!(
+            window_ids = ?window_ids,
+            reason, "finalizing all closing snapshots"
+        );
+        self.force_finalize_closing_snapshots(window_ids);
+    }
+
+    fn force_finalize_closing_snapshots(&mut self, window_ids: Vec<String>) {
+        for window_id in &window_ids {
+            if let Some(closing) = self.closing_window_snapshots.get(window_id) {
+                let stale_root = transformed_root_rect(
+                    closing.decoration.layout.root.rect,
+                    closing.decoration.visual_transform,
+                );
+                self.pending_decoration_damage.push(stale_root);
+            }
+        }
+        self.apply_runtime_window_actions(
+            window_ids
+                .into_iter()
+                .map(|window_id| crate::ssd::RuntimeWindowAction {
+                    window_id,
+                    action: crate::ssd::WaylandWindowAction::FinalizeClose,
+                    animation: None,
+                    channel: None,
+                })
+                .collect(),
+        );
+    }
+
     pub fn promote_window_to_closing_snapshot(
         &mut self,
         window_id: &str,
@@ -1617,6 +1697,25 @@ impl ShojiWM {
         }
         self.live_window_snapshot_trackers.remove(window_id);
 
+        // Derive the watchdog deadline from the close-animation duration the
+        // config declared (`window.setCloseAnimationDuration`). ×2 plus a
+        // margin tolerates scheduler jitter around the TS-side `closePoll`;
+        // a missing/zero duration falls back to a generous constant so an
+        // isolate that died before answering still gets reclaimed.
+        let close_duration_ms = invocation.close_animation_duration_ms.unwrap_or(0);
+        let finalize_deadline_ms = if close_duration_ms > 0 {
+            now_ms
+                .saturating_add(close_duration_ms.saturating_mul(2))
+                .saturating_add(CLOSING_SNAPSHOT_DEADLINE_MARGIN_MS)
+        } else {
+            now_ms.saturating_add(CLOSING_SNAPSHOT_FALLBACK_DEADLINE_MS)
+        };
+        debug!(
+            window_id,
+            close_duration_ms,
+            deadline_in_ms = finalize_deadline_ms.saturating_sub(now_ms),
+            "promoted window to closing snapshot"
+        );
         self.closing_window_snapshots.insert(
             window_id.to_string(),
             crate::backend::snapshot::ClosingWindowSnapshot {
@@ -1625,6 +1724,7 @@ impl ShojiWM {
                 decoration: decoration.clone(),
                 transform: invocation.transform.unwrap_or(decoration.visual_transform),
                 promoted_at_ms: now_ms,
+                finalize_deadline_ms,
             },
         );
         self.mark_runtime_dirty_windows(
@@ -2670,53 +2770,18 @@ impl ShojiWM {
         let closing_active_count = self.closing_window_snapshots.len();
 
         // Watchdog: `closing_window_snapshots` entries are normally freed via
-        // `WaylandWindowAction::FinalizeClose`, enqueued only from the
-        // JS/TS-gated closing pass further down, which only re-evaluates a
-        // window while it is present in `runtime_dirty_window_ids`. That is
-        // the only mechanism that frees each entry's `GlesTexture` (real
-        // VRAM). If anything ever stops re-marking a closing window dirty —
-        // whichever animation system drives it — that entry, and its
-        // texture, would otherwise sit in the map for the lifetime of the
-        // compositor. No close animation shojiwm ships takes anywhere close
-        // to `CLOSING_SNAPSHOT_WATCHDOG_MS`, so anything still present after
-        // that long is stuck, not still animating; force it closed rather
-        // than let VRAM grow unbounded with every window ever closed.
-        const CLOSING_SNAPSHOT_WATCHDOG_MS: u64 = 5_000;
-        let stale_closing_window_ids: Vec<String> = self
-            .closing_window_snapshots
-            .iter()
-            .filter(|(_, closing)| {
-                now_ms.saturating_sub(closing.promoted_at_ms) >= CLOSING_SNAPSHOT_WATCHDOG_MS
-            })
-            .map(|(window_id, _)| window_id.clone())
-            .collect();
-        if !stale_closing_window_ids.is_empty() {
-            warn!(
-                window_ids = ?stale_closing_window_ids,
-                watchdog_ms = CLOSING_SNAPSHOT_WATCHDOG_MS,
-                "closing snapshot watchdog: force-finalizing stalled close animation(s)"
-            );
-            for window_id in &stale_closing_window_ids {
-                if let Some(closing) = self.closing_window_snapshots.get(window_id) {
-                    let stale_root = transformed_root_rect(
-                        closing.decoration.layout.root.rect,
-                        closing.decoration.visual_transform,
-                    );
-                    self.pending_decoration_damage.push(stale_root);
-                }
-            }
-            self.apply_runtime_window_actions(
-                stale_closing_window_ids
-                    .into_iter()
-                    .map(|window_id| crate::ssd::RuntimeWindowAction {
-                        window_id,
-                        action: crate::ssd::WaylandWindowAction::FinalizeClose,
-                        animation: None,
-                        channel: None,
-                    })
-                    .collect(),
-            );
-        }
+        // `WaylandWindowAction::FinalizeClose`, driven by the TS runtime's
+        // close handshake (`closePoll` armed in `startClose`). That chain
+        // breaks when the isolate is replaced mid-animation or the config
+        // throws during the close; the entry — and its `GlesTexture` (real
+        // VRAM) — would then sit in the map for the lifetime of the
+        // compositor. Each entry carries a per-window `finalize_deadline_ms`
+        // derived from the close-animation duration the config itself
+        // declared (see `promote_window_to_closing_snapshot`), so anything
+        // past its deadline is stuck, not still animating; force it closed
+        // rather than let VRAM grow with every window ever closed. A firing
+        // watchdog always indicates a bug in the finalize chain — hence warn.
+        self.finalize_closing_snapshots_past_deadline(now_ms);
 
         let removed_windows_started_at = Instant::now();
         let removed_windows = {

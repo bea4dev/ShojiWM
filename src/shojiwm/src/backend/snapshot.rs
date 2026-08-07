@@ -40,18 +40,22 @@ pub struct ClosingWindowSnapshot {
     pub decoration: WindowDecorationState,
     pub transform: WindowTransform,
     /// Compositor clock time (ms) at which this snapshot was promoted into
-    /// `closing_window_snapshots`. Used purely as a watchdog: the normal
-    /// finalize path relies on the TS/JS decoration runtime re-evaluating
-    /// this window (via `runtime_dirty_window_ids`) until it reports the
-    /// close animation as finished. If a window's close animation is driven
-    /// entirely by the *native* managed-window-animation system (see
-    /// `WaylandWindowAction::ScheduleAnimation`) and nothing ever re-marks
-    /// the window as runtime-dirty, that JS-gated path never runs again and
-    /// the snapshot — along with its `GlesTexture` — is retained forever.
-    /// `promoted_at_ms` lets a periodic watchdog force-finalize snapshots
-    /// that have clearly outlived any reasonable close animation, so a
-    /// single stalled window can never leak GPU memory indefinitely.
+    /// `closing_window_snapshots`. Kept for watchdog logging.
     pub promoted_at_ms: u64,
+    /// Compositor clock time (ms) after which the closing-snapshot watchdog
+    /// may force-finalize this entry. The normal finalize path relies on the
+    /// TS runtime completing the close handshake (`finalizeClose` from the
+    /// `closePoll` timer that `startClose` arms); that chain breaks when the
+    /// isolate is replaced mid-animation (config hot reload) or the config
+    /// throws during the close — the entry, and its `GlesTexture`, would then
+    /// be retained forever. The deadline is derived from the duration the
+    /// config itself declared via `window.setCloseAnimationDuration(...)`
+    /// (duration × 2 + margin), so arbitrarily long user-authored close
+    /// animations are never cut short by a fixed global timeout, while a
+    /// stalled entry is still reclaimed shortly after its own declared
+    /// length. Entries whose duration is unknown fall back to a generous
+    /// constant.
+    pub finalize_deadline_ms: u64,
 }
 
 pub fn retarget_snapshot_rect(snapshot: &mut LiveWindowSnapshot, rect: LogicalRect) -> bool {
