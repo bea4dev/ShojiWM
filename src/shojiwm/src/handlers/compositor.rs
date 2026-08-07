@@ -143,14 +143,13 @@ impl CompositorHandler for ShojiWM {
                             .current()
                             .buffer_delta
                             .take();
-                        if let Some(buffer_delta) = buffer_delta {
-                            if let Some(attrs) = states
+                        if let Some(buffer_delta) = buffer_delta
+                            && let Some(attrs) = states
                                 .data_map
                                 .get::<Mutex<smithay::input::pointer::CursorImageAttributes>>()
                             {
                                 attrs.lock().unwrap().hotspot -= buffer_delta;
                             }
-                        }
 
                         // Workaround for Xwayland (via xwayland-satellite) sending oversized
                         // cursor buffers without setting buffer_scale: it attaches a 48×48
@@ -216,8 +215,8 @@ impl CompositorHandler for ShojiWM {
                     });
                 }
             }
-            if x11_browser_cpu_debug_enabled() {
-                if let Some(window) = mapped_window {
+            if x11_browser_cpu_debug_enabled()
+                && let Some(window) = mapped_window {
                     let snapshot = self.snapshot_window(&window);
                     if is_chrome_like_app_id(snapshot.app_id.as_deref()) {
                         let (buffer_attached, damage_count, frame_callback_count) = with_states(
@@ -254,7 +253,6 @@ impl CompositorHandler for ShojiWM {
                         );
                     }
                 }
-            }
         }
         on_commit_buffer_handler::<Self>(surface);
         if let Some((window, source_damage)) = pending_source_damage {

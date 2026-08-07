@@ -353,31 +353,25 @@ pub struct ManagedWindowPointSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum ManagedWindowAnimationMode {
+    #[default]
     Override,
     Add,
     Sub,
     Multiply,
 }
 
-impl Default for ManagedWindowAnimationMode {
-    fn default() -> Self {
-        Self::Override
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Default)]
 pub enum ManagedWindowAnimationEasingSnapshot {
+    #[default]
     Linear,
     CubicBezier { x1: f64, y1: f64, x2: f64, y2: f64 },
 }
 
-impl Default for ManagedWindowAnimationEasingSnapshot {
-    fn default() -> Self {
-        Self::Linear
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

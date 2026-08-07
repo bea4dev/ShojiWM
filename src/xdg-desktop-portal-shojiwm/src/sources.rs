@@ -252,17 +252,16 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
                 width,
                 height,
                 refresh,
-            } => {
+            }
                 if flags
                     .into_result()
                     .map(|f| f.contains(wl_output::Mode::Current))
                     .unwrap_or(false)
-                {
+                => {
                     cur.width = width;
                     cur.height = height;
                     cur.refresh_mhz = refresh;
                 }
-            }
             wl_output::Event::Done => {
                 let info = state.output_pending.pop().unwrap();
                 state.outputs.push(DiscoveredOutput {
@@ -381,14 +380,14 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppData {
                 c.constraint_width = width;
                 c.constraint_height = height;
             }
-            ext_image_copy_capture_session_v1::Event::ShmFormat { format } => {
-                if let WEnum::Value(f) = format {
-                    // Prefer Xrgb8888 / Argb8888 over more exotic ones.
-                    let is_preferred =
-                        matches!(f, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
-                    if c.constraint_format.is_none() || is_preferred {
-                        c.constraint_format = Some(f);
-                    }
+            ext_image_copy_capture_session_v1::Event::ShmFormat {
+                format: WEnum::Value(f),
+            } => {
+                // Prefer Xrgb8888 / Argb8888 over more exotic ones.
+                let is_preferred =
+                    matches!(f, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
+                if c.constraint_format.is_none() || is_preferred {
+                    c.constraint_format = Some(f);
                 }
             }
             ext_image_copy_capture_session_v1::Event::Done => {
@@ -596,7 +595,7 @@ unsafe fn decode_buffer(
 
     // Compute downscale factor (integer nearest-neighbour).
     let longest = width.max(height);
-    let factor = ((longest + MAX_THUMBNAIL_DIM - 1) / MAX_THUMBNAIL_DIM).max(1);
+    let factor = longest.div_ceil(MAX_THUMBNAIL_DIM).max(1);
     let dst_w = (width / factor).max(1);
     let dst_h = (height / factor).max(1);
 

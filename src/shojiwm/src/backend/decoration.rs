@@ -1290,21 +1290,12 @@ fn rounded_rect_element(
     } else {
         clip
     };
-    let shader_outer_rect = if cached.border_width > 0.0 {
-        [
-            0.0,
-            0.0,
-            shader_rect.size.w as f32,
-            shader_rect.size.h as f32,
-        ]
-    } else {
-        [
-            0.0,
-            0.0,
-            shader_rect.size.w as f32,
-            shader_rect.size.h as f32,
-        ]
-    };
+    let shader_outer_rect = [
+        0.0,
+        0.0,
+        shader_rect.size.w as f32,
+        shader_rect.size.h as f32,
+    ];
     let prefer_derived_inner = matches!(border_fit, crate::ssd::BorderFit::FitChildren)
         && cached.shared_inner_hole
         && render_inner.is_none();

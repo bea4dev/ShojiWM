@@ -1,3 +1,9 @@
+// Compositor code passes lots of independent renderer/output/state args;
+// not worth restructuring just for this lint.
+#![allow(clippy::too_many_arguments)]
+// smithay::desktop::Window hashes/compares by a stable id, so HashMap<Window, _> is fine.
+#![allow(clippy::mutable_key_type)]
+
 use crate::{backend::ShojiWMBackend, state::ShojiWM};
 use mimalloc::MiMalloc;
 use std::{
@@ -232,12 +238,11 @@ fn parse_tty_outputs(args: &[String]) -> Vec<String> {
         let arg = &args[index];
         if let Some(value) = arg.strip_prefix("--tty-output=") {
             outputs.extend(split_tty_outputs(value));
-        } else if arg == "--tty-output" {
-            if let Some(value) = args.get(index + 1) {
+        } else if arg == "--tty-output"
+            && let Some(value) = args.get(index + 1) {
                 outputs.extend(split_tty_outputs(value));
                 index += 1;
             }
-        }
         index += 1;
     }
     outputs
@@ -260,11 +265,10 @@ fn parse_option_value(args: &[String], option: &str) -> Option<String> {
             if !value.is_empty() {
                 return Some(value.to_string());
             }
-        } else if arg == option {
-            if let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) {
+        } else if arg == option
+            && let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) {
                 return Some(value.clone());
             }
-        }
         index += 1;
     }
     None
@@ -441,7 +445,7 @@ fn prune_rotated_logs(
 
     // Newest first. The rotation timestamp is a better ordering key than
     // mtime, which a copy or a backup pass can rewrite.
-    rotated.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+    rotated.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
 
     let now = startup_timestamp_millis();
     let mut kept_bytes = 0_u64;

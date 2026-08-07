@@ -601,9 +601,7 @@ impl ExtWorkspaceManagerState {
 
         let all_workspaces = self
             .workspaces
-            .values()
-            .cloned()
-            .filter(|workspace| !workspace.is_removed())
+            .values().filter(|&workspace| !workspace.is_removed()).cloned()
             .collect::<Vec<_>>();
         for group in &update.groups {
             if let Some(handle) = self.groups.get(&group.id) {

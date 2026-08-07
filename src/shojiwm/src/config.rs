@@ -1,5 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DisplayModePreference {
+    #[default]
     Auto,
     Exact {
         width: u16,
@@ -8,11 +10,6 @@ pub enum DisplayModePreference {
     },
 }
 
-impl Default for DisplayModePreference {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct DisplayConfig {
@@ -104,10 +101,9 @@ pub fn tty_output_names_match(candidate: &str, actual: &str) -> bool {
 }
 
 fn normalize_tty_output_name(name: &str) -> &str {
-    if let Some((prefix, rest)) = name.split_once('-') {
-        if prefix.starts_with("card") && prefix[4..].chars().all(|ch| ch.is_ascii_digit()) {
+    if let Some((prefix, rest)) = name.split_once('-')
+        && prefix.starts_with("card") && prefix[4..].chars().all(|ch| ch.is_ascii_digit()) {
             return rest;
         }
-    }
     name
 }

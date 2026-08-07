@@ -525,13 +525,13 @@ impl ShojiWM {
 
         self.space.elements().for_each(|window| {
             if self.window_frame_processing_applies_to_output(window, output) {
-                window.send_frame(output, time, throttle, &should_send);
+                window.send_frame(output, time, throttle, should_send);
             }
         });
 
         let map = layer_map_for_output(output);
         for layer_surface in map.layers().filter(|layer| layer_surface_is_mapped(layer)) {
-            layer_surface.send_frame(output, time, throttle, &should_send);
+            layer_surface.send_frame(output, time, throttle, should_send);
         }
         drop(map);
 
@@ -620,13 +620,13 @@ impl ShojiWM {
 
         self.space.elements().for_each(|window| {
             if self.window_frame_processing_applies_to_output(window, output) {
-                window.send_frame(output, time, throttle, &should_send);
+                window.send_frame(output, time, throttle, should_send);
             }
         });
 
         let map = layer_map_for_output(output);
         for layer_surface in map.layers().filter(|layer| layer_surface_is_mapped(layer)) {
-            layer_surface.send_frame(output, time, throttle, &should_send);
+            layer_surface.send_frame(output, time, throttle, should_send);
         }
         drop(map);
 

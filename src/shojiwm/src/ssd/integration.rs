@@ -1624,6 +1624,7 @@ impl ShojiWM {
                 live: live_snapshot,
                 decoration: decoration.clone(),
                 transform: invocation.transform.unwrap_or(decoration.visual_transform),
+                promoted_at_ms: now_ms,
             },
         );
         self.mark_runtime_dirty_windows(
@@ -1838,7 +1839,7 @@ impl ShojiWM {
         for action in actions {
             if hot_reload_debug_enabled() || minimize_debug_enabled() {
                 let cached_state = self.window_decorations.iter().find_map(|(_, decoration)| {
-                    (decoration.snapshot.id == action.window_id).then(|| {
+                    (decoration.snapshot.id == action.window_id).then_some({
                         (
                             decoration.managed_window.idle,
                             decoration.managed_window.visible,
@@ -1980,7 +1981,7 @@ impl ShojiWM {
         // can show exactly what would have been rendered if a render had
         // fired in the gap.
         let pre_decoration = self.window_decorations.iter().find_map(|(_, d)| {
-            (d.snapshot.id == inserted_window_id).then(|| {
+            (d.snapshot.id == inserted_window_id).then_some({
                 (
                     d.managed_window.rect,
                     d.managed_window.idle,
@@ -2372,6 +2373,26 @@ impl ShojiWM {
                         next_root,
                     );
                 }
+
+                // The `FinalizeClose` action (which drops this snapshot's
+                // `GlesTexture` and frees its VRAM) is only ever enqueued
+                // from the JS/TS-gated closing pass below, which only
+                // re-evaluates a closing window when it is present in
+                // `runtime_dirty_window_ids`. A close animation driven
+                // purely by this native managed-window-animation system
+                // (`WaylandWindowAction::ScheduleAnimation`, as used by
+                // `scheduleCloseAnimation` in the default config) never
+                // itself touches `runtime_dirty_window_ids` once the JS
+                // side's one-shot `start_close` dirty flag is consumed on
+                // the first frame — so without this, a closing window whose
+                // fade is entirely native-driven never gets re-evaluated,
+                // `FinalizeClose` never fires, and its texture leaks for
+                // the lifetime of the compositor. Re-mark it dirty the
+                // moment its native animation finishes so the existing
+                // finalize check actually runs again on the next frame.
+                if !animation_still_active {
+                    self.runtime_dirty_window_ids.insert(window_id.clone());
+                }
             }
         }
 
@@ -2647,6 +2668,56 @@ impl ShojiWM {
         let mut managed_rect_apply_window_ids = std::collections::HashSet::new();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         let closing_active_count = self.closing_window_snapshots.len();
+
+        // Watchdog: `closing_window_snapshots` entries are normally freed via
+        // `WaylandWindowAction::FinalizeClose`, enqueued only from the
+        // JS/TS-gated closing pass further down, which only re-evaluates a
+        // window while it is present in `runtime_dirty_window_ids`. That is
+        // the only mechanism that frees each entry's `GlesTexture` (real
+        // VRAM). If anything ever stops re-marking a closing window dirty —
+        // whichever animation system drives it — that entry, and its
+        // texture, would otherwise sit in the map for the lifetime of the
+        // compositor. No close animation shojiwm ships takes anywhere close
+        // to `CLOSING_SNAPSHOT_WATCHDOG_MS`, so anything still present after
+        // that long is stuck, not still animating; force it closed rather
+        // than let VRAM grow unbounded with every window ever closed.
+        const CLOSING_SNAPSHOT_WATCHDOG_MS: u64 = 5_000;
+        let stale_closing_window_ids: Vec<String> = self
+            .closing_window_snapshots
+            .iter()
+            .filter(|(_, closing)| {
+                now_ms.saturating_sub(closing.promoted_at_ms) >= CLOSING_SNAPSHOT_WATCHDOG_MS
+            })
+            .map(|(window_id, _)| window_id.clone())
+            .collect();
+        if !stale_closing_window_ids.is_empty() {
+            warn!(
+                window_ids = ?stale_closing_window_ids,
+                watchdog_ms = CLOSING_SNAPSHOT_WATCHDOG_MS,
+                "closing snapshot watchdog: force-finalizing stalled close animation(s)"
+            );
+            for window_id in &stale_closing_window_ids {
+                if let Some(closing) = self.closing_window_snapshots.get(window_id) {
+                    let stale_root = transformed_root_rect(
+                        closing.decoration.layout.root.rect,
+                        closing.decoration.visual_transform,
+                    );
+                    self.pending_decoration_damage.push(stale_root);
+                }
+            }
+            self.apply_runtime_window_actions(
+                stale_closing_window_ids
+                    .into_iter()
+                    .map(|window_id| crate::ssd::RuntimeWindowAction {
+                        window_id,
+                        action: crate::ssd::WaylandWindowAction::FinalizeClose,
+                        animation: None,
+                        channel: None,
+                    })
+                    .collect(),
+            );
+        }
+
         let removed_windows_started_at = Instant::now();
         let removed_windows = {
             timescope::scope!("ssd collect removed windows");
@@ -5977,7 +6048,7 @@ fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
     nearest_mask: Option<crate::ssd::ResolvedDecorationClip>,
-    shared_edges: &impl SharedEdgeGeometryLookup,
+    _shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
         node.style
@@ -6054,7 +6125,7 @@ fn slot_content_clip_for_node(
 
     node.children
         .iter()
-        .find_map(|child| slot_content_clip_for_node(child, next_border, next_mask, shared_edges))
+        .find_map(|child| slot_content_clip_for_node(child, next_border, next_mask, _shared_edges))
 }
 
 impl DecorationTree {
@@ -6901,8 +6972,7 @@ fn collect_render_orders(
         .style
         .background
         .map(|color| color.with_opacity(node.style.opacity))
-    {
-        if background.a > 0 {
+        && background.a > 0 {
             if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
                 map.insert(format!("{path}:fill-top"), *order);
                 *order += 1;
@@ -6917,7 +6987,6 @@ fn collect_render_orders(
                 *order += 1;
             }
         }
-    }
 }
 
 fn collect_cached_buffers(
@@ -7173,8 +7242,7 @@ fn collect_cached_buffers(
                     .style
                     .background
                     .map(|color| color.with_opacity(node.style.opacity))
-                {
-                    if background.a > 0 {
+                    && background.a > 0 {
                         if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
                             if let Some(inner_rect) = border_hole_rect {
                                 push_cached_fill(
@@ -7250,7 +7318,6 @@ fn collect_cached_buffers(
                             );
                         }
                     }
-                }
             }
 
             for_each_paint_ordered_child(node, |index, child| {
@@ -8572,11 +8639,10 @@ fn push_damage_pair(
     old_rect: Option<LogicalRect>,
     new_rect: LogicalRect,
 ) {
-    if let Some(old_rect) = old_rect {
-        if old_rect != new_rect {
+    if let Some(old_rect) = old_rect
+        && old_rect != new_rect {
             damage.push(old_rect);
         }
-    }
     damage.push(new_rect);
 }
 

@@ -78,6 +78,12 @@ struct OutputState {
     last_frame_ms: f32,
 }
 
+impl Default for FpsCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FpsCounter {
     pub fn new() -> Self {
         Self {

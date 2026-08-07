@@ -161,7 +161,7 @@ impl ShojiWM {
             serial,
             Event::time_msec(event),
             |data, modifiers, _handle| {
-                data.current_keyboard_modifiers = modifiers.clone();
+                data.current_keyboard_modifiers = *modifiers;
                 FilterResult::<KeyboardAction>::Forward
             },
         );
@@ -400,7 +400,7 @@ impl ShojiWM {
                         serial,
                         time,
                         |data, modifiers, handle| {
-                            data.current_keyboard_modifiers = modifiers.clone();
+                            data.current_keyboard_modifiers = *modifiers;
 
                             // --- modifier-only tap detection ---
                             // If no other key/button is pressed between press and
@@ -576,8 +576,8 @@ impl ShojiWM {
                 let mut pointer_confined = false;
                 let mut confine_region = None;
 
-                if let Some((surface, surface_origin)) = under.as_ref() {
-                    if pointer.current_focus().as_ref() == Some(surface) {
+                if let Some((surface, surface_origin)) = under.as_ref()
+                    && pointer.current_focus().as_ref() == Some(surface) {
                         with_pointer_constraint(surface, &pointer, |constraint| {
                             let Some(constraint) =
                                 constraint.filter(|constraint| constraint.is_active())
@@ -602,7 +602,6 @@ impl ShojiWM {
                             }
                         });
                     }
-                }
 
                 if pointer_locked {
                     pointer.relative_motion(
@@ -1675,6 +1674,7 @@ impl ShojiWM {
                 runtime_action.action,
                 crate::ssd::WaylandWindowAction::FinalizeClose
             ) {
+                self.prune_window_shader_pipeline_caches(&runtime_action.window_id);
                 self.closing_window_snapshots
                     .remove(&runtime_action.window_id);
                 self.live_window_snapshots.remove(&runtime_action.window_id);
@@ -1795,6 +1795,15 @@ impl ShojiWM {
         }
     }
 }
+
+/// `(protocol id, local point, serial, is_popup, owning-window info)`.
+type SurfaceHitDebugInfo = (
+    u32,
+    smithay::utils::Point<f64, smithay::utils::Logical>,
+    u32,
+    bool,
+    Option<(usize, String, String, Option<String>, i32)>,
+);
 
 impl ShojiWM {
     pub(crate) fn request_window_maximize(
@@ -2204,13 +2213,7 @@ impl ShojiWM {
         &self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
         origin: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> (
-        u32,
-        smithay::utils::Point<f64, smithay::utils::Logical>,
-        u32,
-        bool,
-        Option<(usize, String, String, Option<String>, i32)>,
-    ) {
+    ) -> SurfaceHitDebugInfo {
         (
             surface.id().protocol_id(),
             origin,

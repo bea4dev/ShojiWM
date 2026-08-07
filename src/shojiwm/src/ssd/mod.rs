@@ -644,17 +644,14 @@ pub enum DecorationNodeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ImageFit {
+    #[default]
     Contain,
     Cover,
     Fill,
 }
 
-impl Default for ImageFit {
-    fn default() -> Self {
-        ImageFit::Contain
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageNode {
@@ -1092,7 +1089,7 @@ impl CompiledEffect {
                 EffectStage::Shader(shader) => Some(shader),
                 _ => None,
             })
-            .or_else(|| match &self.input {
+            .or(match &self.input {
                 EffectInput::Shader(shader) => Some(shader),
                 _ => None,
             })
@@ -1453,6 +1450,8 @@ pub(crate) struct ResolvedLogicalRect {
     height: ResolvedLayoutValue,
 }
 
+// kept: non-`_resolved` counterparts, still part of the type's API
+#[allow(dead_code)]
 impl ResolvedLogicalRect {
     fn from_logical(rect: LogicalRect) -> Self {
         Self {
@@ -1568,6 +1567,8 @@ impl From<DecorationValidationError> for DecorationLayoutError {
     }
 }
 
+// kept: lower-level entry point, not currently called directly
+#[allow(dead_code)]
 pub(super) fn layout_node(
     node: &DecorationNode,
     rect: LogicalRect,
@@ -1904,7 +1905,7 @@ fn layout_box_children(
 
     for (flow_position, ((index, child), main_size)) in flow_children
         .into_iter()
-        .zip(allocated.into_iter())
+        .zip(allocated)
         .enumerate()
     {
         let margin = child.style.resolved_margin(scale);
@@ -2157,6 +2158,8 @@ fn transform_subtree(
     }
 }
 
+// kept: non-`_resolved` counterparts of the methods actually used
+#[allow(dead_code)]
 impl DecorationNode {
     fn preferred_main_size_resolved(
         &self,
@@ -2275,7 +2278,7 @@ impl DecorationNode {
     }
 
     fn flex_grow_for_layout(&self) -> f32 {
-        self.style.flex_grow.unwrap_or_else(|| {
+        self.style.flex_grow.unwrap_or({
             if matches!(self.kind, DecorationNodeKind::WindowSlot) {
                 1.0
             } else {
@@ -2579,6 +2582,8 @@ impl DecorationNode {
     }
 }
 
+// kept: non-`_resolved` counterparts of the methods actually used
+#[allow(dead_code)]
 impl DecorationStyle {
     pub(crate) fn effective_border_fit(&self, kind: &DecorationNodeKind) -> BorderFit {
         self.border_fit.unwrap_or(match kind {
@@ -2737,6 +2742,8 @@ fn layout_style_equivalent(left: &DecorationStyle, right: &DecorationStyle) -> b
         && left.visible == right.visible
 }
 
+// kept: non-`_resolved` counterpart of clamp_size_resolved
+#[allow(dead_code)]
 fn clamp_size(value: i32, min: Option<i32>, max: Option<i32>) -> i32 {
     let mut value = value.max(0);
     if let Some(min) = min {
@@ -2764,6 +2771,8 @@ fn clamp_size_resolved(
     value
 }
 
+// kept: non-`_resolved` counterparts of the methods actually used
+#[allow(dead_code)]
 impl LayoutDirection {
     fn main_start_margin_resolved(self, margin: ResolvedLayoutEdges) -> ResolvedLayoutValue {
         match self {
@@ -3194,6 +3203,8 @@ fn hit_test_resize_edges(
     (!edges.is_empty()).then_some(edges)
 }
 
+// kept: non-resolved counterpart of effective_clip_for_node_resolved
+#[allow(dead_code)]
 fn effective_clip_for_node(
     node: &DecorationNode,
     inherited_clip: Option<DecorationClip>,
@@ -3248,6 +3259,8 @@ fn node_clips_children(node: &DecorationNode) -> bool {
         || (node.style.border.is_some() && !matches!(node.style.overflow, Some(Overflow::Visible)))
 }
 
+// kept: used by effective_clip_for_node above
+#[allow(dead_code)]
 fn intersect_decoration_clips(
     left: DecorationClip,
     right: DecorationClip,
@@ -3307,6 +3320,8 @@ fn intersect_resolved_decoration_clips(
     })
 }
 
+// kept: used by the non-resolved clip path above
+#[allow(dead_code)]
 fn rect_contains_logical(outer: LogicalRect, inner: LogicalRect) -> bool {
     outer.x <= inner.x
         && outer.y <= inner.y

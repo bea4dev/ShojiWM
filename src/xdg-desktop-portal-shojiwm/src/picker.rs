@@ -102,11 +102,12 @@ enum Message {
     ThumbnailUpdate(ThumbnailUpdate),
 }
 
+/// `(picked sources, responder)` handed off to the picker's request handler.
+type PickHandoff = (Vec<SourceInfo>, oneshot::Sender<PickResult>);
+
 /// Boxed handoff for the responder so Message can stay `Clone`.
 #[derive(Debug, Clone)]
-struct RequestArrived(
-    std::sync::Arc<Mutex<Option<(Vec<SourceInfo>, oneshot::Sender<PickResult>)>>>,
-);
+struct RequestArrived(std::sync::Arc<Mutex<Option<PickHandoff>>>);
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
