@@ -138,11 +138,10 @@ impl XwmHandler for ShojiWM {
             self.prune_window_state(&elem);
             self.space.unmap_elem(&elem);
         }
-        if !window.is_override_redirect() {
-            if let Err(err) = window.set_mapped(false) {
+        if !window.is_override_redirect()
+            && let Err(err) = window.set_mapped(false) {
                 warn!(?err, "failed to mark X11 surface as unmapped");
             }
-        }
         self.request_tty_maintenance("x11-window-unmapped");
         self.schedule_redraw();
     }

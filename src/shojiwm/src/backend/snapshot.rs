@@ -39,6 +39,19 @@ pub struct ClosingWindowSnapshot {
     pub live: LiveWindowSnapshot,
     pub decoration: WindowDecorationState,
     pub transform: WindowTransform,
+    /// Compositor clock time (ms) at which this snapshot was promoted into
+    /// `closing_window_snapshots`. Used purely as a watchdog: the normal
+    /// finalize path relies on the TS/JS decoration runtime re-evaluating
+    /// this window (via `runtime_dirty_window_ids`) until it reports the
+    /// close animation as finished. If a window's close animation is driven
+    /// entirely by the *native* managed-window-animation system (see
+    /// `WaylandWindowAction::ScheduleAnimation`) and nothing ever re-marks
+    /// the window as runtime-dirty, that JS-gated path never runs again and
+    /// the snapshot — along with its `GlesTexture` — is retained forever.
+    /// `promoted_at_ms` lets a periodic watchdog force-finalize snapshots
+    /// that have clearly outlived any reasonable close animation, so a
+    /// single stalled window can never leak GPU memory indefinitely.
+    pub promoted_at_ms: u64,
 }
 
 pub fn retarget_snapshot_rect(snapshot: &mut LiveWindowSnapshot, rect: LogicalRect) -> bool {
@@ -273,9 +286,7 @@ pub fn closing_snapshot_element(
         Point::from((transformed.x, transformed.y)),
         (transformed.width, transformed.height).into(),
     );
-    if transformed_rect.intersection(output_geo).is_none() {
-        return None;
-    }
+    transformed_rect.intersection(output_geo)?;
 
     let visual = window_visual_state(snapshot.live.rect, snapshot.transform, output_geo, scale);
     let location: Point<i32, smithay::utils::Physical> =
@@ -319,9 +330,7 @@ pub fn live_snapshot_element(
         Point::from((snapshot.rect.x, snapshot.rect.y)),
         (snapshot.rect.width, snapshot.rect.height).into(),
     );
-    if rect.intersection(output_geo).is_none() {
-        return None;
-    }
+    rect.intersection(output_geo)?;
 
     let location: Point<i32, smithay::utils::Physical> =
         (Point::from((snapshot.rect.x, snapshot.rect.y)) - output_geo.loc)

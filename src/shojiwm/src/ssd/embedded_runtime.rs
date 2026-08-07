@@ -235,6 +235,8 @@ enum BridgeRequest {
     },
 }
 
+// boxing left as a follow-up (touches all construction/match sites)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum NativeCompositionPatch {
     /// A structural or otherwise generic node change. This remains the
@@ -270,6 +272,8 @@ impl NativeCompositionPatch {
     }
 }
 
+// boxing left as a follow-up (see NativeCompositionPatch above)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum NativeCompositionUpdate {
     Full {
@@ -345,6 +349,8 @@ pub(super) struct NativeEffectUniformPatchBatch {
     patches: Vec<NativeEffectUniformPatch>,
 }
 
+// boxing left as a follow-up (see NativeCompositionPatch above)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum NativeEffectUpdate {
     Background(Option<BackgroundEffectConfig>),
@@ -457,6 +463,8 @@ impl NativeCompositionUpdate {
     }
 }
 
+// wire counterpart of NativeCompositionUpdate; same rationale
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum WireNativeCompositionUpdate {
@@ -472,6 +480,8 @@ enum WireNativeCompositionUpdate {
     },
 }
 
+// wire counterpart of NativeEffectUpdate; same rationale
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum WireNativeEffectUpdate {
@@ -2114,6 +2124,8 @@ pub struct EmbeddedRuntime {
     composition_updates: Arc<Mutex<HashMap<u64, NativeCompositionUpdate>>>,
     effect_updates: Arc<Mutex<HashMap<u64, NativeEffectUpdate>>>,
     effect_state_cache: Mutex<NativeEffectStateCache>,
+    // read only via the #[cfg(test)] accessor below
+    #[cfg_attr(not(test), allow(dead_code))]
     effect_uniform_patch_count: Arc<AtomicU32>,
     worker: Option<JoinHandle<()>>,
     worker_error: Arc<Mutex<Option<String>>>,
@@ -2639,7 +2651,7 @@ impl Drop for EmbeddedRuntime {
 fn run_runtime(
     bridge_id: u32,
     script_path: &PathBuf,
-    config_path: &PathBuf,
+    config_path: &std::path::Path,
     working_dir: Option<&std::path::Path>,
     ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {

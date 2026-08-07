@@ -1537,26 +1537,24 @@ impl EmbeddedDecorationEvaluator {
         &self,
         display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     ) {
-        if let Ok(mut guard) = self.display_state.lock() {
-            if *guard != display_state {
+        if let Ok(mut guard) = self.display_state.lock()
+            && *guard != display_state {
                 *guard = display_state;
                 self.runtime_state_generation
                     .fetch_add(1, Ordering::Release);
             }
-        }
     }
 
     pub fn set_input_state(
         &self,
         input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     ) {
-        if let Ok(mut guard) = self.input_state.lock() {
-            if *guard != input_state {
+        if let Ok(mut guard) = self.input_state.lock()
+            && *guard != input_state {
                 *guard = input_state;
                 self.runtime_state_generation
                     .fetch_add(1, Ordering::Release);
             }
-        }
     }
 
     pub fn fresh_like(&self) -> Self {

@@ -444,9 +444,20 @@ impl ShojiWM {
     /// `WaylandWindowAction::FinalizeClose` once the close animation itself
     /// finishes.
     pub fn prune_window_state(&mut self, window: &Window) {
+        let window_id = self
+            .window_decorations
+            .get(window)
+            .map(|decoration| decoration.snapshot.id.clone());
         self.window_decorations.remove(window);
         self.window_primary_output_names.remove(window);
         self.window_commit_times.remove(window);
+        if let Some(window_id) = window_id {
+            self.prune_window_shader_pipeline_caches(&window_id);
+        }
+    }
+
+    pub fn prune_window_shader_pipeline_caches(&mut self, window_id: &str) {
+        crate::backend::shader_effect::purge_shared_effect_pipeline_caches_for_window(window_id);
     }
 
     /// Drops a captured `live_window_snapshots` entry (a real `GlesTexture`)
@@ -461,6 +472,7 @@ impl ShojiWM {
         if self.closing_window_snapshots.contains_key(window_id) {
             return;
         }
+        self.prune_window_shader_pipeline_caches(window_id);
         self.live_window_snapshots.remove(window_id);
         self.live_window_snapshot_trackers.remove(window_id);
         self.complete_window_snapshots.remove(window_id);

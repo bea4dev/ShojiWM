@@ -4,6 +4,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Per-popup groups: (id, output-local rect, location, surface, elements).
+type PopupRenderGroups<R> = Vec<(
+    String,
+    crate::ssd::LogicalRect,
+    Point<i32, Logical>,
+    WlSurface,
+    Vec<WaylandSurfaceRenderElement<R>>,
+)>;
+
 use smithay::{
     backend::renderer::{
         ImportAll, Renderer,
@@ -370,13 +379,7 @@ pub fn layer_surface_popup_groups<R>(
     layer_surface: &LayerSurface,
     scale: Scale<f64>,
     alpha: f32,
-) -> Vec<(
-    String,
-    crate::ssd::LogicalRect,
-    Point<i32, Logical>,
-    WlSurface,
-    Vec<WaylandSurfaceRenderElement<R>>,
-)>
+) -> PopupRenderGroups<R>
 where
     R: Renderer + ImportAll,
     R::TextureId: Clone + 'static,
@@ -501,7 +504,7 @@ where
                 let srcs = elements
                     .iter()
                     .take(8)
-                    .map(|element| Element::src(element))
+                    .map(Element::src)
                     .collect::<Vec<_>>();
                 info!(
                     root_surface = ?surface.wl_surface().id(),
@@ -791,13 +794,7 @@ pub fn window_popup_groups<R>(
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
     alpha: f32,
-) -> Vec<(
-    String,
-    crate::ssd::LogicalRect,
-    Point<i32, Logical>,
-    WlSurface,
-    Vec<WaylandSurfaceRenderElement<R>>,
-)>
+) -> PopupRenderGroups<R>
 where
     R: Renderer + ImportAll,
     R::TextureId: Clone + 'static,
@@ -902,7 +899,7 @@ pub fn clipped_surface_elements(
         .collect::<Vec<_>>();
     let element_srcs = elements
         .iter()
-        .map(|element| Element::src(element))
+        .map(Element::src)
         .collect::<Vec<_>>();
     let selected_indices = geometry
         .map(|forced_geometry| {

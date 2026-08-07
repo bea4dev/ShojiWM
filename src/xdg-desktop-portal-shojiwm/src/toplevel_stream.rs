@@ -715,12 +715,12 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppState {
                 state.adv_width = width;
                 state.adv_height = height;
             }
-            ext_image_copy_capture_session_v1::Event::ShmFormat { format } => {
-                if let WEnum::Value(f) = format {
-                    let is_preferred = matches!(f, wl_shm::Format::Xrgb8888);
-                    if state.adv_format.is_none() || is_preferred {
-                        state.adv_format = Some(f);
-                    }
+            ext_image_copy_capture_session_v1::Event::ShmFormat {
+                format: WEnum::Value(f),
+            } => {
+                let is_preferred = matches!(f, wl_shm::Format::Xrgb8888);
+                if state.adv_format.is_none() || is_preferred {
+                    state.adv_format = Some(f);
                 }
             }
             ext_image_copy_capture_session_v1::Event::Done => {
@@ -1147,7 +1147,7 @@ fn build_video_format_param(
         denom: 1,
     };
     let preferred_framerate = Fraction {
-        num: framerate.max(1).min(60),
+        num: framerate.clamp(1, 60),
         denom: 1,
     };
     let obj = Value::Object(Object {
