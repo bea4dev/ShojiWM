@@ -209,6 +209,18 @@ const GPU_TIMING_QUERY_COUNT: usize = 2048;
 const GPU_TIMING_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const SHARED_EFFECT_PIPELINE_CACHE_LIMIT: usize = 128;
 
+pub fn purge_shared_effect_pipeline_caches_for_window(window_id: &str) {
+    SHARED_EFFECT_PIPELINE_CACHES.with(|caches| {
+        let removed = caches.borrow_mut().purge_window(window_id);
+        if removed > 0 {
+            info!(
+                window_id,
+                removed, "purged closed window shader pipeline caches"
+            );
+        }
+    });
+}
+
 #[derive(Debug, Default)]
 struct SnapshotFallbackAggregate {
     samples: u64,
@@ -904,6 +916,17 @@ struct SharedEffectPipelineCaches {
 }
 
 impl SharedEffectPipelineCaches {
+    fn purge_window(&mut self, window_id: &str) -> usize {
+        let before = self.entries.len();
+        let window_token = format!(":{window_id}:");
+        self.entries.retain(|key, _| {
+            !key.starts_with(&format!("winit:window-backdrop:{window_id}:"))
+                && !key.starts_with(&format!("winit:protocol-window:{window_id}:"))
+                && !key.contains(&window_token)
+        });
+        before.saturating_sub(self.entries.len())
+    }
+
     fn pipeline<'a>(
         &'a mut self,
         renderer: &GlesRenderer,
@@ -1271,7 +1294,10 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             // Rate-limited: these run every frame per backdrop element.
             use std::sync::atomic::{AtomicUsize, Ordering};
             static DRAW_LOG_TICK: AtomicUsize = AtomicUsize::new(0);
-            if DRAW_LOG_TICK.fetch_add(1, Ordering::Relaxed) % 240 == 0 {
+            if DRAW_LOG_TICK
+                .fetch_add(1, Ordering::Relaxed)
+                .is_multiple_of(240)
+            {
                 tracing::info!(
                     dst = ?dst,
                     damage = ?damage,
@@ -1425,7 +1451,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             let recreate = inner
                 .framebuffer
                 .as_ref()
-                .map_or(true, |fb| fb.size() != size);
+                .is_none_or(|fb| fb.size() != size);
             if recreate {
                 inner.framebuffer = Some(renderer.create_buffer(Fourcc::Abgr8888, size)?);
             }
@@ -1466,7 +1492,10 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 if prev_read_fbo != current_fbo {
                     use std::sync::atomic::{AtomicUsize, Ordering};
                     static MISMATCH_LOG: AtomicUsize = AtomicUsize::new(0);
-                    if MISMATCH_LOG.fetch_add(1, Ordering::Relaxed) % 120 == 0 {
+                    if MISMATCH_LOG
+                        .fetch_add(1, Ordering::Relaxed)
+                        .is_multiple_of(120)
+                    {
                         tracing::warn!(
                             prev_read_fbo,
                             draw_fbo = current_fbo,
@@ -3361,36 +3390,36 @@ pub fn log_gap_texture_region_readback(
     }
 
     let mut left_gap_px = 0usize;
-    while left_gap_px < width && column_is_fully_transparent(&bytes, width, height, left_gap_px) {
+    while left_gap_px < width && column_is_fully_transparent(bytes, width, height, left_gap_px) {
         left_gap_px += 1;
     }
 
     let mut right_gap_px = 0usize;
     while right_gap_px < width
-        && column_is_fully_transparent(&bytes, width, height, width - 1 - right_gap_px)
+        && column_is_fully_transparent(bytes, width, height, width - 1 - right_gap_px)
     {
         right_gap_px += 1;
     }
 
     let mut top_gap_px = 0usize;
-    while top_gap_px < height && row_is_fully_transparent(&bytes, width, top_gap_px) {
+    while top_gap_px < height && row_is_fully_transparent(bytes, width, top_gap_px) {
         top_gap_px += 1;
     }
 
     let mut bottom_gap_px = 0usize;
     while bottom_gap_px < height
-        && row_is_fully_transparent(&bytes, width, height - 1 - bottom_gap_px)
+        && row_is_fully_transparent(bytes, width, height - 1 - bottom_gap_px)
     {
         bottom_gap_px += 1;
     }
 
-    let nonzero_bounds = first_last_nonzero_alpha(&bytes, width, height);
+    let nonzero_bounds = first_last_nonzero_alpha(bytes, width, height);
     let first_nonzero = nonzero_bounds.map(|(x, y, _, _)| (x as i32, y as i32));
     let last_nonzero = nonzero_bounds.map(|(_, _, x, y)| (x as i32, y as i32));
-    let left_columns = summarize_edge_columns(&bytes, width, height, false);
-    let right_columns = summarize_edge_columns(&bytes, width, height, true);
-    let top_rows = summarize_edge_rows(&bytes, width, height, false);
-    let bottom_rows = summarize_edge_rows(&bytes, width, height, true);
+    let left_columns = summarize_edge_columns(bytes, width, height, false);
+    let right_columns = summarize_edge_columns(bytes, width, height, true);
+    let top_rows = summarize_edge_rows(bytes, width, height, false);
+    let bottom_rows = summarize_edge_rows(bytes, width, height, true);
 
     tracing::info!(
         output = output_name,
@@ -3794,7 +3823,7 @@ fn run_effect_pipeline(
                 current_size,
                 program,
                 effect_context_uniforms(current_size, ctx.content_rect),
-                cache.as_deref_mut(),
+                cache,
                 "effect-finish",
             )?;
         }
@@ -3820,24 +3849,27 @@ fn resolve_effect_input(
     }
     let texture = match input {
         EffectInput::Backdrop | EffectInput::WindowSource(_) => Ok(ctx.backdrop.clone()),
-        EffectInput::LayerSource(_) => ctx
-            .layer_source
-            .clone()
-            .ok_or(ShaderEffectError::UnavailableInput {
-                input: "layerSource",
-            }),
-        EffectInput::PopupSource(_) => ctx
-            .popup_source
-            .clone()
-            .ok_or(ShaderEffectError::UnavailableInput {
-                input: "popupSource",
-            }),
-        EffectInput::XrayBackdrop => ctx
-            .xray_backdrop
-            .clone()
-            .ok_or(ShaderEffectError::UnavailableInput {
-                input: "xrayBackdropSource",
-            }),
+        EffectInput::LayerSource(_) => {
+            ctx.layer_source
+                .clone()
+                .ok_or(ShaderEffectError::UnavailableInput {
+                    input: "layerSource",
+                })
+        }
+        EffectInput::PopupSource(_) => {
+            ctx.popup_source
+                .clone()
+                .ok_or(ShaderEffectError::UnavailableInput {
+                    input: "popupSource",
+                })
+        }
+        EffectInput::XrayBackdrop => {
+            ctx.xray_backdrop
+                .clone()
+                .ok_or(ShaderEffectError::UnavailableInput {
+                    input: "xrayBackdropSource",
+                })
+        }
         EffectInput::Shader(stage) if !stage.textures.is_empty() => {
             let texture = solid_white_texture(renderer)?;
             apply_texture_shader_stage(renderer, texture, requested_size, stage, ctx, cache)
@@ -3845,14 +3877,11 @@ fn resolve_effect_input(
         EffectInput::Shader(stage) => {
             apply_shader_input_stage(renderer, requested_size, stage, cache)
         }
-        EffectInput::Named(name) => {
-            ctx.named
-                .get(name)
-                .cloned()
-                .ok_or_else(|| ShaderEffectError::MissingNamedTexture {
-                    name: name.clone(),
-                })
-        }
+        EffectInput::Named(name) => ctx
+            .named
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ShaderEffectError::MissingNamedTexture { name: name.clone() }),
         EffectInput::State(_) => unreachable!("state inputs return above"),
         EffectInput::Image(path) => load_image_texture(renderer, path, requested_size),
     }?;
@@ -4647,12 +4676,14 @@ fn preblur_using_pyramid(
     let stage_readback = std::env::var_os("SHOJI_GAP_STAGE_READBACK").is_some() && {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static TICK: AtomicUsize = AtomicUsize::new(0);
-        TICK.fetch_add(1, Ordering::Relaxed) % 600 == 0
+        TICK.fetch_add(1, Ordering::Relaxed).is_multiple_of(600)
     };
 
     // Down-sample chain
     let mut current_tex = source;
     let mut current_size = source_size;
+    // Indexed on purpose: state carries across iterations, both forward and reversed.
+    #[allow(clippy::needless_range_loop)]
     for i in 1..=passes {
         let dst_size = (max(1, current_size.0 / 2), max(1, current_size.1 / 2));
         let dst_tex = pyramid[i].clone();

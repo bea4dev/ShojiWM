@@ -851,16 +851,16 @@ impl ShojiWM {
             )
                 .into(),
         );
-        let outputs = self.wlr_outputs_for_rect(rect);
-        outputs
+        
+        self.wlr_outputs_for_rect(rect)
     }
 
     fn wlr_outputs_for_unmanaged_window(&self, window: &Window) -> Vec<Output> {
         let Some(rect) = self.space.element_bbox(window) else {
             return Vec::new();
         };
-        let outputs = self.wlr_outputs_for_rect(rect);
-        outputs
+        
+        self.wlr_outputs_for_rect(rect)
     }
 
     fn wlr_all_outputs(&self) -> Vec<Output> {

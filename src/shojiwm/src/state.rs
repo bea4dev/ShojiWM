@@ -719,11 +719,10 @@ impl ShojiWM {
                     .map(|surface| surface.wl_surface().clone())
             });
 
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            if keyboard.current_focus().as_ref() != focus.as_ref() {
+        if let Some(keyboard) = self.seat.get_keyboard()
+            && keyboard.current_focus().as_ref() != focus.as_ref() {
                 keyboard.set_focus(self, focus, serial);
             }
-        }
     }
 
     fn window_root_surface(window: &Window) -> Option<WlSurface> {
@@ -807,15 +806,14 @@ impl ShojiWM {
     }
 
     pub fn focus_layer_surface_if_on_demand(&mut self, layer: Option<LayerSurface>) {
-        if let Some(layer) = layer {
-            if matches!(
+        if let Some(layer) = layer
+            && matches!(
                 layer.cached_state().keyboard_interactivity,
                 smithay::wayland::shell::wlr_layer::KeyboardInteractivity::OnDemand
             ) {
                 self.layer_shell_on_demand_focus = Some(layer);
                 return;
             }
-        }
 
         self.layer_shell_on_demand_focus = None;
     }
@@ -932,11 +930,10 @@ impl ShojiWM {
             } else {
                 false
             };
-            if candidate.set_activated(should_activate) {
-                if let Some(toplevel) = candidate.toplevel() {
+            if candidate.set_activated(should_activate)
+                && let Some(toplevel) = candidate.toplevel() {
                     let _ = toplevel.send_pending_configure();
                 }
-            }
         }
 
         let current_focus = self
@@ -1201,7 +1198,9 @@ impl ShojiWM {
             })
             .expect("Failed to init async asset worker.");
 
-        let state = Self {
+        
+
+        Self {
             start_time,
             display_handle: dh,
 
@@ -1384,9 +1383,7 @@ impl ShojiWM {
             xdisplay: None,
             xwayland_satellite: None,
             xwayland_refresh_override_mhz: Arc::new(AtomicI32::new(0)),
-        };
-
-        state
+        }
     }
 
     pub fn create_output_global(&mut self, output: &Output) -> GlobalId {
@@ -2068,9 +2065,8 @@ impl ShojiWM {
         let next = current.fresh_like();
         if let Err(error) =
             next.lifecycle_enable("reload", Some(&persisted))
-                .and_then(|invocation| {
+                .map(|invocation| {
                     self.consume_runtime_lifecycle_invocation(invocation);
-                    Ok(())
                 })
         {
             warn!(?error, "failed to hot reload TypeScript config");
@@ -2342,10 +2338,8 @@ impl ShojiWM {
 
         let mut extend_output_names = outputs
             .iter()
-            .filter_map(|output| {
-                (self.runtime_output_mode_setting(&output.name()) == RuntimeOutputMode::Extend)
-                    .then(|| output.name())
-            })
+            .filter(|&output| self.runtime_output_mode_setting(&output.name()) == RuntimeOutputMode::Extend)
+            .map(|output| output.name())
             .collect::<std::collections::BTreeSet<_>>();
         if extend_output_names.is_empty()
             && let Some(output) = outputs.first()
@@ -2944,25 +2938,22 @@ impl ShojiWM {
 
             match desired {
                 Some(RuntimeProcessEntry::Service { reload, .. }) => {
-                    if let Some(active) = self.runtime_managed_services.get(&service_id) {
-                        if active.spec != *desired.expect("matched Some above") {
-                            should_restart = true;
-                        } else if *reload == RuntimeProcessReloadPolicy::AlwaysRestart
-                            && active.last_started_generation != generation
-                        {
-                            should_restart = true;
-                        }
+                    if let Some(active) = self.runtime_managed_services.get(&service_id)
+                        && (active.spec != *desired.expect("matched Some above")
+                            || (*reload == RuntimeProcessReloadPolicy::AlwaysRestart
+                                && active.last_started_generation != generation))
+                    {
+                        should_restart = true;
                     }
                 }
                 _ => should_remove = true,
             }
 
             if should_remove || should_restart {
-                if let Some(mut service) = self.runtime_managed_services.remove(&service_id) {
-                    if let Err(error) = kill_runtime_service(&mut service) {
+                if let Some(mut service) = self.runtime_managed_services.remove(&service_id)
+                    && let Err(error) = kill_runtime_service(&mut service) {
                         warn!(?error, service_id, "failed to stop runtime service");
                     }
-                }
                 self.runtime_process_suppressed_services.remove(&service_id);
             }
         }
@@ -3161,9 +3152,7 @@ impl ShojiWM {
                 return None;
             }
 
-            let Some(location) = self.space.element_location(window) else {
-                return None;
-            };
+            let location = self.space.element_location(window)?;
             let local_pos = inverse_transform_point(
                 pos,
                 decoration.layout.root.rect,
@@ -3180,9 +3169,7 @@ impl ShojiWM {
         }
 
         if let Some((window, _)) = self.raw_window_under(logical_pos) {
-            let Some(location) = self.space.element_location(window) else {
-                return None;
-            };
+            let location = self.space.element_location(window)?;
 
             return window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
@@ -3747,8 +3734,8 @@ impl ShojiWM {
     }
 
     pub fn note_xdg_popup_committed(&mut self, surface_id: u32) {
-        if let Some(popup_debug) = self.popup_latency_debug.as_mut() {
-            if popup_debug.surface_id == surface_id {
+        if let Some(popup_debug) = self.popup_latency_debug.as_mut()
+            && popup_debug.surface_id == surface_id {
                 popup_debug.committed_at = Some(Duration::from(self.clock.now()));
                 if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
                     tracing::info!(
@@ -3761,7 +3748,6 @@ impl ShojiWM {
                     );
                 }
             }
-        }
     }
 
     fn popup_kind_name(popup: &PopupKind) -> &'static str {

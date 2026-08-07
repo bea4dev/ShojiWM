@@ -318,9 +318,7 @@ fn snapshot_for_backend_device<'a, D: SmithayInputDevice>(
         return Some(snapshot);
     }
 
-    let Some((product, vendor)) = device.usb_id() else {
-        return None;
-    };
+    let (product, vendor) = device.usb_id()?;
     devices
         .values()
         .find(|snapshot| snapshot.product == Some(product) && snapshot.vendor == Some(vendor))

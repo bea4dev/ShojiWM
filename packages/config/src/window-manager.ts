@@ -1,6 +1,7 @@
 import {
   createWindowStack,
   createWindowState,
+  dropWindowState,
   cubicBezier,
   createManagedPoll,
   markManagedWindowDirty,
@@ -868,6 +869,15 @@ export class HybridWindowManager {
       }
     }
     this.syncWorkspaceVisibility();
+    // `window.state[...]` (used for e.g. WINDOW_STATE_RECT, minimized, etc.)
+    // is backed by a module-level `signalsByWindowId` map in window-state.ts
+    // keyed by window id. Nothing else clears that entry when a window
+    // closes, so every window ever opened accumulates its own permanent
+    // entry there for the lifetime of the compositor process. This doesn't
+    // explain GPU/VRAM growth (that's the native closing-snapshot leak,
+    // fixed on the Rust side), but it's the same class of bug on the JS
+    // heap and should be cleaned up alongside it.
+    dropWindowState(window.id);
   }
 
   public onFocus(window: WaylandWindow, focused: boolean) {

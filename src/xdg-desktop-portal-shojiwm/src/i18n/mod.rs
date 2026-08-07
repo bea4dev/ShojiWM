@@ -75,7 +75,7 @@ fn detect_locale() -> &'static str {
     // POSIX locale strings look like `ja_JP.UTF-8@modifier`; strip codeset
     // and modifier suffixes before matching.
     let base = raw
-        .split(|c| c == '.' || c == '@')
+        .split(['.', '@'])
         .next()
         .unwrap_or("")
         .trim();

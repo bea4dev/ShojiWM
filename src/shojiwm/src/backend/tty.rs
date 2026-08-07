@@ -1013,7 +1013,7 @@ pub fn device_added(
         surfaces: HashMap::new(),
         surface_reset_attempts: HashMap::new(),
     };
-    state.tty_backends.insert(node.clone(), backend);
+    state.tty_backends.insert(node, backend);
     info!(?node, "drm backend stored in state");
 
     let backend = state.tty_backends.get_mut(&node).unwrap();
@@ -1145,8 +1145,8 @@ fn frame_finish(
             "animation gap: tty frame_finish queue wait"
         );
     }
-    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
-        if let Some(popup_debug) = state.popup_latency_debug.take() {
+    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some()
+        && let Some(popup_debug) = state.popup_latency_debug.take() {
             tracing::info!(
                 surface_id = popup_debug.surface_id,
                 created_to_frame_finish_ms = presentation_clock
@@ -1160,7 +1160,6 @@ fn frame_finish(
                 "xdg popup latency: frame finish"
             );
         }
-    }
 
     surface.frame_pending = false;
     surface.queued_at = None;
@@ -1293,8 +1292,8 @@ pub fn render_if_needed(
         );
     }
 
-    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some() {
-        if let Some(popup_debug) = state.popup_latency_debug {
+    if std::env::var_os("SHOJI_XDG_POPUP_LATENCY_DEBUG").is_some()
+        && let Some(popup_debug) = state.popup_latency_debug {
             let now = Duration::from(state.clock.now());
             tracing::info!(
                 surface_id = popup_debug.surface_id,
@@ -1308,7 +1307,6 @@ pub fn render_if_needed(
                 "xdg popup latency: render_if_needed start"
             );
         }
-    }
 
     trace!(
         backend_count = state.tty_backends.len(),
@@ -1507,15 +1505,18 @@ pub struct OutputCaptureMirror {
     transform: Transform,
 }
 
+/// `(textures, render element states)` from an output-capture mirror pass.
+type OutputCaptureMirrorRenderResult = Result<
+    Option<(TtyRenderElements, TtyRenderElements, RenderElementStates)>,
+    Box<dyn std::error::Error>,
+>;
+
 fn render_output_capture_mirror(
     renderer: &mut GlesRenderer,
     mirror: &mut Option<OutputCaptureMirror>,
     output: &Output,
     elements: &[TtyRenderElements],
-) -> Result<
-    Option<(TtyRenderElements, TtyRenderElements, RenderElementStates)>,
-    Box<dyn std::error::Error>,
-> {
+) -> OutputCaptureMirrorRenderResult {
     let Some(mode) = output.current_mode() else {
         return Ok(None);
     };
@@ -2430,8 +2431,7 @@ fn render_surface(
                     &closing_snapshots,
                     output_geo,
                     scale,
-                )
-                .into_iter(),
+                ),
             );
         }
         let closing_snapshots_elapsed_ms =
@@ -2725,9 +2725,9 @@ fn render_surface(
                 // If it changed the window is actively animating; if not, it is stationary in
                 // snapshot mode.  The snapshot fix below only restores primary_scanout_output for
                 // animating windows so that stationary snapshot windows remain throttled.
-                if use_full_window_snapshot {
-                    if let Some(sid) = snapshot_id.as_deref() {
-                        if let Some(decoration) = window_decorations.get(window) {
+                if use_full_window_snapshot
+                    && let Some(sid) = snapshot_id.as_deref()
+                        && let Some(decoration) = window_decorations.get(window) {
                             let prev = previous_snapshot_visual_transform(
                                 sid,
                                 output.name().as_str(),
@@ -2740,8 +2740,6 @@ fn render_surface(
                                 snapshot_transform_changed_ids.insert(sid.to_string());
                             }
                         }
-                    }
-                }
                 if use_full_window_snapshot {
                     transform_snapshot_window_ids.insert(window_id.clone());
                 } else {
@@ -2815,9 +2813,9 @@ fn render_surface(
                         false,
                         !use_full_window_snapshot,
                     );
-                    if let Some(effect_config) = state.configured_background_effect.as_ref() {
-                        if use_full_window_snapshot
-                            || !effect_config.effect.supports_framebuffer_backdrop()
+                    if let Some(effect_config) = state.configured_background_effect.as_ref()
+                        && (use_full_window_snapshot
+                            || !effect_config.effect.supports_framebuffer_backdrop())
                         {
                             backdrop_items.extend(
                                 configured_background_effect_elements_for_window(
@@ -2846,7 +2844,6 @@ fn render_surface(
                                 .map(|(order, element)| (order, element, true)),
                             );
                         }
-                    }
                     window_timing.backdrop_ms =
                         backdrop_started_at.elapsed().as_secs_f64() * 1000.0;
                     let background_started_at = Instant::now();
@@ -3421,8 +3418,8 @@ fn render_surface(
                                 "transform snapshot tty complete snapshot decision"
                             );
                         }
-                        if !window_has_snapshot_damage {
-                            if let Some(mut existing) = complete_window_snapshots
+                        if !window_has_snapshot_damage
+                            && let Some(mut existing) = complete_window_snapshots
                                 .get(&window_id)
                                 .cloned()
                                 .filter(|snapshot| {
@@ -3447,7 +3444,6 @@ fn render_surface(
                                 }
                                 return Some(existing);
                             }
-                        }
                         let existing_complete = complete_window_snapshots.remove(&window_id);
                         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
                             let first_snapshot_geometry = snapshot_scene.first().map(|element| {
@@ -3526,8 +3522,8 @@ fn render_surface(
                     })
                     .unwrap_or_default()
                 } else if let Some(content_clip) = content_clip {
-                    if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
-                        if let Some(decoration) = window_decorations.get(window) {
+                    if std::env::var_os("SHOJI_GAP_DEBUG").is_some()
+                        && let Some(decoration) = window_decorations.get(window) {
                             let border_buffer = decoration.buffers.iter().find(|buffer| {
                                 buffer.source_kind == "window-border" && buffer.border_width > 0.0
                             });
@@ -3814,7 +3810,6 @@ fn render_surface(
                                 );
                             }
                         }
-                    }
                     let clipped = window_render::clipped_surface_elements(
                         window,
                         &mut backend.renderer,
@@ -4265,8 +4260,8 @@ fn render_surface(
                             })
                             .collect()
                     };
-                    if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
-                        if let Some(first_geometry) = transformed.first().map(|element| {
+                    if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
+                        && let Some(first_geometry) = transformed.first().map(|element| {
                             smithay::backend::renderer::element::Element::geometry(element, scale)
                         }) {
                             log_gap_readback_edge_probes(
@@ -4279,7 +4274,6 @@ fn render_surface(
                                 &window_id,
                             );
                         }
-                    }
                     transformed
                 } else {
                     let surfaces = window_render::surface_elements(
@@ -4315,8 +4309,8 @@ fn render_surface(
                         TtyRenderElements::Window,
                         TtyRenderElements::TransformedWindow,
                     );
-                    if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some() {
-                        if let Some(first_geometry) = transformed.first().map(|element| {
+                    if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
+                        && let Some(first_geometry) = transformed.first().map(|element| {
                             smithay::backend::renderer::element::Element::geometry(element, scale)
                         }) {
                             log_gap_readback_edge_probes(
@@ -4329,7 +4323,6 @@ fn render_surface(
                                 &window_id,
                             );
                         }
-                    }
                     transformed
                 };
                 window_timing.client_phase_ms =
@@ -4616,7 +4609,7 @@ fn render_surface(
                 }
 
                 let mut original_window_body_elements: Vec<TtyRenderElements> = Vec::new();
-                original_window_body_elements.extend(client_elements.into_iter());
+                original_window_body_elements.extend(client_elements);
                 original_window_body_elements
                     .extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
                 original_window_body_elements.extend(
@@ -4956,7 +4949,7 @@ fn render_surface(
                     }
                     scene_elements.extend(in_front_effects);
                 }
-                scene_elements.extend(current_window_elements.into_iter());
+                scene_elements.extend(current_window_elements);
                 if let Some(behind_effects) = behind_root_surface_effects {
                     if window_effect_debug_enabled() {
                         info!(
@@ -5467,13 +5460,12 @@ fn render_surface(
                                 // partially-rendered buffer and producing visible microstutter
                                 // during scroll/animation. Block on the swapchain sync point
                                 // manually before queue_frame commits the flip.
-                                if result.needs_sync() {
-                                    if let PrimaryPlaneElement::Swapchain(ref element) =
+                                if result.needs_sync()
+                                    && let PrimaryPlaneElement::Swapchain(ref element) =
                                         result.primary_element
                                     {
                                         let _ = element.sync.wait();
                                     }
-                                }
                                 let primary_scanout = matches!(
                                     result.primary_element,
                                     PrimaryPlaneElement::Element(_)
@@ -5521,13 +5513,12 @@ fn render_surface(
                                 // partially-rendered buffer and producing visible microstutter
                                 // during scroll/animation. Block on the swapchain sync point
                                 // manually before queue_frame commits the flip.
-                                if result.needs_sync() {
-                                    if let PrimaryPlaneElement::Swapchain(ref element) =
+                                if result.needs_sync()
+                                    && let PrimaryPlaneElement::Swapchain(ref element) =
                                         result.primary_element
                                     {
                                         let _ = element.sync.wait();
                                     }
-                                }
                                 let primary_scanout = matches!(
                                     result.primary_element,
                                     PrimaryPlaneElement::Element(_)
@@ -6618,13 +6609,16 @@ fn transform_backdrop_elements(
         .collect())
 }
 
+/// `(overall bounds, per-element bounds)` for a debug scene geometry dump.
+type DebugSceneGeometrySnapshot = (
+    Option<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
+    Vec<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
+);
+
 fn debug_scene_geometry_snapshot(
     elements: &[TtyRenderElements],
     scale: Scale<f64>,
-) -> (
-    Option<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
-    Vec<smithay::utils::Rectangle<i32, smithay::utils::Physical>>,
-) {
+) -> DebugSceneGeometrySnapshot {
     let geometries = elements
         .iter()
         .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale))
@@ -7050,7 +7044,7 @@ fn log_gap_final_composite_readback(
         buffer.source_kind == "box"
             && buffer.border_width > 0.0
             && buffer.hole_rect_precise.is_some_and(|hole| {
-                let shader = titlebar_shader.rect_precise.unwrap_or_else(|| {
+                let shader = titlebar_shader.rect_precise.unwrap_or({
                     crate::backend::visual::PreciseLogicalRect {
                         x: titlebar_shader.rect.x as f32,
                         y: titlebar_shader.rect.y as f32,
@@ -8414,8 +8408,7 @@ fn backdrop_shader_elements_for_window(
                 cached.shader.invalidate_policy(),
                 crate::ssd::EffectInvalidationPolicy::Always
             ) && !source_damage_hit
-            {
-                if let Some(existing) = existing_cache
+                && let Some(existing) = existing_cache
                     .clone()
                     .filter(|existing| existing.signature == signature)
                 {
@@ -8591,7 +8584,6 @@ fn backdrop_shader_elements_for_window(
                     }
                     return Some((cached.order, element, render_as_backdrop));
                 }
-            }
             let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
             let backdrop_texture = if uses_backdrop {
                 for lower_window in &lower_windows {
@@ -8622,8 +8614,7 @@ fn backdrop_shader_elements_for_window(
                         capture_visual,
                         TtyRenderElements::Window,
                         TtyRenderElements::TransformedWindow,
-                    )
-                    .into_iter(),
+                    ),
                 );
                 capture_scene_texture_for_effect(
                     renderer,
@@ -9409,8 +9400,7 @@ fn configured_background_effect_elements_for_layer(
         effect_config.effect.invalidate_policy(),
         crate::ssd::EffectInvalidationPolicy::Always
     ) && !source_damage_hit
-    {
-        if let Some(existing) = layer_backdrop_cache
+        && let Some(existing) = layer_backdrop_cache
             .get(&stable_key)
             .filter(|existing| existing.signature == signature)
             .cloned()
@@ -9466,7 +9456,6 @@ fn configured_background_effect_elements_for_layer(
             }
             return Ok(elements);
         }
-    }
     let backdrop_texture = if effect_config.effect.uses_backdrop_input() {
         let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
         // Upper layers below this one render above every toplevel window, so
@@ -9895,8 +9884,7 @@ fn lower_layer_scene_elements(
                 effect_config.effect.invalidate_policy(),
                 crate::ssd::EffectInvalidationPolicy::Always
             ) && !source_damage_hit
-            {
-                if let Some(existing) = layer_backdrop_cache
+                && let Some(existing) = layer_backdrop_cache
                     .get(&stable_key)
                     .filter(|existing| existing.signature == signature)
                     .cloned()
@@ -9941,7 +9929,6 @@ fn lower_layer_scene_elements(
                     }
                     continue;
                 }
-            }
             let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
             for lower_layer in lower_layers.iter().skip(index + 1) {
                 if let Ok(mut layer_elements) = layer_surface_scene_elements_for_capture(
@@ -10522,8 +10509,7 @@ fn configured_background_effect_elements_for_window(
                 effect_config.effect.invalidate_policy(),
                 crate::ssd::EffectInvalidationPolicy::Always
             ) && !source_damage_hit
-            {
-                if let Some(existing) = window_decorations
+                && let Some(existing) = window_decorations
                     .get(window)
                     .and_then(|d| d.backdrop_cache.get(&cache_key))
                     .filter(|existing| existing.signature == signature)
@@ -10570,7 +10556,6 @@ fn configured_background_effect_elements_for_window(
                     .ok()
                     .map(|element| (index, element));
                 }
-            }
 
             let backdrop_texture = if uses_backdrop {
                 let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
@@ -10605,8 +10590,7 @@ fn configured_background_effect_elements_for_window(
                         capture_visual,
                         TtyRenderElements::Window,
                         TtyRenderElements::TransformedWindow,
-                    )
-                    .into_iter(),
+                    ),
                 );
                 capture_scene_texture_for_effect(
                     renderer,
@@ -10991,8 +10975,7 @@ fn window_scene_elements_for_capture(
                     visual_state,
                     TtyRenderElements::Window,
                     TtyRenderElements::TransformedWindow,
-                )
-                .into_iter(),
+                ),
             );
         } else {
             elements.extend(
@@ -11007,8 +10990,7 @@ fn window_scene_elements_for_capture(
                     visual_state,
                     TtyRenderElements::Window,
                     TtyRenderElements::TransformedWindow,
-                )
-                .into_iter(),
+                ),
             );
         }
     }
@@ -11025,8 +11007,7 @@ fn window_scene_elements_for_capture(
             visual_state,
             TtyRenderElements::Window,
             TtyRenderElements::TransformedWindow,
-        )
-        .into_iter(),
+        ),
     );
 
     Ok(elements)
@@ -11472,22 +11453,20 @@ fn closing_decoration_elements(
         output_geo,
         scale,
         visual.opacity,
-    ) {
-        if let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual) {
+    )
+        && let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual) {
             elements.extend(transformed);
         }
-    }
     if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
         renderer,
         decoration,
         output_geo,
         scale,
         visual.opacity,
-    ) {
-        if let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual) {
+    )
+        && let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual) {
             elements.extend(transformed);
         }
-    }
     let mut decoration = decoration.clone();
     if let Ok(background_elements) = decoration::background_elements_for_window(
         renderer,
@@ -11495,13 +11474,12 @@ fn closing_decoration_elements(
         output_geo,
         scale,
         visual.opacity,
-    ) {
-        if let Ok(transformed) =
+    )
+        && let Ok(transformed) =
             transform_decoration_elements(background_elements, root_origin, visual)
         {
             elements.extend(transformed);
         }
-    }
     elements
 }
 

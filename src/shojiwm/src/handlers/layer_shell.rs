@@ -188,7 +188,7 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
             layer.layer_surface().send_configure();
         }
 
-        let layer_geo = map.layer_geometry(&layer);
+        let layer_geo = map.layer_geometry(layer);
         let output_loc = state
             .space
             .output_geometry(&output)
@@ -223,8 +223,8 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
                 "layer popup root debug: layer commit"
             );
         }
-        if std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG").is_some() {
-            if let Some(geo) = layer_geo {
+        if std::env::var_os("SHOJI_SOURCE_DAMAGE_DEBUG").is_some()
+            && let Some(geo) = layer_geo {
                 debug!(
                     owner = %owner,
                     layer_geo_loc = ?geo.loc,
@@ -235,7 +235,6 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
                     "layer source damage stored (global coords)"
                 );
             }
-        }
         match layer.layer() {
             Layer::Background | Layer::Bottom => {
                 state.lower_layer_scene_generation =
@@ -285,13 +284,13 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
                 }
             } else if !is_mapped {
                 state.mapped_on_demand_layer_surfaces.remove(&surface_id);
-                if state.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
+                if state.layer_shell_on_demand_focus.as_ref() == Some(layer) {
                     state.layer_shell_on_demand_focus = None;
                 }
             }
         } else {
             state.mapped_on_demand_layer_surfaces.remove(&surface_id);
-            if state.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
+            if state.layer_shell_on_demand_focus.as_ref() == Some(layer) {
                 state.layer_shell_on_demand_focus = None;
             }
         }

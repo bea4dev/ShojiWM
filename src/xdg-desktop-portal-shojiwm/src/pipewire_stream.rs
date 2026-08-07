@@ -660,12 +660,10 @@ impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for AppState {
                 }
             }
             zwp_linux_dmabuf_v1::Event::Format { format }
-                if format == DrmFourcc::Xrgb8888 as u32 =>
-            {
-                if !state.dmabuf_modifiers.contains(&DrmModifier::Invalid) {
+                if format == DrmFourcc::Xrgb8888 as u32
+                && !state.dmabuf_modifiers.contains(&DrmModifier::Invalid) => {
                     state.dmabuf_modifiers.push(DrmModifier::Invalid);
                 }
-            }
             _ => {}
         }
     }
@@ -729,10 +727,10 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppState {
             zwlr_screencopy_frame_v1::Event::BufferDone => {
                 state.on_buffer_done(frame);
             }
-            zwlr_screencopy_frame_v1::Event::Flags { flags } => {
-                if let WEnum::Value(f) = flags {
-                    state.adv_flags = f;
-                }
+            zwlr_screencopy_frame_v1::Event::Flags {
+                flags: WEnum::Value(f),
+            } => {
+                state.adv_flags = f;
             }
             zwlr_screencopy_frame_v1::Event::Damage { .. } => {}
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {

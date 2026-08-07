@@ -11,6 +11,8 @@ use super::{
     WindowResizeHitArea, WindowSourceInclude,
 };
 
+// boxing left as a follow-up (touches all deserialization/match sites)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum WireDecorationChild {
@@ -1033,23 +1035,23 @@ impl TryFrom<WireStyle> for DecorationStyle {
             opacity: value.opacity,
             border: value
                 .border
-                .map(|border| parse_border(border))
+                .map(parse_border)
                 .transpose()?,
             border_top: value
                 .border_top
-                .map(|border| parse_border(border))
+                .map(parse_border)
                 .transpose()?,
             border_right: value
                 .border_right
-                .map(|border| parse_border(border))
+                .map(parse_border)
                 .transpose()?,
             border_bottom: value
                 .border_bottom
-                .map(|border| parse_border(border))
+                .map(parse_border)
                 .transpose()?,
             border_left: value
                 .border_left
-                .map(|border| parse_border(border))
+                .map(parse_border)
                 .transpose()?,
             border_fit: value.border_fit.map(parse_border_fit).transpose()?,
             border_radius: value.border_radius,
