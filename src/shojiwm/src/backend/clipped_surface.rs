@@ -542,9 +542,16 @@ impl ClippedSurfaceElement {
                         other => other,
                     };
 
+                    // smithay's Transform::matrix() returns a glam Affine2 since
+                    // the cgmath -> glam migration; expand it back into the 3x3
+                    // homogeneous cgmath matrix this clip pipeline works in.
                     let tm = transform.matrix();
                     let transform_matrix = Matrix3::from_translation(Vector2::new(0.5, 0.5))
-                        * Matrix3::from_cols(tm[0], tm[1], tm[2])
+                        * Matrix3::from_cols(
+                            Vector3::new(tm.x_axis.x, tm.x_axis.y, 0.0),
+                            Vector3::new(tm.y_axis.x, tm.y_axis.y, 0.0),
+                            Vector3::new(tm.z_axis.x, tm.z_axis.y, 1.0),
+                        )
                         * Matrix3::from_translation(Vector2::new(-0.5, -0.5));
 
                     let input_to_local = transform_matrix

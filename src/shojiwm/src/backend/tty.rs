@@ -11600,13 +11600,15 @@ fn surface_dmabuf_feedback(
     let scanout = DmabufFeedbackBuilder::new(scanout_node.dev_id(), scanout_formats)
         .add_preference_tranche(
             scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             primary_scanout_formats,
+            4u32..=6,
         )
         .add_preference_tranche(
             scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             primary_or_overlay_scanout_formats,
+            4u32..=6,
         )
         .build()?;
 

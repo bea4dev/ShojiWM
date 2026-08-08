@@ -43,7 +43,7 @@ use smithay::wayland::session_lock::{
     LockSurface, LockSurfaceConfigure, SessionLockHandler, SessionLockManagerState,
     SessionLocker,
 };
-use smithay::wayland::tablet_manager::TabletSeatHandler;
+use smithay::input::tablet::TabletSeatHandler;
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
@@ -653,6 +653,8 @@ impl FractionalScaleHandler for ShojiWM {
 }
 
 impl TabletSeatHandler for ShojiWM {
+    type ToolFocus = WlSurface;
+
     fn tablet_tool_image(
         &mut self,
         _tool: &smithay::backend::input::TabletToolDescriptor,
