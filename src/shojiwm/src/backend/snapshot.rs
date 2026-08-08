@@ -56,6 +56,15 @@ pub struct ClosingWindowSnapshot {
     /// length. Entries whose duration is unknown fall back to a generous
     /// constant.
     pub finalize_deadline_ms: u64,
+    /// True once a native managed-window animation (the
+    /// `scheduleCloseAnimation` path) has run to completion on this closing
+    /// snapshot. From that point `transform` holds the close animation's
+    /// final state (typically opacity 0) and must never be overwritten by a
+    /// later TS re-evaluation's *static* transform — that transform is the
+    /// window's normal-life state (opacity 1), so adopting it would flash
+    /// the closing window back to full opacity for the frame(s) between
+    /// animation completion and `FinalizeClose`.
+    pub native_animation_completed: bool,
 }
 
 pub fn retarget_snapshot_rect(snapshot: &mut LiveWindowSnapshot, rect: LogicalRect) -> bool {

@@ -1725,6 +1725,7 @@ impl ShojiWM {
                 transform: invocation.transform.unwrap_or(decoration.visual_transform),
                 promoted_at_ms: now_ms,
                 finalize_deadline_ms,
+                native_animation_completed: false,
             },
         );
         self.mark_runtime_dirty_windows(
@@ -2179,6 +2180,9 @@ impl ShojiWM {
             closing.decoration.managed_window = closing.decoration.static_managed_window.clone();
             closing.decoration.visual_transform = closing.decoration.static_visual_transform;
             closing.transform = closing.decoration.static_visual_transform;
+            // This path deliberately reverts to static state (hot reload /
+            // explicit cancel), so drop the completed-animation freeze too.
+            closing.native_animation_completed = false;
             let next_root = transformed_root_rect(
                 closing.decoration.layout.root.rect,
                 closing.decoration.visual_transform,
@@ -2491,6 +2495,20 @@ impl ShojiWM {
                 // moment its native animation finishes so the existing
                 // finalize check actually runs again on the next frame.
                 if !animation_still_active {
+                    // The animation's final state (opacity 0 / end offset) is
+                    // now the authoritative end state of this close. Freeze it
+                    // so the re-evaluation triggered below cannot overwrite
+                    // `closing.transform` with the TS-side *static* transform
+                    // (opacity 1) — doing so flashed the closing window back
+                    // to full opacity for the frame(s) until `FinalizeClose`.
+                    closing.native_animation_completed = true;
+                    if managed_animation_debug_enabled() {
+                        info!(
+                            window_id = %window_id,
+                            final_opacity = closing.transform.opacity,
+                            "managed animation: closing snapshot animation completed; freezing animated state"
+                        );
+                    }
                     self.runtime_dirty_window_ids.insert(window_id.clone());
                 }
             }
@@ -4239,15 +4257,21 @@ impl ShojiWM {
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     pre_advance_actions.extend(std::mem::take(&mut evaluation.actions));
                     if evaluation.managed_window_only {
-                        let has_active_animation =
-                            closing.decoration.managed_window_animation_active;
+                        // Once a native close animation has completed, its
+                        // final state is frozen; adopting the TS static
+                        // transform here would flash the window back to
+                        // opacity 1 (see `native_animation_completed`).
+                        let preserve_animated_state = closing
+                            .decoration
+                            .managed_window_animation_active
+                            || closing.native_animation_completed;
                         let next_managed_window = evaluation.managed_window;
                         let next_transform = evaluation.transform;
 
                         closing.decoration.static_managed_window = next_managed_window.clone();
                         closing.decoration.static_visual_transform = next_transform;
                         closing.decoration.window_effects = evaluation.window_effects;
-                        if !has_active_animation {
+                        if !preserve_animated_state {
                             closing.decoration.managed_window = next_managed_window;
                             closing.decoration.visual_transform = next_transform;
                             closing.transform = next_transform;
@@ -4335,7 +4359,7 @@ impl ShojiWM {
                                 }
                             }
                         }
-                        if !has_active_animation {
+                        if !preserve_animated_state {
                             closing.transform = next_transform;
                         }
                         let next_root = transformed_root_rect(
@@ -4370,17 +4394,22 @@ impl ShojiWM {
                         evaluation.node.take(),
                         std::mem::take(&mut evaluation.node_patches),
                     )?;
-                    let has_active_animation = closing.decoration.managed_window_animation_active;
+                    // See the managed_window_only branch above: a completed
+                    // native close animation freezes the animated state.
+                    let preserve_animated_state = closing
+                        .decoration
+                        .managed_window_animation_active
+                        || closing.native_animation_completed;
                     let next_managed_window = evaluation.managed_window;
                     let next_transform = evaluation.transform;
                     closing.decoration.static_managed_window = next_managed_window.clone();
                     closing.decoration.window_effects = evaluation.window_effects;
-                    if !has_active_animation {
+                    if !preserve_animated_state {
                         closing.decoration.managed_window = next_managed_window;
                     }
                     let dirty_node_ids = evaluation.dirty_node_ids;
                     if !tree_update.changed {
-                        if !has_active_animation {
+                        if !preserve_animated_state {
                             closing.decoration.visual_transform = next_transform;
                         }
                         closing.decoration.static_visual_transform = next_transform;
@@ -4513,7 +4542,7 @@ impl ShojiWM {
                             self.suggested_window_offset =
                                 suggested_window_offset(&closing.decoration.layout);
                         }
-                        if !has_active_animation {
+                        if !preserve_animated_state {
                             closing.decoration.visual_transform = next_transform;
                         }
                         closing.decoration.static_visual_transform = next_transform;
@@ -4595,7 +4624,7 @@ impl ShojiWM {
                             }
                         }
                     }
-                    if !has_active_animation {
+                    if !preserve_animated_state {
                         closing.decoration.visual_transform = next_transform;
                         closing.transform = next_transform;
                     }
@@ -4668,6 +4697,20 @@ impl ShojiWM {
             }
         }
         let closing_pass_elapsed_ms = closing_pass_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        // Closing-pass evaluations drain TS actions into `pre_advance_actions`
+        // too, but the pre-advance application above already ran before this
+        // pass — without a second sweep those actions (e.g. a `finalizeClose`
+        // pending in TS, or a follow-up scheduleAnimation) would be silently
+        // dropped. Apply schedule/cancel immediately and defer the rest to the
+        // end-of-refresh action sweep like everywhere else.
+        if !pre_advance_actions.is_empty() {
+            let deferred = {
+                timescope::scope!("ssd apply closing-pass actions");
+                self.apply_pre_advance_animation_actions(std::mem::take(&mut pre_advance_actions))
+            };
+            pending_window_actions.extend(deferred);
+        }
 
         if let Some(output_name) = target_output_name {
             if animation_active_for_target {
