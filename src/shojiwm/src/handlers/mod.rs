@@ -665,8 +665,89 @@ impl TabletSeatHandler for ShojiWM {
     }
 }
 
+impl ShojiWM {
+    /// Place an input-method popup (fcitx candidate window, …) relative to the
+    /// text cursor. Smithay resets the popup location to the top-left of the
+    /// `text_input_rectangle` every time the client reports a new cursor
+    /// rectangle, which would draw the candidate list *over* the line being
+    /// typed. Mirror niri's policy instead: put the popup just below the
+    /// cursor rectangle, clamp it horizontally to the output, and flip it
+    /// above the cursor when it would cross the output's bottom edge.
+    fn position_input_method_popup(&self, surface: &PopupSurface) {
+        let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) else {
+            return;
+        };
+        let rect = surface.text_input_rectangle();
+
+        // Global position of the parent surface's top-left corner plus the
+        // output rect used to constrain the popup.
+        let placement = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == &parent)
+            })
+            .and_then(|window| {
+                let geometry = self.space.element_geometry(window)?;
+                let surface_origin = geometry.loc - window.geometry().loc;
+                let output_geo = self
+                    .space
+                    .outputs()
+                    .filter_map(|output| self.space.output_geometry(output))
+                    .find(|output_geo| output_geo.overlaps(geometry))
+                    .or_else(|| {
+                        self.space
+                            .outputs()
+                            .filter_map(|output| self.space.output_geometry(output))
+                            .next()
+                    })?;
+                Some((surface_origin, output_geo))
+            })
+            .or_else(|| {
+                // Layer-shell parents (bars, launchers).
+                self.space.outputs().find_map(|output| {
+                    let map = layer_map_for_output(output);
+                    let layer = map.layer_for_surface(&parent, WindowSurfaceType::TOPLEVEL)?;
+                    let layer_geo = map.layer_geometry(layer)?;
+                    let output_geo = self.space.output_geometry(output)?;
+                    Some((output_geo.loc + layer_geo.loc, output_geo))
+                })
+            });
+        let Some((surface_origin, output_geo)) = placement else {
+            return;
+        };
+
+        // Work in the parent surface's local coordinate space — the same
+        // space as `text_input_rectangle` and the popup's location.
+        let target = Rectangle::new(output_geo.loc - surface_origin, output_geo.size);
+        let mut bbox =
+            smithay::desktop::utils::bbox_from_surface_tree(surface.wl_surface(), rect.loc);
+        let overflow_x = (bbox.loc.x + bbox.size.w) - (target.loc.x + target.size.w);
+        if overflow_x > 0 {
+            bbox.loc.x -= overflow_x;
+        }
+        bbox.loc.x = bbox.loc.x.max(target.loc.x);
+        let mut location = bbox.loc;
+        location.y += rect.size.h;
+        if location.y + bbox.size.h > target.loc.y + target.size.h {
+            location.y = bbox.loc.y - bbox.size.h;
+        }
+        tracing::debug!(
+            popup_surface = ?surface.wl_surface().id(),
+            cursor_rect = ?rect,
+            popup_size = ?bbox.size,
+            ?location,
+            "positioned input method popup"
+        );
+        surface.set_location(location);
+    }
+}
+
 impl InputMethodHandler for ShojiWM {
     fn new_popup(&mut self, surface: PopupSurface) {
+        self.position_input_method_popup(&surface);
         let popup_kind = PopupKind::from(surface);
         if let Err(err) = self.popups.track_popup(popup_kind.clone()) {
             tracing::warn!(?err, "failed to track input method popup");
@@ -675,7 +756,10 @@ impl InputMethodHandler for ShojiWM {
         }
     }
 
-    fn popup_repositioned(&mut self, _surface: PopupSurface) {}
+    fn popup_repositioned(&mut self, surface: PopupSurface) {
+        self.position_input_method_popup(&surface);
+        self.schedule_redraw();
+    }
 
     fn dismiss_popup(&mut self, surface: PopupSurface) {
         self.note_popup_dismiss_requested(
