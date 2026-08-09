@@ -4791,6 +4791,11 @@ impl ShojiWM {
         if !pending_process_actions.is_empty() {
             self.apply_runtime_process_actions(pending_process_actions);
         }
+        // Minimize/restore land as `managed_window.idle` transitions during the
+        // evaluations above, not as focus changes — re-derive each toplevel's
+        // xdg `Activated` state so those transitions emit configures (see
+        // `sync_window_activated_states` for why clients depend on this).
+        self.sync_window_activated_states();
         let apply_updates_elapsed_ms = apply_updates_started_at.elapsed().as_secs_f64() * 1000.0;
         let refresh_elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0;
 

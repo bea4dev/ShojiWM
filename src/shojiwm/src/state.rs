@@ -889,6 +889,88 @@ impl ShojiWM {
         }
     }
 
+    /// The wl surface that should carry the xdg `Activated` state, i.e. the
+    /// keyboard-focus-owning window's root surface when no layer surface holds
+    /// keyboard focus.
+    fn desired_activated_window_surface(&self) -> Option<WlSurface> {
+        let exclusive_layer_focus = self.exclusive_layer_focus_surface();
+        let on_demand_layer_focus = exclusive_layer_focus
+            .is_none()
+            .then(|| {
+                self.layer_shell_on_demand_focus
+                    .as_ref()
+                    .map(|layer| layer.wl_surface().clone())
+            })
+            .flatten();
+        if exclusive_layer_focus.is_some() || on_demand_layer_focus.is_some() {
+            return None;
+        }
+        self.window_keyboard_focus_owner
+            .clone()
+            .or_else(|| self.window_keyboard_focus.clone())
+    }
+
+    /// Recompute every toplevel's xdg `Activated` state and send a configure
+    /// on transitions.
+    ///
+    /// Beyond mirroring keyboard focus, this deactivates windows that are
+    /// minimized (managed `idle`). That matters for more than aesthetics:
+    /// xdg-shell has no "unminimize" event, so a client that requested
+    /// `set_minimized` itself (e.g. Chromium's CSD minimize button) can only
+    /// learn it was restored from a configure whose state set changed —
+    /// Chromium keeps its window in the minimized state (frame rendering
+    /// suspended, caption buttons inert) until a configure carrying
+    /// `Activated` (or a maximize/fullscreen change) arrives. Without the
+    /// idle-driven deactivate here, a focused window that minimized itself
+    /// kept `Activated` throughout, the restore changed nothing, no configure
+    /// was ever sent, and the window stayed visually frozen after restore.
+    ///
+    /// Called from `update_keyboard_focus` and once per decoration refresh so
+    /// the activation follows `managed_window.idle` transitions, which are
+    /// produced by TS evaluations rather than focus changes.
+    pub(crate) fn sync_window_activated_states(&mut self) {
+        if self.session_lock_active {
+            return;
+        }
+
+        let focused_window_surface = self.desired_activated_window_surface();
+        let windows: Vec<Window> = self.space.elements().cloned().collect();
+        for candidate in windows {
+            let mut should_activate = if let Some(toplevel) = candidate.toplevel() {
+                focused_window_surface
+                    .as_ref()
+                    .is_some_and(|surface| toplevel.wl_surface() == surface)
+            } else if let Some(x11) = candidate.x11_surface() {
+                match (focused_window_surface.as_ref(), x11.wl_surface()) {
+                    (Some(focused), Some(wl)) => focused == &wl,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if should_activate
+                && self
+                    .window_decorations
+                    .get(&candidate)
+                    .is_some_and(|decoration| {
+                        decoration.managed_window.managed && decoration.managed_window.idle
+                    })
+            {
+                should_activate = false;
+            }
+            if candidate.set_activated(should_activate) {
+                if let Some(toplevel) = candidate.toplevel() {
+                    let _ = toplevel.send_pending_configure();
+                }
+                debug!(
+                    window_id = %self.snapshot_window(&candidate).id,
+                    activated = should_activate,
+                    "window xdg activated state changed"
+                );
+            }
+        }
+    }
+
     pub fn update_keyboard_focus(&mut self, serial: smithay::utils::Serial) {
         if self.session_lock_active {
             self.focus_session_lock_surface(serial);
@@ -906,35 +988,11 @@ impl ShojiWM {
                     .map(|layer| layer.wl_surface().clone())
             })
             .flatten();
-        let layer_has_focus = exclusive_layer_focus.is_some() || on_demand_layer_focus.is_some();
         let desired_focus = exclusive_layer_focus
             .or(on_demand_layer_focus)
             .or_else(|| self.window_keyboard_focus.clone());
 
-        let focused_window_surface = (!layer_has_focus)
-            .then(|| {
-                self.window_keyboard_focus_owner
-                    .as_ref()
-                    .or(desired_focus.as_ref())
-            })
-            .flatten();
-
-        for candidate in self.space.elements() {
-            let should_activate = if let Some(toplevel) = candidate.toplevel() {
-                focused_window_surface.is_some_and(|surface| toplevel.wl_surface() == surface)
-            } else if let Some(x11) = candidate.x11_surface() {
-                match (focused_window_surface, x11.wl_surface()) {
-                    (Some(focused), Some(wl)) => focused == &wl,
-                    _ => false,
-                }
-            } else {
-                false
-            };
-            if candidate.set_activated(should_activate)
-                && let Some(toplevel) = candidate.toplevel() {
-                    let _ = toplevel.send_pending_configure();
-                }
-        }
+        self.sync_window_activated_states();
 
         let current_focus = self
             .seat
