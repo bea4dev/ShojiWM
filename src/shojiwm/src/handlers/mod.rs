@@ -95,7 +95,37 @@ impl SeatHandler for ShojiWM {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let previous_owner = self.window_keyboard_focus_owner.clone();
         self.sync_window_keyboard_focus_from_surface(focused);
+
+        // The TS runtime only observes focus through `isFocused` snapshot
+        // diffs taken when a window is re-evaluated. A window that is skipped
+        // from evaluation while it loses focus — a minimized window is hidden
+        // from every output, so the per-output refresh never touches it —
+        // keeps a stale `isFocused: true` snapshot. Its next activation then
+        // produces no focus diff, `onFocus` never fires, and the config never
+        // raises it in the window stack (taskbar-activated windows staying
+        // behind, transient z-order glitches). Mark both ends of a focus
+        // hand-off runtime-dirty so their snapshots are re-evaluated promptly
+        // regardless of visibility.
+        let next_owner = self.window_keyboard_focus_owner.clone();
+        if previous_owner.as_ref().map(|surface| surface.id())
+            != next_owner.as_ref().map(|surface| surface.id())
+        {
+            for owner in previous_owner.iter().chain(next_owner.iter()) {
+                let window_id = self
+                    .space
+                    .elements()
+                    .find(|window| Self::window_matches_root_surface(window, owner))
+                    .map(|window| self.snapshot_window(window).id);
+                if let Some(window_id) = window_id {
+                    self.runtime_dirty_window_ids.insert(window_id);
+                }
+            }
+            self.request_tty_maintenance("keyboard-focus-owner-changed");
+            self.schedule_redraw();
+        }
+
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());

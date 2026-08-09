@@ -740,7 +740,7 @@ impl ShojiWM {
         root
     }
 
-    fn window_matches_root_surface(window: &Window, root: &WlSurface) -> bool {
+    pub(crate) fn window_matches_root_surface(window: &Window, root: &WlSurface) -> bool {
         window
             .toplevel()
             .is_some_and(|toplevel| toplevel.wl_surface() == root)

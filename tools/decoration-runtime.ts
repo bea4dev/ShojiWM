@@ -2315,8 +2315,18 @@ function evaluateCached(
       windowId,
       snapshot: snapshotForDebug(snapshot),
     });
+    // Mirror the focus-diff handling of the other snapshot-update paths
+    // (evaluate / ensureRuntimeCacheEntry / preconfigure). This is the path
+    // runtime-dirty windows take (force_full_cached_reevaluation), which is
+    // exactly how activation-request targets get re-evaluated — silently
+    // overwriting latestSnapshot here swallowed their focus transition, so
+    // onFocus never fired and the config never raised them in the stack.
+    const focusChanged = entry.latestSnapshot.isFocused !== snapshot.isFocused;
     entry.latestSnapshot = snapshot;
     updated = entry.cache.update(snapshot);
+    if (focusChanged) {
+      events.emitFocus(entry.cache.window, snapshot.isFocused);
+    }
     debugLabel("evaluate-cached-update-snapshot", {
       windowId,
       snapshotTitle: snapshot.title,
