@@ -948,12 +948,22 @@ impl ShojiWM {
             } else {
                 false
             };
+            // Deactivate only once the minimize animation has finished. Clients
+            // react to the deactivate configure while still on screen otherwise:
+            // Chromium acks it by dropping its CSD shadow margins
+            // (`set_window_geometry(0, 0, …)`) mid-fade, which yanks the
+            // surface-origin math out from under the ghost — the fading window
+            // jumps right/down by the old margin and leaves a stale opaque
+            // slab behind. Waiting until the fade completes makes the client's
+            // minimized-state reshuffle happen while the window is invisible.
             if should_activate
                 && self
                     .window_decorations
                     .get(&candidate)
                     .is_some_and(|decoration| {
-                        decoration.managed_window.managed && decoration.managed_window.idle
+                        decoration.managed_window.managed
+                            && decoration.managed_window.idle
+                            && !decoration.managed_window_animation_active
                     })
             {
                 should_activate = false;
