@@ -62,7 +62,6 @@ COMPOSITOR.cursor.configure({
 });
 
 COMPOSITOR.window.decoration.configure((window, context) => {
-  return { mode: "client" };
   const appId = (window.appId() ?? "").toLowerCase();
   const isFirefox =
     appId === "firefox" ||
