@@ -1568,6 +1568,22 @@ pub fn init_winit(
                                         WinitRenderElements::TransformedWindow,
                                     )
                                 } else {
+                                    // Client-decoration mode: `clips_surface` is false, so all
+                                    // elements are Raw. Apply the window's surface policy
+                                    // (`COMPOSITOR.rendering.surfacePolicy`, e.g. opaque-region
+                                    // ignore for minimized Chromium, whose post-`set_minimized`
+                                    // buffers declare transparent-black CSD margins fully
+                                    // opaque).
+                                    let ignore_opaque = state
+                                        .window_decorations
+                                        .get(window)
+                                        .and_then(|decoration| {
+                                            decoration.managed_window.surface_policy
+                                        })
+                                        .is_some_and(|policy| {
+                                            policy.opaque_region
+                                                == crate::ssd::OpaqueRegionPolicy::Ignore
+                                        });
                                     clipped
                                         .into_iter()
                                         .flat_map(|element| match element {
@@ -1575,11 +1591,10 @@ pub fn init_winit(
                                                 transform_clipped_elements(vec![element], composition_visual)
                                             }
                                             window_render::WindowClipElement::Raw(element) => {
-                                                transform_window_elements(
+                                                transform_policy_window_elements(
                                                     vec![element],
+                                                    ignore_opaque,
                                                     composition_visual,
-                                                    WinitRenderElements::Window,
-                                                    WinitRenderElements::TransformedWindow,
                                                 )
                                             }
                                         })
@@ -1618,12 +1633,23 @@ pub fn init_winit(
                                         "gap debug winit raw surface elements"
                                     );
                                 }
-                                transform_window_elements(
-                                    surfaces,
-                                    composition_visual,
-                                    WinitRenderElements::Window,
-                                    WinitRenderElements::TransformedWindow,
-                                )
+                                {
+                                    let ignore_opaque = state
+                                        .window_decorations
+                                        .get(window)
+                                        .and_then(|decoration| {
+                                            decoration.managed_window.surface_policy
+                                        })
+                                        .is_some_and(|policy| {
+                                            policy.opaque_region
+                                                == crate::ssd::OpaqueRegionPolicy::Ignore
+                                        });
+                                    transform_policy_window_elements(
+                                        surfaces,
+                                        ignore_opaque,
+                                        composition_visual,
+                                    )
+                                }
                             };
                             let popup_elements = transform_window_elements(
                                 window_render::popup_elements(
@@ -2112,6 +2138,7 @@ smithay::render_elements! {
     pub WinitRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
     PolicyWindow=crate::backend::visual::IgnoredOpaqueRegionElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    TransformedPolicyWindow=RelocateRenderElement<RescaleRenderElement<crate::backend::visual::IgnoredOpaqueRegionElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
     TransformedWindow=RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     TransformedClipped=RelocateRenderElement<RescaleRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>,
@@ -2128,6 +2155,55 @@ smithay::render_elements! {
     Backdrop=crate::backend::shader_effect::StableBackdropTextureElement,
     RelocatedBackdrop=RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>,
     TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>>,
+}
+
+/// Like `transform_window_elements`, but clamps every element's opaque
+/// regions to the window's xdg geometry box (see the tty counterpart for the
+/// full rationale — Chromium claims full-surface opacity, shadow margins
+/// included, once it considers itself minimized).
+/// Wrap client surface elements per the window's resolved surface policy.
+/// With `ignore_opaque` the whole surface tree loses its declared opaque
+/// regions and is composited with blending (used e.g. for minimized Chromium,
+/// whose post-`set_minimized` buffers declare transparent-black CSD margins
+/// as fully opaque).
+fn transform_policy_window_elements(
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    ignore_opaque: bool,
+    visual: WindowVisualState,
+) -> Vec<WinitRenderElements> {
+    if !ignore_opaque {
+        return transform_window_elements(
+            elements,
+            visual,
+            WinitRenderElements::Window,
+            WinitRenderElements::TransformedWindow,
+        );
+    }
+    if is_identity_visual_geometry(visual) {
+        return elements
+            .into_iter()
+            .map(|element| {
+                WinitRenderElements::PolicyWindow(
+                    crate::backend::visual::IgnoredOpaqueRegionElement::from_element(element),
+                )
+            })
+            .collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            WinitRenderElements::TransformedPolicyWindow(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    crate::backend::visual::IgnoredOpaqueRegionElement::from_element(element),
+                    visual.origin,
+                    visual.scale,
+                ),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
 }
 
 fn transform_window_elements(

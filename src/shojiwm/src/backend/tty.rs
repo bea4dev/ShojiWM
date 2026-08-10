@@ -1453,6 +1453,7 @@ render_elements! {
     pub TtyRenderElements<=GlesRenderer>;
     Window=WaylandSurfaceRenderElement<GlesRenderer>,
     PolicyWindow=crate::backend::visual::IgnoredOpaqueRegionElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    TransformedPolicyWindow=RelocateRenderElement<RescaleRenderElement<crate::backend::visual::IgnoredOpaqueRegionElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
     TransformedWindow=RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Clipped=crate::backend::clipped_surface::ClippedSurfaceElement,
     TransformedClipped=RelocateRenderElement<RescaleRenderElement<crate::backend::clipped_surface::ClippedSurfaceElement>>,
@@ -1476,6 +1477,7 @@ fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
     match element {
         TtyRenderElements::Window(_) => "Window",
         TtyRenderElements::PolicyWindow(_) => "PolicyWindow",
+        TtyRenderElements::TransformedPolicyWindow(_) => "TransformedPolicyWindow",
         TtyRenderElements::TransformedWindow(_) => "TransformedWindow",
         TtyRenderElements::Clipped(_) => "Clipped",
         TtyRenderElements::TransformedClipped(_) => "TransformedClipped",
@@ -4243,6 +4245,19 @@ fn render_surface(
                                 .collect()
                         }
                     } else {
+                        // In client-decoration mode `clips_surface` is false, so every
+                        // surface element comes back Raw. Apply the window's surface
+                        // policy here: `COMPOSITOR.rendering.surfacePolicy` can return
+                        // `opaqueRegion: "ignore"` (e.g. for minimized Chromium, which
+                        // commits transparent-black CSD margins declared fully opaque
+                        // right after `set_minimized` — trusted, they render as an
+                        // unblended black ring during the minimize animation).
+                        let ignore_opaque = window_decorations
+                            .get(window)
+                            .and_then(|decoration| decoration.managed_window.surface_policy)
+                            .is_some_and(|policy| {
+                                policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
+                            });
                         clipped
                             .into_iter()
                             .flat_map(|element| match element {
@@ -4250,11 +4265,10 @@ fn render_surface(
                                     transform_clipped_elements(vec![element], visual_state)
                                 }
                                 window_render::WindowClipElement::Raw(element) => {
-                                    transform_window_elements(
+                                    transform_policy_window_elements(
                                         vec![element],
+                                        ignore_opaque,
                                         visual_state,
-                                        TtyRenderElements::Window,
-                                        TtyRenderElements::TransformedWindow,
                                     )
                                 }
                             })
@@ -4303,12 +4317,14 @@ fn render_surface(
                             "gap debug tty raw surface elements"
                         );
                     }
-                    let transformed = transform_window_elements(
-                        surfaces,
-                        visual_state,
-                        TtyRenderElements::Window,
-                        TtyRenderElements::TransformedWindow,
-                    );
+                    let ignore_opaque = window_decorations
+                        .get(window)
+                        .and_then(|decoration| decoration.managed_window.surface_policy)
+                        .is_some_and(|policy| {
+                            policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
+                        });
+                    let transformed =
+                        transform_policy_window_elements(surfaces, ignore_opaque, visual_state);
                     if std::env::var_os("SHOJI_GAP_READBACK_DEBUG").is_some()
                         && let Some(first_geometry) = transformed.first().map(|element| {
                             smithay::backend::renderer::element::Element::geometry(element, scale)
@@ -6211,6 +6227,58 @@ fn transform_window_elements(
         .map(|element| {
             transformed(RelocateRenderElement::from_element(
                 RescaleRenderElement::from_element(element, visual.origin, visual.scale),
+                visual.translation,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+/// Like `transform_window_elements`, but clamps every element's opaque
+/// regions to the window's xdg geometry box. Everything outside the geometry
+/// is decoration/shadow by protocol contract and must never be treated as
+/// opaque — Chromium declares a full-surface opaque region (shadow margins
+/// included) once it considers itself minimized, and honouring that culls
+/// the content beneath the translucent margins into a black rectangle
+/// hugging the window.
+/// Wrap client surface elements per the window's resolved surface policy.
+/// With `ignore_opaque` the whole surface tree loses its declared opaque
+/// regions and is composited with blending (used e.g. for minimized Chromium,
+/// whose post-`set_minimized` buffers declare transparent-black CSD margins
+/// as fully opaque).
+fn transform_policy_window_elements(
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    ignore_opaque: bool,
+    visual: WindowVisualState,
+) -> Vec<TtyRenderElements> {
+    if !ignore_opaque {
+        return transform_window_elements(
+            elements,
+            visual,
+            TtyRenderElements::Window,
+            TtyRenderElements::TransformedWindow,
+        );
+    }
+    if is_identity_visual_geometry(visual) {
+        return elements
+            .into_iter()
+            .map(|element| {
+                TtyRenderElements::PolicyWindow(
+                    crate::backend::visual::IgnoredOpaqueRegionElement::from_element(element),
+                )
+            })
+            .collect();
+    }
+
+    elements
+        .into_iter()
+        .map(|element| {
+            TtyRenderElements::TransformedPolicyWindow(RelocateRenderElement::from_element(
+                RescaleRenderElement::from_element(
+                    crate::backend::visual::IgnoredOpaqueRegionElement::from_element(element),
+                    visual.origin,
+                    visual.scale,
+                ),
                 visual.translation,
                 Relocate::Relative,
             ))
@@ -12140,12 +12208,24 @@ fn schedule_estimated_vblank_callback(
                 let Some(surface) = backend.surfaces.get_mut(&crtc) else {
                     return TimeoutAction::Drop;
                 };
+                // This timer is the surface's only estimated-vblank timer
+                // (`schedule_estimated_vblank_callback` refuses to arm a second
+                // one while `frame_callback_timer_armed` is set), so it is
+                // spent the moment it fires — regardless of what state the
+                // surface has moved to since. It used to stay `true` when the
+                // guard below didn't match (generation bumped by a real frame,
+                // or the state had left `WaitingForEstimatedVBlank`): from then
+                // on no estimated-vblank callback could ever be armed again,
+                // and the next time damage dried up the surface parked in
+                // `WaitingForEstimatedVBlank { queued: true }` forever — the
+                // whole output stopped producing frames until an unrelated
+                // client commit restarted the flip cycle. A Chromium window
+                // minimizing itself hits exactly that pattern (it stops
+                // committing the moment it sends `set_minimized`), which froze
+                // the minimize fade as a stuck full-opacity ghost.
+                surface.frame_callback_timer_armed = false;
                 match surface.redraw_state {
-                    TtyRedrawState::WaitingForEstimatedVBlank {
-                        queued,
-                        generation: current_generation,
-                    } if surface.frame_callback_timer_armed && current_generation == generation => {
-                        surface.frame_callback_timer_armed = false;
+                    TtyRedrawState::WaitingForEstimatedVBlank { queued, .. } => {
                         surface.frame_callback_sequence =
                             surface.frame_callback_sequence.wrapping_add(1);
                         let sequence = surface.frame_callback_sequence;

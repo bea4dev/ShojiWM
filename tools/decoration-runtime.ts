@@ -4596,6 +4596,7 @@ function tryWriteNativeCachedResponse(
   if (managedWindow.allowTearing === true) flags |= 2 << 8;
   if (Array.isArray(visibleOutputs)) flags |= 1 << 10;
   if (managedWindow.zIndex !== undefined) flags |= 1 << 11;
+  if (managedWindow.surfacePolicy?.opaqueRegion === "ignore") flags |= 1 << 12;
 
   const rect = managedWindow.rect;
   const fields = [

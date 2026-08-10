@@ -1014,6 +1014,9 @@ impl ShojiRuntimeBridge {
                 tiled: flags & (1 << 6) != 0,
                 allow_tearing,
                 z_index: (flags & (1 << 11) != 0).then_some(fields[14] as i32),
+                surface_policy: (flags & (1 << 12) != 0).then_some(crate::ssd::SurfacePolicy {
+                    opaque_region: crate::ssd::OpaqueRegionPolicy::Ignore,
+                }),
                 transform: WindowTransform {
                     origin: TransformOrigin {
                         x: fields[3],

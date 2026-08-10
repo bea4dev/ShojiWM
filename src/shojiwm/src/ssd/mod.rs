@@ -899,7 +899,10 @@ pub enum EffectAlphaMode {
 
 /// How the compositor treats the opaque region a client declared on its
 /// surface (`wl_surface.set_opaque_region`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum OpaqueRegionPolicy {
     /// Honor the declaration: opaque areas can occlude elements below and be
     /// rendered without blending. Correct and fastest for honest clients.
@@ -914,8 +917,12 @@ pub enum OpaqueRegionPolicy {
 }
 
 /// Per-surface rendering policy resolved by `COMPOSITOR.rendering.surfacePolicy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "camelCase")]
 pub struct SurfacePolicy {
+    #[serde(default)]
     pub opaque_region: OpaqueRegionPolicy,
 }
 

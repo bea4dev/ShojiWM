@@ -21,12 +21,14 @@ import type {
   WindowCompositionContext,
   CompositionElementNode,
   CompositionRenderable,
+  CompositorDefinition,
   WindowCompositionFunction,
   ManagedWindowProps,
   ManagedWindowRect,
   ManagedWindowState,
   ReactiveWaylandWindowHandle,
   SerializableCompositionChild,
+  SurfacePolicy,
   WaylandWindowActions,
   WaylandWindowSnapshot,
   WindowPosition,
@@ -412,6 +414,32 @@ function isManagedWindowNode(node: CompositionChild): node is CompositionElement
   return typeof node !== "string" && typeof node !== "number" && node.type === "ManagedWindow";
 }
 
+// The COMPOSITOR singleton lives on globalThis (see index.ts) so every bundle
+// shares one instance. Read it through the same key instead of importing
+// index.ts, which would create a module cycle (index.ts imports this file).
+function compositorSingleton(): CompositorDefinition | undefined {
+  return (globalThis as Record<string, unknown>)["__shoji_wm_COMPOSITOR__"] as
+    | CompositorDefinition
+    | undefined;
+}
+
+function resolveWindowSurfacePolicy(
+  handle: ReactiveWaylandWindowHandle,
+): SurfacePolicy | undefined {
+  const evaluatePolicy = compositorSingleton()?.rendering?.surfacePolicy;
+  if (!evaluatePolicy) {
+    return undefined;
+  }
+  // Runs inside the managed-window dependency scope of the caller: window
+  // state signals the callback reads subscribe this window for re-evaluation.
+  const resolved = evaluatePolicy({ kind: "toplevel", window: handle.window });
+  if (!resolved) {
+    return undefined;
+  }
+  const opaqueRegion = read(resolved.opaqueRegion);
+  return opaqueRegion === undefined ? undefined : { opaqueRegion };
+}
+
 function snapshotManagedWindow(
   windowId: string,
   props: ManagedWindowProps | undefined,
@@ -450,6 +478,7 @@ function snapshotManagedWindow(
         ...transform,
         opacity: visible && !idle ? opacity : 0,
       },
+      surfacePolicy: resolveWindowSurfacePolicy(handle),
     };
   } finally {
     leaveWindowManagedDependencyScope();

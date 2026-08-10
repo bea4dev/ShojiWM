@@ -437,6 +437,17 @@ export interface ManagedWindowState {
   allowTearing?: boolean;
   zIndex?: number;
   transform: WindowTransform;
+  /**
+   * Rendering policy resolved by `COMPOSITOR.rendering.surfacePolicy` for this
+   * window's client surface tree. Evaluated inside the managed-window
+   * dependency scope, so window-state signals read by the callback re-trigger
+   * evaluation. `undefined` keeps compositor defaults.
+   * `COMPOSITOR.rendering.surfacePolicy` がこのウィンドウのクライアント
+   * サーフェスツリーに対して解決したレンダリングポリシー。managed-window の
+   * 依存スコープ内で評価されるため、コールバックが読んだウィンドウ状態
+   * signal の変化で再評価されます。`undefined` はコンポジターデフォルト。
+   */
+  surfacePolicy?: SurfacePolicy;
 }
 
 export type PrimitiveChild = string | number;
@@ -902,13 +913,20 @@ export interface CompositorEffectConfig {
 
 /**
  * The surface a `COMPOSITOR.rendering.surfacePolicy` callback is deciding
- * about. Currently only popups are delivered; the union will grow to layer
- * and window surfaces without breaking existing callbacks.
+ * about. Popups are delivered as `kind: "popup"`; toplevel windows as
+ * `kind: "toplevel"` with the live `WaylandWindow` so the policy can read
+ * window state (signal reads subscribe — the policy re-evaluates when the
+ * state changes). The union may grow to layer surfaces without breaking
+ * existing callbacks.
  * `COMPOSITOR.rendering.surfacePolicy` コールバックが判断対象とするサーフェス。
- * 現在はポップアップのみ配送されます。将来レイヤー・ウィンドウが union に
- * 追加されても既存コールバックは壊れません。
+ * ポップアップは `kind: "popup"`、トップレベルウィンドウは `kind: "toplevel"`
+ * で配送されます。toplevel は生きた `WaylandWindow` を持ち、ウィンドウ状態を
+ * 参照できます（signal の読み取りは購読され、状態変化で再評価されます）。
+ * 将来レイヤーが union に追加されても既存コールバックは壊れません。
  */
-export type SurfacePolicyTarget = { kind: "popup" } & WaylandPopup;
+export type SurfacePolicyTarget =
+  | ({ kind: "popup" } & WaylandPopup)
+  | { kind: "toplevel"; window: WaylandWindow };
 
 /**
  * Per-surface rendering policy. All fields optional; omitted fields keep the

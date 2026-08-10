@@ -629,6 +629,12 @@ pub struct ManagedWindowState {
     pub z_index: Option<i32>,
     #[serde(default)]
     pub transform: WindowTransform,
+    /// Rendering policy for the window's client surface tree from
+    /// `COMPOSITOR.rendering.surfacePolicy` (`kind: "toplevel"`). `None`
+    /// keeps compositor defaults. Consumed by the backend client-element
+    /// paths (opaque-region handling).
+    #[serde(default)]
+    pub surface_policy: Option<crate::ssd::SurfacePolicy>,
 }
 
 impl Default for ManagedWindowState {
@@ -646,6 +652,7 @@ impl Default for ManagedWindowState {
             allow_tearing: None,
             z_index: None,
             transform: WindowTransform::default(),
+            surface_policy: None,
         }
     }
 }

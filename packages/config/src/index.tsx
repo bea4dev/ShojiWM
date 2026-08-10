@@ -62,6 +62,7 @@ COMPOSITOR.cursor.configure({
 });
 
 COMPOSITOR.window.decoration.configure((window, context) => {
+  return { mode: "client" };
   const appId = (window.appId() ?? "").toLowerCase();
   const isFirefox =
     appId === "firefox" ||
@@ -605,12 +606,37 @@ COMPOSITOR.effect.popup = (popup) => {
   };
 };
 
+// Chromium-family clients repaint their CSD shadow margins as transparent
+// black — while still declaring the whole surface opaque — the moment they
+// send set_minimized, assuming the surface will never be shown again. Honoring
+// that declaration skips blending and paints the margins as a solid black
+// ring during the minimize animation.
+const isChromiumFamily = (appId: string): boolean => {
+  const id = appId.toLowerCase();
+  return (
+    id.includes("chrome") || id.includes("chromium") || id.includes("electron")
+  );
+};
+
 // GTK3 tooltips (waybar) declare their whole rect opaque despite transparent
 // rounded corners, which paints the corners as a solid fill and culls the
 // behind-blur. Ignore the declaration for layer-shell popups.
 COMPOSITOR.rendering.surfacePolicy = (surface) => {
   if (surface.kind === "popup" && surface.parentKind === "layer") {
     return { opaqueRegion: "ignore" };
+  }
+  if (surface.kind === "toplevel") {
+    const window = surface.window;
+    // Minimized only: the restore animation fades in from opacity 0, so the
+    // few frames where a stale black-margin buffer could still be on screen
+    // after unminimize are effectively invisible.
+    if (
+      isChromiumFamily(window.appId() ?? "") &&
+      (window.state[WINDOW_STATE_MINIMIZED]() ||
+        window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE]())
+    ) {
+      return { opaqueRegion: "ignore" };
+    }
   }
   return null;
 };
