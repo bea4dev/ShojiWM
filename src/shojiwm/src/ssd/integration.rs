@@ -5050,8 +5050,8 @@ impl ShojiWM {
                 current_root,
                 current_client,
                 window_id,
-                static_managed_window,
                 last_configured_client_size,
+                rect_override_target_raw,
             )) = ({
                 timescope::scope!("ssd apply managed window state");
                 let Some(decoration) = self.window_decorations.get(&window) else {
@@ -5069,11 +5069,34 @@ impl ShojiWM {
                     }
                     continue;
                 };
+                let window_id = decoration.snapshot.id.clone();
+                let static_managed_window = decoration.static_managed_window.clone();
+                let rect_override_target_raw = self
+                    .managed_window_animations
+                    .get(&window_id)
+                    .and_then(|channels| {
+                        final_override_rect_animation_target(&static_managed_window, channels)
+                    });
+                // Snap the animated rect to the physical pixel grid, anchored
+                // at the animation's final target. Windows animating with
+                // identical deltas and timing (workspace scroll / strip
+                // reflow) then move in identical physical-pixel steps, so
+                // their relative positions stay rigid — independently rounding
+                // a shared fractional delta per window makes neighbouring gaps
+                // oscillate by ±1 physical px. Anchoring at the target (not
+                // the start) makes the final frame land exactly on the static
+                // rect, avoiding a settle jump when the animation completes.
+                let desired_root_raw = match rect_override_target_raw {
+                    Some(target) => snap_rect_animation_to_physical_grid(
+                        desired_root_raw,
+                        target,
+                        decoration.layout_scale,
+                    ),
+                    None => desired_root_raw,
+                };
                 let desired_root = managed_rect_snapshot_to_logical_rect(desired_root_raw);
                 let current_root = decoration.layout.root.rect;
                 let current_client = decoration.client_rect;
-                let window_id = decoration.snapshot.id.clone();
-                let static_managed_window = decoration.static_managed_window.clone();
                 let last_configured_client_size = decoration.last_configured_client_size;
                 Some((
                     managed.force_rect_size,
@@ -5085,8 +5108,8 @@ impl ShojiWM {
                     current_root,
                     current_client,
                     window_id,
-                    static_managed_window,
                     last_configured_client_size,
+                    rect_override_target_raw,
                 ))
             })
             else {
@@ -5136,15 +5159,8 @@ impl ShojiWM {
             // SSD layout instead of by stretching a lagging buffer. The
             // visual rect (relocate, SSD layout) still uses the animated
             // `desired_client`; only the size we hand the client deviates.
-            let active_rect_override_target = {
-                timescope::scope!("ssd apply managed active override");
-                self.managed_window_animations
-                    .get(&window_id)
-                    .and_then(|channels| {
-                        final_override_rect_animation_target(&static_managed_window, channels)
-                    })
-                    .map(managed_rect_snapshot_to_logical_rect)
-            };
+            let active_rect_override_target =
+                rect_override_target_raw.map(managed_rect_snapshot_to_logical_rect);
 
             let tiled_state_changed = {
                 timescope::scope!("ssd apply managed tiled state");
@@ -5677,6 +5693,31 @@ fn content_clip_for_layout(
     shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     slot_content_clip_for_node(&layout.root, None, None, shared_edges)
+}
+
+/// Snap an animated rect's edges to the physical pixel grid (multiples of
+/// 1/scale), anchored at the animation's final target edges. See the call
+/// site in `apply_managed_window_rects` for why this keeps concurrently
+/// animating windows pixel-rigid relative to each other.
+fn snap_rect_animation_to_physical_grid(
+    raw: ManagedWindowRectSnapshot,
+    target: ManagedWindowRectSnapshot,
+    scale: f64,
+) -> ManagedWindowRectSnapshot {
+    if !scale.is_finite() || scale <= 0.0 {
+        return raw;
+    }
+    let snap = |value: f64, anchor: f64| anchor - ((anchor - value) * scale).round() / scale;
+    let left = snap(raw.x, target.x);
+    let top = snap(raw.y, target.y);
+    let right = snap(raw.x + raw.width, target.x + target.width);
+    let bottom = snap(raw.y + raw.height, target.y + target.height);
+    ManagedWindowRectSnapshot {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    }
 }
 
 /// Fractional edge remainders that `managed_rect_snapshot_to_logical_rect`

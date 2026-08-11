@@ -3690,7 +3690,7 @@ export class Workspace {
     const viewportRect = this.tileViewportRect();
     this.lastAppliedTileViewportRect = snapshotManagedRect(viewportRect);
     const tileHeight = read(viewportRect.height);
-    let nextX = read(viewportRect.x) - this.scrollOffset;
+    let nextX = read(viewportRect.x) - this.physicalAlignedScrollOffset();
     const appliedRects: Record<string, ManagedWindowRect> = {};
     this.lastDraggingSlotRect = null;
 
@@ -4518,7 +4518,7 @@ export class Workspace {
     rect: ManagedWindowRect,
   ): ManagedWindowRect {
     return {
-      x: read(rect.x) + this.scrollOffset,
+      x: read(rect.x) + this.physicalAlignedScrollOffset(),
       y: read(rect.y),
       width: read(rect.width),
       height: read(rect.height),
@@ -4529,11 +4529,29 @@ export class Workspace {
     rect: ManagedWindowRect,
   ): ManagedWindowRect {
     return {
-      x: read(rect.x) - this.scrollOffset,
+      x: read(rect.x) - this.physicalAlignedScrollOffset(),
       y: read(rect.y),
       width: read(rect.width),
       height: read(rect.height),
     };
+  }
+
+  /**
+   * Scroll offset quantized to the monitor's physical pixel grid (multiples
+   * of 1/scale). Subtracting the same 1/scale-multiple from every window
+   * keeps each physical position at `round(x_i × scale) − k` with one shared
+   * integer k, so adjacent windows move pixel-rigidly while scrolling. A raw
+   * fractional offset rounds independently per window and makes the gaps
+   * between neighbours oscillate by ±1 physical px. The raw accumulator in
+   * `scrollOffset` stays untouched so slow gesture deltas below half a
+   * physical pixel still accumulate instead of stalling.
+   */
+  private physicalAlignedScrollOffset(): number {
+    const scale = COMPOSITOR.output.current[this.monitor]?.scale ?? 0;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return this.scrollOffset;
+    }
+    return Math.round(this.scrollOffset * scale) / scale;
   }
 
   private clampRectToViewport(rect: ManagedWindowRect): ManagedWindowRect {
