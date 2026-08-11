@@ -84,7 +84,8 @@ use crate::{
     backend::snapshot,
     backend::visual::{
         WindowVisualState, is_identity_visual_geometry, requires_full_window_snapshot,
-        root_physical_origin, transformed_rect, transformed_root_rect, window_visual_state,
+        root_physical_origin, root_physical_origin_precise, transformed_rect,
+        transformed_root_rect, window_visual_state,
     },
     backend::window as window_render,
     config::DisplayModePreference,
@@ -2581,8 +2582,9 @@ fn render_surface(
                 let client_physical_geometry =
                     window_decorations.get(window).and_then(|decoration| {
                         decoration.content_clip.map(|clip| {
-                            let root_origin = root_physical_origin(
+                            let root_origin = root_physical_origin_precise(
                                 decoration.layout.root.rect,
+                                decoration.root_subpixel_offset,
                                 output_geo,
                                 scale,
                             );
@@ -2777,7 +2779,12 @@ fn render_surface(
                     smithay::utils::Rectangle<i32, smithay::utils::Physical>,
                 )> = Vec::new();
                 let root_origin = window_decorations.get(window).map(|decoration| {
-                    root_physical_origin(decoration.layout.root.rect, output_geo, scale)
+                    root_physical_origin_precise(
+                        decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
+                        output_geo,
+                        scale,
+                    )
                 });
                 let composition_visual = if use_full_window_snapshot {
                     WindowVisualState {
@@ -3994,8 +4001,9 @@ fn render_surface(
                             let content_clip_physical =
                             window_decorations.get(window).and_then(|decoration| {
                                 let content_clip = decoration.content_clip?;
-                                let root_origin = root_physical_origin(
+                                let root_origin = root_physical_origin_precise(
                                     decoration.layout.root.rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 );
@@ -8739,8 +8747,12 @@ fn backdrop_shader_elements_for_window(
                         scale,
                     )
                 });
-            let root_origin_physical =
-                crate::backend::visual::root_physical_origin(root_rect, output_geo, scale);
+            let root_origin_physical = crate::backend::visual::root_physical_origin_precise(
+                root_rect,
+                decoration.root_subpixel_offset,
+                output_geo,
+                scale,
+            );
             let final_backdrop_screen_rect = smithay::utils::Rectangle::new(
                 smithay::utils::Point::from((
                     root_origin_physical.x + geometry.loc.x,
@@ -10887,8 +10899,13 @@ fn window_scene_elements_for_capture(
     let client_physical_geometry = window_decorations.get(window).and_then(|decoration| {
         decoration.content_clip.map(|clip| {
             let root_origin =
-                crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
-                    Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+                crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
+                    Point::from((
+                        decoration.layout.root.rect.x as f64
+                            + decoration.root_subpixel_offset.x,
+                        decoration.layout.root.rect.y as f64
+                            + decoration.root_subpixel_offset.y,
+                    )),
                     output_origin,
                     capture_origin_physical,
                     scale,

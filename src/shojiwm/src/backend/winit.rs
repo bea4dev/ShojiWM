@@ -29,7 +29,8 @@ use crate::{
     ShojiWM,
     backend::visual::{
         WindowVisualState, is_identity_visual_geometry, requires_full_window_snapshot,
-        root_physical_origin, transformed_root_rect, window_visual_state,
+        root_physical_origin, root_physical_origin_precise, transformed_root_rect,
+        window_visual_state,
     },
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
@@ -1089,8 +1090,9 @@ pub fn init_winit(
                                 .get(window)
                                 .and_then(|decoration| {
                                     decoration.content_clip.map(|clip| {
-                                        let root_origin = root_physical_origin(
+                                        let root_origin = root_physical_origin_precise(
                                             decoration.layout.root.rect,
+                                            decoration.root_subpixel_offset,
                                             output_geo,
                                             scale,
                                         );
@@ -1188,10 +1190,16 @@ pub fn init_winit(
                             } else {
                                 visual_state
                             };
-                            let root_origin = state
-                                .window_decorations
-                                .get(window)
-                                .map(|decoration| root_physical_origin(decoration.layout.root.rect, output_geo, scale));
+                            let root_origin = state.window_decorations.get(window).map(
+                                |decoration| {
+                                    root_physical_origin_precise(
+                                        decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
+                                        output_geo,
+                                        scale,
+                                    )
+                                },
+                            );
                             let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
                             let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> =
                                 Vec::new();
@@ -2883,8 +2891,12 @@ fn backdrop_shader_elements_for_window(
                         scale,
                     )
                 });
-            let root_origin_physical =
-                crate::backend::visual::root_physical_origin(root_rect, output_geo, scale);
+            let root_origin_physical = crate::backend::visual::root_physical_origin_precise(
+                root_rect,
+                decoration.root_subpixel_offset,
+                output_geo,
+                scale,
+            );
             let final_backdrop_screen_rect = Rectangle::new(
                 smithay::utils::Point::from((
                     root_origin_physical.x + geometry.loc.x,

@@ -690,6 +690,12 @@ pub struct WindowDecorationState {
     /// coherent — which is the steady-state hot path (~25% CPU during
     /// ufo-test).
     pub client_rect_potentially_stale: bool,
+    /// Sub-logical-pixel remainder of the TS-declared managed rect origin
+    /// (`managed.rect.x - round(managed.rect.x)`, range (-0.5, 0.5]). The
+    /// integer layout/Space/configure pipeline drops this fraction; rendering
+    /// adds it back when computing the root physical origin so rect
+    /// animations move at physical-pixel granularity instead of logical.
+    pub root_subpixel_offset: Point<f64, Logical>,
     /// Last animated transform produced by `advance_managed_window_animations`,
     /// **or** the static value when no animation is active. This is the value
     /// rendering reads — it changes per frame while an animation is in flight.
@@ -3276,6 +3282,7 @@ impl ShojiWM {
                             layout_scale,
                             client_rect: layout_client_rect,
                             client_rect_potentially_stale: false,
+                            root_subpixel_offset: managed_rect_subpixel_offset(&managed_window),
                             visual_transform,
                             managed_window,
                             managed_window_animation_active,
@@ -5079,6 +5086,45 @@ impl ShojiWM {
                 continue;
             };
 
+            // The integer pipeline below may conclude "noop" while the
+            // fractional origin remainder still moved (sub-logical-pixel
+            // animation steps). Rendering anchors the root physical origin on
+            // this fraction, so persist it and repaint even when every integer
+            // rect comparison says nothing changed.
+            {
+                let desired_subpixel = Point::<f64, Logical>::from((
+                    desired_root_raw.x - desired_root.x as f64,
+                    desired_root_raw.y - desired_root.y as f64,
+                ));
+                let subpixel_changed =
+                    self.window_decorations
+                        .get_mut(&window)
+                        .is_some_and(|decoration| {
+                            let changed = decoration.root_subpixel_offset != desired_subpixel;
+                            decoration.root_subpixel_offset = desired_subpixel;
+                            changed
+                        });
+                if subpixel_changed {
+                    // The fractional shift moves rendering by at most one
+                    // physical pixel; damage one logical pixel beyond both
+                    // integer roots to cover it.
+                    self.pending_decoration_damage.push(LogicalRect::new(
+                        current_root.x - 1,
+                        current_root.y - 1,
+                        current_root.width + 2,
+                        current_root.height + 2,
+                    ));
+                    self.pending_decoration_damage.push(LogicalRect::new(
+                        desired_root.x - 1,
+                        desired_root.y - 1,
+                        desired_root.width + 2,
+                        desired_root.height + 2,
+                    ));
+                    self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
+                    self.schedule_redraw();
+                }
+            }
+
             // When an Override rect animation is in flight we want the client
             // configured at its **final** target size — not the animated
             // intermediate — so its buffer arrives at the right resolution
@@ -5627,6 +5673,15 @@ fn content_clip_for_layout(
     shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     slot_content_clip_for_node(&layout.root, None, None, shared_edges)
+}
+
+/// Fractional origin remainder that `managed_rect_snapshot_to_logical_rect`
+/// discards. Derivable from the managed rect alone because the quantized left/
+/// top edges are plain `round()` of the raw edges.
+fn managed_rect_subpixel_offset(managed: &super::ManagedWindowState) -> Point<f64, Logical> {
+    managed.rect.map_or(Point::from((0.0, 0.0)), |rect| {
+        Point::from((rect.x - rect.x.round(), rect.y - rect.y.round()))
+    })
 }
 
 fn managed_rect_snapshot_to_logical_rect(rect: ManagedWindowRectSnapshot) -> LogicalRect {

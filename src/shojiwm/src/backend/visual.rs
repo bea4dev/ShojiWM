@@ -733,6 +733,23 @@ pub fn root_physical_origin(
     .to_physical_precise_round(output_scale)
 }
 
+/// `root_physical_origin` with the sub-logical-pixel remainder of the managed
+/// rect applied before the physical rounding. The integer layout pipeline is
+/// unaware of the fraction, so shifting only this anchor moves the whole
+/// rendered window rigidly at physical-pixel granularity.
+pub fn root_physical_origin_precise(
+    rect: LogicalRect,
+    subpixel_offset: Point<f64, Logical>,
+    output_geo: Rectangle<i32, Logical>,
+    output_scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    Point::<f64, Logical>::from((
+        (rect.x - output_geo.loc.x) as f64 + subpixel_offset.x,
+        (rect.y - output_geo.loc.y) as f64 + subpixel_offset.y,
+    ))
+    .to_physical_precise_round(output_scale)
+}
+
 fn root_physical_size_from_edges(
     rect: LogicalRect,
     output_geo: Rectangle<i32, Logical>,
