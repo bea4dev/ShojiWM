@@ -404,6 +404,7 @@ pub fn text_elements_for_window(
                 renderer,
                 label,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
                 alpha,
@@ -437,6 +438,7 @@ pub fn ordered_text_elements_for_window(
                 renderer,
                 label,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
                 alpha,
@@ -462,6 +464,7 @@ pub fn ordered_text_elements_for_decoration(
                 renderer,
                 label,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
                 alpha,
@@ -487,6 +490,7 @@ pub fn text_elements_for_decoration(
                 renderer,
                 label,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
                 alpha,
@@ -500,6 +504,7 @@ pub(crate) fn memory_text_element(
     renderer: &mut GlesRenderer,
     label: &CachedDecorationLabel,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: OutputScale<f64>,
     alpha: f32,
@@ -510,9 +515,9 @@ pub(crate) fn memory_text_element(
 
     let physical = label
         .rect_precise
-        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale))
+        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, root_subpixel, output_geo, scale))
         .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(label.rect, root_rect, output_geo, scale)
+            relative_physical_rect_from_root_snapped_edges(label.rect, root_rect, root_subpixel, output_geo, scale)
         });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,

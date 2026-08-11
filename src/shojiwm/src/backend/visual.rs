@@ -285,13 +285,19 @@ pub fn snapped_precise_logical_rect_in_root_frame_area_space(
     area_width: i32,
     area_height: i32,
     root_rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> SnappedLogicalRect {
-    let element_physical =
-        relative_physical_rect_from_root_precise(element_rect, root_rect, output_geo, scale);
+    let element_physical = relative_physical_rect_from_root_precise(
+        element_rect,
+        root_rect,
+        root_subpixel,
+        output_geo,
+        scale,
+    );
     let clip_physical =
-        relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale);
+        relative_physical_rect_from_root_precise(rect, root_rect, root_subpixel, output_geo, scale);
     let element_width_px = element_physical.size.w.max(1) as f32;
     let element_height_px = element_physical.size.h.max(1) as f32;
     let area_width = area_width.max(1) as f32;
@@ -733,34 +739,53 @@ pub fn root_physical_origin(
     .to_physical_precise_round(output_scale)
 }
 
+/// Sub-logical-pixel remainders of the four managed-rect edges after the
+/// integer quantization (`edge - round(edge)`, each in (-0.5, 0.5]). The
+/// integer layout pipeline is unaware of these fractions; rendering re-applies
+/// them when converting the root rect to physical pixels, so rect animations
+/// move *and resize* at physical-pixel granularity instead of logical.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RootSubpixelEdges {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
 /// `root_physical_origin` with the sub-logical-pixel remainder of the managed
 /// rect applied before the physical rounding. The integer layout pipeline is
 /// unaware of the fraction, so shifting only this anchor moves the whole
 /// rendered window rigidly at physical-pixel granularity.
 pub fn root_physical_origin_precise(
     rect: LogicalRect,
-    subpixel_offset: Point<f64, Logical>,
+    subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Point<i32, Physical> {
     Point::<f64, Logical>::from((
-        (rect.x - output_geo.loc.x) as f64 + subpixel_offset.x,
-        (rect.y - output_geo.loc.y) as f64 + subpixel_offset.y,
+        (rect.x - output_geo.loc.x) as f64 + subpixel.left,
+        (rect.y - output_geo.loc.y) as f64 + subpixel.top,
     ))
     .to_physical_precise_round(output_scale)
 }
 
 fn root_physical_size_from_edges(
     rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> smithay::utils::Size<i32, Physical> {
     let scale_x = output_scale.x.abs().max(0.0001);
     let scale_y = output_scale.y.abs().max(0.0001);
-    let left = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let top = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
-    let right = ((((rect.x + rect.width) - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let bottom = ((((rect.y + rect.height) - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let left =
+        ((((rect.x - output_geo.loc.x) as f64) + root_subpixel.left) * scale_x).round() as i32;
+    let top = ((((rect.y - output_geo.loc.y) as f64) + root_subpixel.top) * scale_y).round() as i32;
+    let right = ((((rect.x + rect.width) - output_geo.loc.x) as f64 + root_subpixel.right)
+        * scale_x)
+        .round() as i32;
+    let bottom = ((((rect.y + rect.height) - output_geo.loc.y) as f64 + root_subpixel.bottom)
+        * scale_y)
+        .round() as i32;
     ((right - left).max(0), (bottom - top).max(0)).into()
 }
 
@@ -770,12 +795,14 @@ fn relative_physical_rect_in_root_frame(
     right: f32,
     bottom: f32,
     root_rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     let root_width = (root_rect.width.max(1)) as f32;
     let root_height = (root_rect.height.max(1)) as f32;
-    let root_size = root_physical_size_from_edges(root_rect, output_geo, output_scale);
+    let root_size =
+        root_physical_size_from_edges(root_rect, root_subpixel, output_geo, output_scale);
     let root_x = root_rect.x as f32;
     let root_y = root_rect.y as f32;
 
@@ -801,6 +828,7 @@ fn relative_physical_rect_in_root_frame(
 pub fn relative_physical_rect_from_root(
     rect: LogicalRect,
     root_rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
     shared_rect: Option<LogicalRect>,
@@ -812,6 +840,7 @@ pub fn relative_physical_rect_from_root(
         (rect.x + rect.width) as f32,
         (rect.y + rect.height) as f32,
         root_rect,
+        root_subpixel,
         output_geo,
         output_scale,
     )
@@ -820,6 +849,7 @@ pub fn relative_physical_rect_from_root(
 pub fn relative_physical_rect_from_root_snapped_edges(
     rect: LogicalRect,
     root_rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
@@ -831,6 +861,7 @@ pub fn relative_physical_rect_from_root_snapped_edges(
             height: rect.height as f32,
         },
         root_rect,
+        root_subpixel,
         output_geo,
         output_scale,
     )
@@ -853,6 +884,7 @@ pub fn snapped_logical_rect_from_relative_physical(
 pub fn relative_physical_rect_from_root_precise(
     rect: PreciseLogicalRect,
     root_rect: LogicalRect,
+    root_subpixel: RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
@@ -862,6 +894,7 @@ pub fn relative_physical_rect_from_root_precise(
         rect.x + rect.width,
         rect.y + rect.height,
         root_rect,
+        root_subpixel,
         output_geo,
         output_scale,
     )
@@ -999,12 +1032,17 @@ mod tests {
         let root_b = LogicalRect::new(101, 40, 200, 80);
         let child_b = LogicalRect::new(112, 40, 10, 10);
 
-        let snapped_a =
-            relative_physical_rect_from_root_snapped_edges(child_a, root_a, output_geo, scale);
-        let snapped_b =
-            relative_physical_rect_from_root_snapped_edges(child_b, root_b, output_geo, scale);
-        let local_a = relative_physical_rect_from_root(child_a, root_a, output_geo, scale, None);
-        let local_b = relative_physical_rect_from_root(child_b, root_b, output_geo, scale, None);
+        let subpixel = super::RootSubpixelEdges::default();
+        let snapped_a = relative_physical_rect_from_root_snapped_edges(
+            child_a, root_a, subpixel, output_geo, scale,
+        );
+        let snapped_b = relative_physical_rect_from_root_snapped_edges(
+            child_b, root_b, subpixel, output_geo, scale,
+        );
+        let local_a =
+            relative_physical_rect_from_root(child_a, root_a, subpixel, output_geo, scale, None);
+        let local_b =
+            relative_physical_rect_from_root(child_b, root_b, subpixel, output_geo, scale, None);
 
         assert_eq!(snapped_a, snapped_b);
         assert_eq!(local_a, local_b);
@@ -1016,7 +1054,13 @@ mod tests {
         let scale = Scale::from((1.25, 1.25));
         let root = LogicalRect::new(1, 0, 10, 10);
 
-        let full = relative_physical_rect_from_root_snapped_edges(root, root, output_geo, scale);
+        let full = relative_physical_rect_from_root_snapped_edges(
+            root,
+            root,
+            super::RootSubpixelEdges::default(),
+            output_geo,
+            scale,
+        );
 
         assert_eq!(full.loc.x, 0);
         assert_eq!(full.loc.y, 0);
@@ -1096,7 +1140,14 @@ mod tests {
         };
 
         let clip = snapped_precise_logical_rect_in_root_frame_area_space(
-            element, element, 10, 10, root, output_geo, scale,
+            element,
+            element,
+            10,
+            10,
+            root,
+            super::RootSubpixelEdges::default(),
+            output_geo,
+            scale,
         );
 
         assert_eq!(clip.x, 0.0);

@@ -690,12 +690,12 @@ pub struct WindowDecorationState {
     /// coherent — which is the steady-state hot path (~25% CPU during
     /// ufo-test).
     pub client_rect_potentially_stale: bool,
-    /// Sub-logical-pixel remainder of the TS-declared managed rect origin
-    /// (`managed.rect.x - round(managed.rect.x)`, range (-0.5, 0.5]). The
-    /// integer layout/Space/configure pipeline drops this fraction; rendering
-    /// adds it back when computing the root physical origin so rect
-    /// animations move at physical-pixel granularity instead of logical.
-    pub root_subpixel_offset: Point<f64, Logical>,
+    /// Sub-logical-pixel remainders of the TS-declared managed rect edges
+    /// (`edge - round(edge)`, each in (-0.5, 0.5]). The integer layout/Space/
+    /// configure pipeline drops these fractions; rendering adds them back when
+    /// computing the root physical origin and frame size so rect animations
+    /// move and resize at physical-pixel granularity instead of logical.
+    pub root_subpixel_offset: crate::backend::visual::RootSubpixelEdges,
     /// Last animated transform produced by `advance_managed_window_animations`,
     /// **or** the static value when no animation is active. This is the value
     /// rendering reads — it changes per frame while an animation is in flight.
@@ -1727,7 +1727,14 @@ impl ShojiWM {
             crate::backend::snapshot::ClosingWindowSnapshot {
                 window_id: window_id.to_string(),
                 live: live_snapshot,
-                decoration: decoration.clone(),
+                decoration: {
+                    let mut decoration = decoration.clone();
+                    // Closing snapshots render their client content from the
+                    // integer `live.rect`; keep the decoration frame on the
+                    // same integer grid so the two cannot drift apart.
+                    decoration.root_subpixel_offset = Default::default();
+                    decoration
+                },
                 transform: invocation.transform.unwrap_or(decoration.visual_transform),
                 promoted_at_ms: now_ms,
                 finalize_deadline_ms,
@@ -5092,10 +5099,7 @@ impl ShojiWM {
             // this fraction, so persist it and repaint even when every integer
             // rect comparison says nothing changed.
             {
-                let desired_subpixel = Point::<f64, Logical>::from((
-                    desired_root_raw.x - desired_root.x as f64,
-                    desired_root_raw.y - desired_root.y as f64,
-                ));
+                let desired_subpixel = managed_rect_snapshot_subpixel_edges(desired_root_raw);
                 let subpixel_changed =
                     self.window_decorations
                         .get_mut(&window)
@@ -5675,13 +5679,28 @@ fn content_clip_for_layout(
     slot_content_clip_for_node(&layout.root, None, None, shared_edges)
 }
 
-/// Fractional origin remainder that `managed_rect_snapshot_to_logical_rect`
-/// discards. Derivable from the managed rect alone because the quantized left/
-/// top edges are plain `round()` of the raw edges.
-fn managed_rect_subpixel_offset(managed: &super::ManagedWindowState) -> Point<f64, Logical> {
-    managed.rect.map_or(Point::from((0.0, 0.0)), |rect| {
-        Point::from((rect.x - rect.x.round(), rect.y - rect.y.round()))
-    })
+/// Fractional edge remainders that `managed_rect_snapshot_to_logical_rect`
+/// discards. Derivable from the managed rect alone because the quantized
+/// edges are plain `round()` of the raw edges.
+fn managed_rect_subpixel_offset(
+    managed: &super::ManagedWindowState,
+) -> crate::backend::visual::RootSubpixelEdges {
+    managed
+        .rect
+        .map_or(Default::default(), managed_rect_snapshot_subpixel_edges)
+}
+
+fn managed_rect_snapshot_subpixel_edges(
+    rect: ManagedWindowRectSnapshot,
+) -> crate::backend::visual::RootSubpixelEdges {
+    let right = rect.x + rect.width;
+    let bottom = rect.y + rect.height;
+    crate::backend::visual::RootSubpixelEdges {
+        left: rect.x - rect.x.round(),
+        top: rect.y - rect.y.round(),
+        right: right - right.round(),
+        bottom: bottom - bottom.round(),
+    }
 }
 
 fn managed_rect_snapshot_to_logical_rect(rect: ManagedWindowRectSnapshot) -> LogicalRect {

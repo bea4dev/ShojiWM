@@ -1100,6 +1100,7 @@ pub fn init_winit(
                                             crate::backend::visual::relative_physical_rect_from_root_precise(
                                                 clip.rect_precise,
                                                 decoration.layout.root.rect,
+                                                decoration.root_subpixel_offset,
                                                 output_geo,
                                                 scale,
                                             );
@@ -2709,6 +2710,7 @@ fn backdrop_shader_elements_for_window(
                                     display_rect.width,
                                     display_rect.height,
                                     root_rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 )
@@ -2735,6 +2737,7 @@ fn backdrop_shader_elements_for_window(
                                     display_rect.width,
                                     display_rect.height,
                                     root_rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 )
@@ -2754,6 +2757,7 @@ fn backdrop_shader_elements_for_window(
                             crate::backend::visual::relative_physical_rect_from_root_precise(
                                 rect,
                                 root_rect,
+                                decoration.root_subpixel_offset,
                                 output_geo,
                                 scale,
                             )
@@ -2879,6 +2883,7 @@ fn backdrop_shader_elements_for_window(
                     crate::backend::visual::relative_physical_rect_from_root_precise(
                         rect,
                         root_rect,
+                        decoration.root_subpixel_offset,
                         output_geo,
                         scale,
                     )
@@ -2988,6 +2993,7 @@ fn backdrop_shader_elements_for_window(
                             display_rect.width,
                             display_rect.height,
                             root_rect,
+                            decoration.root_subpixel_offset,
                             output_geo,
                             scale,
                         )
@@ -3012,6 +3018,7 @@ fn backdrop_shader_elements_for_window(
                             display_rect.width,
                             display_rect.height,
                             root_rect,
+                            decoration.root_subpixel_offset,
                             output_geo,
                             scale,
                         )
@@ -4863,8 +4870,13 @@ fn window_scene_elements_for_capture(
     let client_physical_geometry = state.window_decorations.get(window).and_then(|decoration| {
         decoration.content_clip.map(|clip| {
             let root_origin =
-                crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
-                    Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+                crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
+                    Point::from((
+                        decoration.layout.root.rect.x as f64
+                            + decoration.root_subpixel_offset.left,
+                        decoration.layout.root.rect.y as f64
+                            + decoration.root_subpixel_offset.top,
+                    )),
                     output_origin,
                     capture_origin_physical,
                     scale,
@@ -4872,6 +4884,7 @@ fn window_scene_elements_for_capture(
             let local_geometry = crate::backend::visual::relative_physical_rect_from_root_precise(
                 clip.rect_precise,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 Rectangle::new(output_origin, (0, 0).into()),
                 scale,
             );
@@ -4927,8 +4940,11 @@ fn window_scene_elements_for_capture(
 
     if let Some(decoration) = state.window_decorations.get(window) {
         let root_origin =
-            crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
-                Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+            crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
+                Point::from((
+                    decoration.layout.root.rect.x as f64 + decoration.root_subpixel_offset.left,
+                    decoration.layout.root.rect.y as f64 + decoration.root_subpixel_offset.top,
+                )),
                 output_origin,
                 capture_origin_physical,
                 scale,

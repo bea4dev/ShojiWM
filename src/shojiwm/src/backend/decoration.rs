@@ -107,12 +107,13 @@ fn shrink_rounded_clip_by_pixels(
 fn border_outer_geometry_from_inner(
     inner_rect_precise: crate::backend::visual::PreciseLogicalRect,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
     border_width: f32,
 ) -> Rectangle<i32, Physical> {
     let inner_geometry =
-        relative_physical_rect_from_root_precise(inner_rect_precise, root_rect, output_geo, scale);
+        relative_physical_rect_from_root_precise(inner_rect_precise, root_rect, root_subpixel, output_geo, scale);
     let border_x = ((border_width.max(0.0) as f64) * scale.x.abs().max(0.0001))
         .round()
         .max(0.0) as i32;
@@ -146,6 +147,7 @@ fn border_px_for_scale(border_width: f32, scale: Scale<f64>) -> (i32, i32) {
 fn paired_outer_geometry_from_border_buffer(
     border_cached: &crate::ssd::CachedDecorationBuffer,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> Option<Rectangle<i32, Physical>> {
@@ -159,6 +161,7 @@ fn paired_outer_geometry_from_border_buffer(
             border_outer_geometry_from_inner(
                 hole_rect,
                 root_rect,
+                root_subpixel,
                 output_geo,
                 scale,
                 border_cached.border_width,
@@ -167,7 +170,7 @@ fn paired_outer_geometry_from_border_buffer(
         .or_else(|| {
             border_cached.hole_rect.map(|hole_rect| {
                 let inner_geometry = relative_physical_rect_from_root_snapped_edges(
-                    hole_rect, root_rect, output_geo, scale,
+                    hole_rect, root_rect, root_subpixel, output_geo, scale,
                 );
                 let border_x = ((border_cached.border_width.max(0.0) as f64)
                     * scale.x.abs().max(0.0001))
@@ -207,16 +210,18 @@ fn owner_border_buffer<'a>(
 fn cached_outer_geometry(
     cached: &crate::ssd::CachedDecorationBuffer,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     cached
         .rect_precise
-        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, output_geo, scale))
+        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, root_subpixel, output_geo, scale))
         .unwrap_or_else(|| {
             relative_physical_rect_from_root_snapped_edges(
                 cached.rect,
                 root_rect,
+                root_subpixel,
                 output_geo,
                 scale,
             )
@@ -227,14 +232,17 @@ fn border_outer_geometry(
     cached: &crate::ssd::CachedDecorationBuffer,
     border_fit: crate::ssd::BorderFit,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     if matches!(border_fit, crate::ssd::BorderFit::Normal) && !cached.shared_inner_hole {
-        cached_outer_geometry(cached, root_rect, output_geo, scale)
+        cached_outer_geometry(cached, root_rect, root_subpixel, output_geo, scale)
     } else {
-        paired_outer_geometry_from_border_buffer(cached, root_rect, output_geo, scale)
-            .unwrap_or_else(|| cached_outer_geometry(cached, root_rect, output_geo, scale))
+        paired_outer_geometry_from_border_buffer(cached, root_rect, root_subpixel, output_geo, scale)
+            .unwrap_or_else(|| {
+                cached_outer_geometry(cached, root_rect, root_subpixel, output_geo, scale)
+            })
     }
 }
 
@@ -268,11 +276,12 @@ fn render_inner_clip_from_precise_anchors(
     inner_rect_precise: crate::backend::visual::PreciseLogicalRect,
     inner_radius: f32,
     root_rect: LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
 ) -> RoundedClip {
     let inner_geometry =
-        relative_physical_rect_from_root_precise(inner_rect_precise, root_rect, output_geo, scale);
+        relative_physical_rect_from_root_precise(inner_rect_precise, root_rect, root_subpixel, output_geo, scale);
     let outer_width_px = outer_geometry.size.w.max(1) as f32;
     let outer_height_px = outer_geometry.size.h.max(1) as f32;
     let outer_width = outer_rect_precise.width.max(0.0001);
@@ -412,6 +421,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_precise(
                     rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -420,6 +430,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_snapped_edges(
                     buffer.rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -450,6 +461,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_precise(
                     rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -458,6 +470,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_snapped_edges(
                     buffer.rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -485,6 +498,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_precise(
                     rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -493,6 +507,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_snapped_edges(
                     buffer.rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -520,6 +535,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_precise(
                     rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -528,6 +544,7 @@ fn bordered_node_anchor_union_geometry(
                 relative_physical_rect_from_root_snapped_edges(
                     buffer.rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -539,6 +556,7 @@ fn bordered_node_anchor_union_geometry(
         let rect = relative_physical_rect_from_root_precise(
             content_clip.rect_precise,
             decoration.layout.root.rect,
+            decoration.root_subpixel_offset,
             output_geo,
             scale,
         );
@@ -907,6 +925,7 @@ fn rounded_rect_element(
             cached,
             border_fit,
             decoration.layout.root.rect,
+            decoration.root_subpixel_offset,
             output_geo,
             scale,
         )
@@ -941,11 +960,18 @@ fn rounded_rect_element(
             border_cached,
             owner_border_fit,
             decoration.layout.root.rect,
+            decoration.root_subpixel_offset,
             output_geo,
             scale,
         )
     } else {
-        cached_outer_geometry(cached, decoration.layout.root.rect, output_geo, scale)
+        cached_outer_geometry(
+            cached,
+            decoration.layout.root.rect,
+            decoration.root_subpixel_offset,
+            output_geo,
+            scale,
+        )
     };
     let outer_rect_precise =
         cached
@@ -962,6 +988,7 @@ fn rounded_rect_element(
             relative_physical_rect_from_root_precise(
                 hole_rect,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -971,6 +998,7 @@ fn rounded_rect_element(
                 relative_physical_rect_from_root(
                     hole_rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                     Some(hole_rect),
@@ -1024,6 +1052,7 @@ fn rounded_rect_element(
                             .unwrap_or(cached.hole_radius as f32),
                     ),
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 )
@@ -1051,6 +1080,7 @@ fn rounded_rect_element(
                 let hole_geometry = relative_physical_rect_from_root_precise(
                     hole_rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 );
@@ -1109,6 +1139,7 @@ fn rounded_rect_element(
                     local_rect.size.w,
                     local_rect.size.h,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 ),
@@ -1126,6 +1157,7 @@ fn rounded_rect_element(
                         local_rect.size.w,
                         local_rect.size.h,
                         decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
                         output_geo,
                         scale,
                     ),
@@ -1154,6 +1186,9 @@ fn rounded_rect_element(
                         relative_physical_rect_from_root(
                             hole_rect,
                             cached.rect,
+                            // The frame here is the buffer's own rect, not the
+                            // window root — the root edge fractions do not apply.
+                            crate::backend::visual::RootSubpixelEdges::default(),
                             output_geo,
                             scale,
                             Some(hole_rect),
@@ -1255,6 +1290,7 @@ fn rounded_rect_element(
                 let clip_geometry = relative_physical_rect_from_root_precise(
                     clip_rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                 );
@@ -1274,6 +1310,7 @@ fn rounded_rect_element(
                     let clip_geometry = relative_physical_rect_from_root(
                         clip_rect,
                         decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
                         output_geo,
                         scale,
                         Some(clip_rect),
@@ -1343,6 +1380,7 @@ fn rounded_rect_element(
             relative_physical_rect_from_root_precise(
                 clip_rect,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -1352,6 +1390,7 @@ fn rounded_rect_element(
                 relative_physical_rect_from_root(
                     clip_rect,
                     decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     scale,
                     Some(clip_rect),
@@ -1836,6 +1875,7 @@ fn shader_effect_spec(
             relative_physical_rect_from_root_precise(
                 rect,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -1844,6 +1884,7 @@ fn shader_effect_spec(
             relative_physical_rect_from_root_snapped_edges(
                 cached.rect,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -1885,6 +1926,7 @@ fn shader_effect_spec(
                         local_rect.size.w,
                         local_rect.size.h,
                         decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
                         output_geo,
                         scale,
                     )

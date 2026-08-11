@@ -2592,6 +2592,7 @@ fn render_surface(
                                 crate::backend::visual::relative_physical_rect_from_root_precise(
                                     clip.rect_precise,
                                     decoration.layout.root.rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 );
@@ -3329,6 +3330,7 @@ fn render_surface(
                         &window_id,
                         &output.name(),
                         decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
                         content_clip,
                         output_geo,
                         scale,
@@ -3624,12 +3626,14 @@ fn render_surface(
                                     .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
                                         rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                     ))
                                     .or_else(|| Some(crate::backend::visual::relative_physical_rect_from_root(
                                         buffer.rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                         buffer.clip_rect,
@@ -3641,6 +3645,7 @@ fn render_surface(
                                     .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
                                         rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                     ))
@@ -3648,6 +3653,7 @@ fn render_surface(
                                         crate::backend::visual::relative_physical_rect_from_root(
                                             rect,
                                             decoration.layout.root.rect,
+                                            decoration.root_subpixel_offset,
                                             output_geo,
                                             scale,
                                             Some(rect),
@@ -3663,6 +3669,7 @@ fn render_surface(
                                     .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
                                         rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                     ))
@@ -3670,6 +3677,7 @@ fn render_surface(
                                         crate::backend::visual::relative_physical_rect_from_root(
                                             buffer.rect,
                                             decoration.layout.root.rect,
+                                            decoration.root_subpixel_offset,
                                             output_geo,
                                             scale,
                                             buffer.clip_rect,
@@ -3707,6 +3715,7 @@ fn render_surface(
                                     .map(|rect| crate::backend::visual::relative_physical_rect_from_root_precise(
                                         rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                     ))
@@ -3714,6 +3723,7 @@ fn render_surface(
                                         crate::backend::visual::relative_physical_rect_from_root(
                                             buffer.rect,
                                             decoration.layout.root.rect,
+                                            decoration.root_subpixel_offset,
                                             output_geo,
                                             scale,
                                             buffer.clip_rect,
@@ -3781,6 +3791,7 @@ fn render_surface(
                                     crate::backend::visual::relative_physical_rect_from_root(
                                         buffer.rect,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                         buffer.clip_rect,
@@ -4011,6 +4022,7 @@ fn render_surface(
                                     crate::backend::visual::relative_physical_rect_from_root_precise(
                                         content_clip.rect_precise,
                                         decoration.layout.root.rect,
+                                        decoration.root_subpixel_offset,
                                         output_geo,
                                         scale,
                                     );
@@ -6876,6 +6888,7 @@ fn log_managed_rect_physical_debug(
     window_id: &str,
     output_name: &str,
     root_rect: crate::ssd::LogicalRect,
+    root_subpixel: crate::backend::visual::RootSubpixelEdges,
     content_clip: Option<crate::ssd::ContentClip>,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     scale: Scale<f64>,
@@ -6886,7 +6899,7 @@ fn log_managed_rect_physical_debug(
 
     let scale_x = scale.x.abs().max(0.0001);
     let scale_y = scale.y.abs().max(0.0001);
-    let root_origin = root_physical_origin(root_rect, output_geo, scale);
+    let root_origin = root_physical_origin_precise(root_rect, root_subpixel, output_geo, scale);
     let root_size_independent = smithay::utils::Size::<i32, smithay::utils::Physical>::from((
         ((root_rect.width as f64) * scale_x).round().max(0.0) as i32,
         ((root_rect.height as f64) * scale_y).round().max(0.0) as i32,
@@ -6898,6 +6911,7 @@ fn log_managed_rect_physical_debug(
         let local = crate::backend::visual::relative_physical_rect_from_root_precise(
             clip.rect_precise,
             root_rect,
+            root_subpixel,
             output_geo,
             scale,
         );
@@ -7099,6 +7113,7 @@ fn log_gap_final_composite_readback(
             crate::backend::visual::relative_physical_rect_from_root_precise(
                 rect,
                 root_rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 output_scale,
             )
@@ -7107,6 +7122,7 @@ fn log_gap_final_composite_readback(
             crate::backend::visual::relative_physical_rect_from_root_snapped_edges(
                 titlebar_shader.rect,
                 root_rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 output_scale,
             )
@@ -7139,6 +7155,7 @@ fn log_gap_final_composite_readback(
             let pre = crate::backend::visual::relative_physical_rect_from_root_precise(
                 hole,
                 root_rect,
+                decoration.root_subpixel_offset,
                 output_geo,
                 output_scale,
             );
@@ -7152,6 +7169,7 @@ fn log_gap_final_composite_readback(
                 crate::backend::visual::relative_physical_rect_from_root_precise(
                     rect,
                     root_rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     output_scale,
                 )
@@ -7160,6 +7178,7 @@ fn log_gap_final_composite_readback(
                 crate::backend::visual::relative_physical_rect_from_root_snapped_edges(
                     buffer.rect,
                     root_rect,
+                    decoration.root_subpixel_offset,
                     output_geo,
                     output_scale,
                 )
@@ -8515,6 +8534,7 @@ fn backdrop_shader_elements_for_window(
                                     display_rect.width,
                                     display_rect.height,
                                     root_rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 )
@@ -8539,6 +8559,7 @@ fn backdrop_shader_elements_for_window(
                                     display_rect.width,
                                     display_rect.height,
                                     root_rect,
+                                    decoration.root_subpixel_offset,
                                     output_geo,
                                     scale,
                                 )
@@ -8564,6 +8585,7 @@ fn backdrop_shader_elements_for_window(
                             crate::backend::visual::relative_physical_rect_from_root_precise(
                                 rect,
                                 root_rect,
+                                decoration.root_subpixel_offset,
                                 output_geo,
                                 scale,
                             )
@@ -8735,6 +8757,7 @@ fn backdrop_shader_elements_for_window(
                     crate::backend::visual::relative_physical_rect_from_root_precise(
                         rect,
                         root_rect,
+                        decoration.root_subpixel_offset,
                         output_geo,
                         scale,
                     )
@@ -8901,6 +8924,7 @@ fn backdrop_shader_elements_for_window(
                             display_rect.width,
                             display_rect.height,
                             root_rect,
+                            decoration.root_subpixel_offset,
                             output_geo,
                             scale,
                         )
@@ -8925,6 +8949,7 @@ fn backdrop_shader_elements_for_window(
                             display_rect.width,
                             display_rect.height,
                             root_rect,
+                            decoration.root_subpixel_offset,
                             output_geo,
                             scale,
                         )
@@ -10902,9 +10927,9 @@ fn window_scene_elements_for_capture(
                 crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
                     Point::from((
                         decoration.layout.root.rect.x as f64
-                            + decoration.root_subpixel_offset.x,
+                            + decoration.root_subpixel_offset.left,
                         decoration.layout.root.rect.y as f64
-                            + decoration.root_subpixel_offset.y,
+                            + decoration.root_subpixel_offset.top,
                     )),
                     output_origin,
                     capture_origin_physical,
@@ -10913,6 +10938,7 @@ fn window_scene_elements_for_capture(
             let local_geometry = crate::backend::visual::relative_physical_rect_from_root_precise(
                 clip.rect_precise,
                 decoration.layout.root.rect,
+                decoration.root_subpixel_offset,
                 smithay::utils::Rectangle::new(output_origin, (0, 0).into()),
                 scale,
             );
@@ -10967,8 +10993,11 @@ fn window_scene_elements_for_capture(
 
     if let Some(decoration) = window_decorations.get(window) {
         let root_origin =
-            crate::backend::visual::logical_point_to_relative_physical_point_from_origin(
-                Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+            crate::backend::visual::precise_logical_point_to_relative_physical_point_from_origin(
+                Point::from((
+                    decoration.layout.root.rect.x as f64 + decoration.root_subpixel_offset.left,
+                    decoration.layout.root.rect.y as f64 + decoration.root_subpixel_offset.top,
+                )),
                 output_origin,
                 capture_origin_physical,
                 scale,

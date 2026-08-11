@@ -166,6 +166,7 @@ fn emit_label(
         renderer,
         &label,
         output_rect_as_root(output_geo),
+        crate::backend::visual::RootSubpixelEdges::default(),
         output_geo,
         scale,
         1.0,
