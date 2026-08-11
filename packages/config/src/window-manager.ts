@@ -3522,6 +3522,22 @@ export class Workspace {
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
         continue;
       }
+      // Minimized windows are hidden purely by `idle` — their composed
+      // opacity stays at the workspace value. Scheduling the visual
+      // animation would both bypass the idle render gate (animating
+      // windows stay renderable while idle) and override the composed
+      // opacity, so the "hidden" window would fade in with the workspace
+      // switch. Keep them on static state only.
+      if (
+        window.state[WINDOW_STATE_MINIMIZED]() ||
+        window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE]()
+      ) {
+        cancelWorkspaceVisualAnimation(window);
+        window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(options.toOpacity);
+        continue;
+      }
       // Same ordering rule as prepare: schedule first, then flip
       // VISIBLE. For from-workspace this is mostly a no-op (VISIBLE was
       // already true), but for to-workspace's second call this keeps
