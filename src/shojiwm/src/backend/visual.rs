@@ -772,21 +772,22 @@ pub fn root_physical_origin_precise(
 fn root_physical_size_from_edges(
     rect: LogicalRect,
     root_subpixel: RootSubpixelEdges,
-    output_geo: Rectangle<i32, Logical>,
+    _output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> smithay::utils::Size<i32, Physical> {
+    // Position-independent by design: the physical frame size derives from the
+    // logical size alone, never from where the window sits on the output.
+    // Snapping the edges in output-global space instead makes the size flip by
+    // ±1px with the window's position phase whenever `width × scale` is
+    // fractional, and every frame-mapped descendant (buttons, client slot,
+    // border holes) wobbles along with it as the window moves. The trade-off
+    // is that the far edge may shimmer by 1px during left/top-anchored
+    // resizes; interior stability during moves matters far more.
     let scale_x = output_scale.x.abs().max(0.0001);
     let scale_y = output_scale.y.abs().max(0.0001);
-    let left =
-        ((((rect.x - output_geo.loc.x) as f64) + root_subpixel.left) * scale_x).round() as i32;
-    let top = ((((rect.y - output_geo.loc.y) as f64) + root_subpixel.top) * scale_y).round() as i32;
-    let right = ((((rect.x + rect.width) - output_geo.loc.x) as f64 + root_subpixel.right)
-        * scale_x)
-        .round() as i32;
-    let bottom = ((((rect.y + rect.height) - output_geo.loc.y) as f64 + root_subpixel.bottom)
-        * scale_y)
-        .round() as i32;
-    ((right - left).max(0), (bottom - top).max(0)).into()
+    let width = ((rect.width as f64 + root_subpixel.right - root_subpixel.left) * scale_x).round();
+    let height = ((rect.height as f64 + root_subpixel.bottom - root_subpixel.top) * scale_y).round();
+    ((width.max(0.0) as i32), (height.max(0.0) as i32)).into()
 }
 
 fn relative_physical_rect_in_root_frame(
@@ -900,22 +901,28 @@ pub fn relative_physical_rect_from_root_precise(
     )
 }
 
+// The three `_global_*` variants below historically snapped node edges in
+// output-global space. That made every result depend on the window's position
+// phase (`x × scale mod 1`), so backdrop geometry and fallback rects wobbled
+// by ±1px as the window moved at fractional scales. They now snap in
+// root-local space: subtract the root origin in logical space first, then
+// scale and round. Results are position-independent; the window's global
+// placement enters exactly once, via `root_physical_origin*`.
+
 pub fn relative_physical_rect_from_root_global_edges(
     rect: LogicalRect,
     root_rect: LogicalRect,
-    output_geo: Rectangle<i32, Logical>,
+    _output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     let scale_x = output_scale.x.abs().max(0.0001);
     let scale_y = output_scale.y.abs().max(0.0001);
-    let root_left_px = (((root_rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let root_top_px = (((root_rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
-    let left_px = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let top_px = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
-    let right_px = ((((rect.x + rect.width) - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let bottom_px = ((((rect.y + rect.height) - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let left_px = (((rect.x - root_rect.x) as f64) * scale_x).round() as i32;
+    let top_px = (((rect.y - root_rect.y) as f64) * scale_y).round() as i32;
+    let right_px = ((((rect.x + rect.width) - root_rect.x) as f64) * scale_x).round() as i32;
+    let bottom_px = ((((rect.y + rect.height) - root_rect.y) as f64) * scale_y).round() as i32;
     Rectangle::new(
-        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        Point::from((left_px, top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
     )
 }
@@ -923,19 +930,17 @@ pub fn relative_physical_rect_from_root_global_edges(
 pub fn relative_physical_rect_from_root_global_origin_size(
     rect: LogicalRect,
     root_rect: LogicalRect,
-    output_geo: Rectangle<i32, Logical>,
+    _output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     let scale_x = output_scale.x.abs().max(0.0001);
     let scale_y = output_scale.y.abs().max(0.0001);
-    let root_left_px = (((root_rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let root_top_px = (((root_rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
-    let left_px = (((rect.x - output_geo.loc.x) as f64) * scale_x).round() as i32;
-    let top_px = (((rect.y - output_geo.loc.y) as f64) * scale_y).round() as i32;
+    let left_px = (((rect.x - root_rect.x) as f64) * scale_x).round() as i32;
+    let top_px = (((rect.y - root_rect.y) as f64) * scale_y).round() as i32;
     let width_px = ((rect.width as f64) * scale_x).round().max(0.0) as i32;
     let height_px = ((rect.height as f64) * scale_y).round().max(0.0) as i32;
     Rectangle::new(
-        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        Point::from((left_px, top_px)),
         (width_px, height_px).into(),
     )
 }
@@ -943,21 +948,19 @@ pub fn relative_physical_rect_from_root_global_origin_size(
 pub fn relative_physical_rect_from_root_global_edges_precise(
     rect: PreciseLogicalRect,
     root_rect: LogicalRect,
-    output_geo: Rectangle<i32, Logical>,
+    _output_geo: Rectangle<i32, Logical>,
     output_scale: Scale<f64>,
 ) -> Rectangle<i32, Physical> {
     let scale_x = output_scale.x.abs().max(0.0001) as f32;
     let scale_y = output_scale.y.abs().max(0.0001) as f32;
-    let output_x = output_geo.loc.x as f32;
-    let output_y = output_geo.loc.y as f32;
-    let root_left_px = (((root_rect.x as f32 - output_x) * scale_x).round()) as i32;
-    let root_top_px = (((root_rect.y as f32 - output_y) * scale_y).round()) as i32;
-    let left_px = (((rect.x - output_x) * scale_x).round()) as i32;
-    let top_px = (((rect.y - output_y) * scale_y).round()) as i32;
-    let right_px = ((((rect.x + rect.width) - output_x) * scale_x).round()) as i32;
-    let bottom_px = ((((rect.y + rect.height) - output_y) * scale_y).round()) as i32;
+    let root_x = root_rect.x as f32;
+    let root_y = root_rect.y as f32;
+    let left_px = (((rect.x - root_x) * scale_x).round()) as i32;
+    let top_px = (((rect.y - root_y) * scale_y).round()) as i32;
+    let right_px = ((((rect.x + rect.width) - root_x) * scale_x).round()) as i32;
+    let bottom_px = ((((rect.y + rect.height) - root_y) * scale_y).round()) as i32;
     Rectangle::new(
-        Point::from((left_px - root_left_px, top_px - root_top_px)),
+        Point::from((left_px, top_px)),
         ((right_px - left_px).max(0), (bottom_px - top_px).max(0)).into(),
     )
 }
@@ -1046,6 +1049,46 @@ mod tests {
 
         assert_eq!(snapped_a, snapped_b);
         assert_eq!(local_a, local_b);
+    }
+
+    #[test]
+    fn root_frame_geometry_is_position_independent() {
+        let output_geo = Rectangle::<i32, Logical>::new((0, 0).into(), (4000, 2000).into());
+        let scale = Scale::from((1.8, 1.8));
+        let subpixel = super::RootSubpixelEdges::default();
+        // width × scale is fractional (401 × 1.8 = 721.8, 233 × 1.8 = 419.4) —
+        // the case where output-global edge snapping made the frame size (and
+        // with it every frame-mapped descendant) depend on the window position.
+        let base = LogicalRect::new(100, 40, 401, 233);
+        let child = PreciseLogicalRect {
+            x: 130.0,
+            y: 70.0,
+            width: 30.5,
+            height: 17.25,
+        };
+        let reference =
+            super::relative_physical_rect_from_root_precise(child, base, subpixel, output_geo, scale);
+
+        for delta in 1..8 {
+            let root = LogicalRect::new(base.x + delta, base.y + delta, base.width, base.height);
+            let moved_child = PreciseLogicalRect {
+                x: child.x + delta as f32,
+                y: child.y + delta as f32,
+                width: child.width,
+                height: child.height,
+            };
+            assert_eq!(
+                super::relative_physical_rect_from_root_precise(
+                    moved_child,
+                    root,
+                    subpixel,
+                    output_geo,
+                    scale
+                ),
+                reference,
+                "frame-mapped geometry must not change when the window moves (delta {delta})"
+            );
+        }
     }
 
     #[test]

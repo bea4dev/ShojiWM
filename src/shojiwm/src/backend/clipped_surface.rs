@@ -361,18 +361,53 @@ impl ClippedSurfaceElement {
             snapped_slot_rect.width = element_rect_logical.width;
             snapped_slot_rect.height = element_rect_logical.height;
         }
-        let snapped_mask_rect = Self::align_mask_shared_edges_to_slot(
-            snapped_precise_logical_rect_for_element(
+        let snapped_mask_rect = if forced_geometry.is_some() {
+            // The slot above is anchored on the root-relative physical
+            // geometry, which is independent of the window's global position.
+            // Derive the mask from the slot plus the physically rounded
+            // mask-to-slot edge deltas so the mask inherits that anchoring.
+            // Snapping the mask in output-global space instead (the branch
+            // below) makes it flip by ±1px with the window's position phase
+            // at fractional scales, so the corner mask trembles against the
+            // window while it moves.
+            let elem_w_px = (element_rect_precise.width * output_scale_x).round().max(1.0);
+            let elem_h_px = (element_rect_precise.height * output_scale_y).round().max(1.0);
+            let logical_per_px_x = element_rect_precise.width.max(0.0001) / elem_w_px;
+            let logical_per_px_y = element_rect_precise.height.max(0.0001) / elem_h_px;
+            let left_px = ((clip.mask_rect_precise.x - clip.rect_precise.x) * output_scale_x)
+                .round();
+            let top_px =
+                ((clip.mask_rect_precise.y - clip.rect_precise.y) * output_scale_y).round();
+            let right_px = (((clip.mask_rect_precise.x + clip.mask_rect_precise.width)
+                - (clip.rect_precise.x + clip.rect_precise.width))
+                * output_scale_x)
+                .round();
+            let bottom_px = (((clip.mask_rect_precise.y + clip.mask_rect_precise.height)
+                - (clip.rect_precise.y + clip.rect_precise.height))
+                * output_scale_y)
+                .round();
+            SnappedLogicalRect {
+                x: snapped_slot_rect.x + left_px as f32 * logical_per_px_x,
+                y: snapped_slot_rect.y + top_px as f32 * logical_per_px_y,
+                width: (snapped_slot_rect.width + (right_px - left_px) as f32 * logical_per_px_x)
+                    .max(0.0),
+                height: (snapped_slot_rect.height + (bottom_px - top_px) as f32 * logical_per_px_y)
+                    .max(0.0),
+            }
+        } else {
+            Self::align_mask_shared_edges_to_slot(
+                snapped_precise_logical_rect_for_element(
+                    clip.mask_rect_precise,
+                    element_rect_precise,
+                    output_origin,
+                    output_scale,
+                ),
                 clip.mask_rect_precise,
-                element_rect_precise,
-                output_origin,
+                snapped_slot_rect,
+                clip.rect_precise,
                 output_scale,
-            ),
-            clip.mask_rect_precise,
-            snapped_slot_rect,
-            clip.rect_precise,
-            output_scale,
-        );
+            )
+        };
         let physical_left = (snapped_slot_rect.x * output_scale_x).round() as i32;
         let physical_top = (snapped_slot_rect.y * output_scale_y).round() as i32;
         let physical_right =
