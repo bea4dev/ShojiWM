@@ -586,10 +586,7 @@ fn op_shoji_ipc_listen(#[string] path: &str) -> Result<ShojiIpcListener, std::io
         cancel: tokio::sync::Notify::new(),
         closed: AtomicBool::new(false),
     });
-    ipc_listeners()
-        .lock()
-        .map_err(|_| std::io::Error::other("ipc listener registry is poisoned"))?
-        .push(Arc::downgrade(&inner));
+    IPC_LISTENERS.with(|cell| cell.borrow_mut().push(Arc::downgrade(&inner)));
     Ok(ShojiIpcListener { inner })
 }
 
@@ -635,15 +632,14 @@ struct IpcConnectionInner {
 
 // A reload builds a fresh isolate rather than resetting this one, so sockets
 // are tracked weakly and closed explicitly at teardown.
-static IPC_LISTENERS: OnceLock<Mutex<Vec<Weak<IpcListenerInner>>>> = OnceLock::new();
-static IPC_CONNECTIONS: OnceLock<Mutex<Vec<Weak<IpcConnectionInner>>>> = OnceLock::new();
-
-fn ipc_listeners() -> &'static Mutex<Vec<Weak<IpcListenerInner>>> {
-    IPC_LISTENERS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn ipc_connections() -> &'static Mutex<Vec<Weak<IpcConnectionInner>>> {
-    IPC_CONNECTIONS.get_or_init(|| Mutex::new(Vec::new()))
+//
+// Thread-local, not global: each runtime owns a dedicated thread (as
+// RUNTIME_CURRENT_DIR above relies on), and a reload overlaps a new runtime
+// with the old one's teardown. A process-wide registry would let the outgoing
+// runtime close the incoming runtime's freshly bound listener.
+thread_local! {
+    static IPC_LISTENERS: RefCell<Vec<Weak<IpcListenerInner>>> = const { RefCell::new(Vec::new()) };
+    static IPC_CONNECTIONS: RefCell<Vec<Weak<IpcConnectionInner>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn close_ipc_listener(inner: &IpcListenerInner) {
@@ -668,21 +664,19 @@ fn close_ipc_connection(inner: &IpcConnectionInner) {
     }
 }
 
-/// Close every IPC socket this process opened. Called before the isolate drops
-/// so a reload cycle cannot leak listener fds.
+/// Close the IPC sockets opened by this runtime's thread. Called before the
+/// isolate drops so a reload cycle cannot leak listener fds.
 fn close_ipc_sockets() {
-    if let Ok(mut listeners) = ipc_listeners().lock() {
-        for weak in listeners.drain(..) {
-            if let Some(inner) = weak.upgrade() {
-                close_ipc_listener(&inner);
-            }
+    let listeners = IPC_LISTENERS.with(|cell| cell.take());
+    for weak in listeners {
+        if let Some(inner) = weak.upgrade() {
+            close_ipc_listener(&inner);
         }
     }
-    if let Ok(mut connections) = ipc_connections().lock() {
-        for weak in connections.drain(..) {
-            if let Some(inner) = weak.upgrade() {
-                close_ipc_connection(&inner);
-            }
+    let connections = IPC_CONNECTIONS.with(|cell| cell.take());
+    for weak in connections {
+        if let Some(inner) = weak.upgrade() {
+            close_ipc_connection(&inner);
         }
     }
 }
@@ -803,10 +797,7 @@ impl ShojiIpcListener {
                     cancel: tokio::sync::Notify::new(),
                     closed: AtomicBool::new(false),
                 });
-                ipc_connections()
-                    .lock()
-                    .map_err(|_| std::io::Error::other("ipc connection registry is poisoned"))?
-                    .push(Arc::downgrade(&inner));
+                IPC_CONNECTIONS.with(|cell| cell.borrow_mut().push(Arc::downgrade(&inner)));
                 Ok(Some(ShojiIpcConnection { inner }))
             }
         }
