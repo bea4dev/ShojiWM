@@ -5,12 +5,14 @@ use std::{
     os::unix::fs::FileTypeExt,
     path::PathBuf,
     sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
 };
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 thread_local! {
     static RUNTIME_CURRENT_DIR: RefCell<PathBuf> = RefCell::new(
@@ -568,6 +570,29 @@ fn op_shoji_process_id() -> u32 {
     std::process::id()
 }
 
+/// Bind the IPC socket.
+///
+/// The TS side used `Deno.listen`, which needs RustyScript's `web` feature and
+/// so drags in deno_net -> deno_tls -> rustls/ring/reqwest/quinn, and hands
+/// configs outbound network access they have no use for. Line framing lives
+/// here too, so the TS side needs no TextDecoder/TextEncoder either.
+#[op2]
+#[cppgc]
+fn op_shoji_ipc_listen(#[string] path: &str) -> Result<ShojiIpcListener, std::io::Error> {
+    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    listener.set_nonblocking(true)?;
+    let inner = Arc::new(IpcListenerInner {
+        listener: tokio::sync::Mutex::new(Some(tokio::net::UnixListener::from_std(listener)?)),
+        cancel: tokio::sync::Notify::new(),
+        closed: AtomicBool::new(false),
+    });
+    ipc_listeners()
+        .lock()
+        .map_err(|_| std::io::Error::other("ipc listener registry is poisoned"))?
+        .push(Arc::downgrade(&inner));
+    Ok(ShojiIpcListener { inner })
+}
+
 #[op2(fast)]
 fn op_shoji_wake_compositor() {
     #[cfg(not(test))]
@@ -591,6 +616,85 @@ static BRIDGE_REGISTRATIONS: OnceLock<Mutex<HashMap<u32, BridgeRegistration>>> =
 
 fn bridge_registrations() -> &'static Mutex<HashMap<u32, BridgeRegistration>> {
     BRIDGE_REGISTRATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct IpcListenerInner {
+    // Option so close can drop the fd instead of waiting for a cppgc
+    // finalizer, which is not guaranteed to run before isolate teardown.
+    listener: tokio::sync::Mutex<Option<tokio::net::UnixListener>>,
+    cancel: tokio::sync::Notify,
+    closed: AtomicBool,
+}
+
+struct IpcConnectionInner {
+    reader: tokio::sync::Mutex<Option<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>>,
+    writer: tokio::sync::Mutex<Option<tokio::net::unix::OwnedWriteHalf>>,
+    cancel: tokio::sync::Notify,
+    closed: AtomicBool,
+}
+
+// A reload builds a fresh isolate rather than resetting this one, so sockets
+// are tracked weakly and closed explicitly at teardown.
+static IPC_LISTENERS: OnceLock<Mutex<Vec<Weak<IpcListenerInner>>>> = OnceLock::new();
+static IPC_CONNECTIONS: OnceLock<Mutex<Vec<Weak<IpcConnectionInner>>>> = OnceLock::new();
+
+fn ipc_listeners() -> &'static Mutex<Vec<Weak<IpcListenerInner>>> {
+    IPC_LISTENERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn ipc_connections() -> &'static Mutex<Vec<Weak<IpcConnectionInner>>> {
+    IPC_CONNECTIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn close_ipc_listener(inner: &IpcListenerInner) {
+    if !inner.closed.swap(true, Ordering::AcqRel) {
+        inner.cancel.notify_waiters();
+    }
+    // Fails while an accept holds the lock; that accept drops it on wake.
+    if let Ok(mut listener) = inner.listener.try_lock() {
+        listener.take();
+    }
+}
+
+fn close_ipc_connection(inner: &IpcConnectionInner) {
+    if !inner.closed.swap(true, Ordering::AcqRel) {
+        inner.cancel.notify_waiters();
+    }
+    if let Ok(mut reader) = inner.reader.try_lock() {
+        reader.take();
+    }
+    if let Ok(mut writer) = inner.writer.try_lock() {
+        writer.take();
+    }
+}
+
+/// Close every IPC socket this process opened. Called before the isolate drops
+/// so a reload cycle cannot leak listener fds.
+fn close_ipc_sockets() {
+    if let Ok(mut listeners) = ipc_listeners().lock() {
+        for weak in listeners.drain(..) {
+            if let Some(inner) = weak.upgrade() {
+                close_ipc_listener(&inner);
+            }
+        }
+    }
+    if let Ok(mut connections) = ipc_connections().lock() {
+        for weak in connections.drain(..) {
+            if let Some(inner) = weak.upgrade() {
+                close_ipc_connection(&inner);
+            }
+        }
+    }
+}
+
+#[repr(C)]
+struct ShojiIpcListener {
+    inner: Arc<IpcListenerInner>,
+}
+
+#[repr(C)]
+struct ShojiIpcConnection {
+    inner: Arc<IpcConnectionInner>,
 }
 
 #[repr(C)]
@@ -640,6 +744,133 @@ unsafe impl GarbageCollected for RuntimeRequestEnvelope {
 
     fn get_name(&self) -> &'static CStr {
         c"RuntimeRequestEnvelope"
+    }
+}
+
+unsafe impl GarbageCollected for ShojiIpcListener {
+    fn trace(&self, _visitor: &mut v8::cppgc::Visitor) {}
+
+    fn get_name(&self) -> &'static CStr {
+        c"ShojiIpcListener"
+    }
+}
+
+unsafe impl GarbageCollected for ShojiIpcConnection {
+    fn trace(&self, _visitor: &mut v8::cppgc::Visitor) {}
+
+    fn get_name(&self) -> &'static CStr {
+        c"ShojiIpcConnection"
+    }
+}
+
+#[op2]
+impl ShojiIpcListener {
+    // Resolves to null once the listener is closed.
+    #[async_method]
+    #[cppgc]
+    async fn accept(&self) -> Result<Option<ShojiIpcConnection>, std::io::Error> {
+        let inner = Arc::clone(&self.inner);
+        let cancelled = inner.cancel.notified();
+        tokio::pin!(cancelled);
+        // enable() registers the waiter before the flag is read, so a close
+        // landing between the check and the await still wakes this future.
+        cancelled.as_mut().enable();
+        if inner.closed.load(Ordering::Acquire) {
+            inner.listener.lock().await.take();
+            return Ok(None);
+        }
+
+        let mut guard = inner.listener.lock().await;
+        let Some(listener) = guard.as_ref() else {
+            return Ok(None);
+        };
+        let accepted = tokio::select! {
+            biased;
+            () = &mut cancelled => None,
+            accepted = listener.accept() => Some(accepted),
+        };
+        match accepted {
+            None => {
+                guard.take();
+                Ok(None)
+            }
+            Some(accepted) => {
+                let (stream, _) = accepted?;
+                let (reader, writer) = stream.into_split();
+                let inner = Arc::new(IpcConnectionInner {
+                    reader: tokio::sync::Mutex::new(Some(tokio::io::BufReader::new(reader))),
+                    writer: tokio::sync::Mutex::new(Some(writer)),
+                    cancel: tokio::sync::Notify::new(),
+                    closed: AtomicBool::new(false),
+                });
+                ipc_connections()
+                    .lock()
+                    .map_err(|_| std::io::Error::other("ipc connection registry is poisoned"))?
+                    .push(Arc::downgrade(&inner));
+                Ok(Some(ShojiIpcConnection { inner }))
+            }
+        }
+    }
+
+    #[fast]
+    fn close(&self) {
+        close_ipc_listener(&self.inner);
+    }
+}
+
+#[op2]
+impl ShojiIpcConnection {
+    // One NDJSON line including its trailing newline. Empty string means EOF,
+    // which is unambiguous because a real line always carries the delimiter.
+    #[async_method]
+    #[string]
+    async fn read_line(&self) -> Result<String, std::io::Error> {
+        let inner = Arc::clone(&self.inner);
+        let cancelled = inner.cancel.notified();
+        tokio::pin!(cancelled);
+        cancelled.as_mut().enable();
+        if inner.closed.load(Ordering::Acquire) {
+            return Ok(String::new());
+        }
+
+        let mut guard = inner.reader.lock().await;
+        let Some(reader) = guard.as_mut() else {
+            return Ok(String::new());
+        };
+        let mut line = Vec::new();
+        let read = tokio::select! {
+            biased;
+            () = &mut cancelled => None,
+            read = reader.read_until(b'\n', &mut line) => Some(read),
+        };
+        match read {
+            None => {
+                guard.take();
+                Ok(String::new())
+            }
+            Some(read) => {
+                read?;
+                Ok(String::from_utf8_lossy(&line).into_owned())
+            }
+        }
+    }
+
+    #[async_method]
+    async fn write(&self, #[string] data: String) -> Result<(), std::io::Error> {
+        let inner = Arc::clone(&self.inner);
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        }
+        let mut guard = inner.writer.lock().await;
+        let Some(writer) = guard.as_mut() else {
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        };
+        writer.write_all(data.as_bytes()).await
+    }
+
+    #[fast]
+    fn close(&self) {
+        close_ipc_connection(&self.inner);
     }
 }
 
@@ -1993,10 +2224,16 @@ extension!(
         op_shoji_current_dir,
         op_shoji_path_exists,
         op_shoji_remove_unix_socket,
+        op_shoji_ipc_listen,
         op_shoji_process_id,
         op_shoji_wake_compositor,
     ],
-    objects = [ShojiRuntimeBridge, RuntimeRequestEnvelope],
+    objects = [
+        ShojiRuntimeBridge,
+        RuntimeRequestEnvelope,
+        ShojiIpcListener,
+        ShojiIpcConnection,
+    ],
     esm_entry_point = "ext:shoji_runtime_bridge/native.js",
     esm = [
         dir "src/ssd",
@@ -2701,6 +2938,10 @@ fn run_runtime(
             json_args!(config_path.to_string_lossy(), bridge_id),
         )
         .map_err(|error| format!("embedded TypeScript runtime failed: {error}"));
+
+    // Same reasoning for the IPC sockets: a cppgc finalizer may never run, so
+    // the listener fd would survive the isolate that opened it.
+    close_ipc_sockets();
 
     // Hot-reload spins up a brand-new isolate per reload rather than
     // resetting this one in place, and a plain Drop leaves freed heap pages
