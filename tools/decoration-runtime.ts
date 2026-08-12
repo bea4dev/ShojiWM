@@ -205,10 +205,15 @@ function dirnamePath(path: string): string {
   return slash <= 0 ? "/" : normalized.slice(0, slash);
 }
 
+// this approach stops us from needing to pull in all of deno web
+const FILE_URL_ESCAPE_SET = /[\u0000-\u001F\u007F-\u{10FFFF} "#<>?`{}]/gu;
+
 function pathToFileUrl(path: string): string {
-  const url = new URL("file:///");
-  url.pathname = normalizePath(path);
-  return url.href;
+  const normalized = normalizePath(path);
+  const encoded = normalized.replace(FILE_URL_ESCAPE_SET, (character) =>
+    encodeURIComponent(character),
+  );
+  return `file://${encoded}`;
 }
 
 function pathExists(path: string): boolean {
