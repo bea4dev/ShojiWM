@@ -5119,6 +5119,158 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
     }
 
     #[test]
+    fn embedded_runtime_reload_picks_up_submodule_key_bindings() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-submodule-reload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+import "./bindings.ts";
+COMPOSITOR.window.composition = () => <Label text="x" />;
+"#,
+        )
+        .expect("test config should be written");
+        let bindings_path = test_dir.join("bindings.ts");
+        let write_bindings = |extra_binding: bool| {
+            let extra = if extra_binding {
+                r#"COMPOSITOR.key.bind("second", "Super+Y", () => {});"#
+            } else {
+                ""
+            };
+            std::fs::write(
+                &bindings_path,
+                format!(
+                    r#"
+import {{ COMPOSITOR }} from "shoji_wm";
+COMPOSITOR.key.bind("first", "Super+T", () => {{}});
+{extra}
+"#
+                ),
+            )
+            .expect("test bindings module should be written");
+        };
+        let binding_ids = |update: &Option<RuntimeKeyBindingConfigUpdate>| -> Vec<String> {
+            update
+                .as_ref()
+                .map(|update| update.entries.iter().map(|entry| entry.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        write_bindings(false);
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let invocation = evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle enable should succeed");
+        assert_eq!(
+            binding_ids(&invocation.key_binding_config),
+            vec!["first".to_string()],
+        );
+
+        write_bindings(true);
+        let persisted = evaluator
+            .lifecycle_disable("reload")
+            .expect("lifecycle disable should succeed");
+        let reloaded = evaluator.fresh_like();
+        let invocation = reloaded
+            .lifecycle_enable("reload", Some(&persisted))
+            .expect("reload lifecycle enable should succeed");
+        assert_eq!(
+            binding_ids(&invocation.key_binding_config),
+            vec!["first".to_string(), "second".to_string()],
+            "hot reload should pick up key bindings added in imported submodules"
+        );
+
+        drop(reloaded);
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_reload_delivers_new_key_bindings() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-deno-keybinding-reload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        let write_config = |extra_binding: bool| {
+            let extra = if extra_binding {
+                r#"COMPOSITOR.key.bind("second", "Super+Y", () => {});"#
+            } else {
+                ""
+            };
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+import {{ COMPOSITOR, Label }} from "shoji_wm";
+COMPOSITOR.key.bind("first", "Super+T", () => {{}});
+{extra}
+COMPOSITOR.window.composition = () => <Label text="x" />;
+"#
+                ),
+            )
+            .expect("test config should be written");
+        };
+        let binding_ids = |update: &Option<RuntimeKeyBindingConfigUpdate>| -> Vec<String> {
+            update
+                .as_ref()
+                .map(|update| update.entries.iter().map(|entry| entry.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        write_config(false);
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let invocation = evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle enable should succeed");
+        assert_eq!(
+            binding_ids(&invocation.key_binding_config),
+            vec!["first".to_string()],
+            "initial lifecycle should deliver the initial key bindings"
+        );
+
+        write_config(true);
+        let persisted = evaluator
+            .lifecycle_disable("reload")
+            .expect("lifecycle disable should succeed");
+        let reloaded = evaluator.fresh_like();
+        let invocation = reloaded
+            .lifecycle_enable("reload", Some(&persisted))
+            .expect("reload lifecycle enable should succeed");
+        assert_eq!(
+            binding_ids(&invocation.key_binding_config),
+            vec!["first".to_string(), "second".to_string()],
+            "hot reload should deliver the updated key binding set"
+        );
+
+        drop(reloaded);
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
     fn embedded_runtime_fresh_instance_reloads_config() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

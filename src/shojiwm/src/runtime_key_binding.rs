@@ -177,7 +177,7 @@ pub enum RuntimeKeyBindingParseError {
 pub fn compile_runtime_key_bindings(
     entries: &BTreeMap<String, RuntimeKeyBindingEntry>,
 ) -> Vec<CompiledRuntimeKeyBinding> {
-    entries
+    let compiled = entries
         .values()
         .filter_map(|entry| match entry.compile() {
             Ok(binding) => Some(binding),
@@ -190,7 +190,34 @@ pub fn compile_runtime_key_bindings(
                 None
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    // Dispatch picks the first match in id order, so a binding that reuses an
+    // existing shortcut silently never fires. Surface that so "my new binding
+    // does nothing" is diagnosable from the log. Modifier-only taps are
+    // exempt: the tap dispatcher fires every matching binding.
+    for (index, binding) in compiled.iter().enumerate() {
+        if binding.shortcut.is_modifier_only() {
+            continue;
+        }
+        if let Some(winner) = compiled[..index]
+            .iter()
+            .find(|other| other.phase == binding.phase && other.shortcut == binding.shortcut)
+        {
+            tracing::warn!(
+                binding_id = binding.id,
+                shadowed_by = winner.id,
+                shortcut = entries
+                    .get(&binding.id)
+                    .map(|entry| entry.shortcut.as_str())
+                    .unwrap_or_default(),
+                "key binding shares a shortcut with an earlier binding and will never fire \
+                 (dispatch picks the alphabetically first id)"
+            );
+        }
+    }
+
+    compiled
 }
 
 fn parse_runtime_key_shortcut(
