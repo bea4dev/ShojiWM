@@ -5873,6 +5873,139 @@ COMPOSITOR.window.composition = () => <Box />;
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
+    // A reload used to hand the new generation a freshly allocated dispatcher,
+    // stranding the pointer-move worker on a condvar nobody would notify again.
+    // That worker owns an evaluator clone, so every reload the pointer had armed
+    // leaked a V8 isolate, two threads and four fds. Cycle the runtime with the
+    // worker armed, which is the case the keyboard-only reload burst never hits.
+    #[test]
+    fn embedded_runtime_reload_reuses_the_pointer_move_worker() {
+        use crate::ssd::{
+            PointerHitTargetSnapshot, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
+            PointerMovePointSnapshot,
+        };
+
+        // The thread is named "shojiwm-pointer-move-async"; comm truncates to 15.
+        fn pointer_workers() -> usize {
+            std::fs::read_dir("/proc/self/task")
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .filter(|entry| {
+                            std::fs::read_to_string(entry.path().join("comm"))
+                                .is_ok_and(|comm| comm.trim() == "shojiwm-pointer")
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        }
+
+        fn settle_at(expected: usize) -> usize {
+            for _ in 0..100 {
+                if pointer_workers() == expected {
+                    return expected;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            pointer_workers()
+        }
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-pointer-reload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.event.onPointerMoveAsync(() => {});
+"#,
+        )
+        .expect("test config should be written");
+
+        let mut evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("embedded runtime should enable the pointer config");
+
+        let pointer = PointerMoveEventSnapshot {
+            position: PointerMovePointSnapshot { x: 10.0, y: 20.0 },
+            delta: PointerMovePointSnapshot { x: 1.0, y: -1.0 },
+            target: PointerHitTargetSnapshot::None,
+            output_name: Some("output-1".into()),
+            modifiers: PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 1,
+        };
+
+        // The worker only exists once a pointer sample has reached the evaluator.
+        evaluator.enqueue_pointer_move_async(pointer.clone(), 1);
+        assert_eq!(
+            settle_at(1),
+            1,
+            "the first pointer sample should spawn exactly one worker"
+        );
+
+        for cycle in 0..4u64 {
+            let persisted = evaluator
+                .lifecycle_disable("reload")
+                .expect("embedded runtime should disable for reload");
+
+            let dispatcher = Arc::clone(&evaluator.pointer_move_async);
+            let runtime_cell = Arc::clone(&evaluator.runtime);
+            let reloaded = evaluator.fresh_like();
+            assert!(
+                Arc::ptr_eq(&dispatcher, &reloaded.pointer_move_async),
+                "reload {cycle} should reuse the dispatcher instead of stranding the worker"
+            );
+            assert!(
+                Arc::ptr_eq(&runtime_cell, &reloaded.runtime),
+                "reload {cycle} should swap the runtime cell in place"
+            );
+            drop(dispatcher);
+            drop(runtime_cell);
+
+            reloaded
+                .lifecycle_enable("reload", Some(&persisted))
+                .expect("embedded runtime should re-enable after reload");
+            evaluator = reloaded;
+
+            evaluator.enqueue_pointer_move_async(pointer.clone(), cycle + 2);
+            assert_eq!(
+                settle_at(1),
+                1,
+                "reload {cycle} should not spawn a second pointer worker"
+            );
+            assert_eq!(
+                Arc::strong_count(&evaluator.pointer_move_async),
+                2,
+                "reload {cycle} should leave only the evaluator and its worker holding the dispatcher"
+            );
+        }
+
+        evaluator.shutdown();
+        assert_eq!(settle_at(0), 0, "shutdown should retire the shared worker");
+
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
     #[test]
     fn decoration_policy_request_uses_runtime_wire_names() {
         let window = make_window(false);
