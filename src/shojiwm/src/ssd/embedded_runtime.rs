@@ -548,6 +548,19 @@ fn op_shoji_path_exists(#[string] path: &str) -> bool {
     std::path::Path::new(path).exists()
 }
 
+/// Read a UTF-8 file for a config.
+///
+/// The runtime is built against web_stub/console/url/fs_import, so configs
+/// have neither `node:fs` nor Deno's own fs extension — reading a settings or
+/// theme file next to the config is otherwise impossible. Keep this a narrow
+/// read rather than enabling the `fs` feature, which would also pull in
+/// `io`/`deno_process` and hand configs the whole filesystem API.
+#[op2]
+#[string]
+fn op_shoji_read_text_file(#[string] path: &str) -> Result<String, std::io::Error> {
+    std::fs::read_to_string(path)
+}
+
 #[op2(fast)]
 fn op_shoji_remove_unix_socket(#[string] path: &str) -> Result<bool, std::io::Error> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -572,8 +585,8 @@ fn op_shoji_process_id() -> u32 {
 
 /// Bind the IPC socket.
 ///
-/// The TS side used `Deno.listen`, which needs RustyScript's `web` feature and
-/// so drags in deno_net -> deno_tls -> rustls/ring/reqwest/quinn, and hands
+/// The TS side used `Deno.listen`, which needed RustyScript's `web` feature and
+/// so dragged in deno_net -> deno_tls -> rustls/ring/reqwest/quinn, and handed
 /// configs outbound network access they have no use for. Line framing lives
 /// here too, so the TS side needs no TextDecoder/TextEncoder either.
 #[op2]
