@@ -2019,6 +2019,35 @@ impl EmbeddedDecorationEvaluator {
         }
     }
 
+    /// Display and input state only cross the bridge when they have actually
+    /// changed; the runtime keeps the last copy it was sent, and an absent field
+    /// is the reuse signal. Mirrors the gate the cached and scheduler paths use.
+    /// The returned generation is recorded once the write succeeds.
+    fn interaction_state_payload(
+        &self,
+        last_sent: u64,
+    ) -> (
+        Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
+        u64,
+    ) {
+        let generation = self.runtime_state_generation.load(Ordering::Acquire);
+        if last_sent == generation {
+            return (None, None, generation);
+        }
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        (Some(display_state), Some(input_state), generation)
+    }
+
     fn dispatch_pointer_move(
         &self,
         event: &PointerMoveEventSnapshot,
@@ -2030,16 +2059,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::PointerMove {
             request_id,
@@ -2048,6 +2069,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
         let response = if let Some(response) = runtime.read_interaction_response()? {
             response
         } else {
@@ -2068,16 +2090,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::GestureSwipe {
             request_id,
@@ -2086,6 +2100,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
         let response = if let Some(response) = runtime.read_interaction_response()? {
             response
         } else {
@@ -2108,16 +2123,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::PointerMoveAsync {
             request_id,
@@ -2126,6 +2133,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -2198,16 +2206,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::GestureSwipeAsync {
             request_id,
@@ -2216,6 +2216,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimeGestureSwipeAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -3755,16 +3756,8 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::WindowResize {
             request_id,
@@ -3774,6 +3767,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -3852,16 +3846,8 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::WindowMove {
             request_id,
@@ -3871,6 +3857,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {

@@ -552,7 +552,7 @@ interface WindowResizeRequest {
   windowId: string;
   event: RuntimeWindowResizeEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -562,7 +562,7 @@ interface WindowMoveRequest {
   windowId: string;
   event: RuntimeWindowMoveEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -615,7 +615,7 @@ interface PointerMoveRequest {
   kind: "pointerMove" | "pointerMoveAsync";
   event: PointerMoveEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -624,7 +624,7 @@ interface GestureSwipeRequest {
   kind: "gestureSwipe" | "gestureSwipeAsync";
   event: GestureSwipeEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
