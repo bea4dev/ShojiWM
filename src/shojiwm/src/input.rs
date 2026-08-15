@@ -2027,22 +2027,12 @@ impl ShojiWM {
         window: &smithay::desktop::Window,
         source: crate::ssd::WindowActivateRequestSourceSnapshot,
     ) -> bool {
-        let minimize_source = match source {
-            crate::ssd::WindowActivateRequestSourceSnapshot::Api => {
-                crate::ssd::WindowStateRequestSourceSnapshot::Api
-            }
-            crate::ssd::WindowActivateRequestSourceSnapshot::XdgActivation => {
-                crate::ssd::WindowStateRequestSourceSnapshot::XdgActivation
-            }
-            crate::ssd::WindowActivateRequestSourceSnapshot::Xwayland => {
-                crate::ssd::WindowStateRequestSourceSnapshot::Xwayland
-            }
-            crate::ssd::WindowActivateRequestSourceSnapshot::Keybind => {
-                crate::ssd::WindowStateRequestSourceSnapshot::Keybind
-            }
-        };
-        self.request_window_minimize(window, false, minimize_source);
-
+        // Do NOT pre-dispatch an unminimize here: the TS activate handler owns
+        // the restore (its own `wasMinimized` branch) and must observe the
+        // pre-activate minimized state. Restoring first made a dock click on a
+        // minimized window look like "activate an unminimized, still-focused
+        // window", which the minimize-raise toggle then immediately
+        // re-minimized (visible as a one-frame flash of the window).
         let snapshot = self.snapshot_window(window);
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         let event = crate::ssd::WindowActivateRequestEventSnapshot {

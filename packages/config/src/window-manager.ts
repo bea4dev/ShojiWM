@@ -1303,6 +1303,19 @@ export class HybridWindowManager {
       });
     }
     const workspace = this.findWorkspaceForWindow(event.window);
+    // Minimize-raise toggle: dock/taskbar sources only. xdg-activation and
+    // xwayland activations come from applications raising themselves
+    // (notification clicks, "open link" handoffs) — minimizing there would
+    // hide the window the app is trying to show.
+    if (
+      !wasMinimized &&
+      event.source !== "xdg-activation" &&
+      event.source !== "xwayland" &&
+      event.source !== "keybind" &&
+      this.minimizeOnReactivate(event.window, workspace)
+    ) {
+      return;
+    }
     if (workspace) {
       // If the window is on another workspace, switch with the same
       // slide/fade animation as keyboard/gesture switching (no-op if same).
@@ -1312,6 +1325,29 @@ export class HybridWindowManager {
     }
     // Focus the target window after switching (overrides switchWorkspaceTo's focusActiveWindow).
     event.window.focus();
+  }
+
+  /**
+   * Minimize-raise toggle (issue #71): activating the already-focused window
+   * from a dock/taskbar minimizes it instead of re-focusing. Floating
+   * workspaces only, and only when the window is on the visible workspace —
+   * activating a window on another workspace keeps the usual switch+focus.
+   * Routed through `window.minimize()` so the request takes the same Rust
+   * round trip as CSD buttons and taskbar set_minimized, keeping every
+   * minimize side effect centralized in `onWindowMinimizeRequest`.
+   */
+  private minimizeOnReactivate(
+    window: WaylandWindow,
+    workspace: Workspace | undefined,
+  ): boolean {
+    if (!workspace || workspace.isTiled || !workspace.isActive()) {
+      return false;
+    }
+    if (window.state[WINDOW_STATE_MINIMIZED]() || !window.isFocused()) {
+      return false;
+    }
+    window.minimize();
+    return true;
   }
 
   public toggleCurrentWorkspaceTiling() {
@@ -1703,6 +1739,10 @@ export class HybridWindowManager {
         source: "api",
         timestamp: Date.now(),
       });
+    } else if (this.minimizeOnReactivate(window, workspace)) {
+      // Minimize-raise toggle: an IPC activation is always a dock/taskbar
+      // gesture, so re-activating the focused window minimizes it.
+      return true;
     }
 
     // Cross-workspace: switch first with the existing slide/fade. Skip the

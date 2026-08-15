@@ -5307,6 +5307,164 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    fn activate_toggle_fixture(
+        focused_at_activate: bool,
+        source: crate::ssd::WindowActivateRequestSourceSnapshot,
+    ) -> Vec<RuntimeWindowAction> {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should succeed");
+
+        let window = make_named_window("0xa", "kitty-float", false, false);
+        evaluator
+            .evaluate_window_preview(&window, 0)
+            .expect("preview should evaluate");
+        let focused = make_named_window("0xa", "kitty-float", true, false);
+        evaluator
+            .evaluate_window(&focused, 100)
+            .expect("evaluation should succeed");
+        let at_activate = make_named_window("0xa", "kitty-float", focused_at_activate, false);
+        if !focused_at_activate {
+            evaluator
+                .evaluate_window(&at_activate, 150)
+                .expect("defocus evaluation should succeed");
+        }
+
+        let invocation = evaluator
+            .window_activate_request(
+                &at_activate,
+                &crate::ssd::WindowActivateRequestEventSnapshot {
+                    source,
+                    timestamp: 200,
+                },
+                200,
+            )
+            .expect("activate request should evaluate");
+        invocation.actions
+    }
+
+    fn has_action(
+        actions: &[RuntimeWindowAction],
+        window_id: &str,
+        expected: crate::ssd::WaylandWindowAction,
+    ) -> bool {
+        actions
+            .iter()
+            .any(|action| action.window_id == window_id && action.action == expected)
+    }
+
+    #[test]
+    fn reactivating_focused_floating_window_requests_minimize() {
+        let actions = activate_toggle_fixture(
+            true,
+            crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+        );
+        assert!(
+            has_action(&actions, "0xa", crate::ssd::WaylandWindowAction::Minimize),
+            "dock activation of the focused floating window should minimize it: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn activating_unfocused_floating_window_focuses_it() {
+        let actions = activate_toggle_fixture(
+            false,
+            crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+        );
+        assert!(
+            !has_action(&actions, "0xa", crate::ssd::WaylandWindowAction::Minimize),
+            "activating an unfocused window must not minimize it: {actions:?}"
+        );
+        assert!(
+            has_action(&actions, "0xa", crate::ssd::WaylandWindowAction::Focus),
+            "activating an unfocused window should focus it: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn reactivating_toggled_minimized_window_restores_it() {
+        // The noctalia regression: minimize via the dock toggle, then click
+        // the icon again while the (hidden) window still holds keyboard
+        // focus. The second activation must restore the window, not bounce
+        // it back into minimized.
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should succeed");
+
+        let window = make_named_window("0xa", "kitty-float", false, false);
+        evaluator
+            .evaluate_window_preview(&window, 0)
+            .expect("preview should evaluate");
+        let focused = make_named_window("0xa", "kitty-float", true, false);
+        evaluator
+            .evaluate_window(&focused, 100)
+            .expect("evaluation should succeed");
+
+        let event = crate::ssd::WindowActivateRequestEventSnapshot {
+            source: crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+            timestamp: 200,
+        };
+        let first = evaluator
+            .window_activate_request(&focused, &event, 200)
+            .expect("first activate should evaluate");
+        assert!(
+            has_action(&first.actions, "0xa", crate::ssd::WaylandWindowAction::Minimize),
+            "first activation should toggle the focused window into minimize: {:?}",
+            first.actions
+        );
+
+        // Mirror `apply_runtime_window_actions`: the queued `window.minimize()`
+        // action round-trips through Rust as a minimize request, which is what
+        // flips WINDOW_STATE_MINIMIZED on the TS side.
+        evaluator
+            .window_minimize_request(
+                &focused,
+                &crate::ssd::WindowMinimizeRequestEventSnapshot {
+                    minimized: true,
+                    source: crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                    timestamp: 250,
+                },
+                250,
+            )
+            .expect("minimize request should evaluate");
+
+        // No focus change is delivered in between — the focused snapshot is
+        // intentionally stale, mirroring the live race.
+        let second = evaluator
+            .window_activate_request(&focused, &event, 300)
+            .expect("second activate should evaluate");
+        assert!(
+            !has_action(&second.actions, "0xa", crate::ssd::WaylandWindowAction::Minimize),
+            "re-activating the minimized window must not re-minimize it: {:?}",
+            second.actions
+        );
+        assert!(
+            has_action(&second.actions, "0xa", crate::ssd::WaylandWindowAction::Focus),
+            "re-activating the minimized window should restore and focus it: {:?}",
+            second.actions
+        );
+    }
+
+    #[test]
+    fn xdg_activation_of_focused_window_does_not_minimize() {
+        let actions = activate_toggle_fixture(
+            true,
+            crate::ssd::WindowActivateRequestSourceSnapshot::XdgActivation,
+        );
+        assert!(
+            !has_action(&actions, "0xa", crate::ssd::WaylandWindowAction::Minimize),
+            "xdg-activation must never trigger the minimize toggle: {actions:?}"
+        );
+    }
+
     #[test]
     fn plain_second_window_launches_above_existing_window_tiled() {
         let (editor_z, chrome_z) = launch_scenario_z_indices(false, true);
