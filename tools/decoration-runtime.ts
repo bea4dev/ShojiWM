@@ -206,9 +206,11 @@ function dirnamePath(path: string): string {
 }
 
 function pathToFileUrl(path: string): string {
-  const url = new URL("file:///");
-  url.pathname = normalizePath(path);
-  return url.href;
+  const encodedPath = normalizePath(path)
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `file://${encodedPath}`;
 }
 
 function pathExists(path: string): boolean {

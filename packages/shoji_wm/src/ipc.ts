@@ -17,13 +17,20 @@
 // This module is intentionally feature-agnostic: workspace/window specifics are
 // wired up by the configuration package on top of this transport.
 //
-interface DenoUnixConnection {
-  read(buffer: Uint8Array): Promise<number | null>;
-  write(buffer: Uint8Array): Promise<number>;
+// Sockets come from the compositor's own ops rather than Deno.listen, so the
+// runtime needs no deno_net (and so no rustls/reqwest/quinn) and configs get
+// no outbound network access. Line framing happens in Rust, which is why
+// there is no TextDecoder here.
+interface ShojiIpcConnection {
+  /** One NDJSON line including its newline; "" means EOF. */
+  readLine(): Promise<string>;
+  write(data: string): Promise<void>;
   close(): void;
 }
 
-interface DenoUnixListener extends AsyncIterable<DenoUnixConnection> {
+interface ShojiIpcListener {
+  /** Resolves to null once the listener is closed. */
+  accept(): Promise<ShojiIpcConnection | null>;
   close(): void;
 }
 
@@ -32,12 +39,17 @@ interface DenoRuntime {
     get(key: string): string | undefined;
   };
   kill(pid: number, signal: string): void;
-  listen(options: { transport: "unix"; path: string }): DenoUnixListener;
   removeSync?(path: string): void;
 }
 
 const denoRuntime = (globalThis as typeof globalThis & { Deno?: DenoRuntime })
   .Deno;
+
+const nativeListen = (
+  globalThis as typeof globalThis & {
+    __SHOJI_IPC_LISTEN__?: (path: string) => ShojiIpcListener;
+  }
+).__SHOJI_IPC_LISTEN__;
 
 function removeUnixSocket(path: string): void {
   const nativeRemove = (
@@ -244,8 +256,8 @@ export function defaultSocketPath(): string {
 export function createIpcServer(
   socketPath: string = defaultSocketPath(),
 ): IpcServer {
-  if (!denoRuntime) {
-    throw new Error("ShojiWM IPC requires the embedded Deno runtime");
+  if (!nativeListen) {
+    throw new Error("ShojiWM IPC requires the embedded compositor runtime");
   }
 
   try {
@@ -255,36 +267,20 @@ export function createIpcServer(
   }
 
   const handlers = new Map<string, IpcHandler>();
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  const listener = denoRuntime.listen({ transport: "unix", path: socketPath });
+  const listener = nativeListen(socketPath);
   let closed = false;
 
   interface ClientState {
-    connection: DenoUnixConnection;
+    connection: ShojiIpcConnection;
     writeChain: Promise<void>;
   }
 
   const clients = new Set<ClientState>();
 
-  const writeAll = async (
-    connection: DenoUnixConnection,
-    bytes: Uint8Array,
-  ): Promise<void> => {
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = await connection.write(bytes.subarray(offset));
-      if (written <= 0) {
-        throw new Error("ShojiWM IPC connection stopped accepting writes");
-      }
-      offset += written;
-    }
-  };
-
   const writeFrame = (client: ClientState, message: unknown): void => {
-    const frame = encoder.encode(`${JSON.stringify(message)}\n`);
+    const frame = `${JSON.stringify(message)}\n`;
     client.writeChain = client.writeChain
-      .then(() => writeAll(client.connection, frame))
+      .then(() => client.connection.write(frame))
       .catch(() => {
         clients.delete(client);
         try {
@@ -339,21 +335,13 @@ export function createIpcServer(
   };
 
   const serveClient = async (client: ClientState): Promise<void> => {
-    const bytes = new Uint8Array(16 * 1024);
-    let buffer = "";
     try {
       while (!closed) {
-        const read = await client.connection.read(bytes);
-        if (read === null) break;
-        buffer += decoder.decode(bytes.subarray(0, read), { stream: true });
-        let newlineIndex = buffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
-          newlineIndex = buffer.indexOf("\n");
-          if (line.length > 0) {
-            void dispatch(client, line);
-          }
+        const line = await client.connection.readLine();
+        if (line.length === 0) break;
+        const trimmed = line.trim();
+        if (trimmed.length > 0) {
+          void dispatch(client, trimmed);
         }
       }
     } catch (error) {
@@ -372,7 +360,9 @@ export function createIpcServer(
 
   void (async () => {
     try {
-      for await (const connection of listener) {
+      while (!closed) {
+        const connection = await listener.accept();
+        if (connection === null) break;
         if (closed) {
           connection.close();
           break;

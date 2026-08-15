@@ -52,10 +52,23 @@ calloop = { version = "0.14.0", features = ["signals"] }
 # catching it before we can read).
 libc = "0.2"
 timescope = "0.1.3"
-rustyscript = { git = "https://github.com/rscarson/rustyscript.git", rev = "ef6ccee0eb45378dba540ebe78005f05ed3aa81b", default-features = false, features = ["web"] }
+# web_stub, not web: `web` is one of rustyscript's network_extensions and pulls
+# deno_net/deno_fetch/deno_tls, so rustls, ring, reqwest and quinn end up in a
+# compositor. IPC sockets are our own ops instead. console and fs_import were
+# supplied transitively by `web` and are still needed -- without fs_import the
+# module loader rejects every file: specifier.
+#
+# `url` is mandatory even though nothing here uses URL: web_stub registers
+# ext:deno_web/00_url.js and 01_urlpattern.js but its own init_stub.js never
+# imports them, and only the url feature's init_url.js does. Without it every
+# runtime fails to construct with "Following modules were not evaluated".
+rustyscript = { git = "https://github.com/rscarson/rustyscript.git", rev = "ef6ccee0eb45378dba540ebe78005f05ed3aa81b", default-features = false, features = ["web_stub", "console", "url", "fs_import"] }
 # The op2 macro expands against the deno_core crate name directly.
 deno_core = "=0.380.1"
-tokio = { version = "1.47.1", features = ["sync"] }
+# net/io-util/macros are for the IPC socket ops. They only resolved before
+# because deno_core unifies tokio to "full"; name them so a dependency bump
+# can't silently remove them.
+tokio = { version = "1.47.1", features = ["sync", "net", "io-util", "macros"] }
 # V8 142's Temporal implementation requires the ICU 2.1 API. RustyScript's
 # upstream lockfile pins this set, but its published dependency ranges also
 # admit incompatible ICU 2.2 releases.
