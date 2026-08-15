@@ -6006,6 +6006,98 @@ COMPOSITOR.window.composition = () => <Box />;
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
+    // A reload builds a fresh isolate rather than reusing one, and cppgc
+    // finalizers are not guaranteed to run before teardown, so a listener fd
+    // could outlive the runtime that opened it. Super+Shift+R cannot be driven
+    // from a test (input.rs intercepts it in the compositor), so cycle the
+    // runtime directly and watch the process fd table.
+    #[test]
+    fn embedded_runtime_ipc_does_not_leak_fds_across_reloads() {
+        fn open_fds() -> usize {
+            std::fs::read_dir("/proc/self/fd")
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+        }
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        // Keep an encoded-looking segment in the path so the runtime's manual
+        // file URL conversion cannot accidentally decode it into a space.
+        let test_dir = std::env::temp_dir()
+            .join(format!("shojiwm-ipc%20reload-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        let mut baseline = 0usize;
+        for cycle in 0..6 {
+            let socket_path = test_dir.join(format!("ipc-{cycle}.sock"));
+            let socket_literal = serde_json::to_string(&socket_path.to_string_lossy())
+                .expect("path should serialize");
+            let config_path = test_dir.join(format!("config-{cycle}.tsx"));
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+ipc.handle("ping", () => "pong");
+COMPOSITOR.window.composition = () => <Box />;
+"#
+                ),
+            )
+            .expect("test config should be written");
+
+            let evaluator = EmbeddedDecorationEvaluator::for_paths(
+                repository_root.join("tools/decoration-runtime.ts"),
+                &config_path,
+            )
+            .with_working_dir(&repository_root);
+            evaluator
+                .lifecycle_enable("test", None)
+                .expect("embedded runtime should enable the IPC config");
+
+            let mut socket = UnixStream::connect(&socket_path)
+                .expect("each reload cycle should serve its own socket");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("read timeout should be configured");
+            socket
+                .write_all(b"{\"id\":1,\"method\":\"ping\"}\n")
+                .expect("IPC request should be written");
+            let mut response = String::new();
+            BufReader::new(socket)
+                .read_line(&mut response)
+                .expect("IPC response should be read");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&response)
+                    .expect("IPC response should be JSON"),
+                serde_json::json!({ "id": 1, "result": "pong" })
+            );
+
+            evaluator
+                .lifecycle_disable("test")
+                .expect("embedded runtime should disable the IPC config");
+            drop(evaluator);
+
+            // Let the first couple of cycles settle before sampling, so
+            // one-off allocations are not counted as growth.
+            if cycle == 1 {
+                baseline = open_fds();
+            }
+        }
+
+        let after = open_fds();
+        assert!(
+            after <= baseline + 2,
+            "IPC sockets leaked across reloads: {baseline} fds after cycle 1, {after} after cycle 5"
+        );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
     fn test_output_snapshot(name: &str) -> WaylandOutputSnapshot {
         use crate::ssd::window_model::{OutputModeSnapshot, OutputPositionSnapshot};
         WaylandOutputSnapshot {
