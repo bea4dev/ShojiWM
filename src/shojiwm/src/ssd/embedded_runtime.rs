@@ -132,6 +132,10 @@ pub enum NativeEffectRequest {
 /// High-frequency pointer, gesture, move and resize events cross the CppGC
 /// bridge as V8 values. This avoids allocating and parsing JSON frames while
 /// retaining the existing TypeScript event shapes.
+///
+/// `display_state` and `input_state` are omitted when they have not changed
+/// since the runtime last received them; the runtime keeps the previous copy.
+/// Absence is the reuse signal, matching the cached and scheduler fast paths.
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NativeInteractionRequest {
@@ -141,10 +145,10 @@ pub enum NativeInteractionRequest {
         event: PointerMoveEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
     PointerMoveAsync {
         #[serde(rename = "requestId")]
@@ -152,10 +156,10 @@ pub enum NativeInteractionRequest {
         event: PointerMoveEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
     GestureSwipe {
         #[serde(rename = "requestId")]
@@ -163,10 +167,10 @@ pub enum NativeInteractionRequest {
         event: GestureSwipeEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
     GestureSwipeAsync {
         #[serde(rename = "requestId")]
@@ -174,10 +178,10 @@ pub enum NativeInteractionRequest {
         event: GestureSwipeEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
     WindowMove {
         #[serde(rename = "requestId")]
@@ -187,10 +191,10 @@ pub enum NativeInteractionRequest {
         event: WindowMoveEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
     WindowResize {
         #[serde(rename = "requestId")]
@@ -200,10 +204,10 @@ pub enum NativeInteractionRequest {
         event: WindowResizeEventSnapshot,
         #[serde(rename = "nowMs")]
         now_ms: u64,
-        #[serde(rename = "displayState")]
-        display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
-        #[serde(rename = "inputState")]
-        input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
 }
 
