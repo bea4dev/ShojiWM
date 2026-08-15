@@ -5179,6 +5179,152 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("embedded runtime should preload the default config");
     }
 
+    fn make_named_window(
+        id: &str,
+        app_id: &str,
+        is_focused: bool,
+        is_maximized: bool,
+    ) -> WaylandWindowSnapshot {
+        let mut snapshot = make_window(is_focused);
+        snapshot.id = id.to_string();
+        snapshot.title = format!("{app_id} window");
+        snapshot.app_id = Some(app_id.to_string());
+        snapshot.is_maximized = is_maximized;
+        snapshot
+    }
+
+    fn real_config_evaluator() -> EmbeddedDecorationEvaluator {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            repository_root.join("packages/config/src/index.tsx"),
+        )
+        .with_working_dir(&repository_root)
+    }
+
+    fn tiled_workspace_persisted_state() -> serde_json::Value {
+        serde_json::json!({
+            "config.hybrid-window-manager": {
+                "currentMonitor": "TEST-1",
+                "activeWorkspaceByMonitor": [["TEST-1", 1]],
+                "workspaces": [{
+                    "monitor": "TEST-1",
+                    "index": 1,
+                    "isTiled": true,
+                    "activeWindowId": null,
+                    "scrollOffset": 0,
+                    "windows": [],
+                }],
+            },
+        })
+    }
+
+    fn launch_scenario_z_indices(second_window_maximized: bool, tiled: bool) -> (i32, i32) {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        if tiled {
+            evaluator
+                .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+                .expect("tiled lifecycle should succeed");
+        } else {
+            evaluator
+                .lifecycle_enable("initial", None)
+                .expect("initial lifecycle should succeed");
+        }
+
+        // First app opens unmaximized and takes focus.
+        let editor = make_named_window("0xa", "org.gnome.TextEditor", false, false);
+        evaluator
+            .evaluate_window_preview(&editor, 0)
+            .expect("editor preview should evaluate");
+        let editor_focused = make_named_window("0xa", "org.gnome.TextEditor", true, false);
+        evaluator
+            .evaluate_window(&editor_focused, 100)
+            .expect("editor evaluation should succeed");
+
+        // Second app launches; when maximized it sends set_maximized before its
+        // window joins any workspace (observed live: the maximize request is
+        // dispatched before hybrid-initial-configure).
+        let chrome = make_named_window("0xb", "google-chrome", false, second_window_maximized);
+        if second_window_maximized {
+            evaluator
+                .window_maximize_request(
+                    &chrome,
+                    &crate::ssd::WindowMaximizeRequestEventSnapshot {
+                        maximized: true,
+                        source: crate::ssd::WindowStateRequestSourceSnapshot::ClientCsd,
+                        timestamp: 150,
+                    },
+                    150,
+                )
+                .expect("maximize request should evaluate");
+        }
+        evaluator
+            .evaluate_window_preview(&chrome, 200)
+            .expect("chrome preview should evaluate");
+        let chrome_focused =
+            make_named_window("0xb", "google-chrome", true, second_window_maximized);
+        let chrome_result = evaluator
+            .evaluate_window(&chrome_focused, 300)
+            .expect("chrome evaluation should succeed");
+
+        let editor_unfocused = make_named_window("0xa", "org.gnome.TextEditor", false, false);
+        let editor_result = evaluator
+            .evaluate_window(&editor_unfocused, 400)
+            .expect("editor re-evaluation should succeed");
+
+        let chrome_z = chrome_result
+            .managed_window
+            .z_index
+            .expect("chrome should have a z index");
+        let editor_z = editor_result
+            .managed_window
+            .z_index
+            .expect("editor should have a z index");
+        (editor_z, chrome_z)
+    }
+
+    #[test]
+    fn plain_second_window_launches_above_existing_window() {
+        let (editor_z, chrome_z) = launch_scenario_z_indices(false, false);
+        assert!(
+            chrome_z > editor_z,
+            "second (plain) window should stack above: editor={editor_z} chrome={chrome_z}"
+        );
+    }
+
+    #[test]
+    fn maximized_second_window_launches_above_existing_window() {
+        let (editor_z, chrome_z) = launch_scenario_z_indices(true, false);
+        assert!(
+            chrome_z > editor_z,
+            "second (maximized) window should stack above: editor={editor_z} chrome={chrome_z}"
+        );
+    }
+
+    #[test]
+    fn plain_second_window_launches_above_existing_window_tiled() {
+        let (editor_z, chrome_z) = launch_scenario_z_indices(false, true);
+        assert!(
+            chrome_z > editor_z,
+            "second (plain, tiled ws) window should stack above: editor={editor_z} chrome={chrome_z}"
+        );
+    }
+
+    #[test]
+    fn maximized_second_window_launches_above_existing_window_tiled() {
+        let (editor_z, chrome_z) = launch_scenario_z_indices(true, true);
+        assert!(
+            chrome_z > editor_z,
+            "second (maximized, tiled ws) window should stack above: editor={editor_z} chrome={chrome_z}"
+        );
+    }
+
     #[test]
     fn embedded_runtime_reload_picks_up_submodule_key_bindings() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

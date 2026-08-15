@@ -1322,6 +1322,7 @@ export class HybridWindowManager {
       }
       workspace.setTiled(!workspace.isTiled);
       this.applyWorkspaceStackPolicy(workspace);
+      this.restoreFloatingFocusStacking(workspace);
     });
   }
 
@@ -1334,7 +1335,26 @@ export class HybridWindowManager {
       }
       workspace.setTiled(!workspace.isTiled);
       this.applyWorkspaceStackPolicy(workspace);
+      this.restoreFloatingFocusStacking(workspace);
     });
+  }
+
+  /**
+   * After leaving tiling mode the "floating windows stay above tiles" policy
+   * no longer applies; put the focused window back on top explicitly because
+   * focusing an already-focused window does not emit another focus event.
+   * Only called from the tiling toggles, where focus signals are settled —
+   * during window-open initialization they can be stale (two windows both
+   * reporting focused) and raising here would hoist the wrong window.
+   */
+  private restoreFloatingFocusStacking(workspace: Workspace) {
+    if (workspace.isTiled) {
+      return;
+    }
+    const focusedWindow = workspace.focusedWindow();
+    if (focusedWindow && this.windowStack.has(focusedWindow)) {
+      this.windowStack.raise(focusedWindow);
+    }
   }
 
   public focusTile(direction: -1 | 1) {
@@ -1737,13 +1757,16 @@ export class HybridWindowManager {
     }
 
     if (!workspace.isTiled) {
-      // Leaving tiling mode removes the "floating windows stay above tiles"
-      // policy. Restore normal focus-based stacking explicitly because
-      // focusing an already-focused window does not emit another focus event.
-      const focusedWindow = workspace.focusedWindow();
-      if (focusedWindow && this.windowStack.has(focusedWindow)) {
-        this.windowStack.raise(focusedWindow);
-      }
+      // Floating workspaces stack purely by focus order, which `onFocus`
+      // already maintains. Raising `workspace.focusedWindow()` here instead
+      // reads the per-window focus *signals*, and those go stale between
+      // evaluations: while a new window's focused snapshot has arrived but
+      // the previous window's unfocused snapshot has not, both report
+      // focused and the OLD window wins — this ran during the new window's
+      // first-commit initialization and hoisted the previous window above
+      // the one being opened. The explicit tiling→floating restoration this
+      // used to provide lives in `restoreFloatingFocusStacking`, called from
+      // the toggle sites only.
       return;
     }
 
