@@ -205,15 +205,12 @@ function dirnamePath(path: string): string {
   return slash <= 0 ? "/" : normalized.slice(0, slash);
 }
 
-// this approach stops us from needing to pull in all of deno web
-const FILE_URL_ESCAPE_SET = /[\u0000-\u001F\u007F-\u{10FFFF} "#<>?`{}]/gu;
-
 function pathToFileUrl(path: string): string {
-  const normalized = normalizePath(path);
-  const encoded = normalized.replace(FILE_URL_ESCAPE_SET, (character) =>
-    encodeURIComponent(character),
-  );
-  return `file://${encoded}`;
+  const encodedPath = normalizePath(path)
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `file://${encodedPath}`;
 }
 
 function pathExists(path: string): boolean {
@@ -557,7 +554,7 @@ interface WindowResizeRequest {
   windowId: string;
   event: RuntimeWindowResizeEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -567,7 +564,7 @@ interface WindowMoveRequest {
   windowId: string;
   event: RuntimeWindowMoveEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -620,7 +617,7 @@ interface PointerMoveRequest {
   kind: "pointerMove" | "pointerMoveAsync";
   event: PointerMoveEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 
@@ -629,7 +626,7 @@ interface GestureSwipeRequest {
   kind: "gestureSwipe" | "gestureSwipeAsync";
   event: GestureSwipeEvent;
   nowMs: number;
-  displayState: Record<string, OutputStateSnapshot>;
+  displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
 

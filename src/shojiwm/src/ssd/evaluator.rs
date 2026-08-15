@@ -738,6 +738,14 @@ struct PointerMoveAsyncDispatcher {
     pending: Mutex<Option<RuntimeAsyncWork>>,
     pending_changed: Condvar,
     worker_started: AtomicBool,
+    // The worker now outlives every reload, so it has to be told when the runtime
+    // cell is empty: false from the head of `lifecycle_disable` until a
+    // `lifecycle_enable` succeeds.
+    runtime_dispatchable: AtomicBool,
+    // Bumped per reload so an invocation produced by the outgoing isolate is
+    // dropped instead of clobbering the freshly loaded config.
+    epoch: AtomicU64,
+    shutdown: AtomicBool,
 }
 
 struct EmbeddedDecorationRuntime {
@@ -1564,35 +1572,51 @@ impl EmbeddedDecorationEvaluator {
             }
     }
 
+    /// Retire the current isolate and hand back an evaluator that shares this
+    /// one's state.
+    ///
+    /// Every `Arc` is shared rather than reallocated so the pointer-move worker
+    /// spawned by the first generation keeps serving later ones. Allocating a
+    /// fresh dispatcher here used to strand that worker on a condvar nobody
+    /// would notify again, leaking its evaluator clone — and with it an isolate,
+    /// two threads and four fds — on every reload the pointer had armed.
     pub fn fresh_like(&self) -> Self {
-        Self {
-            script_path: self.script_path.clone(),
-            config_path: self.config_path.clone(),
-            working_dir: self.working_dir.clone(),
-            runtime: Arc::new(Mutex::new(None)),
-            display_state: Arc::new(Mutex::new(
-                self.display_state
-                    .lock()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_default(),
-            )),
-            input_state: Arc::new(Mutex::new(
-                self.input_state
-                    .lock()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_default(),
-            )),
-            runtime_state_generation: Arc::new(AtomicU64::new(
-                self.runtime_state_generation.load(Ordering::Acquire),
-            )),
-            pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
-            async_event_sender: Arc::new(Mutex::new(
-                self.async_event_sender
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.clone()),
-            )),
+        self.reset_runtime_for_reload();
+        self.clone()
+    }
+
+    /// Drop the isolate in place, keeping the cell every generation shares.
+    fn reset_runtime_for_reload(&self) {
+        self.pointer_move_async
+            .runtime_dispatchable
+            .store(false, Ordering::Release);
+        self.pointer_move_async.epoch.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut pending) = self.pointer_move_async.pending.lock() {
+            *pending = None;
         }
+
+        let mut runtime_guard = match self.runtime.lock() {
+            Ok(guard) => guard,
+            // The cell outlives reloads now, so a poisoned mutex would too.
+            // Reload used to heal it by allocating a new one.
+            Err(poisoned) => {
+                self.runtime.clear_poison();
+                poisoned.into_inner()
+            }
+        };
+        // `EmbeddedRuntime::drop` closes the request channel and joins the
+        // runtime thread, so this is the isolate teardown.
+        *runtime_guard = None;
+    }
+
+    /// Stop the shared pointer-move worker. The worker holds an evaluator clone
+    /// and parks on the dispatcher's condvar, so nothing else can retire it.
+    #[allow(dead_code)]
+    pub fn shutdown(&self) {
+        self.pointer_move_async
+            .shutdown
+            .store(true, Ordering::Release);
+        self.pointer_move_async.pending_changed.notify_all();
     }
 
     pub fn preload(&self) -> Result<(), DecorationEvaluationError> {
@@ -1722,6 +1746,11 @@ impl EmbeddedDecorationEvaluator {
             )));
         }
 
+        // The shared worker may dispatch from here on.
+        self.pointer_move_async
+            .runtime_dispatchable
+            .store(true, Ordering::Release);
+
         Ok(DecorationHandlerInvocation {
             invoked: true,
             display_config: response.display_config,
@@ -1740,6 +1769,10 @@ impl EmbeddedDecorationEvaluator {
         &self,
         reason: &str,
     ) -> Result<serde_json::Value, DecorationEvaluationError> {
+        // Park the shared worker before taking the lock it also contends for.
+        self.pointer_move_async
+            .runtime_dispatchable
+            .store(false, Ordering::Release);
         let mut runtime_guard = self.runtime.lock().map_err(|_| {
             DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
         })?;
@@ -1950,6 +1983,11 @@ impl EmbeddedDecorationEvaluator {
     }
 
     fn ensure_pointer_move_async_worker(&self) {
+        // The worker is now process-lifetime, so this only ever flips once.
+        // Reading first keeps the steady state off a cacheline the worker owns.
+        if self.pointer_move_async.worker_started.load(Ordering::Relaxed) {
+            return;
+        }
         if self
             .pointer_move_async
             .worker_started
@@ -1979,6 +2017,9 @@ impl EmbeddedDecorationEvaluator {
                     Err(_) => return,
                 };
                 while pending.is_none() {
+                    if self.pointer_move_async.shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
                     pending = match self.pointer_move_async.pending_changed.wait(pending) {
                         Ok(pending) => pending,
                         Err(_) => return,
@@ -1986,10 +2027,14 @@ impl EmbeddedDecorationEvaluator {
                 }
                 pending.take()
             };
+            if self.pointer_move_async.shutdown.load(Ordering::Acquire) {
+                return;
+            }
             let Some(work) = work else {
                 continue;
             };
 
+            let epoch = self.pointer_move_async.epoch.load(Ordering::Acquire);
             let result = match work {
                 RuntimeAsyncWork::PointerMove { event, now_ms } => self
                     .dispatch_pointer_move_async(&event, now_ms)
@@ -2002,6 +2047,13 @@ impl EmbeddedDecorationEvaluator {
                         invocation.map(DecorationRuntimeAsyncInvocation::GestureSwipe)
                     }),
             };
+
+            // A reload can land while the round trip is in flight. The result then
+            // came from the retired isolate, and consuming it would overwrite the
+            // config the new one just installed.
+            if self.pointer_move_async.epoch.load(Ordering::Acquire) != epoch {
+                continue;
+            }
 
             match result {
                 Ok(Some(invocation)) => {
@@ -2019,6 +2071,35 @@ impl EmbeddedDecorationEvaluator {
         }
     }
 
+    /// Display and input state only cross the bridge when they have actually
+    /// changed; the runtime keeps the last copy it was sent, and an absent field
+    /// is the reuse signal. Mirrors the gate the cached and scheduler paths use.
+    /// The returned generation is recorded once the write succeeds.
+    fn interaction_state_payload(
+        &self,
+        last_sent: u64,
+    ) -> (
+        Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
+        u64,
+    ) {
+        let generation = self.runtime_state_generation.load(Ordering::Acquire);
+        if last_sent == generation {
+            return (None, None, generation);
+        }
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        (Some(display_state), Some(input_state), generation)
+    }
+
     fn dispatch_pointer_move(
         &self,
         event: &PointerMoveEventSnapshot,
@@ -2030,16 +2111,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::PointerMove {
             request_id,
@@ -2048,6 +2121,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
         let response = if let Some(response) = runtime.read_interaction_response()? {
             response
         } else {
@@ -2068,16 +2142,8 @@ impl EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::GestureSwipe {
             request_id,
@@ -2086,6 +2152,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
         let response = if let Some(response) = runtime.read_interaction_response()? {
             response
         } else {
@@ -2100,24 +2167,28 @@ impl EmbeddedDecorationEvaluator {
         event: &PointerMoveEventSnapshot,
         now_ms: u64,
     ) -> Result<Option<DecorationPointerMoveAsyncInvocation>, DecorationEvaluationError> {
+        if !self
+            .pointer_move_async
+            .runtime_dispatchable
+            .load(Ordering::Acquire)
+        {
+            return Ok(None);
+        }
         let Ok(mut runtime_guard) = self.runtime.try_lock() else {
             // Pointer motion is lossy by design. If the runtime is handling a synchronous
             // request, dropping this sample is better than blocking input delivery.
             return Ok(None);
         };
-        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        // Never `ensure_runtime` here: the worker must not be what brings an
+        // isolate into existence, or a sample landing mid-reload spawns one that
+        // never received `lifecycleEnable`.
+        let Some(runtime) = runtime_guard.as_mut() else {
+            return Ok(None);
+        };
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::PointerMoveAsync {
             request_id,
@@ -2126,6 +2197,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -2192,22 +2264,24 @@ impl EmbeddedDecorationEvaluator {
         event: &GestureSwipeEventSnapshot,
         now_ms: u64,
     ) -> Result<Option<DecorationGestureSwipeAsyncInvocation>, DecorationEvaluationError> {
+        if !self
+            .pointer_move_async
+            .runtime_dispatchable
+            .load(Ordering::Acquire)
+        {
+            return Ok(None);
+        }
         let Ok(mut runtime_guard) = self.runtime.try_lock() else {
             return Ok(None);
         };
-        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        // See `dispatch_pointer_move_async`: the worker never spawns an isolate.
+        let Some(runtime) = runtime_guard.as_mut() else {
+            return Ok(None);
+        };
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::GestureSwipeAsync {
             request_id,
@@ -2216,6 +2290,7 @@ impl EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimeGestureSwipeAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -3755,16 +3830,8 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::WindowResize {
             request_id,
@@ -3774,6 +3841,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -3852,16 +3920,8 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let display_state = self
-            .display_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        let input_state = self
-            .input_state
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
 
         runtime.write_interaction_request(NativeInteractionRequest::WindowMove {
             request_id,
@@ -3871,6 +3931,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             display_state,
             input_state,
         })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
 
         let response: RuntimePointerMoveAsyncResponse =
             if let Some(response) = runtime.read_interaction_response()? {
@@ -5816,8 +5877,10 @@ COMPOSITOR.window.composition = () => <Box />;
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
+        // Keep an encoded-looking segment in the path so the runtime's manual
+        // file URL conversion cannot accidentally decode it into a space.
         let test_dir = std::env::temp_dir()
-            .join(format!("shojiwm-ipc-reload-test-{}", std::process::id()));
+            .join(format!("shojiwm-ipc%20reload-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
 
         let mut baseline = 0usize;
@@ -5886,6 +5949,336 @@ COMPOSITOR.window.composition = () => <Box />;
             "IPC sockets leaked across reloads: {baseline} fds after cycle 1, {after} after cycle 5"
         );
 
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    fn test_output_snapshot(name: &str) -> WaylandOutputSnapshot {
+        use crate::ssd::window_model::{OutputModeSnapshot, OutputPositionSnapshot};
+        WaylandOutputSnapshot {
+            name: name.to_owned(),
+            description: None,
+            make: None,
+            model: None,
+            serial: None,
+            connector: None,
+            enabled: true,
+            resolution: Some(OutputModeSnapshot {
+                width: 1920,
+                height: 1080,
+                refresh_rate: 60.0,
+            }),
+            position: OutputPositionSnapshot { x: 0, y: 0 },
+            scale: 1.0,
+            available_modes: Vec::new(),
+        }
+    }
+
+    // The interaction paths omit display and input state when it has not changed
+    // since the runtime last received it. A gate that never opened would leave
+    // the runtime on permanently stale outputs, so pin both directions.
+    #[test]
+    fn interaction_state_payload_elides_only_unchanged_state() {
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            PathBuf::from("decoration-runtime.ts"),
+            PathBuf::from("config.tsx"),
+        );
+
+        // A freshly spawned runtime records generation 0 while the evaluator
+        // starts at 1, so the first request after any spawn carries full state.
+        let (display, input, first) = evaluator.interaction_state_payload(0);
+        assert!(display.is_some(), "cold start must send display state");
+        assert!(input.is_some(), "cold start must send input state");
+
+        let (display, input, _) = evaluator.interaction_state_payload(first);
+        assert!(
+            display.is_none() && input.is_none(),
+            "unchanged state must not cross the bridge"
+        );
+
+        evaluator.set_display_state(std::collections::BTreeMap::from([(
+            "DP-1".to_owned(),
+            test_output_snapshot("DP-1"),
+        )]));
+        let (display, input, second) = evaluator.interaction_state_payload(first);
+        assert!(
+            display.is_some() && input.is_some(),
+            "a changed output must reopen the gate"
+        );
+        assert!(second > first, "a real change must bump the generation");
+
+        // set_display_state only bumps on an actual difference, so re-setting the
+        // same map must leave the gate shut.
+        evaluator.set_display_state(std::collections::BTreeMap::from([(
+            "DP-1".to_owned(),
+            test_output_snapshot("DP-1"),
+        )]));
+        let (display, _, third) = evaluator.interaction_state_payload(second);
+        assert!(
+            display.is_none(),
+            "identical state must not reopen the gate"
+        );
+        assert_eq!(third, second);
+    }
+
+    // End-to-end counterpart to the unit test above. The elided fields are
+    // omitted by `skip_serializing_if`, so the runtime must see no key at all —
+    // a present-but-undefined field would hit `"displayState" in request` and
+    // wipe the cached outputs instead of reusing them.
+    #[test]
+    fn elided_interaction_state_keeps_the_runtime_outputs_cached() {
+        use crate::ssd::{
+            PointerHitTargetSnapshot, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
+            PointerMovePointSnapshot,
+        };
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-interaction-gate-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let socket_path = test_dir.join("gate.sock");
+        let socket_literal =
+            serde_json::to_string(&socket_path.to_string_lossy()).expect("path should serialize");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+ipc.handle("outputs", () => COMPOSITOR.output.list);
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.event.onPointerMove(() => {{}});
+"#
+            ),
+        )
+        .expect("test config should be written");
+
+        let outputs_seen_by_runtime = || -> Vec<String> {
+            let mut socket =
+                UnixStream::connect(&socket_path).expect("IPC server should be listening");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout should be configured");
+            socket
+                .write_all(b"{\"id\":1,\"method\":\"outputs\"}\n")
+                .expect("IPC request should be written");
+            let mut response = String::new();
+            BufReader::new(socket)
+                .read_line(&mut response)
+                .expect("IPC response should be read");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&response).expect("IPC response should be JSON");
+            parsed["result"]
+                .as_array()
+                .expect("outputs handler should return an array")
+                .iter()
+                .map(|name| name.as_str().unwrap_or_default().to_owned())
+                .collect()
+        };
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("embedded runtime should enable the gate config");
+
+        let pointer = PointerMoveEventSnapshot {
+            position: PointerMovePointSnapshot { x: 1.0, y: 2.0 },
+            delta: PointerMovePointSnapshot { x: 0.0, y: 0.0 },
+            target: PointerHitTargetSnapshot::None,
+            output_name: Some("DP-1".into()),
+            modifiers: PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 1,
+        };
+
+        evaluator.set_display_state(std::collections::BTreeMap::from([(
+            "DP-1".to_owned(),
+            test_output_snapshot("DP-1"),
+        )]));
+        evaluator
+            .pointer_move(&pointer, 1)
+            .expect("pointer move should reach the runtime");
+        assert_eq!(
+            outputs_seen_by_runtime(),
+            vec!["DP-1".to_string()],
+            "a changed output must cross the bridge"
+        );
+
+        // Nothing changed, so this request omits both fields entirely.
+        evaluator
+            .pointer_move(&pointer, 2)
+            .expect("second pointer move should reach the runtime");
+        assert_eq!(
+            outputs_seen_by_runtime(),
+            vec!["DP-1".to_string()],
+            "an omitted field must reuse the cache, not clear it"
+        );
+
+        evaluator.set_display_state(std::collections::BTreeMap::from([
+            ("DP-1".to_owned(), test_output_snapshot("DP-1")),
+            ("HDMI-1".to_owned(), test_output_snapshot("HDMI-1")),
+        ]));
+        evaluator
+            .pointer_move(&pointer, 3)
+            .expect("third pointer move should reach the runtime");
+        let mut seen = outputs_seen_by_runtime();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec!["DP-1".to_string(), "HDMI-1".to_string()],
+            "a later change must reopen the gate"
+        );
+
+        evaluator
+            .lifecycle_disable("test")
+            .expect("embedded runtime should disable");
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    // A reload used to hand the new generation a freshly allocated dispatcher,
+    // stranding the pointer-move worker on a condvar nobody would notify again.
+    // That worker owns an evaluator clone, so every reload the pointer had armed
+    // leaked a V8 isolate, two threads and four fds. Cycle the runtime with the
+    // worker armed, which is the case the keyboard-only reload burst never hits.
+    #[test]
+    fn embedded_runtime_reload_reuses_the_pointer_move_worker() {
+        use crate::ssd::{
+            PointerHitTargetSnapshot, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
+            PointerMovePointSnapshot,
+        };
+
+        // The thread is named "shojiwm-pointer-move-async"; comm truncates to 15.
+        fn pointer_workers() -> usize {
+            std::fs::read_dir("/proc/self/task")
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .filter(|entry| {
+                            std::fs::read_to_string(entry.path().join("comm"))
+                                .is_ok_and(|comm| comm.trim() == "shojiwm-pointer")
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        }
+
+        fn settle_at(expected: usize) -> usize {
+            for _ in 0..100 {
+                if pointer_workers() == expected {
+                    return expected;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            pointer_workers()
+        }
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-pointer-reload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.event.onPointerMoveAsync(() => {});
+"#,
+        )
+        .expect("test config should be written");
+
+        let mut evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("embedded runtime should enable the pointer config");
+
+        let pointer = PointerMoveEventSnapshot {
+            position: PointerMovePointSnapshot { x: 10.0, y: 20.0 },
+            delta: PointerMovePointSnapshot { x: 1.0, y: -1.0 },
+            target: PointerHitTargetSnapshot::None,
+            output_name: Some("output-1".into()),
+            modifiers: PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 1,
+        };
+
+        // The worker only exists once a pointer sample has reached the evaluator.
+        evaluator.enqueue_pointer_move_async(pointer.clone(), 1);
+        assert_eq!(
+            settle_at(1),
+            1,
+            "the first pointer sample should spawn exactly one worker"
+        );
+
+        for cycle in 0..4u64 {
+            let persisted = evaluator
+                .lifecycle_disable("reload")
+                .expect("embedded runtime should disable for reload");
+
+            let dispatcher = Arc::clone(&evaluator.pointer_move_async);
+            let runtime_cell = Arc::clone(&evaluator.runtime);
+            let reloaded = evaluator.fresh_like();
+            assert!(
+                Arc::ptr_eq(&dispatcher, &reloaded.pointer_move_async),
+                "reload {cycle} should reuse the dispatcher instead of stranding the worker"
+            );
+            assert!(
+                Arc::ptr_eq(&runtime_cell, &reloaded.runtime),
+                "reload {cycle} should swap the runtime cell in place"
+            );
+            drop(dispatcher);
+            drop(runtime_cell);
+
+            reloaded
+                .lifecycle_enable("reload", Some(&persisted))
+                .expect("embedded runtime should re-enable after reload");
+            evaluator = reloaded;
+
+            evaluator.enqueue_pointer_move_async(pointer.clone(), cycle + 2);
+            assert_eq!(
+                settle_at(1),
+                1,
+                "reload {cycle} should not spawn a second pointer worker"
+            );
+            assert_eq!(
+                Arc::strong_count(&evaluator.pointer_move_async),
+                2,
+                "reload {cycle} should leave only the evaluator and its worker holding the dispatcher"
+            );
+        }
+
+        evaluator.shutdown();
+        assert_eq!(settle_at(0), 0, "shutdown should retire the shared worker");
+        drop(evaluator);
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
