@@ -9126,6 +9126,258 @@ mod tests {
         LayoutDirection, Overflow, StylePosition,
     };
 
+    #[test]
+    fn shader_clip_coverage_stays_inside_border_ring_at_fractional_scale() {
+        // Numeric replication of the live render math for the terminal-glass
+        // ShaderEffect (direct child of a WindowBorder). The shader display
+        // maps v_coords over its frame-mapped geometry, normalizes to "area"
+        // units, and cuts with a rounded rect clip. That coverage must stay
+        // inside the border ring's outer corner curve.
+        let mut glass = DecorationNode::new(DecorationNodeKind::ShaderEffect(
+            crate::ssd::ShaderEffectNode {
+                direction: LayoutDirection::Column,
+                shader: crate::ssd::CompiledEffect {
+                    input: crate::ssd::EffectInput::Backdrop,
+                    capture_padding: 24,
+                    invalidate: crate::ssd::EffectInvalidationPolicy::Always,
+                    pipeline: Vec::new(),
+                    alpha: crate::ssd::EffectAlphaMode::Opaque,
+                },
+            },
+        ))
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Row,
+            }))
+            .with_style(DecorationStyle {
+                height: Some(30),
+                ..Default::default()
+            }),
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+        glass.stable_id = Some("glass".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                border_radius: Some(10),
+                ..Default::default()
+            })
+            .with_children(vec![glass]);
+        root.stable_id = Some("root".into());
+        let tree = DecorationTree::new(root);
+        let scale = 1.8f64;
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(103, 133, 400, 300), scale)
+            .expect("layout should succeed");
+        let arena = Bump::new();
+        let shared = build_shared_edge_geometry_map_in(&layout, &arena);
+        let order = build_render_order_map(&layout);
+        let (_buffers, shaders) = build_cached_buffers_and_shaders(&layout, &order, None, &shared);
+        let glass_cache = shaders
+            .iter()
+            .find(|shader| shader.stable_key.starts_with("root/child-0"))
+            .expect("glass shader cache");
+        let root_rect = layout.root.rect;
+        let output_geo =
+            smithay::utils::Rectangle::<i32, Logical>::new((0, 0).into(), (2133, 1200).into());
+        let scale2 = smithay::utils::Scale::from((scale, scale));
+        let subpixel = crate::backend::visual::RootSubpixelEdges::default();
+        let rect_precise = glass_cache.rect_precise.expect("glass rect_precise");
+        let geometry = crate::backend::visual::relative_physical_rect_from_root_precise(
+            rect_precise,
+            root_rect,
+            subpixel,
+            output_geo,
+            scale2,
+        );
+        let clip_rect_precise = glass_cache.clip_rect_precise.expect("glass clip");
+        let local_rect_w = glass_cache.rect.width;
+        let local_rect_h = glass_cache.rect.height;
+        let clip_area = crate::backend::visual::snapped_precise_logical_rect_in_root_frame_area_space(
+            clip_rect_precise,
+            rect_precise,
+            local_rect_w,
+            local_rect_h,
+            root_rect,
+            subpixel,
+            output_geo,
+            scale2,
+        );
+        let clip_radius = glass_cache
+            .clip_radius_precise
+            .unwrap_or(glass_cache.clip_radius as f32);
+        eprintln!(
+            "root={root_rect:?} glass rect={:?} rect_precise={rect_precise:?}",
+            glass_cache.rect
+        );
+        eprintln!("geometry(root-local px)={geometry:?} clip_area={clip_area:?} clip_radius={clip_radius}");
+
+        // Shader emulation (wrap_backdrop_shader_source): coverage at a
+        // root-local physical point. Models the full GPU data flow: the
+        // pipeline output texture carries capture padding, so smithay's
+        // v_coords varying spans the sample-src subrect (uv_offset..uv_offset
+        // + uv_scale), NOT [0,1] across the quad. The wrapper must normalize
+        // v_coords back to quad-local uv before scaling by rect_size —
+        // `normalize_uv: false` replicates the historical bug (raw v_coords)
+        // and is asserted below to poke, pinning the failure mode.
+        let render_scale = geometry.size.w.max(1) as f32 / local_rect_w.max(1) as f32;
+        let padding_px =
+            (glass_cache.shader.capture_padding.max(0) as f32 * render_scale.max(1.0)).ceil();
+        let tex_w = geometry.size.w as f32 + 2.0 * padding_px;
+        let tex_h = geometry.size.h as f32 + 2.0 * padding_px;
+        let uv_offset = (padding_px / tex_w, padding_px / tex_h);
+        let uv_scale = (
+            geometry.size.w as f32 / tex_w,
+            geometry.size.h as f32 / tex_h,
+        );
+        let shader_alpha = |px: f64, py: f64, normalize_uv: bool| -> f32 {
+            let quad_u = (px - geometry.loc.x as f64) / geometry.size.w.max(1) as f64;
+            let quad_v = (py - geometry.loc.y as f64) / geometry.size.h.max(1) as f64;
+            if !(0.0..=1.0).contains(&quad_u) || !(0.0..=1.0).contains(&quad_v) {
+                return 0.0; // outside the drawn quad
+            }
+            // smithay tex_matrix: varying = src-subrect uv at this quad point.
+            let v_coords = (
+                uv_offset.0 + quad_u as f32 * uv_scale.0,
+                uv_offset.1 + quad_v as f32 * uv_scale.1,
+            );
+            let (ux, uy) = if normalize_uv {
+                (
+                    (v_coords.0 - uv_offset.0) / uv_scale.0,
+                    (v_coords.1 - uv_offset.1) / uv_scale.1,
+                )
+            } else {
+                v_coords
+            };
+            let cx = ux * local_rect_w as f32 - clip_area.x;
+            let cy = uy * local_rect_h as f32 - clip_area.y;
+            let half_w = clip_area.width * 0.5;
+            let half_h = clip_area.height * 0.5;
+            let p = (cx - half_w, cy - half_h);
+            let r = clip_radius;
+            let q = ((p.0.abs() - (half_w - r)), (p.1.abs() - (half_h - r)));
+            let dist = q.0.max(q.1).min(0.0) + (q.0.max(0.0).hypot(q.1.max(0.0))) - r;
+            let half_px = 0.5 / render_scale.max(1.0);
+            1.0 - ((dist + half_px) / (2.0 * half_px)).clamp(0.0, 1.0)
+        };
+
+        // Border ring outer curve: corner circle at root-local physical
+        // (r_out, r_out) with r_out = snapped outer radius.
+        let r_out = ((10.0 * scale).round()) as f64; // 18 px
+        let (ccx, ccy) = (r_out, r_out);
+        let mut worst: Option<(f64, f32)> = None;
+        let mut worst_raw: Option<(f64, f32)> = None;
+        for step in 0..2000 {
+            let angle = std::f64::consts::FRAC_PI_2 * (step as f64) / 1999.0 + std::f64::consts::PI;
+            for extra in 0..30 {
+                let d = r_out + 0.75 + (extra as f64) * 0.25;
+                let px = ccx + angle.cos() * d;
+                let py = ccy + angle.sin() * d;
+                let alpha = shader_alpha(px, py, true);
+                if alpha > 0.1 && worst.is_none_or(|(wd, _)| d > wd) {
+                    worst = Some((d, alpha));
+                }
+                let raw_alpha = shader_alpha(px, py, false);
+                if raw_alpha > 0.1 && worst_raw.is_none_or(|(wd, _)| d > wd) {
+                    worst_raw = Some((d, raw_alpha));
+                }
+            }
+        }
+        if let Some((d, alpha)) = worst {
+            panic!(
+                "glass coverage pokes outside the ring: up to {:.2}px beyond the outer curve (alpha {alpha:.2})",
+                d - r_out
+            );
+        }
+        // Sanity check of the diagnosis: with the capture padding present, the
+        // raw-v_coords formula dilates the clip and must poke past the ring.
+        // If this stops failing the emulation no longer models the padding.
+        let (raw_d, _) = worst_raw.expect("raw v_coords formula should poke outside the ring");
+        eprintln!(
+            "raw v_coords formula pokes {:.2}px beyond the outer curve (expected)",
+            raw_d - r_out
+        );
+    }
+
+    #[test]
+    fn window_border_child_clip_probe() {
+        let mut titlebar = DecorationNode::new(DecorationNodeKind::ShaderEffect(
+            crate::ssd::ShaderEffectNode {
+                direction: LayoutDirection::Row,
+                shader: crate::ssd::CompiledEffect {
+                    input: crate::ssd::EffectInput::Backdrop,
+                    capture_padding: 0,
+                    invalidate: crate::ssd::EffectInvalidationPolicy::Always,
+                    pipeline: Vec::new(),
+                    alpha: crate::ssd::EffectAlphaMode::Opaque,
+                },
+            },
+        ))
+        .with_style(DecorationStyle {
+            height: Some(30),
+            background: Some(Color::BLACK),
+            ..Default::default()
+        });
+        titlebar.stable_id = Some("titlebar".into());
+        let mut inner = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![
+            titlebar,
+            DecorationNode::new(DecorationNodeKind::WindowSlot),
+        ]);
+        inner.stable_id = Some("inner".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_style(DecorationStyle {
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                border_radius: Some(10),
+                ..Default::default()
+            })
+            .with_children(vec![inner]);
+        root.stable_id = Some("root".into());
+        let tree = DecorationTree::new(root);
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(102, 132, 400, 300), 1.0)
+            .expect("layout should succeed");
+        eprintln!(
+            "root rect={:?} content(resolved)={:?} effective_clip={:?}",
+            layout.root.rect,
+            layout.root.resolved_content_rect.round_to_logical_rect(),
+            layout.root.effective_clip,
+        );
+        let arena = Bump::new();
+        let shared = build_shared_edge_geometry_map_in(&layout, &arena);
+        let order = build_render_order_map(&layout);
+        let (buffers, shaders) =
+            build_cached_buffers_and_shaders(&layout, &order, None, &shared);
+        for shader in &shaders {
+            eprintln!(
+                "shader {} rect={:?} rect_precise={:?} clip_rect_precise={:?} clip_radius_precise={:?}",
+                shader.stable_key,
+                shader.rect,
+                shader.rect_precise,
+                shader.clip_rect_precise,
+                shader.clip_radius_precise,
+            );
+        }
+        for buffer in &buffers {
+            eprintln!(
+                "buffer {} kind={} rect={:?} clip_rect_precise={:?} clip_radius_precise={:?}",
+                buffer.stable_key,
+                buffer.source_kind,
+                buffer.rect,
+                buffer.clip_rect_precise,
+                buffer.clip_radius_precise,
+            );
+        }
+    }
+
     fn test_rect(x: f64, y: f64, width: f64, height: f64) -> ManagedWindowRectSnapshot {
         ManagedWindowRectSnapshot {
             x,

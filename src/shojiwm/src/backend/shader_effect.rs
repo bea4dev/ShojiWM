@@ -1620,6 +1620,21 @@ impl StableBackdropFramebufferElement {
             let region_opaque =
                 relative_intersections(opaque_regions, region_geometry).unwrap_or_default();
             let src = scale_buffer_subrect(sample_src, region.geometry, full_geometry.size);
+            // The element clip is expressed in element-area space; each region
+            // draw uses region-local coordinates (rect_size = region.area.size),
+            // so translate the clip by the region's offset within the element.
+            let clip_rect = self
+                .clip_rect
+                .map(|clip| {
+                    [
+                        clip.x - region.area.loc.x as f32,
+                        clip.y - region.area.loc.y as f32,
+                        clip.width,
+                        clip.height,
+                    ]
+                })
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+            let radius = self.clip_radius.max(0.0);
             let full_size = texture.size();
             let uv_offset = [
                 src.loc.x as f32 / full_size.w.max(1) as f32,
@@ -1646,9 +1661,16 @@ impl StableBackdropFramebufferElement {
                         [region.area.size.w as f32, region.area.size.h as f32],
                     ),
                     Uniform::new("render_scale", self.render_scale.max(1.0)),
-                    Uniform::new("clip_enabled", 0.0f32),
-                    Uniform::new("clip_rect", [0.0, 0.0, 0.0, 0.0]),
-                    Uniform::new("clip_radius", [0.0, 0.0, 0.0, 0.0]),
+                    Uniform::new(
+                        "clip_enabled",
+                        if clip_rect[2] > 0.0 && clip_rect[3] > 0.0 {
+                            1.0f32
+                        } else {
+                            0.0f32
+                        },
+                    ),
+                    Uniform::new("clip_rect", clip_rect),
+                    Uniform::new("clip_radius", [radius, radius, radius, radius]),
                 ],
             )?;
         }
@@ -2764,7 +2786,17 @@ void main() {{
     color.rgb *= color.a;
 
     if (clip_enabled > 0.5) {{
-        vec2 coords = v_coords * rect_size;
+        // v_coords is smithay's texture varying: it spans the sampled src
+        // subrect in normalized texture coordinates, not [0,1] across the
+        // quad. When the pipeline output carries capture padding the src is
+        // offset/shrunk, so the clip position must be reconstructed from the
+        // quad-local uv ((v_coords - uv_offset) / uv_scale) — using raw
+        // v_coords dilates the clip rect by the padding and the rounded
+        // corners never clip anything.
+        vec2 local_uv = v_coords;
+        if (uv_scale.x > 0.0) local_uv.x = (local_uv.x - uv_offset.x) / uv_scale.x;
+        if (uv_scale.y > 0.0) local_uv.y = (local_uv.y - uv_offset.y) / uv_scale.y;
+        vec2 coords = local_uv * rect_size;
         vec2 clip_coords = coords - clip_rect.xy;
         color *= rounded_rect_alpha(clip_coords, clip_rect.zw, clip_radius);
     }}

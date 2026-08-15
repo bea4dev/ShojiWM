@@ -716,12 +716,22 @@ pub fn ordered_background_elements_for_window_with_framebuffer_backdrops(
     }
 
     for cached in decoration.shader_buffers.clone() {
-        if include_framebuffer_backdrops && cached.shader.supports_framebuffer_backdrop() {
-            if let Some(element) = backdrop_shader_effect_element(
-                renderer, decoration, &cached, output_geo, scale, alpha,
-            )? {
-                items.push((cached.order, DecorationSceneElements::Backdrop(element)));
+        if cached.shader.supports_framebuffer_backdrop() {
+            if include_framebuffer_backdrops {
+                if let Some(element) = backdrop_shader_effect_element(
+                    renderer, decoration, &cached, output_geo, scale, alpha,
+                )? {
+                    items.push((cached.order, DecorationSceneElements::Backdrop(element)));
+                }
             }
+            // When framebuffer backdrops are excluded (full-window snapshot
+            // and offscreen source passes) there is no framebuffer to sample.
+            // Falling through to the generic pixel element used to draw the
+            // effect anyway — with undefined input and, crucially, WITHOUT
+            // the rounded ancestor clip (StableShaderEffectElement has no
+            // clip support), so its square corners painted outside the
+            // rounded window border. Those frames then persisted on screen:
+            // the corner region gets no damage after the animation ends.
             continue;
         }
         if cached.shader.is_texture_backed() {
