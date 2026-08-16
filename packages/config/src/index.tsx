@@ -512,6 +512,7 @@ COMPOSITOR.input.configure((input, _context) => {
     pointer: {
       pointerAccel: 0.0,
       accelProfile: "flat",
+      motionSpace: "logical",
     },
     keyboard: {
       options: "caps:ctrl_modifier",

@@ -134,6 +134,60 @@ fn stack_hit_debug_enabled() -> bool {
 }
 
 impl ShojiWM {
+    /// Maps a libinput relative delta into the coordinate space configured for
+    /// the device.
+    ///
+    /// libinput's unit is scale-independent; interpreting one unit as one
+    /// logical pixel is our convention, and under fractional scaling it makes
+    /// the smallest expressible movement land between physical pixels (one
+    /// unit at scale 1.5 covers 1.5 of them). Because the cursor is drawn on
+    /// whole physical pixels, rounding then splits a steady movement into an
+    /// uneven 2,1,2,1 pattern. Dividing by the scale of the output under the
+    /// pointer makes one unit exactly one physical pixel, so every step is the
+    /// same size.
+    ///
+    /// The scale is taken from the output the pointer currently sits on, which
+    /// keeps one unit equal to one physical pixel on every output even when
+    /// they differ — at the cost of the pointer covering less of the screen
+    /// per hand movement on the more densely scaled one. That is inherent to
+    /// working in physical pixels and is what Windows does too.
+    fn pointer_motion_delta<D: smithay::backend::input::Device>(
+        &self,
+        device: &D,
+        delta: Point<f64, Logical>,
+        position: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        use crate::runtime_input::RuntimeInputMotionSpace;
+
+        let motion_space = crate::runtime_input::motion_space_for_backend_device(
+            &self.runtime_input_config,
+            &self.runtime_input_devices,
+            device,
+        );
+        if matches!(motion_space, RuntimeInputMotionSpace::Logical) {
+            return delta;
+        }
+
+        // Fall back to leaving the delta alone when the pointer is not over any
+        // output: there is no meaningful scale to divide by, and guessing one
+        // would silently change the pointer speed.
+        let Some(scale) = self
+            .space
+            .outputs()
+            .find(|output| {
+                self.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.to_f64().contains(position))
+            })
+            .map(|output| output.current_scale().fractional_scale())
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+        else {
+            return delta;
+        };
+
+        Point::from((delta.x / scale, delta.y / scale))
+    }
+
     fn input_event_counts_as_idle_activity<I: InputBackend>(event: &InputEvent<I>) -> bool {
         !matches!(
             event,
@@ -624,8 +678,15 @@ impl ShojiWM {
                     return;
                 }
 
+                // Only the accumulated cursor position is remapped. The
+                // relative-motion event forwarded to clients below keeps the
+                // raw delta: a pointer-locked client (an FPS-style game) wants
+                // the device's own motion, not one scaled to our pixel grid.
+                let motion_delta =
+                    self.pointer_motion_delta(&event.device(), event.delta(), previous_pos);
+
                 let Some(pos) = constrain_pointer_location_to_outputs(
-                    previous_pos + event.delta(),
+                    previous_pos + motion_delta,
                     self.space
                         .outputs()
                         .filter_map(|output| self.space.output_geometry(output)),
@@ -2836,5 +2897,66 @@ mod pointer_output_constraint_tests {
         );
 
         assert_eq!(constrained, Some(Point::from((150.0, 74.5))));
+    }
+}
+
+#[cfg(test)]
+mod pointer_motion_space_tests {
+    /// Physical position the cursor is drawn at, mirroring the render path in
+    /// `backend::tty` (`(pointer_pos - hotspot).to_physical(scale).to_i32_round()`).
+    fn drawn_physical(logical: f64, scale: f64) -> i32 {
+        (logical * scale).round() as i32
+    }
+
+    fn step_sizes(quantum: f64, scale: f64, steps: usize) -> Vec<i32> {
+        let mut previous = drawn_physical(0.0, scale);
+        (1..=steps)
+            .map(|index| {
+                let current = drawn_physical(quantum * index as f64, scale);
+                let delta = current - previous;
+                previous = current;
+                delta
+            })
+            .collect()
+    }
+
+    #[test]
+    fn logical_space_makes_a_steady_movement_step_unevenly() {
+        // A mouse emits whole device counts, so with no acceleration the
+        // smallest movement is exactly one logical pixel. At scale 1.5 that is
+        // 1.5 physical pixels, which rounding splits into alternating 2 and 1
+        // pixel steps — the judder this setting exists to remove.
+        let steps = step_sizes(1.0, 1.5, 8);
+        assert_eq!(steps, vec![2, 1, 2, 1, 2, 1, 2, 1]);
+        assert!(steps.iter().any(|step| *step == 2));
+    }
+
+    #[test]
+    fn physical_space_gives_one_pixel_per_count_on_every_scale() {
+        // Dividing the delta by the output scale makes one count exactly one
+        // physical pixel, so the steps are uniform whatever the scale is.
+        for scale in [1.0, 1.25, 1.5, 1.75, 1.8, 2.0] {
+            let steps = step_sizes(1.0 / scale, scale, 16);
+            assert!(
+                steps.iter().all(|step| *step == 1),
+                "scale {scale} produced uneven steps: {steps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sub_pixel_quantum_never_exceeds_one_physical_pixel() {
+        // The touchpad reaches the same result by a different route: libinput
+        // applies an acceleration factor well below 1, so its effective
+        // quantum is already finer than a physical pixel and no step can span
+        // two of them even in logical space.
+        let quantum = 0.377;
+        for scale in [1.5, 1.8] {
+            let steps = step_sizes(quantum, scale, 64);
+            assert!(
+                steps.iter().all(|step| (0..=1).contains(step)),
+                "scale {scale} produced a multi-pixel step: {steps:?}"
+            );
+        }
     }
 }

@@ -55,6 +55,7 @@ pub struct RuntimeKeyboardInputConfig {
 pub struct RuntimePointerInputConfig {
     pub pointer_accel: Option<f64>,
     pub accel_profile: Option<RuntimeInputAccelProfile>,
+    pub motion_space: Option<RuntimeInputMotionSpace>,
     pub left_handed: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub middle_emulation: Option<bool>,
@@ -65,6 +66,7 @@ pub struct RuntimePointerInputConfig {
 pub struct RuntimeTouchpadInputConfig {
     pub pointer_accel: Option<f64>,
     pub accel_profile: Option<RuntimeInputAccelProfile>,
+    pub motion_space: Option<RuntimeInputMotionSpace>,
     pub left_handed: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub middle_emulation: Option<bool>,
@@ -81,6 +83,34 @@ pub struct RuntimeTouchpadInputConfig {
 pub enum RuntimeInputAccelProfile {
     Adaptive,
     Flat,
+}
+
+/// Coordinate space a relative pointer delta is interpreted in.
+///
+/// libinput reports motion in a scale-independent unit and has no idea what an
+/// output's scale is; treating one unit as one *logical* pixel is purely a
+/// compositor-side convention. Under fractional scaling that convention makes
+/// the smallest possible movement land on a fractional physical pixel (one
+/// unit at scale 1.5 is 1.5 physical pixels), and since the cursor can only be
+/// drawn on whole physical pixels the rounding turns a steady movement into an
+/// uneven 2,1,2,1 step pattern.
+///
+/// `Physical` divides the delta by the scale of the output under the pointer,
+/// so one unit becomes exactly one physical pixel and every step is uniform —
+/// the same model Windows uses, where pointer motion never passes through a
+/// logical coordinate space at all.
+///
+/// The cost is that the pointer travels `scale` times less far per unit of
+/// hand movement. That cannot be compensated in software: multiplying the
+/// delta back up restores the fractional step and the problem with it. Use a
+/// higher hardware DPI (or a larger `pointer_accel`) instead, so the device
+/// emits proportionally more units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeInputMotionSpace {
+    #[default]
+    Logical,
+    Physical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -178,6 +208,7 @@ impl RuntimePointerInputConfig {
     fn merge_from(&mut self, other: &RuntimePointerInputConfig) {
         self.pointer_accel = other.pointer_accel.or(self.pointer_accel);
         self.accel_profile = other.accel_profile.or(self.accel_profile);
+        self.motion_space = other.motion_space.or(self.motion_space);
         self.left_handed = other.left_handed.or(self.left_handed);
         self.natural_scroll = other.natural_scroll.or(self.natural_scroll);
         self.middle_emulation = other.middle_emulation.or(self.middle_emulation);
@@ -188,6 +219,7 @@ impl RuntimeTouchpadInputConfig {
     fn merge_from(&mut self, other: &RuntimeTouchpadInputConfig) {
         self.pointer_accel = other.pointer_accel.or(self.pointer_accel);
         self.accel_profile = other.accel_profile.or(self.accel_profile);
+        self.motion_space = other.motion_space.or(self.motion_space);
         self.left_handed = other.left_handed.or(self.left_handed);
         self.natural_scroll = other.natural_scroll.or(self.natural_scroll);
         self.middle_emulation = other.middle_emulation.or(self.middle_emulation);
@@ -203,6 +235,12 @@ impl RuntimeTouchpadInputConfig {
         RuntimePointerInputConfig {
             pointer_accel: self.pointer_accel,
             accel_profile: self.accel_profile,
+            // `motion_space` is deliberately not forwarded: this conversion
+            // exists to feed `apply_pointer_config`, which pushes settings into
+            // libinput, and motion space is a compositor-side concept libinput
+            // knows nothing about. It is resolved separately per event by
+            // `motion_space_for_backend_device`.
+            motion_space: None,
             left_handed: self.left_handed,
             natural_scroll: self.natural_scroll,
             middle_emulation: self.middle_emulation,
@@ -294,6 +332,63 @@ pub fn scroll_factor_for_backend_device<D: SmithayInputDevice>(
         1.0
     }
 }
+
+/// Resolves the motion space configured for the device that produced a
+/// relative pointer event. Touchpads read their setting from the `touchpad`
+/// block and everything else from `pointer`, matching how the rest of the
+/// per-device input configuration is split.
+pub fn motion_space_for_backend_device<D: SmithayInputDevice>(
+    config: &RuntimeInputConfig,
+    devices: &BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    device: &D,
+) -> RuntimeInputMotionSpace {
+    let Some(snapshot) = snapshot_for_backend_device(devices, device) else {
+        return RuntimeInputMotionSpace::default();
+    };
+    let touchpad = snapshot.kind.touchpad;
+
+    // Resolved by walking the same global -> name -> sysname chain
+    // `merged_config_for_device` uses, but without building the merged config:
+    // this runs once per relative pointer event (up to the device's full report
+    // rate), and merging clones every string in the keyboard block just to read
+    // one enum.
+    let mut resolved = None;
+    let mut apply = |device_config: &RuntimeInputDeviceConfig| {
+        if let Some(motion_space) = motion_space_in(touchpad, device_config) {
+            resolved = Some(motion_space);
+        }
+    };
+    if let Some(global) = &config.global {
+        apply(global);
+    }
+    if let Some(Some(device_config)) = config.device.get(&snapshot.name) {
+        apply(device_config);
+    }
+    if let Some(sysname) = &snapshot.sysname
+        && let Some(Some(device_config)) = config.device.get(sysname)
+    {
+        apply(device_config);
+    }
+    resolved.unwrap_or_default()
+}
+
+fn motion_space_in(
+    touchpad: bool,
+    device_config: &RuntimeInputDeviceConfig,
+) -> Option<RuntimeInputMotionSpace> {
+    if touchpad {
+        device_config
+            .touchpad
+            .as_ref()
+            .and_then(|touchpad| touchpad.motion_space)
+    } else {
+        device_config
+            .pointer
+            .as_ref()
+            .and_then(|pointer| pointer.motion_space)
+    }
+}
+
 
 pub fn snapshot_for_backend_input_device<D: SmithayInputDevice>(
     devices: &BTreeMap<String, RuntimeInputDeviceSnapshot>,
@@ -552,5 +647,100 @@ impl ShojiWM {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod motion_space_tests {
+    use super::*;
+
+    fn motion_space_from_merged(
+        touchpad: bool,
+        merged: &RuntimeInputDeviceConfig,
+    ) -> RuntimeInputMotionSpace {
+        motion_space_in(touchpad, merged).unwrap_or_default()
+    }
+
+    fn device_config(
+        pointer: Option<RuntimeInputMotionSpace>,
+        touchpad: Option<RuntimeInputMotionSpace>,
+    ) -> RuntimeInputDeviceConfig {
+        RuntimeInputDeviceConfig {
+            keyboard: None,
+            pointer: pointer.map(|motion_space| RuntimePointerInputConfig {
+                motion_space: Some(motion_space),
+                ..Default::default()
+            }),
+            touchpad: touchpad.map(|motion_space| RuntimeTouchpadInputConfig {
+                motion_space: Some(motion_space),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn motion_space_defaults_to_logical() {
+        let merged = RuntimeInputDeviceConfig::default();
+        assert_eq!(
+            motion_space_from_merged(false, &merged),
+            RuntimeInputMotionSpace::Logical
+        );
+        assert_eq!(
+            motion_space_from_merged(true, &merged),
+            RuntimeInputMotionSpace::Logical
+        );
+    }
+
+    #[test]
+    fn touchpads_and_mice_read_their_own_block() {
+        // A touchpad is still a libinput pointer device, so the two blocks have
+        // to stay independent: configuring one must not move the other.
+        let merged = device_config(Some(RuntimeInputMotionSpace::Physical), None);
+        assert_eq!(
+            motion_space_from_merged(false, &merged),
+            RuntimeInputMotionSpace::Physical
+        );
+        assert_eq!(
+            motion_space_from_merged(true, &merged),
+            RuntimeInputMotionSpace::Logical
+        );
+
+        let merged = device_config(None, Some(RuntimeInputMotionSpace::Physical));
+        assert_eq!(
+            motion_space_from_merged(false, &merged),
+            RuntimeInputMotionSpace::Logical
+        );
+        assert_eq!(
+            motion_space_from_merged(true, &merged),
+            RuntimeInputMotionSpace::Physical
+        );
+    }
+
+    #[test]
+    fn per_device_motion_space_overrides_global() {
+        let mut merged = device_config(Some(RuntimeInputMotionSpace::Logical), None);
+        merged.merge_from(&device_config(
+            Some(RuntimeInputMotionSpace::Physical),
+            None,
+        ));
+        assert_eq!(
+            motion_space_from_merged(false, &merged),
+            RuntimeInputMotionSpace::Physical
+        );
+    }
+
+    #[test]
+    fn motion_space_is_not_pushed_into_libinput_pointer_settings() {
+        // `as_pointer_config` feeds `apply_pointer_config`, which writes to the
+        // libinput device. Motion space is resolved per event on our side
+        // instead, so leaking it here would imply libinput understands it.
+        let touchpad = RuntimeTouchpadInputConfig {
+            motion_space: Some(RuntimeInputMotionSpace::Physical),
+            pointer_accel: Some(0.5),
+            ..Default::default()
+        };
+        let as_pointer = touchpad.as_pointer_config();
+        assert_eq!(as_pointer.motion_space, None);
+        assert_eq!(as_pointer.pointer_accel, Some(0.5));
     }
 }

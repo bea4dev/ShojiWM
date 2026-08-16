@@ -1448,6 +1448,7 @@ export interface InputDeviceInfo {
 }
 
 export type InputAccelProfile = "adaptive" | "flat";
+export type InputMotionSpace = "logical" | "physical";
 export type InputClickMethod = "buttonAreas" | "clickfinger";
 export type InputScrollMethod = "none" | "twoFinger" | "edge" | "onButtonDown";
 export type InputTapButtonMap = "leftRightMiddle" | "leftMiddleRight";
@@ -1465,6 +1466,36 @@ export interface KeyboardInputConfig {
 export interface PointerInputConfig {
   pointerAccel?: number;
   accelProfile?: InputAccelProfile;
+  /**
+   * Coordinate space relative pointer motion is interpreted in.
+   * Defaults to `"logical"`.
+   * 相対ポインター移動を解釈する座標空間です。既定は `"logical"` です。
+   *
+   * libinput reports motion in a scale-independent unit; treating one unit as
+   * one logical pixel is a compositor-side convention. Under fractional
+   * scaling the smallest possible movement then lands between physical pixels
+   * (one unit at scale 1.5 spans 1.5 of them), and because the cursor is drawn
+   * on whole physical pixels the rounding turns steady movement into an uneven
+   * 2,1,2,1 step pattern. `"physical"` divides by the scale of the output
+   * under the pointer so one unit is exactly one physical pixel and every step
+   * is uniform.
+   * libinput はスケール非依存の単位で移動量を報告し、その 1 単位を論理 1px と
+   * みなすのはコンポジター側の慣習です。フラクショナルスケールではこの慣習に
+   * より最小移動量が物理ピクセルの間に落ち（scale 1.5 なら 1 単位が 1.5 物理
+   * px）、カーソルは整数の物理ピクセルにしか描けないため、丸めによって一定速度
+   * の移動が 2,1,2,1 の不均一なステップになります。`"physical"` はポインターが
+   * 乗っている出力のスケールで割り、1 単位をちょうど物理 1px にすることで
+   * ステップを均一にします。
+   *
+   * The pointer necessarily travels `scale` times less far per hand movement,
+   * and that cannot be undone in software — scaling the delta back up restores
+   * the fractional step. Raise the device's hardware DPI (or `pointerAccel`)
+   * instead so it emits proportionally more units.
+   * この設定では手の移動量あたりのポインター移動が scale 分の 1 になります。
+   * ソフト側で戻すことはできません（掛け直すと半端なステップが復活するため）。
+   * 速度はデバイス側の DPI（または `pointerAccel`）を上げて補ってください。
+   */
+  motionSpace?: InputMotionSpace;
   leftHanded?: boolean;
   naturalScroll?: boolean;
   middleEmulation?: boolean;
