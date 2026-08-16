@@ -462,17 +462,21 @@ fn resize_edges_snapshot(edges: ResizeEdge) -> WindowResizeEdgesSnapshot {
 
 fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
     WindowResizePointSnapshot {
-        x: point.x.round() as i32,
-        y: point.y.round() as i32,
+        x: point.x,
+        y: point.y,
     }
 }
 
+/// Unlike a move, a resize rect stays quantized upstream: the size it carries
+/// is the one configured on the client surface, and `xdg_toplevel.configure`
+/// only speaks whole logical pixels. Widening the snapshot here just avoids a
+/// second, separate rect type.
 fn rect_snapshot(rect: Rectangle<i32, Logical>) -> WindowPositionSnapshot {
     WindowPositionSnapshot {
-        x: rect.loc.x,
-        y: rect.loc.y,
-        width: rect.size.w,
-        height: rect.size.h,
+        x: rect.loc.x as f64,
+        y: rect.loc.y as f64,
+        width: rect.size.w as f64,
+        height: rect.size.h as f64,
     }
 }
 

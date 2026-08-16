@@ -123,20 +123,46 @@ pub struct WindowIconSnapshot {
     pub bytes: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
+/// A logical-space rect handed to config code.
+///
+/// Deliberately `f64`: while a mapped window's own geometry is quantized to
+/// whole logical pixels, the rect reported during a drag is derived from the
+/// pointer, which moves in fractions of one. Rounding it here used to pin
+/// dragged windows to the integer logical grid — a 1.5 or 1.8 physical pixel
+/// step depending on the output scale, coarser than the cursor's own 1 physical
+/// pixel — so a drag visibly stepped and slipped against the cursor. The
+/// fraction now survives into `ManagedWindowRectSnapshot`, whose remainder
+/// `root_physical_origin_precise` applies as a rigid physical-pixel offset.
+///
+/// TypeScript sees no difference: its numbers are `f64` already, and JSON does
+/// not distinguish `763` from `763.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowPositionSnapshot {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+impl From<super::LogicalRect> for WindowPositionSnapshot {
+    fn from(rect: super::LogicalRect) -> Self {
+        Self {
+            x: rect.x as f64,
+            y: rect.y as f64,
+            width: rect.width as f64,
+            height: rect.height as f64,
+        }
+    }
+}
+
+/// A logical-space point handed to config code. `f64` for the same reason as
+/// [`WindowPositionSnapshot`]: this carries pointer positions and drag deltas.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowResizePointSnapshot {
-    pub x: i32,
-    pub y: i32,
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -234,7 +260,7 @@ pub enum WindowResizePhaseSnapshot {
     Cancel,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowResizeEventSnapshot {
     pub source: WindowResizeSourceSnapshot,
@@ -267,7 +293,7 @@ pub enum WindowMovePhaseSnapshot {
     Cancel,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowMoveEventSnapshot {
     pub source: WindowMoveSourceSnapshot,
@@ -736,10 +762,10 @@ impl ShojiWM {
             .map(|loc| {
                 let geometry = window.geometry();
                 WindowPositionSnapshot {
-                    x: loc.x + geometry.loc.x,
-                    y: loc.y + geometry.loc.y,
-                    width: geometry.size.w,
-                    height: geometry.size.h,
+                    x: (loc.x + geometry.loc.x) as f64,
+                    y: (loc.y + geometry.loc.y) as f64,
+                    width: geometry.size.w as f64,
+                    height: geometry.size.h as f64,
                 }
             })
             .unwrap_or_default();
@@ -753,10 +779,10 @@ impl ShojiWM {
             .window_decorations
             .get(window)
             .map(|decoration| WindowPositionSnapshot {
-                x: decoration.layout.root.rect.x,
-                y: decoration.layout.root.rect.y,
-                width: decoration.layout.root.rect.width,
-                height: decoration.layout.root.rect.height,
+                x: decoration.layout.root.rect.x as f64,
+                y: decoration.layout.root.rect.y as f64,
+                width: decoration.layout.root.rect.width as f64,
+                height: decoration.layout.root.rect.height as f64,
             })
             .unwrap_or(position);
 
@@ -833,10 +859,10 @@ impl ShojiWM {
             .map(|loc| {
                 let geometry = window.geometry();
                 WindowPositionSnapshot {
-                    x: loc.x + geometry.loc.x,
-                    y: loc.y + geometry.loc.y,
-                    width: geometry.size.w.max(1),
-                    height: geometry.size.h.max(1),
+                    x: (loc.x + geometry.loc.x) as f64,
+                    y: (loc.y + geometry.loc.y) as f64,
+                    width: geometry.size.w.max(1) as f64,
+                    height: geometry.size.h.max(1) as f64,
                 }
             })
             .unwrap_or_default();
@@ -850,10 +876,10 @@ impl ShojiWM {
             .window_decorations
             .get(window)
             .map(|decoration| WindowPositionSnapshot {
-                x: decoration.layout.root.rect.x,
-                y: decoration.layout.root.rect.y,
-                width: decoration.layout.root.rect.width,
-                height: decoration.layout.root.rect.height,
+                x: decoration.layout.root.rect.x as f64,
+                y: decoration.layout.root.rect.y as f64,
+                width: decoration.layout.root.rect.width as f64,
+                height: decoration.layout.root.rect.height as f64,
             })
             .unwrap_or(position);
 

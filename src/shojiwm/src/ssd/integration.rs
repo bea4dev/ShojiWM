@@ -4326,12 +4326,8 @@ impl ShojiWM {
                                     closing.decoration.layout = layout;
                                     closing.decoration.content_clip = content_clip;
                                     closing.decoration.client_rect = desired_client;
-                                    closing.decoration.snapshot.position = WindowPositionSnapshot {
-                                        x: desired_client.x,
-                                        y: desired_client.y,
-                                        width: desired_client.width,
-                                        height: desired_client.height,
-                                    };
+                                    closing.decoration.snapshot.position =
+                                        WindowPositionSnapshot::from(desired_client);
                                     closing.decoration.buffers = build_cached_buffers(
                                         &closing.decoration.layout,
                                         &order_map,
@@ -4596,12 +4592,8 @@ impl ShojiWM {
                                 closing.decoration.layout = layout;
                                 closing.decoration.content_clip = content_clip;
                                 closing.decoration.client_rect = desired_client;
-                                closing.decoration.snapshot.position = WindowPositionSnapshot {
-                                    x: desired_client.x,
-                                    y: desired_client.y,
-                                    width: desired_client.width,
-                                    height: desired_client.height,
-                                };
+                                closing.decoration.snapshot.position =
+                                    WindowPositionSnapshot::from(desired_client);
                                 closing.decoration.buffers =
                                     build_cached_buffers(&closing.decoration.layout, &order_map);
                                 closing.decoration.shader_buffers =
@@ -5438,12 +5430,7 @@ impl ShojiWM {
                         decoration.layout = layout;
                         decoration.content_clip = content_clip;
                         decoration.client_rect = desired_client;
-                        decoration.snapshot.position = WindowPositionSnapshot {
-                            x: desired_client.x,
-                            y: desired_client.y,
-                            width: desired_client.width,
-                            height: desired_client.height,
-                        };
+                        decoration.snapshot.position = WindowPositionSnapshot::from(desired_client);
                         decoration.buffers = buffers;
                         decoration.shader_buffers = shader_buffers;
                         decoration.text_buffers = text_buffers;
@@ -5594,12 +5581,7 @@ impl ShojiWM {
                 closing.decoration.layout = layout;
                 closing.decoration.content_clip = content_clip;
                 closing.decoration.client_rect = desired_client;
-                closing.decoration.snapshot.position = WindowPositionSnapshot {
-                    x: desired_client.x,
-                    y: desired_client.y,
-                    width: desired_client.width,
-                    height: desired_client.height,
-                };
+                closing.decoration.snapshot.position = WindowPositionSnapshot::from(desired_client);
                 closing.decoration.buffers =
                     build_cached_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.shader_buffers = shader_buffers;
@@ -6498,12 +6480,7 @@ fn translate_cached_decoration_position(
 ) {
     decoration.layout = decoration.layout.translated(dx, dy);
     decoration.client_rect = client_rect;
-    decoration.snapshot.position = WindowPositionSnapshot {
-        x: client_rect.x,
-        y: client_rect.y,
-        width: client_rect.width,
-        height: client_rect.height,
-    };
+    decoration.snapshot.position = WindowPositionSnapshot::from(client_rect);
     decoration.content_clip = decoration
         .content_clip
         .map(|clip| translate_content_clip(clip, dx, dy));
@@ -10327,5 +10304,70 @@ mod tests {
         assert_eq!(header_box.rect.bottom, window_slot.rect.top);
         assert_eq!(header_box.rect.left, window_slot.rect.left);
         assert_eq!(header_box.rect.right, window_slot.rect.right);
+    }
+
+    /// The drag path must keep the pointer's sub-logical-pixel motion.
+    ///
+    /// A move grab feeds `WindowMoveEventSnapshot::current_rect` to config
+    /// code, which sets it as the managed rect; the fractional remainder then
+    /// anchors the rendered root origin via `root_physical_origin_precise`.
+    /// Rounding the drag delta to whole logical pixels (as the grab used to)
+    /// pins the window to a 1.5 physical pixel grid at scale 1.5 — coarser
+    /// than the cursor's own single physical pixel, so the window visibly
+    /// steps and slips against the cursor it is stuck to.
+    #[test]
+    fn dragging_a_window_moves_it_one_physical_pixel_at_a_time() {
+        let scale = 1.5f64;
+        let output_geo =
+            smithay::utils::Rectangle::<i32, Logical>::new((0, 0).into(), (2560, 1440).into());
+        let output_scale = smithay::utils::Scale::from((scale, scale));
+        let initial = LogicalRect::new(763, 349, 968, 813);
+
+        // One physical pixel of pointer travel, expressed in logical units.
+        let step = 1.0 / scale;
+        let origin_after = |delta_steps: u32, round_delta_to_logical: bool| {
+            let mut delta = step * delta_steps as f64;
+            if round_delta_to_logical {
+                delta = delta.round();
+            }
+            let dragged = ManagedWindowRectSnapshot {
+                x: initial.x as f64 + delta,
+                y: initial.y as f64,
+                width: initial.width as f64,
+                height: initial.height as f64,
+            };
+            crate::backend::visual::root_physical_origin_precise(
+                managed_rect_snapshot_to_logical_rect(dragged),
+                managed_rect_snapshot_subpixel_edges(dragged),
+                output_geo,
+                output_scale,
+            )
+        };
+
+        let mut steps = Vec::new();
+        let mut previous = origin_after(0, false).x;
+        for index in 1..=12 {
+            let current = origin_after(index, false).x;
+            steps.push(current - previous);
+            previous = current;
+        }
+        assert!(
+            steps.iter().all(|step| *step == 1),
+            "a one-physical-pixel drag step should move the window exactly one physical pixel, got {steps:?}"
+        );
+
+        // Same drag with the delta quantized to whole logical pixels: the
+        // window stalls, then jumps two physical pixels at once.
+        let mut rounded_steps = Vec::new();
+        let mut previous = origin_after(0, true).x;
+        for index in 1..=12 {
+            let current = origin_after(index, true).x;
+            rounded_steps.push(current - previous);
+            previous = current;
+        }
+        assert!(
+            rounded_steps.iter().any(|step| *step > 1),
+            "the rounded-delta baseline should still show multi-pixel jumps, got {rounded_steps:?}"
+        );
     }
 }

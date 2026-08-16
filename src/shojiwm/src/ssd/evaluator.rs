@@ -4760,16 +4760,16 @@ mod tests {
             title: "Kitty".into(),
             app_id: Some("kitty".into()),
             position: WindowPositionSnapshot {
-                x: 0,
-                y: 0,
-                width: 800,
-                height: 600,
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
             },
             rect: WindowPositionSnapshot {
-                x: 0,
-                y: 0,
-                width: 800,
-                height: 600,
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
             },
             is_focused,
             is_floating: true,
@@ -4952,7 +4952,7 @@ COMPOSITOR.event.onWindowResize(() => {});
         evaluator
             .evaluate_window(&window, 3)
             .expect("window cache should be initialized");
-        let point = WindowResizePointSnapshot { x: 10, y: 20 };
+        let point = WindowResizePointSnapshot { x: 10.0, y: 20.0 };
         let modifiers = PointerModifierStateSnapshot {
             logo: true,
             alt: false,
@@ -4963,8 +4963,8 @@ COMPOSITOR.event.onWindowResize(() => {});
             source: WindowMoveSourceSnapshot::Modifier,
             phase: WindowMovePhaseSnapshot::Update,
             start_pointer: point,
-            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
-            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            current_pointer: WindowResizePointSnapshot { x: 30.0, y: 40.0 },
+            delta: WindowResizePointSnapshot { x: 20.0, y: 20.0 },
             start_rect: window.rect,
             current_rect: window.rect,
             output_name: Some("output-1".into()),
@@ -4988,8 +4988,8 @@ COMPOSITOR.event.onWindowResize(() => {});
                 bottom: true,
             },
             start_pointer: point,
-            current_pointer: WindowResizePointSnapshot { x: 30, y: 40 },
-            delta: WindowResizePointSnapshot { x: 20, y: 20 },
+            current_pointer: WindowResizePointSnapshot { x: 30.0, y: 40.0 },
+            delta: WindowResizePointSnapshot { x: 20.0, y: 20.0 },
             start_rect: window.rect,
             current_rect: window.rect,
             output_name: Some("output-1".into()),

@@ -102,7 +102,7 @@ impl MoveSurfaceGrab {
             current_pointer: point_snapshot(current_pointer),
             delta: point_snapshot(delta),
             start_rect: rect_snapshot(self.initial_event_rect),
-            current_rect: rect_snapshot(current_rect),
+            current_rect,
             output_name,
             modifiers: PointerModifierStateSnapshot {
                 logo: data.current_keyboard_modifiers.logo,
@@ -134,6 +134,12 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
+        // Unlike the runtime-managed path above, this fallback places the
+        // window directly in the `Space`, whose element locations are whole
+        // logical pixels, and a window without a managed rect has nowhere to
+        // carry a fractional remainder. So this path keeps the coarser step;
+        // the sub-pixel precision lives in `WindowMoveEventSnapshot`, which
+        // config code turns into a managed rect.
         let new_location = new_location.to_i32_round();
         let old_location = data
             .space
@@ -339,32 +345,67 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
     }
 }
 
+/// Offsets the rect the drag started from by the raw pointer delta.
+///
+/// The delta stays fractional on purpose. Rounding it to whole logical pixels
+/// used to quantize the dragged window to a 1.5 (or 1.8) physical pixel grid
+/// depending on the output scale, which is coarser than the single physical
+/// pixel the cursor itself moves in — so the window stepped in visible jumps
+/// and slipped against the cursor it was supposed to be stuck to.
 fn move_rect_for_delta(
     initial: smithay::utils::Rectangle<i32, Logical>,
     delta: Point<f64, Logical>,
-) -> smithay::utils::Rectangle<i32, Logical> {
-    smithay::utils::Rectangle::new(
-        (
-            initial.loc.x + delta.x.round() as i32,
-            initial.loc.y + delta.y.round() as i32,
-        )
-            .into(),
-        initial.size,
-    )
+) -> WindowPositionSnapshot {
+    WindowPositionSnapshot {
+        x: initial.loc.x as f64 + delta.x,
+        y: initial.loc.y as f64 + delta.y,
+        width: initial.size.w as f64,
+        height: initial.size.h as f64,
+    }
 }
 
 fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
     WindowResizePointSnapshot {
-        x: point.x.round() as i32,
-        y: point.y.round() as i32,
+        x: point.x,
+        y: point.y,
     }
 }
 
 fn rect_snapshot(rect: smithay::utils::Rectangle<i32, Logical>) -> WindowPositionSnapshot {
     WindowPositionSnapshot {
-        x: rect.loc.x,
-        y: rect.loc.y,
-        width: rect.size.w,
-        height: rect.size.h,
+        x: rect.loc.x as f64,
+        y: rect.loc.y as f64,
+        width: rect.size.w as f64,
+        height: rect.size.h as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_rect_keeps_the_pointer_delta_fractional() {
+        // The pointer moves in fractions of a logical pixel (one physical
+        // pixel is 1/scale of one). Rounding here pinned dragged windows to
+        // the integer logical grid, which at scale 1.5 is a 1.5 physical pixel
+        // step — coarser than the cursor's own, so the window lagged behind in
+        // visible jumps. The fraction has to reach the managed rect, whose
+        // remainder anchors the rendered origin.
+        let initial =
+            smithay::utils::Rectangle::<i32, Logical>::new((763, 349).into(), (968, 813).into());
+        let rect = move_rect_for_delta(initial, Point::from((0.4, -0.7)));
+        assert_eq!(rect.x, 763.4);
+        assert_eq!(rect.y, 348.3);
+        // The size is carried through untouched: a move never resizes.
+        assert_eq!(rect.width, 968.0);
+        assert_eq!(rect.height, 813.0);
+    }
+
+    #[test]
+    fn pointer_snapshot_is_not_quantized() {
+        let snapshot = point_snapshot(Point::from((1280.25, 719.75)));
+        assert_eq!(snapshot.x, 1280.25);
+        assert_eq!(snapshot.y, 719.75);
     }
 }
