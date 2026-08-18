@@ -107,8 +107,8 @@ rustPlatform.buildRustPackage {
     lockFile = ../Cargo.lock;
 
     outputHashes = {
-      "smithay-0.7.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
-      "smithay-drm-extras-0.1.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
+      "smithay-0.7.0" = "sha256-4/aS6R6zChcxwWQQ8q+sLu2mrsGm4sq8dlP89Sgt8Gc=";
+      "smithay-drm-extras-0.1.0" = "sha256-4/aS6R6zChcxwWQQ8q+sLu2mrsGm4sq8dlP89Sgt8Gc=";
       "rustyscript-0.12.3" = "sha256-04yZws8aY6NpyQc0F6fg7CAwYYXer7r+eFABwafP+kU=";
     };
   };
