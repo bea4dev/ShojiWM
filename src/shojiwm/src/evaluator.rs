@@ -7427,6 +7427,7 @@ COMPOSITOR.window.composition = () => <Box />;
             }),
             subpixel: Default::default(),
             detected_subpixel: Default::default(),
+            hdr_supported: false,
             position: OutputPositionSnapshot { x: 0, y: 0 },
             scale: 1.0,
             transform: Default::default(),
