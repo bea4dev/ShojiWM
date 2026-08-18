@@ -5369,6 +5369,54 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// A dock that focuses the app it just launched (noctalia's dock arms a
+    /// pending-launch-focus and activates as soon as a matching toplevel
+    /// appears) sends `activate` before the client has committed a single
+    /// buffer — the foreign-toplevel handle exists from `xdg_toplevel`
+    /// creation. Only preview evaluations have run at that point, so the
+    /// window is focused but has never presented. Treating that hand-off as a
+    /// taskbar re-click minimized apps straight into the taskbar on launch
+    /// (issue #68), visible only for maximized windows because those skip the
+    /// deferred initial layout and so already belong to a workspace.
+    #[test]
+    fn launch_focus_activation_before_first_commit_does_not_minimize() {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should succeed");
+
+        // Maximized launch: preview evaluations only — no `evaluate_window`,
+        // so `onFirstCommit` has not fired yet.
+        let opening = make_named_window("0xb", "google-chrome", false, true);
+        evaluator
+            .evaluate_window_preview(&opening, 0)
+            .expect("preview should evaluate");
+        let opening_focused = make_named_window("0xb", "google-chrome", true, true);
+        evaluator
+            .evaluate_window_preview(&opening_focused, 100)
+            .expect("focused preview should evaluate");
+
+        let actions = evaluator
+            .window_activate_request(
+                &opening_focused,
+                &crate::ssd::WindowActivateRequestEventSnapshot {
+                    source: crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+                    timestamp: 150,
+                },
+                150,
+            )
+            .expect("activate request should evaluate")
+            .actions;
+
+        assert!(
+            !has_action(&actions, "0xb", crate::ssd::WaylandWindowAction::Minimize),
+            "a dock focusing the window it just launched must not minimize it: {actions:?}"
+        );
+    }
+
     #[test]
     fn activating_unfocused_floating_window_focuses_it() {
         let actions = activate_toggle_fixture(

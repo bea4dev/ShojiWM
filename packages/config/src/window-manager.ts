@@ -653,6 +653,24 @@ export class HybridWindowManager {
   private readonly restoredDuringInitialConfigure = new Set<string>();
   private readonly deferredInitialLayoutWindowIds = new Set<string>();
 
+  /**
+   * Windows that have presented at least one frame (`onFirstCommit`).
+   *
+   * A window's foreign-toplevel handle is created the moment the client makes
+   * its `xdg_toplevel` — before it has committed a single buffer — so a dock
+   * that focuses the window it just launched sends its `activate` while the
+   * window is still invisible. Noctalia's dock does exactly this (it arms a
+   * pending-launch-focus and activates as soon as a matching toplevel shows
+   * up), and "launch or focus" docks generally behave the same way.
+   *
+   * Without this set the minimize-raise toggle read that launch hand-off as
+   * "the user re-clicked the focused window's taskbar entry" and minimized a
+   * window that had never been shown — apps appeared to launch straight into
+   * the taskbar (issue #68). A taskbar entry the user can actually click
+   * belongs, by definition, to a window that has already presented.
+   */
+  private readonly presentedWindowIds = new Set<string>();
+
   private initializeWindowLayout(
     window: WaylandWindow,
     options: AddWindowOptions = {},
@@ -810,6 +828,7 @@ export class HybridWindowManager {
   }
 
   public onFirstCommit(window: WaylandWindow) {
+    this.presentedWindowIds.add(window.id);
     if (!this.tileabilityByWindowId.has(window.id)) {
       this.trackWindowTileability(window);
     }
@@ -858,6 +877,7 @@ export class HybridWindowManager {
   }
 
   public onClose(window: WaylandWindow) {
+    this.presentedWindowIds.delete(window.id);
     this.restoredDuringInitialConfigure.delete(window.id);
     this.deferredInitialLayoutWindowIds.delete(window.id);
     this.pendingInitialFocusByWindowId.delete(window.id);
@@ -1335,11 +1355,18 @@ export class HybridWindowManager {
    * Routed through `window.minimize()` so the request takes the same Rust
    * round trip as CSD buttons and taskbar set_minimized, keeping every
    * minimize side effect centralized in `onWindowMinimizeRequest`.
+   *
+   * Never fires before the window has presented a frame: that activation is a
+   * dock handing focus to the app it just launched, not the user toggling a
+   * visible window. See `presentedWindowIds`.
    */
   private minimizeOnReactivate(
     window: WaylandWindow,
     workspace: Workspace | undefined,
   ): boolean {
+    if (!this.presentedWindowIds.has(window.id)) {
+      return false;
+    }
     if (!workspace || workspace.isTiled || !workspace.isActive()) {
       return false;
     }
