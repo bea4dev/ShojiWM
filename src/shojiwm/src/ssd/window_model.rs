@@ -741,13 +741,12 @@ impl ShojiWM {
             .and_then(|surface| self.runtime_id_for_toplevel_surface(surface));
         let is_transient = parent_surface.is_some();
 
-        let focused_surface = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
-        let is_focused = focused_surface
-            .as_ref()
-            .is_some_and(|focused| self.surface_belongs_to_window(window, focused));
+        // Active window, not raw keyboard focus: a layer-shell panel that
+        // borrowed the keyboard must not make every window report itself as
+        // unfocused. See `ShojiWM::activated_window_surface`.
+        let is_focused = self
+            .activated_window_surface()
+            .is_some_and(|surface| Self::window_matches_root_surface(window, &surface));
         let (_pending_activated, is_maximized, is_fullscreen) =
             toplevel.with_pending_state(|state| {
                 (
@@ -845,13 +844,11 @@ impl ShojiWM {
         let parent_id = transient_for.map(|parent| format!("x11:{parent}"));
         let is_transient = parent_id.is_some() || x11.is_modal();
 
-        let focused_surface = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
-        let is_focused = focused_surface
-            .as_ref()
-            .is_some_and(|focused| self.surface_belongs_to_window(window, focused));
+        // Active window, not raw keyboard focus — see the xdg-toplevel branch
+        // above and `ShojiWM::activated_window_surface`.
+        let is_focused = self
+            .activated_window_surface()
+            .is_some_and(|surface| Self::window_matches_root_surface(window, &surface));
 
         let position = self
             .space

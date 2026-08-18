@@ -920,20 +920,30 @@ impl ShojiWM {
         }
     }
 
-    /// The wl surface that should carry the xdg `Activated` state, i.e. the
-    /// keyboard-focus-owning window's root surface when no layer surface holds
-    /// keyboard focus.
-    fn desired_activated_window_surface(&self) -> Option<WlSurface> {
-        let exclusive_layer_focus = self.exclusive_layer_focus_surface();
-        let on_demand_layer_focus = exclusive_layer_focus
-            .is_none()
-            .then(|| {
-                self.layer_shell_on_demand_focus
-                    .as_ref()
-                    .map(|layer| layer.wl_surface().clone())
-            })
-            .flatten();
-        if exclusive_layer_focus.is_some() || on_demand_layer_focus.is_some() {
+    /// Root surface of the window that currently counts as *active*: the one
+    /// that carries the xdg `Activated` state, reports `isFocused` in
+    /// snapshots, and is advertised as `activated` over
+    /// wlr-foreign-toplevel-management.
+    ///
+    /// This deliberately is *not* "whoever holds raw keyboard focus".
+    /// `on_demand` layer surfaces — bars, docks, OSDs — are handed keyboard
+    /// focus as soon as they map (see `handlers::layer_shell`) and keep it
+    /// until the user clicks a window, and pressing such a panel takes focus
+    /// again. Deriving activation from keyboard focus therefore left *every*
+    /// toplevel permanently deactivated for the whole session while any such
+    /// panel was running. Taskbars read wlr `activated` as "this is the
+    /// current window", so sfwbar's `windowinfo("focused")` was always false
+    /// and its `if windowinfo("focused") minimize() else focus()` toggle could
+    /// never take the minimize branch (issue #71). A panel borrowing the
+    /// keyboard is not the user switching windows; the active window is
+    /// `window_keyboard_focus_owner`, which layer focus intentionally leaves
+    /// untouched.
+    ///
+    /// `exclusive` keyboard interactivity is a genuinely modal grab
+    /// (lock-screen style), so it still clears activation, as does an active
+    /// session lock.
+    pub(crate) fn activated_window_surface(&self) -> Option<WlSurface> {
+        if self.session_lock_active || self.exclusive_layer_focus_surface().is_some() {
             return None;
         }
         self.window_keyboard_focus_owner
@@ -964,7 +974,7 @@ impl ShojiWM {
             return;
         }
 
-        let focused_window_surface = self.desired_activated_window_surface();
+        let focused_window_surface = self.activated_window_surface();
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for candidate in windows {
             let mut should_activate = if let Some(toplevel) = candidate.toplevel() {
