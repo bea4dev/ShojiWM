@@ -291,9 +291,8 @@ pub fn reset_hdr_connector_state(
         conn,
         PROP_HDR_OUTPUT_METADATA
     )
-    {
-        if current != 0 {
-            if let Err(error) = device.set_property(
+        && current != 0
+            && let Err(error) = device.set_property(
                 conn.handle(),
                 info.handle(),
                 0
@@ -303,8 +302,6 @@ pub fn reset_hdr_connector_state(
                     "failed to clear HDR_OUTPUT_METADATA"
                 );
             }
-        }
-    }
     if let Some((info, current)) = find_connector_property(
         device,
         conn,
@@ -320,9 +317,9 @@ pub fn reset_hdr_connector_state(
                 .map(|entry| entry.value()),
             _ => None,
         };
-        if let Some(default_value) = default_value {
-            if current != default_value {
-                if let Err(error) =
+        if let Some(default_value) = default_value
+            && current != default_value
+                && let Err(error) =
                     device.set_property(
                         conn.handle(),
                         info.handle(),
@@ -334,8 +331,6 @@ pub fn reset_hdr_connector_state(
                         "failed to reset Colorspace"
                     );
                 }
-            }
-        }
     }
 }
 
