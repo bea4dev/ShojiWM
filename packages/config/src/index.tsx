@@ -454,7 +454,7 @@ COMPOSITOR.output.configure((context) => {
 
   display["eDP-1"] = {
     mode: "extend",
-    resolution: { width: 2880, height: 1800, refreshRate: 120 },
+    resolution: "best",
     position: "auto",
     scale: 1.8,
   };
