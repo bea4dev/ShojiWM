@@ -5085,7 +5085,7 @@ dependencies = [
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/bea4dev/smithay.git?rev=a04c9a0ca2ff84dd9a994f58888f391b1b233fdc#a04c9a0ca2ff84dd9a994f58888f391b1b233fdc"
+source = "git+https://github.com/bea4dev/smithay.git?rev=ba8ca4e62a318ac23a9b0f271f201c71d7c39a01#ba8ca4e62a318ac23a9b0f271f201c71d7c39a01"
 dependencies = [
  "aliasable",
  "appendlist",
@@ -5203,7 +5203,7 @@ dependencies = [
 [[package]]
 name = "smithay-drm-extras"
 version = "0.1.0"
-source = "git+https://github.com/bea4dev/smithay.git?rev=a04c9a0ca2ff84dd9a994f58888f391b1b233fdc#a04c9a0ca2ff84dd9a994f58888f391b1b233fdc"
+source = "git+https://github.com/bea4dev/smithay.git?rev=ba8ca4e62a318ac23a9b0f271f201c71d7c39a01#ba8ca4e62a318ac23a9b0f271f201c71d7c39a01"
 dependencies = [
  "drm",
 ]

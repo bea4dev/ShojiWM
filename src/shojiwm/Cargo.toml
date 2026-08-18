@@ -9,12 +9,12 @@ bitflags = "2.11.0"
 thiserror = "2.0.12"
 smithay = {
     git = "https://github.com/bea4dev/smithay.git",
-    rev = "a04c9a0ca2ff84dd9a994f58888f391b1b233fdc",
+    rev = "ba8ca4e62a318ac23a9b0f271f201c71d7c39a01",
     features = ["use_system_lib", "xwayland"]
 }
 smithay-drm-extras = {
     git = "https://github.com/bea4dev/smithay.git",
-    rev = "a04c9a0ca2ff84dd9a994f58888f391b1b233fdc",
+    rev = "ba8ca4e62a318ac23a9b0f271f201c71d7c39a01",
     package = "smithay-drm-extras",
     default-features = false
 }

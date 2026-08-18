@@ -233,6 +233,24 @@ fn popup_lifecycle_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+/// Latency diagnostic (`SHOJI_LATENCY_TRACE=1`), used to break down the
+/// pointer input-to-photon time into its waits.
+///
+/// A pointer input that has been handled but has not yet reached the screen.
+/// Only the oldest such input is kept: a render carries every input that
+/// arrived before it, so the oldest one measures the full input-to-photon path.
+///
+/// All three clocks involved are `CLOCK_MONOTONIC` and directly comparable:
+/// libinput event timestamps, smithay's `Clock<Monotonic>`, and the DRM page
+/// flip's `DrmEventTime::Monotonic`.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingPointerInput {
+    /// Kernel timestamp of the device event, from libinput.
+    pub event_time: Duration,
+    /// When the compositor finished handling it.
+    pub handled_at: Duration,
+}
+
 pub struct ShojiWM {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -426,6 +444,19 @@ pub struct ShojiWM {
 
     pub is_running: bool,
     pub needs_redraw: bool,
+    /// Pointer motion happened this dispatch cycle and nothing else damaged
+    /// the frame: instead of a full render, try to move only the DRM cursor
+    /// plane (see `backend::tty::try_fast_cursor_move`). `needs_redraw`
+    /// supersedes this — a full render carries the cursor position anyway.
+    pub cursor_fast_move_pending: bool,
+    /// When the pointer last moved. Gates deferred frame submission: holding
+    /// a rendered frame until the commit deadline only buys cursor freshness,
+    /// so with an idle pointer the hold is skipped and frames commit
+    /// immediately as before.
+    pub last_pointer_motion_at: Option<Instant>,
+    /// Latency diagnostic (`SHOJI_LATENCY_TRACE`): oldest pointer input not yet carried
+    /// onto the screen. See [`PendingPointerInput`].
+    pub pending_pointer_input: Option<PendingPointerInput>,
     pub cursor_status: CursorImageStatus,
     pub cursor_override: Option<CursorIcon>,
     pub cursor_theme: Cursor,
@@ -1432,6 +1463,9 @@ impl ShojiWM {
 
             is_running: true,
             needs_redraw: true,
+            cursor_fast_move_pending: false,
+            last_pointer_motion_at: None,
+            pending_pointer_input: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_override: None,
             cursor_theme: Cursor::load(),

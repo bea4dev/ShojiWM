@@ -21,7 +21,7 @@ use smithay::{
             DrmEventMetadata,
             DrmEventTime,
             DrmNode,
-            compositor::{FrameFlags, PrimaryPlaneElement},
+            compositor::{CursorMoveOutcome, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
         },
@@ -409,6 +409,30 @@ fn overlay_plane_state_map() -> &'static Mutex<HashMap<String, usize>> {
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn cursor_plane_state_map() -> &'static Mutex<HashMap<String, bool>> {
+    static STATE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Edge-triggered log of hardware cursor plane assignment
+/// (SHOJI_DIRECT_SCANOUT_DEBUG). The planned cursor-only fast-commit path only
+/// helps while the cursor actually sits on the DRM cursor plane, so this
+/// records when it lands there and when it falls back to GL compositing.
+fn note_cursor_plane_transition(output_name: &str, assigned: bool) {
+    let Ok(mut guard) = cursor_plane_state_map().lock() else {
+        return;
+    };
+    let previous = guard.insert(output_name.to_string(), assigned);
+    if previous == Some(assigned) {
+        return;
+    }
+    tracing::info!(
+        output = %output_name,
+        cursor_plane_assigned = assigned,
+        "cursor plane assignment changed"
+    );
+}
+
 /// Edge-triggered log of overlay plane assignments (SHOJI_DIRECT_SCANOUT_DEBUG).
 /// Overlay promotion of translucent client surfaces is a suspect for
 /// "transparent regions render black / flicker, but screencopy looks fine",
@@ -670,12 +694,36 @@ pub(crate) fn fullscreen_scanout_window(
     Some(window.clone())
 }
 
+/// Latency diagnostic (`SHOJI_LATENCY_TRACE=1`): a pointer input that has been rendered
+/// into a frame and committed, waiting for the page flip that will show it.
+#[derive(Debug, Clone, Copy)]
+struct LatencyInFlight {
+    input: crate::state::PendingPointerInput,
+    /// Start of the render that picked this input up.
+    render_started_at: Duration,
+    /// When the atomic commit was submitted.
+    committed_at: Duration,
+}
+
+/// A rendered frame whose atomic commit is being held back until just before
+/// the next vblank (cursor-freshness deferred submission). The frame itself
+/// stays staged inside the `DrmCompositor` as `next_frame`; this carries the
+/// bits `queue_frame` needs when the deadline timer finally submits it.
+struct DeferredSubmit {
+    feedback: smithay::desktop::utils::OutputPresentationFeedback,
+    total_cpu_elapsed: Duration,
+    /// Monotonic time the render began (`SHOJI_LATENCY_TRACE` only).
+    latency_render_started_at: Option<Duration>,
+}
+
 struct SurfaceData {
     output: Output,
     drm_output: GbmDrmOutput,
     available_modes: Vec<smithay::reexports::drm::control::Mode>,
     blink_damage_tracker: OutputDamageTracker,
     frame_pending: bool,
+    /// Latency diagnostic (`SHOJI_LATENCY_TRACE`): see [`LatencyInFlight`].
+    latency_in_flight: Option<LatencyInFlight>,
     queued_at: Option<Instant>,
     queued_cpu_duration: Duration,
     skipped_while_pending_count: u32,
@@ -699,6 +747,56 @@ struct SurfaceData {
     /// client commit must not be parked behind the estimated-vblank timer (see
     /// `queue_tty_redraws`).
     tearing_active: bool,
+    /// Whether the last real render assigned the cursor to the DRM cursor
+    /// plane. Gates the cursor fast path: a position-only plane commit is
+    /// meaningless while the cursor is composited into the primary plane.
+    cursor_on_plane: bool,
+    /// Hotspot used when the cursor was last rendered, in logical
+    /// coordinates. Any hotspot change comes with a cursor image change,
+    /// which damages the frame and forces a full render, so a cached value
+    /// is always in sync while the fast path is allowed to run.
+    last_cursor_hotspot: Point<i32, Logical>,
+    /// A cursor fast-path move arrived while a page flip was in flight with
+    /// nothing queued behind it (`CursorMoveOutcome::Busy`). Retried in
+    /// `frame_finish` with the pointer position current at that time.
+    cursor_move_pending: bool,
+    /// A deadline timer is armed to commit the cursor position just before
+    /// the next predicted vblank. Committing right after the previous flip
+    /// would put a position that is already a frame old on screen; deferring
+    /// the commit to `vblank - margin` makes the displayed position at most
+    /// `margin` old instead.
+    cursor_commit_timer_armed: bool,
+    cursor_commit_timer_generation: u64,
+    /// How far the kernel's vblank timestamps sit in the future of the actual
+    /// event delivery (EMA, zero when events arrive after their timestamp).
+    /// amdgpu on the eDP panel (60Hz, PSR suspected) timestamps flips ~4ms
+    /// ahead of when it delivers the event, so a deadline computed purely in
+    /// timestamp space would fire ~4ms later in real time than intended and
+    /// the cursor commit would miss its vblank. Subtracted from the cursor
+    /// commit deadline.
+    vblank_timestamp_lead: Duration,
+    /// Adaptive cursor commit margin (see [`CURSOR_MARGIN_INITIAL`]). Only
+    /// consulted when `SHOJI_CURSOR_COMMIT_MARGIN_MS` is not set.
+    cursor_commit_margin: Duration,
+    /// The vblank a fast-path cursor commit targeted, recorded only when the
+    /// commit happened in steady cadence (no idle gap — PSR exit makes the
+    /// first flip after an idle period abnormally slow, and learning from
+    /// those would inflate the steady-state margin). Compared with the actual
+    /// presentation timestamp in `frame_finish` to adapt the margin.
+    cursor_commit_predicted_vblank: Option<Duration>,
+    /// Refresh period the adaptive margin was learned for; a rate change
+    /// resets the margin since the driver's commit cutoff is rate-dependent.
+    cursor_margin_period_basis: Duration,
+    /// Miss-window state (see [`CURSOR_MARGIN_WINDOW_COMMITS`]).
+    cursor_margin_window_commits: u16,
+    cursor_margin_window_misses: u8,
+    /// A rendered frame held back until the commit deadline (see
+    /// [`DeferredSubmit`]). While this is `Some`, `frame_pending` and
+    /// `WaitingForVBlank` are already set as if the frame had been committed,
+    /// so the existing throttling keeps new damage queued behind it and the
+    /// cursor fast path patches the staged frame instead of committing.
+    deferred_submit: Option<DeferredSubmit>,
+    deferred_submit_generation: u64,
     dmabuf_feedback: SurfaceDmabufFeedback,
 }
 
@@ -791,6 +889,8 @@ fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
 }
 
 fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
+    surface.deferred_submit = None;
+    surface.deferred_submit_generation = surface.deferred_submit_generation.wrapping_add(1);
     surface.frame_pending = false;
     surface.queued_at = None;
     surface.queued_cpu_duration = Duration::ZERO;
@@ -1105,6 +1205,88 @@ fn frame_finish(
         })
         .unwrap_or_else(|| Duration::from(state.clock.now()));
     surface.next_frame_target = Some(presentation_clock + surface.frame_duration);
+    // Track how far the kernel timestamp runs ahead of the event delivery
+    // (zero on drivers whose events arrive after their timestamp); the cursor
+    // commit deadline subtracts this so its lead time is real, not
+    // timestamp-space. Event delivery jitters with dispatch load, so smooth
+    // with an EMA rather than trusting single samples.
+    let lead_sample =
+        presentation_clock.saturating_sub(Duration::from(state.clock.now()));
+    surface.vblank_timestamp_lead = (surface.vblank_timestamp_lead * 7 + lead_sample) / 8;
+    // Adapt the cursor commit margin from where fast-path commits actually
+    // land. Ratchet only: a miss (landed at least half a period past its
+    // predicted vblank) bumps the margin immediately; hits never shrink it,
+    // so the steady state does not probe the miss boundary and stutter
+    // periodically. A refresh-rate change resets the learned value.
+    if surface.cursor_margin_period_basis != surface.frame_duration {
+        surface.cursor_margin_period_basis = surface.frame_duration;
+        surface.cursor_commit_margin = CURSOR_MARGIN_INITIAL;
+        surface.cursor_margin_window_commits = 0;
+        surface.cursor_margin_window_misses = 0;
+    }
+    if let Some(predicted) = surface.cursor_commit_predicted_vblank.take()
+        && cursor_commit_margin_override().is_none()
+        && !surface.frame_duration.is_zero()
+    {
+        surface.cursor_margin_window_commits += 1;
+        if presentation_clock > predicted + surface.frame_duration / 2 {
+            surface.cursor_margin_window_misses += 1;
+        }
+        if surface.cursor_margin_window_misses >= CURSOR_MARGIN_WINDOW_MISSES {
+            surface.cursor_margin_window_commits = 0;
+            surface.cursor_margin_window_misses = 0;
+            let ceil = CURSOR_MARGIN_CEIL.min(surface.frame_duration.mul_f64(0.8));
+            let bumped = (surface.cursor_commit_margin + CURSOR_MARGIN_MISS_BUMP).min(ceil);
+            if bumped != surface.cursor_commit_margin {
+                // Deliberately an unconditional info log (not gated behind
+                // SHOJI_LATENCY_TRACE): a bump is a rare, meaningful
+                // operational event — the driver/panel commit cutoff turned
+                // out wider than the current margin (rate change, PSR state,
+                // sustained load) — and its trail in a normal session log is
+                // exactly what explains "the cursor felt different today".
+                info!(
+                    output = %output_name,
+                    margin_before_ms = surface.cursor_commit_margin.as_secs_f64() * 1000.0,
+                    margin_after_ms = bumped.as_secs_f64() * 1000.0,
+                    refresh_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                    "cursor commits are systematically missing their vblank; widening deadline margin"
+                );
+                surface.cursor_commit_margin = bumped;
+            }
+        } else if surface.cursor_margin_window_commits >= CURSOR_MARGIN_WINDOW_COMMITS {
+            surface.cursor_margin_window_commits = 0;
+            surface.cursor_margin_window_misses = 0;
+        }
+    }
+    // Latency diagnostic (`SHOJI_LATENCY_TRACE`): `presentation_clock` is the kernel's
+    // own scanout timestamp for this flip, so this is real input-to-photon
+    // (everything but the panel's internal delay). The breakdown separates the
+    // three waits: reaching the compositor, sitting until a render starts, and
+    // sitting rendered until the next vblank.
+    if let Some(in_flight) = surface.latency_in_flight.take() {
+        let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
+        let sub = |later: Duration, earlier: Duration| ms(later.saturating_sub(earlier));
+        // How far the vblank event's delivery sits from the kernel's own
+        // scanout timestamp. Negative would mean the event (and this handler)
+        // ran before the moment the timestamp refers to — a driver that
+        // timestamps the upcoming scanout rather than the completed one.
+        let event_delay_ms =
+            ms(Duration::from(state.clock.now())) - ms(presentation_clock);
+        info!(
+            output = %output_name,
+            input_to_photon_ms = sub(presentation_clock, in_flight.input.event_time),
+            kernel_to_compositor_ms = sub(in_flight.input.handled_at, in_flight.input.event_time),
+            wait_for_render_ms = sub(in_flight.render_started_at, in_flight.input.handled_at),
+            render_to_commit_ms = sub(in_flight.committed_at, in_flight.render_started_at),
+            commit_to_photon_ms = sub(presentation_clock, in_flight.committed_at),
+            vblank_event_delay_ms = event_delay_ms,
+            cursor_margin_ms = ms(
+                cursor_commit_margin_override().unwrap_or(surface.cursor_commit_margin)
+            ),
+            refresh_ms = ms(surface.frame_duration),
+            "latency trace: pointer input to photon"
+        );
+    }
     if let Ok(user_data) = submit_result {
         let clock = presentation_clock;
         let sequence = present_sequence;
@@ -1170,6 +1352,11 @@ fn frame_finish(
         TtyRedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
         _ => false,
     };
+    // A cursor fast-path move that hit `CursorMoveOutcome::Busy` waited for
+    // this vblank; retry it below once the surface borrow ends. A full redraw
+    // supersedes it — the render carries the cursor position anyway.
+    let cursor_retry = !redraw_needed && surface.cursor_move_pending;
+    surface.cursor_move_pending = false;
     surface.redraw_state = if redraw_needed {
         TtyRedrawState::Queued
     } else {
@@ -1209,6 +1396,11 @@ fn frame_finish(
         render_queued_surface_after_frame_finish(state, loop_handle, node, crtc);
     } else {
         schedule_commit_timing_timer(loop_handle, state, node, crtc);
+        if cursor_retry && !try_fast_cursor_move(state, loop_handle) {
+            // The plane layout changed while we waited; let a normal render
+            // reposition the cursor instead.
+            state.schedule_redraw();
+        }
     }
 }
 
@@ -1262,6 +1454,379 @@ fn render_queued_surface_after_frame_finish(
                 "queued tty follow-up redraw failed; falling back to scheduled redraw"
             );
             state.schedule_redraw();
+        }
+    }
+}
+
+/// Kill switch for the cursor-plane fast path: `SHOJI_CURSOR_FAST_PATH=0`
+/// falls back to full renders for every pointer motion.
+pub fn cursor_fast_path_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SHOJI_CURSOR_FAST_PATH").is_none_or(|value| value != "0")
+    })
+}
+
+/// Fixed override for the cursor commit margin (`SHOJI_CURSOR_COMMIT_MARGIN_MS`).
+/// When set, the adaptive margin is bypassed entirely — useful for measuring
+/// how much lead time a driver/panel actually needs.
+fn cursor_commit_margin_override() -> Option<Duration> {
+    static MARGIN: OnceLock<Option<Duration>> = OnceLock::new();
+    *MARGIN.get_or_init(|| {
+        std::env::var("SHOJI_CURSOR_COMMIT_MARGIN_MS")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .map(|ms| Duration::from_secs_f64(ms.clamp(0.5, 15.0) / 1000.0))
+    })
+}
+
+/// Starting cursor commit margin. The margin adapts upward from here when
+/// misses are *systematic* (see [`CURSOR_MARGIN_MISS_SCORE_BUMP`]); it never
+/// decays, so the steady state does not probe the miss boundary and stutter
+/// periodically. A refresh-rate change resets it, since the driver's commit
+/// cutoff is rate/panel-state dependent (measured: ~5ms needed at 60Hz with
+/// PSR-style timestamp skew, ~3ms at 120Hz without).
+///
+/// Isolated misses are deliberately tolerated: measured at 120Hz, a 3ms
+/// margin has a ~0.3% miss rate, and the user judged that occasional
+/// one-frame hiccup clearly preferable to a permanently 1ms staler cursor.
+const CURSOR_MARGIN_INITIAL: Duration = Duration::from_millis(3);
+const CURSOR_MARGIN_MISS_BUMP: Duration = Duration::from_millis(1);
+const CURSOR_MARGIN_CEIL: Duration = Duration::from_millis(8);
+/// Windowed miss counting for the ratchet: the margin widens as soon as
+/// [`CURSOR_MARGIN_WINDOW_MISSES`] cursor commits miss their vblank within a
+/// window of [`CURSOR_MARGIN_WINDOW_COMMITS`] commits (≈1.6% sustained). The
+/// two regimes this must separate are far apart — ~0.1% isolated misses at a
+/// healthy margin (measured at 120Hz/3ms, must never bump) versus 2–3% at a
+/// marginal one (measured at 60Hz/5ms, perceived as visible frame drops, must
+/// bump) — and Poisson statistics make the window a near-perfect classifier:
+/// four misses land in one window virtually never at 0.1%, within a few
+/// seconds at 2%, and within 4 commits right after a rate change. An earlier
+/// score-drift scheme put its critical rate at 2.4%, straddling the marginal
+/// regime's own 2–3% variance, and stalled one bump short.
+const CURSOR_MARGIN_WINDOW_COMMITS: u16 = 256;
+const CURSOR_MARGIN_WINDOW_MISSES: u8 = 4;
+
+/// Cursor-only fast path: commit a new hardware-cursor-plane position without
+/// re-rendering.
+///
+/// A full render/queue cycle gives pointer motion two waits: the input sits
+/// until a render slot opens (the previous flip is still in flight) and the
+/// finished frame then waits up to a whole refresh for its vblank. When
+/// nothing but the cursor moved we can skip both — the cursor plane keeps its
+/// buffer and only its CRTC position changes, which
+/// `DrmCompositor::update_cursor_position` either commits immediately, merges
+/// into an already queued frame, or asks us to retry after the in-flight flip
+/// (latched via `cursor_move_pending`, resolved in `frame_finish`).
+///
+/// Returns `false` when the fast path cannot run; the caller falls back to
+/// `schedule_redraw()` and the normal render carries the cursor instead.
+pub fn try_fast_cursor_move(state: &mut ShojiWM, loop_handle: &LoopHandle<'_, ShojiWM>) -> bool {
+    fast_cursor_move_inner(state, loop_handle, true)
+}
+
+/// Deadline submission: the commit half of a render whose `queue_frame` was
+/// held back until just before the next vblank (see `DeferredSubmit`). Runs
+/// from the one-shot timer armed in `render_surface`; patches the staged
+/// frame with the freshest pointer position and then submits it.
+fn submit_deferred_frame(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    generation: u64,
+) {
+    {
+        let Some(surface) = state
+            .tty_backends
+            .get_mut(&node)
+            .and_then(|backend| backend.surfaces.get_mut(&crtc))
+        else {
+            return;
+        };
+        if surface.deferred_submit.is_none() || surface.deferred_submit_generation != generation {
+            return;
+        }
+    }
+    // Carry the freshest pointer position: the frame is still staged inside
+    // the DrmCompositor, so this patches its cursor plane in place
+    // (`MergedIntoQueued`) rather than committing anything by itself.
+    let _ = fast_cursor_move_inner(state, loop_handle, false);
+    let Some(surface) = state
+        .tty_backends
+        .get_mut(&node)
+        .and_then(|backend| backend.surfaces.get_mut(&crtc))
+    else {
+        return;
+    };
+    let Some(deferred) = surface.deferred_submit.take() else {
+        return;
+    };
+    let queue_started_at = Instant::now();
+    let submit_error = {
+        timescope::scope!("tty deferred queue_frame");
+        surface
+            .drm_output
+            .queue_frame_tearing(Some(deferred.feedback), false)
+            .err()
+    };
+    match submit_error {
+        None => {
+            let now = Duration::from(state.clock.now());
+            // This commit was deadline-scheduled, so it participates in the
+            // margin adaptation (immediately-submitted frames do not — a late
+            // render, not the margin, decides those).
+            record_margin_learning_sample(surface, now);
+            surface.queued_at = Some(queue_started_at);
+            surface.queued_cpu_duration = deferred.total_cpu_elapsed;
+            surface.skipped_while_pending_count = 0;
+            // `frame_pending` and `WaitingForVBlank` were already set when
+            // the frame was staged.
+            // Latency diagnostic (`SHOJI_LATENCY_TRACE`)
+            if crate::input::latency_trace_enabled()
+                && surface.latency_in_flight.is_none()
+                && let Some(input) = state.pending_pointer_input.take()
+            {
+                surface.latency_in_flight = Some(LatencyInFlight {
+                    input,
+                    render_started_at: deferred.latency_render_started_at.unwrap_or(now),
+                    committed_at: now,
+                });
+            }
+        }
+        Some(err) => {
+            // The held frame is gone either way; put the surface back into a
+            // state where a fresh render can recover through the normal
+            // (fully error-handled) path. `EmptyFrame` means a follow-up
+            // render emptied the staged frame — its own no-damage handling
+            // already ran, so stay quiet about it.
+            surface.frame_pending = false;
+            surface.redraw_state = TtyRedrawState::Idle;
+            let output_name = surface.output.name();
+            use smithay::backend::drm::compositor::FrameError;
+            let empty = matches!(err, FrameError::EmptyFrame);
+            if !empty {
+                warn!(
+                    output = %output_name,
+                    ?err,
+                    "deferred frame submission failed; falling back to a fresh render"
+                );
+                state.schedule_redraw();
+            }
+        }
+    }
+}
+
+/// Deadline for a commit that wants to land on the next vblank while carrying
+/// the freshest possible cursor position: `predicted next vblank − (margin +
+/// timestamp skew)`. `None` when there is no vblank basis to predict from.
+fn commit_deadline(surface: &SurfaceData, now: Duration) -> Option<Duration> {
+    let last_presented_at = surface.last_presented_at?;
+    let period = surface.frame_duration;
+    if period.is_zero() {
+        return None;
+    }
+    let elapsed_periods =
+        (now.saturating_sub(last_presented_at).as_nanos() / period.as_nanos()) as u32;
+    let next_vblank = last_presented_at + period * (elapsed_periods + 1);
+    let margin = cursor_commit_margin_override().unwrap_or(surface.cursor_commit_margin);
+    Some(next_vblank.saturating_sub(margin + surface.vblank_timestamp_lead))
+}
+
+/// Record which vblank a deadline-scheduled commit targets so `frame_finish`
+/// can adapt the margin from where it actually lands. Only commits for which
+/// the margin was the binding constraint may participate: callers must not
+/// record immediately-submitted frames (a late render, not the margin, decides
+/// those), and this skips non-steady cadence (the first flip after an idle
+/// gap can be abnormally slow — PSR exit — and would inflate the margin).
+fn record_margin_learning_sample(surface: &mut SurfaceData, now: Duration) {
+    surface.cursor_commit_predicted_vblank = None;
+    let Some(last_presented_at) = surface.last_presented_at else {
+        return;
+    };
+    let period = surface.frame_duration;
+    if period.is_zero() {
+        return;
+    }
+    let elapsed = now.saturating_sub(last_presented_at);
+    if elapsed < period * 2 {
+        let k = (elapsed.as_nanos() / period.as_nanos()) as u32 + 1;
+        surface.cursor_commit_predicted_vblank = Some(last_presented_at + period * k);
+    }
+}
+
+fn fast_cursor_move_inner(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    allow_defer: bool,
+) -> bool {
+    if !cursor_fast_path_enabled() {
+        return false;
+    }
+    let ShojiWM {
+        space,
+        seat,
+        tty_backends,
+        tty_session_active,
+        pending_pointer_input,
+        clock,
+        ..
+    } = state;
+    if !*tty_session_active {
+        return false;
+    }
+    let Some(pointer) = seat.get_pointer() else {
+        return false;
+    };
+    let pointer_pos = pointer.current_location();
+    let Some((output, output_geo)) = space.outputs().find_map(|output| {
+        let geo = space.output_geometry(output)?;
+        geo.to_f64()
+            .contains(pointer_pos)
+            .then(|| (output.clone(), geo))
+    }) else {
+        return false;
+    };
+
+    let Some((node, crtc, surface)) = tty_backends.iter_mut().find_map(|(node, backend)| {
+        backend.surfaces.iter_mut().find_map(|(crtc, surface)| {
+            if surface.output == output {
+                Some((*node, *crtc, surface))
+            } else {
+                None
+            }
+        })
+    }) else {
+        return false;
+    };
+
+    // Only when the last real render actually put the cursor on the DRM
+    // cursor plane, and never while the tearing path is active (async flips
+    // reject commits that touch anything but the primary plane).
+    if !surface.cursor_on_plane || surface.tearing_active {
+        return false;
+    }
+    // While an estimated-vblank timer stands in for a real vblank a fast
+    // commit would make a real vblank event race that timer; keep the slow
+    // path for this state.
+    if matches!(
+        surface.redraw_state,
+        TtyRedrawState::WaitingForEstimatedVBlank { .. }
+    ) {
+        return false;
+    }
+
+    // Deadline scheduling for the commit only: a commit made right after the
+    // previous flip carries a position that is a whole frame old by the time
+    // its vblank scans it out. Defer the commit to `next vblank - margin` and
+    // read the pointer position at that moment instead. Rendering is never
+    // deferred — a late timer only means the cursor shows one frame later,
+    // exactly like today's behaviour.
+    // While a rendered frame is being held for deferred submission there is
+    // no point arming a cursor timer of our own: patching the staged frame
+    // immediately (below) is free, and the hold timer re-patches with the
+    // final position right before it submits.
+    if allow_defer && surface.deferred_submit.is_none() {
+        let now = Duration::from(clock.now());
+        if let Some(deadline) = commit_deadline(surface, now) {
+            if now < deadline {
+                if surface.cursor_commit_timer_armed {
+                    // Already scheduled; the timer reads the freshest pointer
+                    // position when it fires.
+                    return true;
+                }
+                let generation = surface.cursor_commit_timer_generation.wrapping_add(1);
+                surface.cursor_commit_timer_generation = generation;
+                surface.cursor_commit_timer_armed = true;
+                let callback_loop_handle = loop_handle.clone();
+                let armed = loop_handle
+                    .insert_source(Timer::from_duration(deadline - now), move |_, _, state| {
+                        let timer_is_current = {
+                            let Some(surface) = state
+                                .tty_backends
+                                .get_mut(&node)
+                                .and_then(|backend| backend.surfaces.get_mut(&crtc))
+                            else {
+                                return TimeoutAction::Drop;
+                            };
+                            if !surface.cursor_commit_timer_armed
+                                || surface.cursor_commit_timer_generation != generation
+                            {
+                                return TimeoutAction::Drop;
+                            }
+                            surface.cursor_commit_timer_armed = false;
+                            true
+                        };
+                        // A pending full redraw carries the cursor position by
+                        // itself; committing here as well would only occupy
+                        // the CRTC ahead of it.
+                        if timer_is_current
+                            && !state.needs_redraw
+                            && !fast_cursor_move_inner(state, &callback_loop_handle, false)
+                        {
+                            state.schedule_redraw();
+                        }
+                        TimeoutAction::Drop
+                    })
+                    .is_ok();
+                if !armed {
+                    surface.cursor_commit_timer_armed = false;
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
+
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    // Same formula as the render path's cursor element location.
+    let location = (pointer_pos - output_geo.loc.to_f64() - surface.last_cursor_hotspot.to_f64())
+        .to_physical(scale)
+        .to_i32_round();
+
+    match surface.drm_output.update_cursor_position(location, None) {
+        Ok(CursorMoveOutcome::Committed) => {
+            record_margin_learning_sample(surface, Duration::from(clock.now()));
+            surface.cursor_move_pending = false;
+            surface.frame_pending = true;
+            surface.queued_at = Some(Instant::now());
+            surface.queued_cpu_duration = Duration::ZERO;
+            surface.skipped_while_pending_count = 0;
+            surface.redraw_state = TtyRedrawState::WaitingForVBlank {
+                redraw_needed: false,
+            };
+            // Latency diagnostic (`SHOJI_LATENCY_TRACE`): a fast-path commit goes
+            // straight from input handling to the atomic commit, so render
+            // start and commit time coincide.
+            if crate::input::latency_trace_enabled()
+                && surface.latency_in_flight.is_none()
+                && let Some(input) = pending_pointer_input.take()
+            {
+                let now = Duration::from(clock.now());
+                surface.latency_in_flight = Some(LatencyInFlight {
+                    input,
+                    render_started_at: now,
+                    committed_at: now,
+                });
+            }
+            true
+        }
+        Ok(CursorMoveOutcome::MergedIntoQueued) | Ok(CursorMoveOutcome::AlreadyUpToDate) => {
+            surface.cursor_move_pending = false;
+            true
+        }
+        Ok(CursorMoveOutcome::Busy) => {
+            surface.cursor_move_pending = true;
+            true
+        }
+        Ok(CursorMoveOutcome::NotApplicable) => false,
+        Err(err) => {
+            warn!(
+                output = %output.name(),
+                ?err,
+                "cursor fast path commit failed; falling back to a full render"
+            );
+            false
         }
     }
 }
@@ -1331,7 +1896,22 @@ pub fn render_if_needed(
             .collect();
 
         for crtc in crtcs {
-            match render_surface(state, loop_handle, node, crtc)? {
+            let outcome = render_surface(state, loop_handle, node, crtc)?;
+            // Latency diagnostic (`SHOJI_LATENCY_TRACE`): a commit took the pending
+            // input onto the screen, so stop tracking it here — the next input
+            // starts its own measurement. Matched by event time so a render
+            // that skipped its commit leaves the input pending.
+            if let Some(pending) = state.pending_pointer_input
+                && state
+                    .tty_backends
+                    .get(&node)
+                    .and_then(|backend| backend.surfaces.get(&crtc))
+                    .and_then(|surface| surface.latency_in_flight)
+                    .is_some_and(|in_flight| in_flight.input.event_time == pending.event_time)
+            {
+                state.pending_pointer_input = None;
+            }
+            match outcome {
                 RenderSurfaceOutcome::Skipped => {}
                 RenderSurfaceOutcome::CommitFailed => {
                     // An invalid screen configuration is expected right after
@@ -1923,6 +2503,25 @@ fn render_surface(
     crtc: crtc::Handle,
 ) -> Result<RenderSurfaceOutcome, Box<dyn std::error::Error>> {
     let frame_started_at = Instant::now();
+    // Latency diagnostic (`SHOJI_LATENCY_TRACE`): anchor pair for the input-to-photon
+    // measurement. Both readings are CLOCK_MONOTONIC, so a later `Instant`
+    // delta added to the monotonic anchor gives a monotonic timestamp that is
+    // directly comparable to libinput and DRM timestamps — without having to
+    // reach for `state.clock` deeper in the render, where it is borrowed.
+    // Peeked, not taken. A render that ends up skipping its commit (most
+    // commonly because a flip is still pending) does not put anything on
+    // screen, so the input it looked at is still waiting and must stay pending
+    // for the render that does commit. Consuming it here instead would drop
+    // exactly the inputs that wait longest and report only the lucky ones that
+    // arrived just before a committing render — i.e. the best case only.
+    // `render_if_needed` clears it once a commit actually took it.
+    let latency_anchor = crate::input::latency_trace_enabled().then(|| {
+        (
+            Duration::from(state.clock.now()),
+            frame_started_at,
+            state.pending_pointer_input,
+        )
+    });
     timescope::scope!("tty render_surface");
     let spike_threshold_ms = animation_spike_threshold_ms();
     let Some(output) = state
@@ -2349,6 +2948,9 @@ fn render_surface(
                 };
 
                 pointer_element.set_status(effective_cursor_status);
+                // The cursor fast path recomputes this location for newer
+                // pointer positions; keep the hotspot it needs in sync.
+                surface.last_cursor_hotspot = hotspot;
 
                 let cursor_location = (pointer_pos - output_geo.loc.to_f64() - hotspot.to_f64())
                     .to_physical(scale)
@@ -5619,12 +6221,14 @@ fn render_surface(
             }
         };
         fps_counter.record_present(output.name().as_str());
+        surface.cursor_on_plane = result.cursor_plane_assigned;
         if direct_scanout_debug_enabled() {
             note_overlay_plane_transition(
                 output.name().as_str(),
                 result.overlay_plane_count,
                 &result.overlay_details,
             );
+            note_cursor_plane_transition(output.name().as_str(), result.cursor_plane_assigned);
         }
         note_direct_scanout_transition(
             output.name().as_str(),
@@ -6006,66 +6610,143 @@ fn render_surface(
             // log; see `note_tearing_transition`).
             note_tearing_transition(output.name().as_str(), should_tear, tearing_forced);
             let queue_started_at = Instant::now();
-            // `should_tear` selects an immediate (async) page flip when the fullscreen
-            // direct-scanout tearing fast path is active, and a normal vblank-synced flip
-            // otherwise. See `should_tear` / the tearing fast-path block above.
+            // Deferred submission (cursor freshness): hold the rendered frame
+            // — it stays staged inside the DrmCompositor as `next_frame` —
+            // until the commit deadline, so the cursor plane carries the
+            // freshest pointer position when it finally flies. The hold only
+            // buys cursor freshness, so it is gated on the pointer actually
+            // moving; a render that finishes past the deadline (or when the
+            // gate is off) submits immediately below, exactly as before.
+            // `frame_pending`/`WaitingForVBlank` are set for both paths, so
+            // the existing throttling treats the held frame as in-flight and
+            // the cursor fast path patches it instead of committing.
+            let mut deferred = false;
+            if !should_tear
+                && cursor_fast_path_enabled()
+                && result.cursor_plane_assigned
+                && state
+                    .last_pointer_motion_at
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
             {
-                timescope::scope!("tty queue_frame");
-                if let Err(err) = surface
-                    .drm_output
-                    .queue_frame_tearing(Some(output_presentation_feedback), should_tear)
+                let now = Duration::from(state.clock.now());
+                if let Some(deadline) = commit_deadline(surface, now)
+                    && deadline > now
                 {
-                    if error_chain_has_permission_denied(&err) {
-                        warn!(
-                            output = %output.name(),
-                            ?err,
-                            "tty queue_frame lost drm access; waiting for session resume"
-                        );
-                        // A permission-denied commit means DRM master is already gone,
-                        // but logind's `PauseSession` has not been dispatched yet —
-                        // measured ~20ms wide on resume from suspend. Until the flag
-                        // flips, `run_tty_udev` still treats `UdevEvent::Changed` as a
-                        // live hotplug, so a connector event landing inside that window
-                        // half-applies exactly as its comment warns: the scanner records
-                        // the new topology while every CRTC commit fails with EACCES, and
-                        // the post-resume replay then skips the output because it is
-                        // already recorded as connected. Nothing re-arms it and the panel
-                        // stays dark for the rest of the session. Drop the flag where the
-                        // loss is first observed so the existing deferral covers the gap;
-                        // `ActivateSession` restores it.
-                        *tty_session_active = false;
-                        reset_surface_after_tty_pause(surface);
-                        return Ok(RenderSurfaceOutcome::Skipped);
+                    let generation = surface.deferred_submit_generation.wrapping_add(1);
+                    surface.deferred_submit_generation = generation;
+                    let callback_loop_handle = loop_handle.clone();
+                    if loop_handle
+                        .insert_source(Timer::from_duration(deadline - now), move |_, _, state| {
+                            submit_deferred_frame(
+                                state,
+                                &callback_loop_handle,
+                                node,
+                                crtc,
+                                generation,
+                            );
+                            TimeoutAction::Drop
+                        })
+                        .is_ok()
+                    {
+                        deferred = true;
                     }
-                    if error_chain_has_drm_test_failed(&err) {
-                        warn!(
-                            output = %output.name(),
-                            ?err,
-                            "tty queue_frame failed its atomic test; requesting surface reset",
-                        );
-                        return Ok(
-                            RenderSurfaceOutcome::CommitFailed,
-                        );
-                    }
-                    return Err(Box::new(err));
                 }
             }
-            if animation_gap_debug_enabled() {
-                info!(
-                    output = %output.name(),
-                    redraw_state_before = ?surface.redraw_state,
-                    frame_pending_before = surface.frame_pending,
-                    frame_callback_timer_armed = surface.frame_callback_timer_armed,
-                    next_frame_target = ?surface.next_frame_target,
-                    estimated_render_duration_ms =
-                        surface.estimated_render_duration.as_secs_f64() * 1000.0,
-                    result_is_empty = result.is_empty,
-                    "animation gap: tty queue_frame submitted"
-                );
+            if deferred {
+                surface.deferred_submit = Some(DeferredSubmit {
+                    feedback: output_presentation_feedback,
+                    total_cpu_elapsed,
+                    latency_render_started_at: latency_anchor
+                        .map(|(anchor_mono, _, _)| anchor_mono),
+                });
+            } else {
+                // Even without the hold (late render or gate off), re-patch
+                // the staged cursor position right before submission: the
+                // render sampled the pointer at its start, and a heavy render
+                // leaves that several milliseconds stale by now.
+                if cursor_fast_path_enabled()
+                    && result.cursor_plane_assigned
+                    && !should_tear
+                    && output_geo.to_f64().contains(pointer_pos)
+                {
+                    let cursor_location = (pointer_pos
+                        - output_geo.loc.to_f64()
+                        - surface.last_cursor_hotspot.to_f64())
+                    .to_physical(scale)
+                    .to_i32_round();
+                    let _ = surface.drm_output.update_cursor_position(cursor_location, None);
+                }
+                // `should_tear` selects an immediate (async) page flip when the fullscreen
+                // direct-scanout tearing fast path is active, and a normal vblank-synced flip
+                // otherwise. See `should_tear` / the tearing fast-path block above.
+                {
+                    timescope::scope!("tty queue_frame");
+                    if let Err(err) = surface
+                        .drm_output
+                        .queue_frame_tearing(Some(output_presentation_feedback), should_tear)
+                    {
+                        if error_chain_has_permission_denied(&err) {
+                            warn!(
+                                output = %output.name(),
+                                ?err,
+                                "tty queue_frame lost drm access; waiting for session resume"
+                            );
+                            // A permission-denied commit means DRM master is already gone,
+                            // but logind's `PauseSession` has not been dispatched yet —
+                            // measured ~20ms wide on resume from suspend. Until the flag
+                            // flips, `run_tty_udev` still treats `UdevEvent::Changed` as a
+                            // live hotplug, so a connector event landing inside that window
+                            // half-applies exactly as its comment warns: the scanner records
+                            // the new topology while every CRTC commit fails with EACCES, and
+                            // the post-resume replay then skips the output because it is
+                            // already recorded as connected. Nothing re-arms it and the panel
+                            // stays dark for the rest of the session. Drop the flag where the
+                            // loss is first observed so the existing deferral covers the gap;
+                            // `ActivateSession` restores it.
+                            *tty_session_active = false;
+                            reset_surface_after_tty_pause(surface);
+                            return Ok(RenderSurfaceOutcome::Skipped);
+                        }
+                        if error_chain_has_drm_test_failed(&err) {
+                            warn!(
+                                output = %output.name(),
+                                ?err,
+                                "tty queue_frame failed its atomic test; requesting surface reset",
+                            );
+                            return Ok(
+                                RenderSurfaceOutcome::CommitFailed,
+                            );
+                        }
+                        return Err(Box::new(err));
+                    }
+                }
+                if animation_gap_debug_enabled() {
+                    info!(
+                        output = %output.name(),
+                        redraw_state_before = ?surface.redraw_state,
+                        frame_pending_before = surface.frame_pending,
+                        frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                        next_frame_target = ?surface.next_frame_target,
+                        estimated_render_duration_ms =
+                            surface.estimated_render_duration.as_secs_f64() * 1000.0,
+                        result_is_empty = result.is_empty,
+                        "animation gap: tty queue_frame submitted"
+                    );
+                }
+                // Latency diagnostic (`SHOJI_LATENCY_TRACE`): this frame now carries every
+                // pointer input that arrived before the render began. Record the
+                // oldest so `frame_finish` can report how long it took to appear.
+                if let Some((anchor_mono, anchor_instant, Some(input))) = latency_anchor {
+                    surface.latency_in_flight = Some(LatencyInFlight {
+                        input,
+                        render_started_at: anchor_mono,
+                        committed_at: anchor_mono + queue_started_at.duration_since(anchor_instant),
+                    });
+                }
+                surface.queued_at = Some(queue_started_at);
+                surface.queued_cpu_duration = total_cpu_elapsed;
             }
             surface.frame_pending = true;
-            surface.queued_at = Some(queue_started_at);
-            surface.queued_cpu_duration = total_cpu_elapsed;
             surface.skipped_while_pending_count = 0;
             surface.frame_callback_timer_armed = false;
             surface.frame_callback_timer_generation =
@@ -11825,6 +12506,7 @@ fn connector_connected(
         available_modes: connector.modes().to_vec(),
         blink_damage_tracker: OutputDamageTracker::from_output(&output),
         frame_pending: false,
+        latency_in_flight: None,
         queued_at: None,
         queued_cpu_duration: Duration::ZERO,
         skipped_while_pending_count: 0,
@@ -11841,6 +12523,19 @@ fn connector_connected(
         last_frame_callback_at: None,
         supports_async_flip,
         tearing_active: false,
+        cursor_on_plane: false,
+        last_cursor_hotspot: Point::default(),
+        cursor_move_pending: false,
+        cursor_commit_timer_armed: false,
+        cursor_commit_timer_generation: 0,
+        vblank_timestamp_lead: Duration::ZERO,
+        cursor_commit_margin: CURSOR_MARGIN_INITIAL,
+        cursor_commit_predicted_vblank: None,
+        cursor_margin_period_basis: frame_duration,
+        cursor_margin_window_commits: 0,
+        cursor_margin_window_misses: 0,
+        deferred_submit: None,
+        deferred_submit_generation: 0,
         dmabuf_feedback,
     };
     backend.surfaces.insert(crtc, surface);

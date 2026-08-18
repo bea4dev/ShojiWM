@@ -39,7 +39,7 @@ use crate::{
     activation_environment::publish_activation_environment,
     backend::tty::{
         device_added, device_changed, device_removed, pause_tty_session, render_if_needed,
-        resume_tty_session,
+        resume_tty_session, try_fast_cursor_move,
     },
     config::tty_output_names_match,
     state::ShojiWM,
@@ -387,6 +387,17 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
                 state.schedule_redraw();
             }
             state.cleanup_popups_with_debug("tty-pre-render-maintenance");
+        }
+
+        // Cursor fast path: pointer motion whose only visual effect is the
+        // cursor position skips the full render and just moves the DRM cursor
+        // plane. Any other pending damage wins — the full render repositions
+        // the cursor plane anyway.
+        if state.cursor_fast_move_pending {
+            state.cursor_fast_move_pending = false;
+            if !state.needs_redraw && !try_fast_cursor_move(&mut state, &event_loop.handle()) {
+                state.schedule_redraw();
+            }
         }
 
         let mut rendered_this_iteration = false;

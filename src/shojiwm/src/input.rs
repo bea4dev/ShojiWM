@@ -76,6 +76,11 @@ const POINTER_TRAILING_EDGE_INSET: f64 = 0.5;
 /// The half-pixel inset keeps the projected point strictly inside a trailing
 /// edge while still flooring to its final logical pixel. Pointer hit tests use
 /// `to_i32_floor()` for the corresponding containment rule.
+/// Gate for the pointer input-to-photon latency diagnostic.
+pub fn latency_trace_enabled() -> bool {
+    std::env::var_os("SHOJI_LATENCY_TRACE").is_some()
+}
+
 fn constrain_pointer_location_to_outputs(
     location: Point<f64, Logical>,
     output_geometries: impl IntoIterator<Item = Rectangle<i32, Logical>>,
@@ -151,6 +156,43 @@ impl ShojiWM {
     /// they differ — at the cost of the pointer covering less of the screen
     /// per hand movement on the more densely scaled one. That is inherent to
     /// working in physical pixels and is what Windows does too.
+    /// Latency diagnostic (`SHOJI_LATENCY_TRACE=1`): mark that a pointer input is now
+    /// waiting to be shown, so the render/flip path can report how long it took
+    /// to reach the screen.
+    ///
+    /// Keeps only the oldest pending input. A frame carries every input that
+    /// arrived before it, so the oldest is the one that measures the whole
+    /// path; overwriting it with newer ones would report only the last-moment
+    /// input and hide the wait.
+    fn note_pointer_input_for_latency(&mut self, event_time_usec: u64) {
+        if !latency_trace_enabled() {
+            return;
+        }
+        if self.pending_pointer_input.is_some() {
+            return;
+        }
+        self.pending_pointer_input = Some(crate::state::PendingPointerInput {
+            event_time: std::time::Duration::from_micros(event_time_usec),
+            handled_at: std::time::Duration::from(self.clock.now()),
+        });
+    }
+
+    /// Redraw request for pointer motion: prefer the cursor-plane fast path
+    /// over a full render. The flag is resolved after dispatch in the tty
+    /// backend loop; anything else that damaged the frame during this
+    /// dispatch sets `needs_redraw`, which supersedes the fast path there.
+    fn request_redraw_for_pointer_motion(&mut self) {
+        self.last_pointer_motion_at = Some(std::time::Instant::now());
+        if crate::backend::tty::cursor_fast_path_enabled()
+            && self.tty_session_active
+            && !self.tty_backends.is_empty()
+        {
+            self.cursor_fast_move_pending = true;
+        } else {
+            self.schedule_redraw();
+        }
+    }
+
     fn pointer_motion_delta<D: smithay::backend::input::Device>(
         &self,
         device: &D,
@@ -763,7 +805,8 @@ impl ShojiWM {
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);
                 }
-                self.schedule_redraw();
+                self.note_pointer_input_for_latency(event.time());
+                self.request_redraw_for_pointer_motion();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let Some(output_bounds) = self.output_layout_bounds() else {
@@ -813,7 +856,8 @@ impl ShojiWM {
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);
                 }
-                self.schedule_redraw();
+                self.note_pointer_input_for_latency(event.time());
+                self.request_redraw_for_pointer_motion();
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
