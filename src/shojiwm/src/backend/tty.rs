@@ -12972,8 +12972,8 @@ fn connector_disconnected(
         color_state
     ) = state.output_color.remove(
         &output_name
-    ) {
-        if let Some(
+    )
+        && let Some(
             blob
         ) = color_state.hdr_metadata_blob {
             // The kernel only frees property blobs when the DRM fd closes,
@@ -12985,7 +12985,6 @@ fn connector_disconnected(
                 blob,
             );
         }
-    }
     let output = surface.output;
     state.space.unmap_output(&output);
     state.remove_output_global(&output);
