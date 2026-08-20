@@ -1807,7 +1807,7 @@ pub fn init_winit(
                             }
 
                             if state.windows_ready_for_decoration.insert(window_id.clone()) {
-                                state.apply_pending_initial_focus_for_window(&window_id, window);
+                                state.apply_pending_initial_focus_for_window(&window_id);
                             }
 
                             if let Some(decoration) = state.window_decorations.get(window)

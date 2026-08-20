@@ -463,6 +463,18 @@ impl ShojiWM {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Any focus decision made under here traces back to a key press, a
+        // pointer press or a gesture — including the config's own
+        // `window.focus()` from a key binding, which is dispatched synchronously
+        // from inside this call. Focus-ordering policy uses this to tell "the
+        // user asked for this window" from "an application asked for itself".
+        // Saved and restored rather than cleared so the flag survives nesting.
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
+        self.process_input_event_inner(event);
+        self.user_input_in_flight = previous;
+    }
+
+    fn process_input_event_inner<I: InputBackend>(&mut self, event: InputEvent<I>) {
         if Self::input_event_counts_as_idle_activity(&event) {
             self.notify_idle_activity();
         }
@@ -475,6 +487,17 @@ impl ShojiWM {
                 if self.session_lock_active {
                     self.forward_locked_keyboard_event::<I>(&event, serial);
                     return;
+                }
+                // Typing into a window is the strongest evidence that it is the
+                // user's window, and it is evidence only the compositor has: a
+                // key press produces no event the config layer can see, and the
+                // config focuses every window at `onOpen`, so "was focused"
+                // cannot separate a window the user chose from one that was
+                // handed focus automatically. This is what lets a close election
+                // pick the terminal an `ssh` was typed into over a window that
+                // opened beside it moments later.
+                if event.state() == KeyState::Pressed {
+                    self.note_keyboard_user_input();
                 }
                 let time = Event::time_msec(&event);
                 let key_phase = match event.state() {
@@ -2723,29 +2746,76 @@ impl ShojiWM {
         }
     }
 
+    /// Focus `window` on the compositor's or the config's initiative.
     pub(crate) fn focus_window(&mut self, window: &smithay::desktop::Window, serial: Serial) {
-        self.focus_window_at_surface(window, None, serial);
+        self.grant_window_keyboard_focus(window, None, serial);
     }
 
-    pub(crate) fn apply_pending_initial_focus_for_window(
-        &mut self,
-        window_id: &str,
-        window: &smithay::desktop::Window,
-    ) {
+    /// Deliver the keyboard focus that was parked while a window had not
+    /// painted yet.
+    ///
+    /// This deliberately does **not** re-focus the window. The target was
+    /// already chosen when the config called `window.focus()` at open; the only
+    /// reason it was not handed to the keyboard is
+    /// `should_defer_initial_keyboard_focus`, which parks *delivery* until the
+    /// window can render. Re-running `focus_window` here made first paint a
+    /// second, later decision point — and one ordered by client paint latency:
+    /// this queue is filled inside the render walk in descending-z order
+    /// (`sorted_windows_top_to_bottom`) and applied last-wins, and the two
+    /// backends drain it at different points in the frame. An application that
+    /// maps two toplevels a frame apart therefore handed the keyboard to
+    /// whichever of them painted last, rather than to the one anything had
+    /// actually asked for.
+    pub(crate) fn apply_pending_initial_focus_for_window(&mut self, window_id: &str) {
         if !self.pending_initial_focus_window_ids.remove(window_id) {
             return;
         }
-
-        let serial = SERIAL_COUNTER.next_serial();
-        self.focus_window(window, serial);
+        self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
     }
 
+    /// Focus `window` because the user pressed the pointer on it.
+    ///
+    /// The four pointer-press sites in `process_input_event` are this
+    /// function's only external callers. Besides the grant it records the window
+    /// in the focus chain, which a close or unlock successor election reads —
+    /// and which also makes the grant itself unconditional, since the ordering
+    /// rule never refuses a window the user has used. A press on the
+    /// already-focused window counts: none of the four sites checks for that,
+    /// and it is still the user saying "this one".
     pub(crate) fn focus_window_at_surface(
         &mut self,
         window: &smithay::desktop::Window,
         surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
         serial: Serial,
     ) {
+        self.note_window_user_input(window);
+        self.grant_window_keyboard_focus(window, surface, serial);
+    }
+
+    fn grant_window_keyboard_focus(
+        &mut self,
+        window: &smithay::desktop::Window,
+        surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+        serial: Serial,
+    ) {
+        // A window mapping or activating behind the lock screen must not
+        // restack the session or pre-select who gets the keyboard at unlock.
+        // `update_keyboard_focus` refuses to *deliver* focus while locked, but
+        // by the time it is reached the caller has already raised the element
+        // and rewritten `window_keyboard_focus`.
+        if self.session_lock_active {
+            return;
+        }
+        if self.automatic_focus_is_superseded(window) {
+            debug!(
+                window_id = window
+                    .toplevel()
+                    .map(|toplevel| toplevel.wl_surface().id().protocol_id())
+                    .unwrap_or_default(),
+                "refusing unrequested focus for a window opened before the current target"
+            );
+            return;
+        }
         let started_at = Instant::now();
         let window_id = window
             .toplevel()
