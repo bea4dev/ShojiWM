@@ -906,7 +906,7 @@ impl ShojiWM {
 
     fn window_was_used_by_user(&self, window: &Window) -> bool {
         Self::window_root_surface(window)
-            .is_some_and(|root| self.focus_chain.iter().any(|surface| *surface == root))
+            .is_some_and(|root| self.focus_chain.contains(&root))
     }
 
     /// Record that the user acted on `window`: a pointer press on it, a key
