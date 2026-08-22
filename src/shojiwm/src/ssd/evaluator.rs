@@ -5501,6 +5501,91 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// The sfwbar regression: its taskbar click sends `unset_minimized` and
+    /// `activate` as separate requests in one flush. The unset_minimized
+    /// restores the window before the activate handler runs, so `wasMinimized`
+    /// no longer shields the minimize-raise toggle — and since focus never
+    /// leaves a minimized window, the toggle read the activate as a re-click
+    /// of a visible focused window and bounced it straight back into
+    /// minimized (a one-frame flash). A restore and an activate this close
+    /// together are one gesture and must never toggle.
+    #[test]
+    fn restore_then_activate_in_one_gesture_does_not_reminimize() {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should succeed");
+
+        let window = make_named_window("0xa", "kitty-float", false, false);
+        evaluator
+            .evaluate_window_preview(&window, 0)
+            .expect("preview should evaluate");
+        let focused = make_named_window("0xa", "kitty-float", true, false);
+        evaluator
+            .evaluate_window(&focused, 100)
+            .expect("evaluation should succeed");
+
+        // Minimize from the taskbar; the window keeps keyboard focus.
+        evaluator
+            .window_minimize_request(
+                &focused,
+                &crate::ssd::WindowMinimizeRequestEventSnapshot {
+                    minimized: true,
+                    source: crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                    timestamp: 200,
+                },
+                200,
+            )
+            .expect("minimize request should evaluate");
+
+        // sfwbar's click: unset_minimized (twice, in fact), then activate.
+        for timestamp in [300, 301] {
+            evaluator
+                .window_minimize_request(
+                    &focused,
+                    &crate::ssd::WindowMinimizeRequestEventSnapshot {
+                        minimized: false,
+                        source: crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                        timestamp,
+                    },
+                    timestamp,
+                )
+                .expect("restore request should evaluate");
+        }
+        let activate = evaluator
+            .window_activate_request(
+                &focused,
+                &crate::ssd::WindowActivateRequestEventSnapshot {
+                    source: crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+                    timestamp: 302,
+                },
+                302,
+            )
+            .expect("activate request should evaluate");
+
+        assert!(
+            !has_action(
+                &activate.actions,
+                "0xa",
+                crate::ssd::WaylandWindowAction::Minimize
+            ),
+            "a restore+activate taskbar click must not re-minimize the window: {:?}",
+            activate.actions
+        );
+        assert!(
+            has_action(
+                &activate.actions,
+                "0xa",
+                crate::ssd::WaylandWindowAction::Focus
+            ),
+            "the restored window should be focused: {:?}",
+            activate.actions
+        );
+    }
+
     #[test]
     fn xdg_activation_of_focused_window_does_not_minimize() {
         let actions = activate_toggle_fixture(

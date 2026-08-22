@@ -134,6 +134,9 @@ const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
 const INITIAL_TILEABILITY_SETTLE_DURATION = seconds(1);
 const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.3);
 const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
+// See `lastRestoreAtMs`: a restore and an activate closer together than this
+// are one taskbar click, so the minimize-raise toggle must not fire.
+const RESTORE_ACTIVATE_GRACE_MS = 100;
 const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
@@ -671,6 +674,25 @@ export class HybridWindowManager {
    */
   private readonly presentedWindowIds = new Set<string>();
 
+  /**
+   * When each window was last restored from minimized, by wall clock.
+   *
+   * sfwbar's taskbar click sends `unset_minimized` and `activate` as separate
+   * requests in one flush (`foreign_toplevel_focus` → unset_minimized +
+   * `foreign_toplevel_activate`, which sends unset_minimized + activate
+   * again). By the time the activate handler runs, the unset_minimized has
+   * already restored the window, so the `wasMinimized` guard in
+   * `onWindowActivateRequest` sees an unminimized window — and since focus
+   * never leaves a minimized window, the minimize-raise toggle read the
+   * activate as "the user re-clicked the focused window's taskbar entry" and
+   * re-minimized it (visible as a one-frame flash of the window).
+   *
+   * A restore and an activate that arrive within this grace period are one
+   * gesture, never a toggle. Same-flush requests run back-to-back (< a few
+   * ms); two intentional clicks are always further apart than this.
+   */
+  private readonly lastRestoreAtMs = new Map<string, number>();
+
   private initializeWindowLayout(
     window: WaylandWindow,
     options: AddWindowOptions = {},
@@ -878,6 +900,7 @@ export class HybridWindowManager {
 
   public onClose(window: WaylandWindow) {
     this.presentedWindowIds.delete(window.id);
+    this.lastRestoreAtMs.delete(window.id);
     this.restoredDuringInitialConfigure.delete(window.id);
     this.deferredInitialLayoutWindowIds.delete(window.id);
     this.pendingInitialFocusByWindowId.delete(window.id);
@@ -1288,6 +1311,7 @@ export class HybridWindowManager {
     if (wasMinimized !== event.minimized) {
       stopRectAnimation(event.window, WINDOW_STATE_RECT);
       if (!event.minimized) {
+        this.lastRestoreAtMs.set(event.window.id, Date.now());
         event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(false);
       }
       event.window.state[WINDOW_STATE_MINIMIZED].set(event.minimized);
@@ -1371,6 +1395,16 @@ export class HybridWindowManager {
       return false;
     }
     if (window.state[WINDOW_STATE_MINIMIZED]() || !window.isFocused()) {
+      return false;
+    }
+    // A restore that just happened means this activate is the tail of the
+    // same taskbar click (sfwbar sends unset_minimized + activate as
+    // separate requests), not a re-click of a visible window.
+    const restoredAt = this.lastRestoreAtMs.get(window.id);
+    if (
+      restoredAt !== undefined &&
+      Date.now() - restoredAt <= RESTORE_ACTIVATE_GRACE_MS
+    ) {
       return false;
     }
     window.minimize();
