@@ -17,6 +17,7 @@
   mesa,
   libglvnd,
   libgbm ? mesa,
+  addDriverRunpath,
   pixman,
   seatd,
   pipewire,
@@ -87,17 +88,9 @@ let
     libdrm
   ];
 
-  gbmBackendsPath = lib.makeSearchPath "lib/gbm" [
-    mesa
-  ];
-
-  driDriversPath = lib.makeSearchPath "lib/dri" [
-    mesa
-  ];
-
-  eglVendorLibraryDirs = lib.makeSearchPath "share/glvnd/egl_vendor.d" [
-    mesa
-  ];
+  gbmBackendsPath = "${addDriverRunpath.driverLink}/lib/gbm";
+  driDriversPath = "${addDriverRunpath.driverLink}/lib/dri";
+  eglVendorLibraryDirs = "${addDriverRunpath.driverLink}/share/glvnd/egl_vendor.d";
 in
 rustPlatform.buildRustPackage {
   pname = "shojiwm";
