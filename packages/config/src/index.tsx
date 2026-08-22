@@ -61,6 +61,11 @@ COMPOSITOR.cursor.configure({
   size: 24,
 });
 
+COMPOSITOR.process.once("GTK-CSD-control-buttons", {
+  command: "gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'",
+  runPolicy: "once-per-session",
+});
+
 COMPOSITOR.window.decoration.configure((_window, context) => {
   return { mode: context.clientPreference ?? "server" };
 });
