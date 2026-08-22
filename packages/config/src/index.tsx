@@ -61,27 +61,8 @@ COMPOSITOR.cursor.configure({
   size: 24,
 });
 
-COMPOSITOR.window.decoration.configure((window, context) => {
-  const appId = (window.appId() ?? "").toLowerCase();
-  const isFirefox =
-    appId === "firefox" ||
-    appId.endsWith(".firefox") ||
-    appId.includes("firefoxdeveloperedition");
-
-  // The KDE manager advertises CSD before per-window metadata is available.
-  // Keep that baseline while appId is unknown: sending an early SSD response
-  // makes some Firefox/Chromium versions permanently build reduced chrome.
-  if (appId.length === 0) {
-    return { mode: context.clientPreference ?? "client" };
-  }
-
-  // Firefox can repeatedly renegotiate when CSD is rejected. Keep CSD even
-  // when it relies on the manager default and sends no explicit preference.
-  if (isFirefox) {
-    return { mode: "client" };
-  }
-
-  return { mode: "server" };
+COMPOSITOR.window.decoration.configure((_window, context) => {
+  return { mode: context.clientPreference ?? "server" };
 });
 
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
@@ -775,9 +756,10 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const forceRectSize = computed(
     () => window.isResizable() && !window.isTransient(),
   );
-  const tiled = computed(
-    () => window.appId() === "mpv" || window.state[WINDOW_STATE_TILED](),
-  );
+
+  // force no corner rounding CSD
+  const tiled = true;
+
   const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window);
   const zIndex = computed(() => {
     if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
@@ -927,6 +909,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     );
   }
 
+  // use less Server-Side Decoration
   if (useClientDecoration) {
     return (
       <ManagedWindow
@@ -939,11 +922,29 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         idle={inactive}
         interactive={inactive((value) => !value)}
       >
-        <ClientWindow />
+        <WindowBorder
+          style={{
+            border: { px: WINDOW_BORDER_PX, color: borderColor },
+            borderRadius: 10,
+            background: "#10131900",
+            padding: 0,
+            paddingX: 0,
+            paddingRight: 0,
+          }}
+          interaction={{
+            resizeHitArea: {
+              edgePx: 8,
+              cornerPx: 14,
+            },
+          }}
+        >
+          <ClientWindow />
+        </WindowBorder>
       </ManagedWindow>
     );
   }
 
+  // use full Server-Side Decoration
   return (
     <ManagedWindow
       rect={managedRect}
