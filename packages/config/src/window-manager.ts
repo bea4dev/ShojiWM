@@ -161,6 +161,9 @@ const TILE_GAP = 12;
 const TILE_MARGIN = 12;
 const TILE_WIDTH_RATIO = 0.5;
 const TILE_MIN_WIDTH = 240;
+// Fractional-scale rounding can leave a tile a hair past the screen edge;
+// overflow at or below this is "fully visible" for the focus-key pan step.
+const TILE_FOCUS_OVERFLOW_EPSILON = 1;
 const MANAGED_WINDOW_ONLY_REBUILD_SUPPRESSION = {
   allowManagedWindowOnly: true,
   onViolation: "fallback-last",
@@ -4303,6 +4306,12 @@ export class Workspace {
     const activeIndex = tileable.findIndex(
       (window) => window.id === this.activeWindowId,
     );
+    if (
+      activeIndex >= 0 &&
+      this.panActiveTileIntoView(tileable, activeIndex, direction)
+    ) {
+      return;
+    }
     const fallbackIndex = this.focusFallbackTileIndex(tileable, direction);
     const currentIndex =
       activeIndex >= 0
@@ -4313,6 +4322,49 @@ export class Workspace {
     this.scrollToWindow(tileable[nextIndex]);
     this.applyLayout();
     this.focusActiveWindow();
+  }
+
+  /**
+   * When the focused tile sticks out of the screen on the side the focus key
+   * is heading, the key press pans the tile fully into view instead of
+   * advancing to the neighbor — moving on only happens once the window is
+   * within the screen. Overflow on the opposite side doesn't block: fixing it
+   * would scroll against the pressed direction, so the key advances as usual.
+   * A tile wider than the screen aligns its near edge first and the next
+   * press advances.
+   *
+   * "Within the screen" is measured against the usable area, not the tile
+   * viewport: the viewport is inset by TILE_MARGIN for cosmetic spacing, and
+   * content inside that margin is still on screen. Maximized tiles in
+   * particular are wider than the viewport by design (MAXIMIZED_WINDOW_PADDING
+   * < TILE_MARGIN), so an inset-viewport check would eat one key press on a
+   * 4px invisible pan for every fully-visible maximized tile.
+   */
+  private panActiveTileIntoView(
+    tileable: WaylandWindow[],
+    index: number,
+    direction: -1 | 1,
+  ): boolean {
+    const viewportRect = this.tileViewportRect();
+    const viewportWidth = read(viewportRect.width);
+    const windowLeft = this.tileLeftForIndex(tileable, index, viewportRect);
+    const windowRight =
+      windowLeft + this.tileWidthForWindow(tileable[index], viewportRect);
+    const overflow =
+      direction < 0
+        ? this.scrollOffset - windowLeft - TILE_MARGIN
+        : windowRight - (this.scrollOffset + viewportWidth) - TILE_MARGIN;
+    if (overflow <= TILE_FOCUS_OVERFLOW_EPSILON) {
+      return false;
+    }
+
+    this.stopKineticScroll();
+    this.scrollOffset =
+      direction < 0 ? windowLeft : windowRight - viewportWidth;
+    this.clampScrollOffset(tileable.length);
+    this.applyLayout();
+    this.focusActiveWindow();
+    return true;
   }
 
   private focusFallbackTileIndex(

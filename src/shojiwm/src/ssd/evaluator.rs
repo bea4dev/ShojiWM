@@ -5586,6 +5586,196 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// Super+Left/Right on a tiled workspace: when the focused tile sticks out
+    /// of the viewport on the side the key is heading, the press pans the tile
+    /// fully into view; only a fully-visible tile advances focus to the
+    /// neighbor. Repro: resize the middle of three tiles wider than the
+    /// screen — it ends left-aligned (the resize-end `scrollToWindow` flips a
+    /// wider-than-viewport tile to its left edge), overflowing to the right —
+    /// then press right: the old behavior jumped straight to the neighbor.
+    #[test]
+    fn focus_key_pans_overflowing_tile_into_view_before_advancing() {
+        use crate::ssd::window_model::{
+            WindowResizeEdgesSnapshot, WindowResizeEventSnapshot, WindowResizePhaseSnapshot,
+            WindowResizePointSnapshot, WindowResizeSourceSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        // Open 0xa → 0xb → 0xc, delivering the unfocus of the previous window
+        // before the next one takes focus — new tiles insert after the focused
+        // window, so stale focus snapshots would scramble the tile order.
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc"] {
+            let window = make_named_window(id, "kitty", false, false);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, false);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, false);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+        // Focus the middle tile.
+        let unfocused_c = make_named_window("0xc", "kitty", false, false);
+        evaluator
+            .evaluate_window(&unfocused_c, now)
+            .expect("defocus evaluation should succeed");
+        let focused_b = make_named_window("0xb", "kitty", true, false);
+        evaluator
+            .evaluate_window(&focused_b, now + 50)
+            .expect("focus evaluation should succeed");
+        now += 100;
+
+        // Interactively resize the middle tile wider than the 1920px viewport.
+        // `resizeTile` right-aligns the tile afterwards, so it overflows the
+        // viewport on the left.
+        let rect = |width: f64| crate::ssd::window_model::WindowPositionSnapshot {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height: 600.0,
+        };
+        for (phase, width) in [
+            (WindowResizePhaseSnapshot::Start, 800.0),
+            (WindowResizePhaseSnapshot::Update, 2400.0),
+            (WindowResizePhaseSnapshot::End, 2400.0),
+        ] {
+            let resize = WindowResizeEventSnapshot {
+                source: WindowResizeSourceSnapshot::Ssd,
+                phase,
+                edges: WindowResizeEdgesSnapshot {
+                    left: false,
+                    right: true,
+                    top: false,
+                    bottom: false,
+                },
+                start_pointer: WindowResizePointSnapshot { x: 800.0, y: 300.0 },
+                current_pointer: WindowResizePointSnapshot {
+                    x: width,
+                    y: 300.0,
+                },
+                delta: WindowResizePointSnapshot {
+                    x: width - 800.0,
+                    y: 0.0,
+                },
+                start_rect: rect(800.0),
+                current_rect: rect(width),
+                output_name: Some("TEST-1".into()),
+                timestamp: now,
+            };
+            evaluator
+                .window_resize("0xb", &resize, now)
+                .expect("resize should evaluate");
+            now += 10;
+        }
+
+        // First press: the tile overflows right, so the key pans it into view
+        // and focus must stay on the same window.
+        let first = evaluator
+            .invoke_key_binding("tile-focus-right-quick", now)
+            .expect("first focus-right should evaluate");
+        assert!(
+            first.invoked,
+            "tile-focus-right-quick should be a known binding"
+        );
+        assert!(
+            !has_action(&first.actions, "0xc", crate::ssd::WaylandWindowAction::Focus),
+            "an overflowing tile must be panned into view, not skipped: {:?}",
+            first.actions
+        );
+        assert!(
+            has_action(&first.actions, "0xb", crate::ssd::WaylandWindowAction::Focus),
+            "the overflowing tile should keep focus while panning: {:?}",
+            first.actions
+        );
+
+        // Second press: the tile's right edge is now flush with the viewport,
+        // so focus advances to the neighbor.
+        let second = evaluator
+            .invoke_key_binding("tile-focus-right-quick", now + 100)
+            .expect("second focus-right should evaluate");
+        assert!(
+            has_action(&second.actions, "0xc", crate::ssd::WaylandWindowAction::Focus),
+            "a fully-visible tile should advance focus to the neighbor: {:?}",
+            second.actions
+        );
+    }
+
+    /// Maximized tiles are wider than the inset tile viewport by design
+    /// (MAXIMIZED_WINDOW_PADDING 8 < TILE_MARGIN 12), so when centered they
+    /// poke 4px past the viewport on both sides while being fully on screen.
+    /// Measuring the focus-key overflow against the inset viewport burned the
+    /// first key press on that invisible 4px pan — every focus move between
+    /// maximized tiles needed two presses. Fully-visible tiles must advance
+    /// on the first press.
+    #[test]
+    fn focus_key_advances_from_fully_visible_maximized_tile_on_first_press() {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc"] {
+            let window = make_named_window(id, "kitty", false, true);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, true);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, true);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+
+        // Focus sits on 0xc, centered by the maximized scrollToWindow branch.
+        // Each left press must advance immediately: 0xc → 0xb → 0xa.
+        let first = evaluator
+            .invoke_key_binding("tile-focus-left-quick", now)
+            .expect("first focus-left should evaluate");
+        assert!(
+            has_action(&first.actions, "0xb", crate::ssd::WaylandWindowAction::Focus),
+            "a fully-visible maximized tile must advance on the first press: {:?}",
+            first.actions
+        );
+
+        let second = evaluator
+            .invoke_key_binding("tile-focus-left-quick", now + 100)
+            .expect("second focus-left should evaluate");
+        assert!(
+            has_action(&second.actions, "0xa", crate::ssd::WaylandWindowAction::Focus),
+            "every subsequent press must advance one tile as well: {:?}",
+            second.actions
+        );
+    }
+
     #[test]
     fn xdg_activation_of_focused_window_does_not_minimize() {
         let actions = activate_toggle_fixture(
