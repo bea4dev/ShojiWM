@@ -137,6 +137,11 @@ impl XwmHandler for ShojiWM {
             self.remove_foreign_toplevel(&elem);
             self.prune_window_state(&elem);
             self.space.unmap_elem(&elem);
+            // X11 *unmap* is the real close — `destroyed_window` never touches
+            // the space. Re-elect now rather than leaving the stale target to be
+            // reaped whenever some unrelated event next runs
+            // `update_keyboard_focus`.
+            self.update_keyboard_focus(smithay::utils::SERIAL_COUNTER.next_serial());
         }
         if !window.is_override_redirect()
             && let Err(err) = window.set_mapped(false) {
@@ -253,12 +258,14 @@ impl XwmHandler for ShojiWM {
         let Some(window) = self.find_x11_window(&window) else {
             return;
         };
-        self.request_window_activate(
+        // Same contract as the xdg-activation path: the runtime owns the
+        // decision when it has a handler.
+        if !self.request_window_activate(
             &window,
             crate::ssd::WindowActivateRequestSourceSnapshot::Xwayland,
-        );
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        self.focus_window(&window, serial);
+        ) {
+            self.focus_window(&window, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, _window: X11Surface) {}

@@ -2840,6 +2840,12 @@ impl ShojiWM {
                 if !self.promote_window_to_closing_snapshot(window_id, decoration, now_ms)? {
                     self.decoration_evaluator.window_closed(window_id)?;
                     self.windows_ready_for_decoration.remove(window_id);
+                    // Kept in step with `windows_ready_for_decoration`. A window
+                    // destroyed before its first paint otherwise leaves its id
+                    // here for the process lifetime, which permanently defeats
+                    // the `is_empty()` fast path in
+                    // `should_defer_initial_keyboard_focus`.
+                    self.pending_initial_focus_window_ids.remove(window_id);
                     self.runtime_dirty_window_ids.remove(window_id);
                     self.runtime_managed_only_window_ids.remove(window_id);
                     self.snapshot_dirty_window_ids.remove(window_id);

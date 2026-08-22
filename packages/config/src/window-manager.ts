@@ -3408,6 +3408,10 @@ export class Workspace {
   public removeWindow(window: WaylandWindow): WaylandWindow | null | undefined {
     const index = this.windows.findIndex((current) => current.id === window.id);
     if (index >= 0) {
+      // Both describe the tile sequence this window is still part of, so they
+      // have to be read before the splice takes it out.
+      const wasTile = this.isTileable(window);
+      const tileIndex = this.tileIndexOf(window.id);
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
       this.initialTileStateByWindowId.delete(window.id);
@@ -3419,15 +3423,40 @@ export class Workspace {
       }
       let nextFocus: WaylandWindow | null = null;
       if (this.activeWindowId === window.id) {
-        nextFocus =
-          this.tileableWindows()[
-            Math.min(index, this.tileableWindows().length - 1)
-          ] ?? null;
+        nextFocus = this.successorForRemovedWindow(wasTile, tileIndex);
         this.activeWindowId = nextFocus?.id ?? null;
       }
       return nextFocus;
     }
     return undefined;
+  }
+
+  /**
+   * The window that inherits focus when the active one is removed, or null to
+   * leave that to the compositor.
+   *
+   * "The tile that slid into its place" is only an answer for a tile in a
+   * tiled workspace. Anywhere else — a floating workspace, or a dialog that
+   * never held a slot — there is no next-one-along to name, and naming one
+   * anyway is what sent focus to the wrong window: dismissing an SSH approval
+   * prompt jumped to the password manager's main window instead of returning
+   * to the terminal that had asked for it.
+   *
+   * Declining is not caution, it is the better answer. The compositor elects
+   * the window the user most recently typed in or clicked on, which is what
+   * "put me back where I was" means, and is something this layer cannot work
+   * out for itself: it focuses every window at onOpen, so "was focused" cannot
+   * separate a terminal in use from a dialog that appeared beside it.
+   */
+  private successorForRemovedWindow(
+    wasTile: boolean,
+    tileIndex: number,
+  ): WaylandWindow | null {
+    if (!this.isTiled || !wasTile || tileIndex < 0) {
+      return null;
+    }
+    const tileable = this.tileableWindows();
+    return tileable[Math.min(tileIndex, tileable.length - 1)] ?? null;
   }
 
   public removeTileDragWindow(window: WaylandWindow) {
@@ -4352,9 +4381,8 @@ export class Workspace {
       window.state[WINDOW_STATE_FLOATING_RECT].set(null);
 
       if (this.activeWindowId === window.id) {
-        const windowIndex = this.windows.findIndex(
-          (current) => current.id === window.id,
-        );
+        // The slot this window has just vacated by ceasing to be tileable.
+        const windowIndex = this.tileIndexOf(window.id);
         const tileable = this.tileableWindows();
         this.activeWindowId =
           (restoredInitialActiveWindowId &&
@@ -4455,11 +4483,42 @@ export class Workspace {
     return true;
   }
 
+  /**
+   * Whether `window` occupies a slot in the tile sequence right now.
+   * Minimized windows are excluded because they hold no slot, so they must
+   * not be counted when translating a position into that sequence.
+   */
+  private isTileable(window: WaylandWindow): boolean {
+    return this.shouldTile(window) && !window.state[WINDOW_STATE_MINIMIZED]();
+  }
+
   private tileableWindows(): WaylandWindow[] {
-    return this.windows.filter(
-      (window) =>
-        this.shouldTile(window) && !window.state[WINDOW_STATE_MINIMIZED](),
+    return this.windows.filter((window) => this.isTileable(window));
+  }
+
+  /**
+   * Where `windowId` sits in the tile sequence: its index in
+   * `tileableWindows()`, or the index it would occupy if it were a tile. -1
+   * when the window is not in this workspace at all.
+   *
+   * Both callers want that second reading — one asks about a window it has
+   * just removed, the other about one that has just stopped being tileable —
+   * and both used to index `tileableWindows()` with a raw `this.windows`
+   * position instead. That array also holds dialogs, transients and minimized
+   * windows, so the position ran past the end of the tile list and the clamp
+   * below it silently returned the *last* tile: whichever window happened to
+   * be opened most recently.
+   */
+  private tileIndexOf(windowId: string): number {
+    const position = this.windows.findIndex(
+      (current) => current.id === windowId,
     );
+    if (position < 0) {
+      return -1;
+    }
+    return this.windows
+      .slice(0, position)
+      .filter((current) => this.isTileable(current)).length;
   }
 
   public focusedWindow(): WaylandWindow | undefined {

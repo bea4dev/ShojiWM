@@ -6828,17 +6828,7 @@ fn render_surface(
     };
 
     for window_id in newly_ready_initial_focus_window_ids {
-        if !state.pending_initial_focus_window_ids.contains(&window_id) {
-            continue;
-        }
-        let window = state
-            .space
-            .elements()
-            .find(|window| state.snapshot_window(window).id == window_id)
-            .cloned();
-        if let Some(window) = window {
-            state.apply_pending_initial_focus_for_window(&window_id, &window);
-        }
+        state.apply_pending_initial_focus_for_window(&window_id);
     }
 
     if let Some(damage) = captured_blink_damage.as_deref() {

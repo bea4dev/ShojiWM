@@ -923,10 +923,18 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
         let Some(window) = self.wlr_foreign_toplevel_window(handle) else {
             return;
         };
+        // Picking a window out of a taskbar is the user choosing it, even
+        // though the click itself landed on the panel rather than on the window
+        // — the input layer cannot attribute it. Record it so a later successor
+        // election knows about it, and so the focus-ordering rule cannot refuse
+        // it or anything the handler focuses instead.
+        self.note_window_user_input(&window);
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
         self.request_window_activate(
             &window,
             crate::ssd::WindowActivateRequestSourceSnapshot::Api,
         );
+        self.user_input_in_flight = previous;
         self.sync_wlr_foreign_toplevel_states();
     }
 

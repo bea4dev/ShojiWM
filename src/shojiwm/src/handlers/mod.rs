@@ -253,6 +253,18 @@ impl SessionLockHandler for ShojiWM {
             );
         }
         self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+        // `lock()` cleared the focus target and nothing elected a replacement,
+        // so the session came back with the keyboard on a panel or on nothing at
+        // all — `update_keyboard_focus`'s fallback chain is exclusive layer,
+        // on-demand layer, then the target `lock()` erased. The focus chain
+        // deliberately survives the lock, so put the user back in the window
+        // they were working in.
+        if self.window_keyboard_focus.is_none()
+            && let Some(window) = self.elect_focus_successor()
+        {
+            self.set_window_keyboard_focus_target_surface(&window, None);
+            self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+        }
         self.schedule_redraw();
     }
 
@@ -508,20 +520,25 @@ impl XdgActivationHandler for ShojiWM {
             .cloned();
 
         if let Some(window) = window {
-            self.request_window_activate(
+            // Dispatch to the runtime and respect the outcome. This used to
+            // hand the window the keyboard immediately afterwards regardless,
+            // discarding `request_window_activate`'s return value — so no rule
+            // the config layer expressed could survive an xdg-activation, and a
+            // handler that deliberately declined to focus was overridden anyway.
+            // `wlr_foreign_toplevel_activate` already follows this contract;
+            // this makes the activation paths match it.
+            //
+            // Routing the fallback through `focus_window` also collapses a
+            // second, divergent raise rule and drops `Serial::from(0)` — the
+            // only fabricated serial in the crate, which reached smithay's
+            // `enter_internal` and became the seat's `last_enter`: the exact
+            // baseline `token_created` validates the next token against.
+            if !self.request_window_activate(
                 &window,
                 crate::ssd::WindowActivateRequestSourceSnapshot::XdgActivation,
-            );
-            if !self
-                .window_decorations
-                .get(&window)
-                .is_some_and(|decoration| decoration.managed_window.managed)
-            {
-                self.space.raise_element(&window, true);
+            ) {
+                self.focus_window(&window, SERIAL_COUNTER.next_serial());
             }
-            self.set_window_keyboard_focus_target_surface(&window, Some(&surface));
-            self.focus_layer_surface_if_on_demand(None);
-            self.update_keyboard_focus(Serial::from(0));
             self.schedule_redraw();
         }
     }

@@ -420,6 +420,21 @@ pub struct ShojiWM {
     pub pending_initial_focus_window_ids: HashSet<String>,
     pub window_keyboard_focus_owner: Option<WlSurface>,
     pub window_keyboard_focus: Option<WlSurface>,
+    /// Root surfaces of the windows the user has actually *used*, most recent
+    /// first.
+    ///
+    /// Only real key presses, pointer presses and explicit taskbar picks
+    /// promote into this chain, which is what makes it different from focus
+    /// history: the config focuses every window at `onOpen`, so "was focused"
+    /// cannot separate a window the user chose from one that was handed focus
+    /// automatically. Typing is evidence only the compositor has — a key press
+    /// produces no event the config layer can observe.
+    pub focus_chain: Vec<WlSurface>,
+    /// True for the whole of `process_input_event`, and around a taskbar
+    /// activation. Any focus decision made under it — including a
+    /// `window.focus()` the config issues from a key binding, which is
+    /// dispatched from inside that call — is traceable to the user.
+    pub user_input_in_flight: bool,
     pub mapped_on_demand_layer_surfaces: HashSet<u32>,
     pub force_full_damage: bool,
     pub debug_previous_scene_signatures: HashMap<String, Vec<String>>,
@@ -873,6 +888,146 @@ impl ShojiWM {
         })
     }
 
+    /// Windows remembered in [`Self::focus_chain`]. Only ever walked when a
+    /// focused window disappears, so this is a memory bound, not a policy.
+    const FOCUS_CHAIN_LIMIT: usize = 32;
+
+    fn window_for_root_surface(&self, root: &WlSurface) -> Option<&Window> {
+        self.space
+            .elements()
+            .find(|window| Self::window_matches_root_surface(window, root))
+    }
+
+    pub fn window_allows_input(&self, window: &Window) -> bool {
+        self.window_decorations
+            .get(window)
+            .is_none_or(|decoration| decoration.managed_window_allows_input())
+    }
+
+    fn window_was_used_by_user(&self, window: &Window) -> bool {
+        Self::window_root_surface(window)
+            .is_some_and(|root| self.focus_chain.contains(&root))
+    }
+
+    /// Record that the user acted on `window`: a pointer press on it, a key
+    /// press delivered into it, or an explicit pick from a taskbar.
+    pub(crate) fn note_window_user_input(&mut self, window: &Window) {
+        let Some(root) = Self::window_root_surface(window) else {
+            return;
+        };
+        // Continuous typing in one window is the common case; keep it to a
+        // single comparison.
+        if self.focus_chain.first() == Some(&root) {
+            return;
+        }
+        self.focus_chain
+            .retain(|surface| surface.alive() && *surface != root);
+        self.focus_chain.insert(0, root);
+        self.focus_chain.truncate(Self::FOCUS_CHAIN_LIMIT);
+    }
+
+    /// Credit a key press to the window the keyboard is actually in.
+    ///
+    /// Deliberately reads the seat's current focus rather than
+    /// `window_keyboard_focus_owner`: while a layer-shell panel holds on-demand
+    /// keyboard focus the owner still names the window underneath (see
+    /// `activated_window_surface`), so typing into a panel's search field would
+    /// otherwise be credited to an unrelated window. It is also correct during a
+    /// deferral, when the target and the seat disagree.
+    pub(crate) fn note_keyboard_user_input(&mut self) {
+        let Some(surface) = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+        else {
+            return;
+        };
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| self.surface_belongs_to_window(window, &surface))
+            .cloned()
+        else {
+            return;
+        };
+        self.note_window_user_input(&window);
+    }
+
+    /// Whether an *automatic* focus grant for `window` — one the user did not
+    /// ask for: a window's own open-time `focus()`, an xdg-activation, an
+    /// `_NET_ACTIVE_WINDOW` request — must give way to whoever currently holds
+    /// the focus target.
+    ///
+    /// The failure this exists for: an application maps two toplevels a frame
+    /// apart over two separate `wl_display` connections, then focuses or
+    /// activates both. Because they are separate clients
+    /// `xdg_toplevel.set_parent` is protocol-impossible, so neither is transient
+    /// and no parentage rule can order them. Whichever request the application
+    /// happened to emit last then took the keyboard — and for a password manager
+    /// that maps a blank host toplevel beside its real prompt, that was
+    /// routinely the blank one.
+    ///
+    /// Creation order is the one thing about such a burst that is *not* a race:
+    /// request order, first-commit order and paint order all vary run to run. So
+    /// while the user has touched neither window, the later-created one keeps
+    /// the keyboard.
+    ///
+    /// Narrow on purpose — every clause below is a way out:
+    ///  * `user_input_in_flight` exempts anything a key press, a pointer press
+    ///    or a taskbar pick set in motion, so alt-tab, workspace switches and
+    ///    dock clicks are never refused;
+    ///  * a window the user has actually used is never refused and never blocks
+    ///    anything, so a single click on a refused window ends the refusal;
+    ///  * a target that cannot take input — minimized, or on a hidden workspace
+    ///    — never blocks anything, so an unreachable window cannot latch this on.
+    pub(crate) fn automatic_focus_is_superseded(&self, window: &Window) -> bool {
+        if self.user_input_in_flight {
+            return false;
+        }
+        let Some(target_root) = self.window_keyboard_focus.as_ref() else {
+            return false;
+        };
+        let Some(target) = self.window_for_root_surface(target_root) else {
+            return false;
+        };
+        // `Window::id` is a process-global counter assigned in
+        // `Window::new_wayland_window` / `new_x11_window`, i.e. at role creation,
+        // before the client has committed anything.
+        if target == window || target.id() <= window.id() {
+            return false;
+        }
+        if !self.window_allows_input(target) {
+            return false;
+        }
+        !self.window_was_used_by_user(target) && !self.window_was_used_by_user(window)
+    }
+
+    /// The window that should take the keyboard now that the one holding it has
+    /// gone away — closed, unmapped, or cleared by a session lock.
+    ///
+    /// Prefers the window the user most recently *used*. That is the one thing
+    /// the config layer structurally cannot know: it focuses every window at
+    /// `onOpen`, so "was focused" cannot separate a terminal the user typed a
+    /// command into from a window an application opened beside it moments later,
+    /// and a key press produces no event the config can observe.
+    pub(crate) fn elect_focus_successor(&self) -> Option<Window> {
+        for root in &self.focus_chain {
+            if let Some(window) = self
+                .window_for_root_surface(root)
+                .filter(|window| self.window_allows_input(window))
+            {
+                return Some(window.clone());
+            }
+        }
+        // Nothing the user has used is left — a fresh session, or every used
+        // window is gone. Fall back to what they are looking at rather than
+        // leaving the keyboard on nothing.
+        self.windows_top_to_bottom()
+            .into_iter()
+            .find(|window| self.window_allows_input(window))
+            .cloned()
+    }
+
     fn prune_keyboard_focus_targets(&mut self) {
         if let Some(surface) = self.layer_shell_on_demand_focus.as_ref() {
             let alive = surface.alive();
@@ -914,8 +1069,25 @@ impl ShojiWM {
                 }
                 self.window_keyboard_focus_owner = owner_root;
             } else {
-                self.window_keyboard_focus_owner = None;
-                self.window_keyboard_focus = None;
+                // The focused window is gone. Nothing else in the compositor
+                // elects a replacement — neither `toplevel_destroyed` nor
+                // `unmapped_window` touches keyboard focus — so without this the
+                // keyboard is left on nothing until the user clicks something:
+                // dismissing a dialog does not hand focus back to the window it
+                // was opened over.
+                //
+                // Only the focus *target* is set. `update_keyboard_focus` still
+                // ranks an exclusive or on-demand layer surface above it, so
+                // electing here cannot pull the keyboard out of an open panel —
+                // the elected window becomes the active window, which is exactly
+                // what `window_keyboard_focus_owner` is for.
+                match self.elect_focus_successor() {
+                    Some(window) => self.set_window_keyboard_focus_target_surface(&window, None),
+                    None => {
+                        self.window_keyboard_focus_owner = None;
+                        self.window_keyboard_focus = None;
+                    }
+                }
             }
         }
     }
@@ -1452,6 +1624,8 @@ impl ShojiWM {
             pending_initial_focus_window_ids: HashSet::new(),
             window_keyboard_focus_owner: None,
             window_keyboard_focus: None,
+            focus_chain: Vec::new(),
+            user_input_in_flight: false,
             mapped_on_demand_layer_surfaces: Default::default(),
             force_full_damage,
             debug_previous_scene_signatures: HashMap::new(),
