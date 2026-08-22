@@ -5776,6 +5776,612 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// Three-finger workspace scrolling catches on tile snap positions (the
+    /// offsets where a tile is fully on screen at the viewport edge) when the
+    /// gesture moves at or below workspaceScrollSnapMaxVelocity, holds the
+    /// catch until the finger travels workspaceScrollSnapBreakoutPx further,
+    /// then continues to the next snap position — while a fast gesture passes
+    /// straight through.
+    #[test]
+    fn workspace_scroll_gesture_snaps_to_tile_edges_at_low_speed() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        // Four 804px tiles in a 1896px viewport (1920 minus 2x TILE_MARGIN):
+        // content 3252, max scroll 1356, snap offsets {540, 816}. Opening 0xd
+        // last leaves the scroll at 1356.
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc", "0xd"] {
+            let window = make_named_window(id, "kitty", false, false);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, false);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, false);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+
+        let swipe = |phase: GestureSwipePhaseSnapshot,
+                     delta_x: f64,
+                     velocity_x: f64,
+                     timestamp: u64| {
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x: delta_x,
+                total_y: 0.0,
+                velocity_x,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+        // The repo config maps scroll delta as -delta_x * 1.5 and compares
+        // -velocity_x * 1.5 against the 300 px/s snap threshold.
+        // Read rects the way the compositor does after a managed-window-only
+        // scroll update: through the cached evaluation path. A full
+        // evaluate_window with a fresh snapshot would reconcile against the
+        // snapshot's stale floating rect instead of reporting the scroll.
+        let rect_x = |id: &str, at: u64| {
+            let result = evaluator
+                .evaluate_cached_window(id, None, at, false)
+                .expect("cached evaluation should succeed");
+            result
+                .managed_window
+                .rect
+                .expect("tiled window should have a managed rect")
+                .x
+        };
+
+        // Slow drag towards lower offsets: 30px of scroll per event at
+        // 150 px/s. Crossing snap offset 816 must catch and hold there:
+        // tile 0xb sits exactly at the viewport left edge (x = 12).
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        // 18 updates x 30px land exactly on snap offset 816 (1356 - 540).
+        for _ in 0..18 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 100.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        assert_eq!(
+            rect_x("0xb", now + 1),
+            12.0,
+            "slow scroll should catch with tile 0xb flush at the viewport left edge"
+        );
+
+        // One more event stays within the 48px breakout: still caught.
+        now += 10;
+        evaluator
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 100.0, now),
+                now,
+            )
+            .expect("update should evaluate");
+        assert_eq!(
+            rect_x("0xb", now + 1),
+            12.0,
+            "movement within the breakout distance must not move the caught scroll"
+        );
+
+        // Keep dragging: the accumulated travel exceeds the breakout, the
+        // catch releases, and the scroll then catches the next snap offset
+        // (540) where tile 0xc is flush at the viewport right edge.
+        // First event exceeds the breakout (releases with the 12px excess),
+        // the rest scroll on until snap offset 540 is crossed and caught.
+        for _ in 0..10 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 100.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        assert_eq!(
+            rect_x("0xc", now + 1),
+            1104.0,
+            "after breaking out the scroll should catch the next snap position \
+             (0xc flush at the viewport right edge)"
+        );
+
+        // Lift while caught: no kinetic glide, the catch holds.
+        now += 10;
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::End, 0.0, -100.0, now), now)
+            .expect("end should evaluate");
+        assert_eq!(
+            rect_x("0xc", now + 1),
+            1104.0,
+            "lifting the fingers while caught must stay on the snap position"
+        );
+
+        // Fast drag back up: crossing snap offset 816 at 3000 px/s must pass
+        // straight through (0xb ends past the viewport edge, not flush).
+        now += 10;
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        for _ in 0..5 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, -40.0, -2000.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        assert_eq!(
+            rect_x("0xb", now + 1),
+            -12.0,
+            "a fast scroll must pass through the snap position without catching"
+        );
+    }
+
+    /// Kinetic settle, non-maximized anchor leaning the other way: the
+    /// center-closest tile snaps flush to the LEFT edge when it sits left of
+    /// the screen center.
+    #[test]
+    fn workspace_kinetic_scroll_snaps_center_window_flush_to_leaning_left_edge() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc", "0xd"] {
+            let window = make_named_window(id, "kitty", false, false);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, false);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, false);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+
+        let swipe = |phase: GestureSwipePhaseSnapshot,
+                     delta_x: f64,
+                     velocity_x: f64,
+                     timestamp: u64| {
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x: delta_x,
+                total_y: 0.0,
+                velocity_x,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+
+        // Drag to scroll ~516 and release at 150 px/s so the settle engages
+        // at the release position. There the screen center (~1462) is
+        // closest to 0xb's center (1218); 0xb leans left of it, so it must
+        // snap flush to the viewport left edge (scroll 816).
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        for _ in 0..28 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 2000.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        now += 10;
+        evaluator
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now),
+                now,
+            )
+            .expect("end should evaluate");
+
+        for _ in 0..250 {
+            now += 8;
+            evaluator
+                .scheduler_tick(now)
+                .expect("scheduler tick should evaluate");
+        }
+
+        let result = evaluator
+            .evaluate_cached_window("0xb", None, now + 1, false)
+            .expect("cached evaluation should succeed");
+        let x = result
+            .managed_window
+            .rect
+            .expect("tiled window should have a managed rect")
+            .x;
+        assert_eq!(
+            x, 12.0,
+            "the center-closest tile must snap flush to the edge it leans \
+             toward (0xb at the viewport left edge)"
+        );
+    }
+
+    /// A maximized tile hanging off one edge must not yank a smaller
+    /// neighbor that already sits fully on screen out of view: the neighbor
+    /// is closer to the screen center, so it is the anchor, and its
+    /// leaning-edge position is exactly where the scroll already rests.
+    #[test]
+    fn workspace_kinetic_scroll_never_yanks_fully_visible_tile_for_maximized_neighbor() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        // 0xa is maximized (1904px), 0xb a normal 804px tile to its right.
+        let mut now = 0;
+        for (id, maximized) in [("0xa", true), ("0xb", false)] {
+            let window = make_named_window(id, "kitty", false, maximized);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if id == "0xb" {
+                let unfocused = make_named_window("0xa", "kitty", false, true);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, maximized);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            now += 100;
+        }
+
+        let swipe = |phase: GestureSwipePhaseSnapshot,
+                     delta_x: f64,
+                     velocity_x: f64,
+                     timestamp: u64| {
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x: delta_x,
+                total_y: 0.0,
+                velocity_x,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+
+        // Opening 0xb scrolled it fully into view at the right end (scroll
+        // 824, flush at the viewport right edge); the maximized 0xa pokes off
+        // the left edge at ~57% visible. 0xb's center is nearer the screen
+        // center, so a slow flick further rightwards anchors on 0xb, whose
+        // leaning-edge target is the current position — NOT 0xa's center,
+        // which would push 0xb completely off screen.
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        for _ in 0..3 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, -20.0, -2000.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        now += 10;
+        evaluator
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, 0.0, -150.0, now),
+                now,
+            )
+            .expect("end should evaluate");
+
+        for _ in 0..250 {
+            now += 8;
+            evaluator
+                .scheduler_tick(now)
+                .expect("scheduler tick should evaluate");
+        }
+
+        let result = evaluator
+            .evaluate_cached_window("0xb", None, now + 1, false)
+            .expect("cached evaluation should succeed");
+        let x = result
+            .managed_window
+            .rect
+            .expect("tiled window should have a managed rect")
+            .x;
+        assert_eq!(
+            x, 1104.0,
+            "the fully-visible tile must stay on screen (flush at the \
+             viewport right edge), not be yanked away to center the cut \
+             maximized neighbor"
+        );
+    }
+
+    /// Maximized tiles settle on their center once the glide decays below
+    /// the snap threshold.
+    #[test]
+    fn workspace_kinetic_scroll_settles_maximized_tile_at_center() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc"] {
+            let window = make_named_window(id, "kitty", false, true);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, true);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, true);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+
+        let swipe = |phase: GestureSwipePhaseSnapshot,
+                     delta_x: f64,
+                     velocity_x: f64,
+                     timestamp: u64| {
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x: delta_x,
+                total_y: 0.0,
+                velocity_x,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+
+        // Three maximized tiles, 1904px wide with centers 1916px apart:
+        // 0xb spans [1916, 3820] and is centered at scroll offset 1920.
+        // Read the current scroll from 0xb's on-screen position and release
+        // a flick whose natural landing point (start - v * 360ms) falls just
+        // past 0xb's center, so the settle must center 0xb (x = the 8px
+        // maximized padding).
+        let pre = evaluator
+            .evaluate_cached_window("0xb", None, now, false)
+            .expect("cached evaluation should succeed");
+        let scroll_start = 1928.0
+            - pre
+                .managed_window
+                .rect
+                .expect("tiled window should have a managed rect")
+                .x;
+        // Three fast updates below scroll the workspace by 90px first.
+        let velocity = (scroll_start - 90.0 - 1930.0) / 0.36;
+        assert!(
+            (120.0..=5000.0).contains(&velocity),
+            "flick velocity {velocity} out of kinetic range; adjust the setup"
+        );
+
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        for _ in 0..3 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 2000.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        now += 10;
+        evaluator
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, 0.0, velocity, now),
+                now,
+            )
+            .expect("end should evaluate");
+
+        for _ in 0..250 {
+            now += 8;
+            evaluator
+                .scheduler_tick(now)
+                .expect("scheduler tick should evaluate");
+        }
+
+        let result = evaluator
+            .evaluate_cached_window("0xb", None, now + 1, false)
+            .expect("cached evaluation should succeed");
+        let x = result
+            .managed_window
+            .rect
+            .expect("tiled window should have a managed rect")
+            .x;
+        assert_eq!(
+            x, 8.0,
+            "the maximized tile must settle centered on screen"
+        );
+    }
+
+    /// Kinetic settle, non-maximized anchor: the tile whose center is
+    /// closest to the screen center is the anchor, and it snaps flush to the
+    /// screen edge on the side it leans toward — here the right edge.
+    #[test]
+    fn workspace_kinetic_scroll_snaps_center_window_flush_to_leaning_right_edge() {
+        use crate::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ["0xa", "0xb", "0xc", "0xd"] {
+            let window = make_named_window(id, "kitty", false, false);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, false);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, false);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+
+        let swipe = |phase: GestureSwipePhaseSnapshot,
+                     delta_x: f64,
+                     velocity_x: f64,
+                     timestamp: u64| {
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x: delta_x,
+                total_y: 0.0,
+                velocity_x,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+
+        // Drag to scroll ~996 and release at 150 px/s — below any realistic
+        // snap threshold, so the settle engages right at the release
+        // position. There the screen center (~1942) is closest to 0xc's
+        // center (2034); 0xc leans right of it, so it must snap flush to the
+        // viewport right edge (scroll 540).
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
+            .expect("begin should evaluate");
+        for _ in 0..12 {
+            now += 10;
+            evaluator
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, 20.0, 2000.0, now),
+                    now,
+                )
+                .expect("update should evaluate");
+        }
+        now += 10;
+        evaluator
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now),
+                now,
+            )
+            .expect("end should evaluate");
+
+        for _ in 0..250 {
+            now += 8;
+            evaluator
+                .scheduler_tick(now)
+                .expect("scheduler tick should evaluate");
+        }
+
+        let result = evaluator
+            .evaluate_cached_window("0xc", None, now + 1, false)
+            .expect("cached evaluation should succeed");
+        let x = result
+            .managed_window
+            .rect
+            .expect("tiled window should have a managed rect")
+            .x;
+        assert_eq!(
+            x, 1104.0,
+            "the center-closest tile must snap flush to the edge it leans \
+             toward (0xc at the viewport right edge)"
+        );
+    }
+
     #[test]
     fn xdg_activation_of_focused_window_does_not_minimize() {
         let actions = activate_toggle_fixture(

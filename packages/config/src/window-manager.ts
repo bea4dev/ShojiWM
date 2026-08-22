@@ -320,6 +320,20 @@ export interface WorkspaceGestureSpeedConfig {
    * workspace switch. Defaults to workspaceSwitchFactor when omitted.
    */
   workspaceSwitchVelocityFactor?: number;
+  /**
+   * At or below this scroll speed (logical px/s of workspace movement) a
+   * three-finger workspace scroll catches on tile snap positions — the
+   * offsets where a tile sits fully on screen at the viewport edge
+   * (TILE_MARGIN gap), or centered for maximized tiles. Faster scrolling
+   * passes straight through. Applies to both the active gesture and the
+   * kinetic glide after release. 0 disables snapping.
+   */
+  workspaceScrollSnapMaxVelocity?: number;
+  /**
+   * Extra finger travel (logical px of workspace movement) needed to break
+   * out of a caught snap position while the fingers are still down.
+   */
+  workspaceScrollSnapBreakoutPx?: number;
 }
 
 interface ResolvedWorkspaceGestureSpeedConfig {
@@ -327,6 +341,8 @@ interface ResolvedWorkspaceGestureSpeedConfig {
   workspaceScrollKineticFactor: number;
   workspaceSwitchFactor: number;
   workspaceSwitchVelocityFactor: number;
+  workspaceScrollSnapMaxVelocity: number;
+  workspaceScrollSnapBreakoutPx: number;
 }
 
 const DEFAULT_WORKSPACE_GESTURE_SPEED: ResolvedWorkspaceGestureSpeedConfig = {
@@ -334,6 +350,8 @@ const DEFAULT_WORKSPACE_GESTURE_SPEED: ResolvedWorkspaceGestureSpeedConfig = {
   workspaceScrollKineticFactor: 1,
   workspaceSwitchFactor: 1,
   workspaceSwitchVelocityFactor: 1,
+  workspaceScrollSnapMaxVelocity: 300,
+  workspaceScrollSnapBreakoutPx: 48,
 };
 
 function hotReloadDebugEnabled(): boolean {
@@ -361,6 +379,20 @@ function sanitizeGestureSpeedFactor(
     return fallback;
   }
   if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return value;
+}
+
+/** Like sanitizeGestureSpeedFactor, but 0 is a valid value ("disabled"). */
+function sanitizeGestureThreshold(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isFinite(value) || value < 0) {
     return fallback;
   }
   return value;
@@ -415,6 +447,17 @@ export class HybridWindowManager {
   private workspaceGesture: WorkspaceGestureState | null = null;
   private workspaceGestureMode: WorkspaceGestureMode | null = null;
   private workspaceScrollGestureRectAnimationsCancelled = false;
+  /**
+   * Snap position the active scroll gesture is currently caught on, with the
+   * finger travel accumulated since catching. Movement is swallowed until it
+   * exceeds workspaceScrollSnapBreakoutPx, which releases the catch.
+   */
+  private workspaceScrollSnapLatch: {
+    offset: number;
+    overshoot: number;
+  } | null = null;
+  /** EMA of the active gesture's scroll speed (logical px/s, unsigned). */
+  private workspaceScrollGestureSpeed: number | null = null;
   private workspaceGestureSpeed = { ...DEFAULT_WORKSPACE_GESTURE_SPEED };
   private lastPointerPosition: PointerMoveEvent["position"] | null = null;
   private lastPointerTarget: PointerMoveEvent["target"] = { kind: "none" };
@@ -459,6 +502,14 @@ export class HybridWindowManager {
         config.workspaceSwitchVelocityFactor,
         workspaceSwitchFactor,
       ),
+      workspaceScrollSnapMaxVelocity: sanitizeGestureThreshold(
+        config.workspaceScrollSnapMaxVelocity,
+        DEFAULT_WORKSPACE_GESTURE_SPEED.workspaceScrollSnapMaxVelocity,
+      ),
+      workspaceScrollSnapBreakoutPx: sanitizeGestureSpeedFactor(
+        config.workspaceScrollSnapBreakoutPx,
+        DEFAULT_WORKSPACE_GESTURE_SPEED.workspaceScrollSnapBreakoutPx,
+      ),
     };
   }
 
@@ -484,6 +535,8 @@ export class HybridWindowManager {
       this.workspaceGesture = null;
       this.workspaceGestureMode = null;
       this.workspaceScrollGestureRectAnimationsCancelled = false;
+      this.workspaceScrollSnapLatch = null;
+      this.workspaceScrollGestureSpeed = null;
       this.currentMonitor = this.gestureMonitor(event);
       return;
     }
@@ -1977,8 +2030,48 @@ export class HybridWindowManager {
 
     this.currentMonitor = monitor;
     workspace.stopKineticScroll();
-    const deltaX =
+    let deltaX =
       -event.deltaX * this.workspaceGestureSpeed.workspaceScrollFactor;
+
+    // Smooth the per-event scroll speed: libinput's instantaneous velocity is
+    // noisy, and one slow sample mid-flick must not fake a below-threshold
+    // catch.
+    const eventSpeed =
+      Math.abs(event.velocityX) *
+      this.workspaceGestureSpeed.workspaceScrollFactor;
+    this.workspaceScrollGestureSpeed =
+      this.workspaceScrollGestureSpeed === null
+        ? eventSpeed
+        : this.workspaceScrollGestureSpeed * 0.6 + eventSpeed * 0.4;
+
+    const latch = this.workspaceScrollSnapLatch;
+    if (latch) {
+      // Caught on a snap position: swallow finger travel until it exceeds
+      // the breakout distance, then resume with the excess.
+      latch.overshoot += deltaX;
+      const breakout = this.workspaceGestureSpeed.workspaceScrollSnapBreakoutPx;
+      if (Math.abs(latch.overshoot) <= breakout) {
+        return;
+      }
+      deltaX = latch.overshoot - Math.sign(latch.overshoot) * breakout;
+      this.workspaceScrollSnapLatch = null;
+    }
+
+    const snapMaxVelocity =
+      this.workspaceGestureSpeed.workspaceScrollSnapMaxVelocity;
+    if (
+      this.workspaceScrollSnapLatch === null &&
+      snapMaxVelocity > 0 &&
+      this.workspaceScrollGestureSpeed <= snapMaxVelocity
+    ) {
+      const from = workspace.scrollPosition;
+      const snapOffset = workspace.snapOffsetBetween(from, from + deltaX);
+      if (snapOffset !== null) {
+        deltaX = snapOffset - from;
+        this.workspaceScrollSnapLatch = { offset: snapOffset, overshoot: 0 };
+      }
+    }
+
     const shouldCancelRectAnimations =
       !this.workspaceScrollGestureRectAnimationsCancelled;
     const scrolled = workspace.scrollBy(deltaX, {
@@ -2006,6 +2099,14 @@ export class HybridWindowManager {
       return;
     }
 
+    // Fingers lifted while caught on a snap position: stay caught, no glide.
+    if (this.workspaceScrollSnapLatch) {
+      this.workspaceScrollSnapLatch = null;
+      this.workspaceScrollGestureSpeed = null;
+      return;
+    }
+    this.workspaceScrollGestureSpeed = null;
+
     workspace.startKineticScroll(
       -event.velocityX *
         this.workspaceGestureSpeed.workspaceScrollKineticFactor,
@@ -2016,6 +2117,7 @@ export class HybridWindowManager {
         );
         this.applyWorkspaceStackPolicy(workspace);
       },
+      this.workspaceGestureSpeed.workspaceScrollSnapMaxVelocity,
     );
   }
 
@@ -4210,9 +4312,121 @@ export class Workspace {
     return true;
   }
 
+  /**
+   * Scroll offsets where the workspace scroll should catch: for every
+   * non-maximized tile the two boundaries of full visibility — tile left
+   * edge at the viewport left (TILE_MARGIN gap from the screen edge) and
+   * tile right edge at the viewport right — and for maximized tiles the
+   * single centered offset. Offsets at or outside the scroll range are
+   * dropped; the clamped ends are natural stops already.
+   */
+  private tileSnapOffsets(): number[] {
+    const tileable = this.tileableWindows();
+    const viewportRect = this.tileViewportRect();
+    const viewportWidth = read(viewportRect.width);
+    const contentWidth = this.tileContentWidth(tileable, viewportRect);
+    const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
+    const offsets: number[] = [];
+    let left = 0;
+    for (const window of tileable) {
+      const width = this.tileWidthForWindow(window, viewportRect);
+      if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+        offsets.push(left + width / 2 - viewportWidth / 2);
+      } else {
+        offsets.push(left);
+        offsets.push(left + width - viewportWidth);
+      }
+      left += width + TILE_GAP;
+    }
+    const inRange = offsets
+      .filter((offset) => offset > 0.5 && offset < maxScrollOffset - 0.5)
+      .sort((a, b) => a - b);
+    const deduped: number[] = [];
+    for (const offset of inRange) {
+      if (deduped.length === 0 || offset - deduped[deduped.length - 1] > 1) {
+        deduped.push(offset);
+      }
+    }
+    return deduped;
+  }
+
+  /**
+   * First snap offset a scroll from `from` to `to` would cross, or null.
+   * `from` itself is excluded so a scroll resting on a snap position can
+   * move off it.
+   */
+  public snapOffsetBetween(from: number, to: number): number | null {
+    if (to === from) {
+      return null;
+    }
+    const forward = to > from;
+    let best: number | null = null;
+    for (const offset of this.tileSnapOffsets()) {
+      const crossed = forward
+        ? offset > from + 0.5 && offset <= to
+        : offset < from - 0.5 && offset >= to;
+      if (!crossed) {
+        continue;
+      }
+      if (best === null || (forward ? offset < best : offset > best)) {
+        best = offset;
+      }
+    }
+    return best;
+  }
+
+  public get scrollPosition(): number {
+    return this.scrollOffset;
+  }
+
+  /**
+   * Scroll offset the kinetic glide should settle on, or null (only when the
+   * workspace has no tiles).
+   *
+   * Evaluated at the moment the glide decays below the snap threshold, from
+   * the CURRENT scroll position — the state the user is looking at when the
+   * settle visibly begins:
+   *
+   * 1. The anchor is the tile whose center is closest to the screen center.
+   * 2. A non-maximized anchor snaps flush to the screen edge on the side it
+   *    leans toward (the TILE_MARGIN gap comes from the viewport inset).
+   * 3. A maximized anchor snaps to its centered position.
+   *
+   * Both the selection and the destination are unambiguous, so no rejection
+   * or compatibility pass is needed.
+   */
+  private kineticSnapTarget(): number | null {
+    const viewportRect = this.tileViewportRect();
+    const viewportWidth = read(viewportRect.width);
+    const tileable = this.tileableWindows();
+    const contentWidth = this.tileContentWidth(tileable, viewportRect);
+    const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
+    const from = clamp(this.scrollOffset, 0, maxScrollOffset);
+    const viewportCenter = from + viewportWidth / 2;
+
+    let best: { distance: number; target: number } | null = null;
+    let left = 0;
+    for (const window of tileable) {
+      const width = this.tileWidthForWindow(window, viewportRect);
+      const center = left + width / 2;
+      const distance = Math.abs(center - viewportCenter);
+      const target = window.state[WINDOW_STATE_MAXIMIZED]()
+        ? center - viewportWidth / 2
+        : center < viewportCenter
+          ? left
+          : left + width - viewportWidth;
+      if (best === null || distance < best.distance) {
+        best = { distance, target };
+      }
+      left += width + TILE_GAP;
+    }
+    return best === null ? null : clamp(best.target, 0, maxScrollOffset);
+  }
+
   public startKineticScroll(
     initialVelocityX: number,
     onFrame?: () => void,
+    snapMaxVelocity = 0,
   ): void {
     this.stopKineticScroll();
     if (
@@ -4234,6 +4448,22 @@ export class Workspace {
     let firstStep = true;
 
     const step = (dtMs: number): boolean => {
+      // The moment the glide decays to snapping speed, pick the settle
+      // anchor and glide onto it with the standard tile animation — the same
+      // easing every other window movement uses.
+      if (snapMaxVelocity > 0 && Math.abs(velocityX) <= snapMaxVelocity) {
+        const target = this.kineticSnapTarget();
+        if (target !== null) {
+          this.stopKineticScroll();
+          if (Math.abs(target - this.scrollOffset) > 0.5) {
+            this.scrollOffset = target;
+            this.applyLayout({ preserveMissingActive: true });
+            onFrame?.();
+          }
+          return false;
+        }
+      }
+
       const deltaX = (velocityX * dtMs) / 1000;
       const scrolled = this.scrollBy(deltaX, {
         stopKinetic: false,

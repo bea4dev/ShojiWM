@@ -519,6 +519,12 @@ HYBRID_WINDOW_MANAGER.configureWorkspaceGestureSpeed({
   workspaceScrollKineticFactor: 1,
   workspaceSwitchFactor: 1,
   workspaceSwitchVelocityFactor: 1,
+  // At or below this scroll speed (logical px/s) the workspace scroll
+  // catches on tile snap positions (fully-on-screen edges; center for
+  // maximized tiles). 0 disables snapping.
+  workspaceScrollSnapMaxVelocity: 600,
+  // Finger travel (logical px) needed to break out of a caught position.
+  workspaceScrollSnapBreakoutPx: 48,
 });
 
 COMPOSITOR.effect.background_effect = compileEffect({
