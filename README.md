@@ -8,7 +8,7 @@
 
 
 
-<video src="https://bea4dev.github.io/ShojiWM/ja/video/example0.mp4" width="320" height="240" controls></video>
+<video src="https://github.com/user-attachments/assets/b93d7afa-87cd-4399-8603-d5c6a3d63ebf" width="320" height="240" controls></video>
 </div>
 
 ## Documents
