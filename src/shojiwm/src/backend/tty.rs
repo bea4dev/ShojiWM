@@ -75,7 +75,7 @@ use smithay::{
     },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     backend::damage,
@@ -256,6 +256,45 @@ fn error_chain_has_drm_test_failed(error: &(dyn std::error::Error + 'static)) ->
         }
         current = error
             .source();
+    }
+    false
+}
+
+/// Whether a render/commit error chain bottoms out in the kernel *rejecting* an
+/// atomic commit outright (`DrmError::Access` carrying `EINVAL`).
+///
+/// This is the page-flip sibling of `error_chain_has_drm_test_failed`. A
+/// TEST_ONLY commit the kernel refuses surfaces as `DrmError::TestFailed`, but
+/// the real commit that follows surfaces as
+/// `Access { errmsg: "Page flip commit failed", source: EINVAL }` -- a
+/// different variant carrying the same meaning: this configuration is not one
+/// the kernel will accept right now.
+///
+/// Treating only the first as recoverable is what turned a rejected
+/// post-resume page flip into `tty render iteration failed; shutting down` --
+/// the compositor exiting and taking the whole login session with it, several
+/// seconds after the output had connected perfectly well. Both deserve the same
+/// bounded surface rebuild. `reset_surface_after_commit_failure` still ends the
+/// session if one CRTC keeps failing inside its window, so a configuration the
+/// kernel will never accept cannot spin the render loop forever.
+///
+/// Deliberately narrow. EACCES is handled earlier (the session-paused path, and
+/// `error_chain_has_permission_denied`), and EBUSY/EAGAIN/EINTR are transient
+/// conditions smithay itself classifies as `TemporaryFailure`. Only EINVAL means
+/// "the kernel looked at this configuration and said no".
+fn error_chain_has_rejected_commit(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<DrmError>().is_some_and(|drm| {
+            matches!(
+                drm,
+                DrmError::Access(access)
+                    if access.source.kind() == std::io::ErrorKind::InvalidInput
+            )
+        }) {
+            return true;
+        }
+        current = error.source();
     }
     false
 }
@@ -869,6 +908,16 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
             );
         }
     }
+    // Connectors that lost their first modeset are invisible to the rescan
+    // above (the scanner already holds them as connected), so drive their retry
+    // explicitly. Forced due now: this is the moment DRM master comes back, and
+    // waiting out the normal interval leaves the panel dark meanwhile.
+    let now = Instant::now();
+    for pending in &mut state.pending_connector_retries {
+        pending.next_attempt_at = now;
+    }
+    retry_pending_connectors(state);
+
     state.force_full_damage = true;
     state.request_tty_maintenance("tty-session-resume");
     state.schedule_redraw();
@@ -6210,13 +6259,12 @@ fn render_surface(
             Err(
                 err,
             ) => {
-                if error_chain_has_drm_test_failed(
-                    &err,
-                ) {
+                if error_chain_has_drm_test_failed(&err) || error_chain_has_rejected_commit(&err)
+                {
                     warn!(
                         output = %output.name(),
                         ?err,
-                        "tty render_frame failed its atomic test; requesting surface reset",
+                        "tty render_frame was rejected by the kernel; requesting surface reset",
                     );
                     return Ok(
                         RenderSurfaceOutcome::CommitFailed,
@@ -6715,11 +6763,13 @@ fn render_surface(
                             reset_surface_after_tty_pause(surface);
                             return Ok(RenderSurfaceOutcome::Skipped);
                         }
-                        if error_chain_has_drm_test_failed(&err) {
+                        if error_chain_has_drm_test_failed(&err)
+                            || error_chain_has_rejected_commit(&err)
+                        {
                             warn!(
                                 output = %output.name(),
                                 ?err,
-                                "tty queue_frame failed its atomic test; requesting surface reset",
+                                "tty queue_frame was rejected by the kernel; requesting surface reset",
                             );
                             return Ok(
                                 RenderSurfaceOutcome::CommitFailed,
@@ -12408,6 +12458,159 @@ fn surface_dmabuf_feedback(
     Ok(SurfaceDmabufFeedback { render, scanout })
 }
 
+/// A connector whose `connector_connected` failed and still owes us an output.
+///
+/// This queue exists because the DRM scanner cannot re-offer the connector.
+/// `scan_connectors` commits the connector to its map as `Connected` *before*
+/// returning the event, so once a connect attempt has been handed out, every
+/// later scan compares `(Connected, Connected)` with an unchanged mode list and
+/// emits nothing at all. A rescan -- including the belt-and-braces rescan in
+/// `resume_tty_session` -- therefore cannot repair a connector whose first
+/// modeset was rejected. Recovery has to be owned here instead.
+pub struct PendingConnectorRetry {
+    pub node: DrmNode,
+    pub crtc: crtc::Handle,
+    pub connector: connector::Info,
+    pub attempts: u32,
+    pub next_attempt_at: Instant,
+}
+
+/// Bounded, for the same reason `reset_surface_after_commit_failure` is bounded:
+/// a configuration the kernel *always* rejects must not be retried forever.
+/// Eight attempts at half-second spacing covers the post-resume window where
+/// the display engine is still settling, then gives up loudly.
+const CONNECTOR_RETRY_MAX_ATTEMPTS: u32 = 8;
+const CONNECTOR_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Undo the output `connector_connected` publishes before the CRTC exists.
+///
+/// `initialize_output` is the first call that can fail, and by then the
+/// `wl_output` global has been advertised and mapped into the space: clients
+/// already see the output and lay windows out on it. Leaving that behind is
+/// strictly worse than never having connected -- the panel is dark while every
+/// client believes it is usable, which is exactly how one rejected post-resume
+/// modeset turns into a blank ScreenPad with windows stranded on it.
+///
+/// `connector_disconnected` cannot do this job: it keys off
+/// `backend.surfaces.remove(&crtc)` and returns immediately when that is empty,
+/// which is precisely the state a failure leaves behind.
+fn unwind_half_connected_output(
+    state: &mut ShojiWM,
+    node: DrmNode,
+    output: &Output,
+    output_name: &str,
+) {
+    // Remove unconditionally, then destroy the blob if there was one: the
+    // kernel only frees property blobs when the DRM fd closes, and this device
+    // stays open across hotplugs, so a retry loop would otherwise leak one blob
+    // per attempt.
+    let color_state = state.output_color.remove(output_name);
+    if let Some(blob) = color_state.and_then(|color| color.hdr_metadata_blob)
+        && let Some(backend) = state.tty_backends.get(&node)
+    {
+        crate::color::drm_metadata::destroy_metadata_blob(
+            backend.drm_output_manager.device(),
+            blob,
+        );
+    }
+    state.space.unmap_output(output);
+    state.remove_output_global(output);
+    state.screencopy_state.remove_output(output);
+    state.output_capture_mirrors.remove(output_name);
+}
+
+/// Record a connector whose connect attempt failed, so it can be retried.
+fn queue_connector_retry(
+    state: &mut ShojiWM,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    connector: connector::Info,
+) {
+    let next_attempt_at = Instant::now() + CONNECTOR_RETRY_INTERVAL;
+    if let Some(existing) = state
+        .pending_connector_retries
+        .iter_mut()
+        .find(|pending| pending.node == node && pending.crtc == crtc)
+    {
+        // Keep the attempt count: repeated failures on one CRTC must still
+        // reach the give-up bound rather than resetting it every scan.
+        existing.connector = connector;
+        existing.next_attempt_at = next_attempt_at;
+        return;
+    }
+    state.pending_connector_retries.push(PendingConnectorRetry {
+        node,
+        crtc,
+        connector,
+        attempts: 0,
+        next_attempt_at,
+    });
+}
+
+/// Re-attempt connectors whose first `connector_connected` failed.
+///
+/// Driven from the tty maintenance tick and forced once from
+/// `resume_tty_session`. Without this nothing re-arms a connector that lost its
+/// first modeset -- see `PendingConnectorRetry` for why a rescan cannot.
+pub fn retry_pending_connectors(state: &mut ShojiWM) {
+    if state.pending_connector_retries.is_empty() || !state.tty_session_active {
+        return;
+    }
+    let now = Instant::now();
+    let pending = std::mem::take(&mut state.pending_connector_retries);
+    let mut keep = Vec::with_capacity(pending.len());
+    for mut entry in pending {
+        if entry.next_attempt_at > now {
+            keep.push(entry);
+            continue;
+        }
+        // Something else already built this CRTC (a real hotplug, or a
+        // `resume_tty_session` rescan that did see a topology change). Nothing
+        // left to owe.
+        if state
+            .tty_backends
+            .get(&entry.node)
+            .is_some_and(|backend| backend.surfaces.contains_key(&entry.crtc))
+        {
+            continue;
+        }
+        entry.attempts += 1;
+        match connector_connected(state, entry.node, entry.crtc, entry.connector.clone()) {
+            Ok(()) => {
+                info!(
+                    node = ?entry.node,
+                    crtc = ?entry.crtc,
+                    attempts = entry.attempts,
+                    "recovered tty output after retry",
+                );
+                state.notify_runtime_outputs_changed();
+            }
+            Err(err) if entry.attempts < CONNECTOR_RETRY_MAX_ATTEMPTS => {
+                debug!(
+                    node = ?entry.node,
+                    crtc = ?entry.crtc,
+                    attempts = entry.attempts,
+                    ?err,
+                    "tty output retry failed; will try again",
+                );
+                entry.next_attempt_at = now + CONNECTOR_RETRY_INTERVAL;
+                keep.push(entry);
+            }
+            Err(err) => {
+                error!(
+                    node = ?entry.node,
+                    crtc = ?entry.crtc,
+                    attempts = entry.attempts,
+                    ?err,
+                    "giving up on tty output after repeated failures; panel stays dark",
+                );
+            }
+        }
+    }
+    // A retry can itself queue work, so merge rather than overwrite.
+    state.pending_connector_retries.extend(keep);
+}
+
 fn connector_connected(
     state: &mut ShojiWM,
     node: DrmNode,
@@ -12473,22 +12676,54 @@ fn connector_connected(
         "connected tty output"
     );
 
-    let backend = state.tty_backends.get_mut(&node).unwrap();
+    // Scoped so the `backend` borrow ends before the failure path touches
+    // `state` again. Everything published above this point is undone on error
+    // rather than propagated as-is -- see `unwind_half_connected_output`.
+    let initialized = {
+        let backend = state.tty_backends.get_mut(&node).unwrap();
+        // Bind this to its own statement so the `drm_output_manager` guard is dropped at
+        // the semicolon. It must NOT be the scrutinee of the `match` below: a match keeps
+        // its scrutinee temporaries alive for the whole match, and `surface_dmabuf_feedback`
+        // calls `drm_output.with_compositor`, which locks the same manager. Holding the
+        // guard across it self-deadlocks on a non-reentrant mutex -- the compositor hangs
+        // during startup with no error logged at all, right after smithay's
+        // "Failed to destroy old mode property blob" warning.
+        let initialize = backend
+            .drm_output_manager
+            .lock()
+            .initialize_output::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
+                crtc,
+                mode,
+                &[connector.handle()],
+                &output,
+                None,
+                &mut backend.renderer,
+                &DrmOutputRenderElements::default(),
+            );
+        match initialize {
+            Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
+            Ok(drm_output) => {
+                match surface_dmabuf_feedback(
+                    &drm_output,
+                    backend.renderer.dmabuf_formats(),
+                    node,
+                ) {
+                    Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
+                    Ok(feedback) => Ok((drm_output, feedback)),
+                }
+            }
+        }
+    };
 
-    let drm_output = backend
-        .drm_output_manager
-        .lock()
-        .initialize_output::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
-            crtc,
-            mode,
-            &[connector.handle()],
-            &output,
-            None,
-            &mut backend.renderer,
-            &DrmOutputRenderElements::default(),
-        )?;
-    let dmabuf_feedback =
-        surface_dmabuf_feedback(&drm_output, backend.renderer.dmabuf_formats(), node)?;
+    let (drm_output, dmabuf_feedback) = match initialized {
+        Ok(pair) => pair,
+        Err(err) => {
+            unwind_half_connected_output(state, node, &output, &output.name());
+            return Err(err);
+        }
+    };
+
+    let backend = state.tty_backends.get_mut(&node).unwrap();
 
     let supports_async_flip = drm_output.supports_async_page_flip();
     info!(
@@ -12609,13 +12844,36 @@ pub fn device_changed(
                 connector,
                 crtc: Some(crtc),
             } => {
-                connector_connected(state, node, crtc, connector)?;
-                changed = true;
+                // Deliberately not `?`. `scan_connectors` has already recorded
+                // this connector as connected, so an error that unwinds out of
+                // this loop is unrecoverable: every later scan sees an
+                // unchanged topology and emits nothing, and the panel stays
+                // dark for the rest of the session even though the kernel has
+                // it lit. Propagating would also abandon the connectors still
+                // queued in this same scan result. Hand it to the retry queue.
+                if let Err(err) = connector_connected(state, node, crtc, connector.clone()) {
+                    warn!(
+                        ?node,
+                        ?crtc,
+                        ?err,
+                        "connector failed to initialize; queueing retry",
+                    );
+                    queue_connector_retry(state, node, crtc, connector);
+                } else {
+                    changed = true;
+                }
             }
             DrmScanEvent::Disconnected {
                 connector,
                 crtc: Some(crtc),
             } => {
+                // Drop any retry still owed for this CRTC. The panel is
+                // genuinely gone, so retrying would republish and unwind its
+                // `wl_output` global once per attempt -- visible output churn
+                // for a connector that no longer exists.
+                state
+                    .pending_connector_retries
+                    .retain(|pending| !(pending.node == node && pending.crtc == crtc));
                 connector_disconnected(state, node, crtc, connector);
                 changed = true;
             }
