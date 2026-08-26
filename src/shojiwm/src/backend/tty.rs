@@ -12683,7 +12683,14 @@ fn connector_connected(
     // rather than propagated as-is -- see `unwind_half_connected_output`.
     let initialized = {
         let backend = state.tty_backends.get_mut(&node).unwrap();
-        match backend
+        // Bind this to its own statement so the `drm_output_manager` guard is dropped at
+        // the semicolon. It must NOT be the scrutinee of the `match` below: a match keeps
+        // its scrutinee temporaries alive for the whole match, and `surface_dmabuf_feedback`
+        // calls `drm_output.with_compositor`, which locks the same manager. Holding the
+        // guard across it self-deadlocks on a non-reentrant mutex -- the compositor hangs
+        // during startup with no error logged at all, right after smithay's
+        // "Failed to destroy old mode property blob" warning.
+        let initialize = backend
             .drm_output_manager
             .lock()
             .initialize_output::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
@@ -12694,7 +12701,8 @@ fn connector_connected(
                 None,
                 &mut backend.renderer,
                 &DrmOutputRenderElements::default(),
-            ) {
+            );
+        match initialize {
             Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
             Ok(drm_output) => {
                 match surface_dmabuf_feedback(
