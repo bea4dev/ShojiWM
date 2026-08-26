@@ -260,6 +260,45 @@ fn error_chain_has_drm_test_failed(error: &(dyn std::error::Error + 'static)) ->
     false
 }
 
+/// Whether a render/commit error chain bottoms out in the kernel *rejecting* an
+/// atomic commit outright (`DrmError::Access` carrying `EINVAL`).
+///
+/// This is the page-flip sibling of `error_chain_has_drm_test_failed`. A
+/// TEST_ONLY commit the kernel refuses surfaces as `DrmError::TestFailed`, but
+/// the real commit that follows surfaces as
+/// `Access { errmsg: "Page flip commit failed", source: EINVAL }` -- a
+/// different variant carrying the same meaning: this configuration is not one
+/// the kernel will accept right now.
+///
+/// Treating only the first as recoverable is what turned a rejected
+/// post-resume page flip into `tty render iteration failed; shutting down` --
+/// the compositor exiting and taking the whole login session with it, several
+/// seconds after the output had connected perfectly well. Both deserve the same
+/// bounded surface rebuild. `reset_surface_after_commit_failure` still ends the
+/// session if one CRTC keeps failing inside its window, so a configuration the
+/// kernel will never accept cannot spin the render loop forever.
+///
+/// Deliberately narrow. EACCES is handled earlier (the session-paused path, and
+/// `error_chain_has_permission_denied`), and EBUSY/EAGAIN/EINTR are transient
+/// conditions smithay itself classifies as `TemporaryFailure`. Only EINVAL means
+/// "the kernel looked at this configuration and said no".
+fn error_chain_has_rejected_commit(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<DrmError>().is_some_and(|drm| {
+            matches!(
+                drm,
+                DrmError::Access(access)
+                    if access.source.kind() == std::io::ErrorKind::InvalidInput
+            )
+        }) {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 fn browser_cpu_debug_allowed(output_name: &str) -> bool {
     if !browser_cpu_debug_enabled() {
         return false;
@@ -6212,13 +6251,12 @@ fn render_surface(
             Err(
                 err,
             ) => {
-                if error_chain_has_drm_test_failed(
-                    &err,
-                ) {
+                if error_chain_has_drm_test_failed(&err) || error_chain_has_rejected_commit(&err)
+                {
                     warn!(
                         output = %output.name(),
                         ?err,
-                        "tty render_frame failed its atomic test; requesting surface reset",
+                        "tty render_frame was rejected by the kernel; requesting surface reset",
                     );
                     return Ok(
                         RenderSurfaceOutcome::CommitFailed,
@@ -6717,11 +6755,13 @@ fn render_surface(
                             reset_surface_after_tty_pause(surface);
                             return Ok(RenderSurfaceOutcome::Skipped);
                         }
-                        if error_chain_has_drm_test_failed(&err) {
+                        if error_chain_has_drm_test_failed(&err)
+                            || error_chain_has_rejected_commit(&err)
+                        {
                             warn!(
                                 output = %output.name(),
                                 ?err,
-                                "tty queue_frame failed its atomic test; requesting surface reset",
+                                "tty queue_frame was rejected by the kernel; requesting surface reset",
                             );
                             return Ok(
                                 RenderSurfaceOutcome::CommitFailed,
