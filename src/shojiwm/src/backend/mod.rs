@@ -12,6 +12,7 @@ pub mod screencopy_render;
 pub mod shader_effect;
 pub mod snapshot;
 pub mod text;
+pub mod transform_probe_tests;
 pub mod tty;
 pub mod visual;
 pub mod window;

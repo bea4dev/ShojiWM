@@ -45,9 +45,29 @@ const MAX_THUMBNAIL_DIM: u32 = 320;
 pub struct OutputInfo {
     pub name: String,
     pub description: String,
+    /// Current mode dimensions in hardware (untransformed) orientation, as
+    /// sent by `wl_output.mode`.
     pub width: i32,
     pub height: i32,
     pub refresh_mhz: i32,
+    /// Output rotation/flip from `wl_output.geometry`. Determines the stream
+    /// route: wlr-screencopy delivers rotated (scanout-orientation) frames,
+    /// so transformed outputs stream through ext-image-copy-capture instead,
+    /// which this compositor renders upright.
+    pub transform: wl_output::Transform,
+}
+
+impl OutputInfo {
+    /// Mode dimensions in the transformed (as-displayed) orientation.
+    pub fn logical_mode_size(&self) -> (i32, i32) {
+        match self.transform {
+            wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270 => (self.height, self.width),
+            _ => (self.width, self.height),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -241,12 +261,18 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
                 width: 0,
                 height: 0,
                 refresh_mhz: 0,
+                transform: wl_output::Transform::Normal,
             });
         }
         let cur = state.output_pending.last_mut().unwrap();
         match event {
             wl_output::Event::Name { name } => cur.name = name,
             wl_output::Event::Description { description } => cur.description = description,
+            wl_output::Event::Geometry { transform, .. } => {
+                if let WEnum::Value(transform) = transform {
+                    cur.transform = transform;
+                }
+            }
             wl_output::Event::Mode {
                 flags,
                 width,

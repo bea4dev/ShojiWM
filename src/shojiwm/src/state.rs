@@ -44,6 +44,7 @@ use smithay::{
     },
     utils::{
         Clock, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, SERIAL_COUNTER, Scale,
+        Transform,
     },
     wayland::{
         background_effect::BackgroundEffectState,
@@ -2467,10 +2468,17 @@ impl ShojiWM {
                         refresh_rate: mode.refresh as f64 / 1000.0,
                     })
                     .collect::<Vec<_>>();
-                let resolution = output.current_mode().map(|mode| OutputModeSnapshot {
-                    width: mode.size.w,
-                    height: mode.size.h,
-                    refresh_rate: mode.refresh as f64 / 1000.0,
+                // Report the mode size in the output's transformed orientation
+                // so config-side logical-size math (`resolution / scale`) stays
+                // correct on rotated outputs. `availableModes` stay physical.
+                let transform = output.current_transform();
+                let resolution = output.current_mode().map(|mode| {
+                    let size = transform.transform_size(mode.size);
+                    OutputModeSnapshot {
+                        width: size.w,
+                        height: size.h,
+                        refresh_rate: mode.refresh as f64 / 1000.0,
+                    }
                 });
                 let location = output.current_location();
                 (
@@ -2489,6 +2497,7 @@ impl ShojiWM {
                             y: location.y,
                         },
                         scale: output.current_scale().fractional_scale(),
+                        transform: transform.into(),
                         available_modes,
                     },
                 )
@@ -2588,8 +2597,12 @@ impl ShojiWM {
             .max(0.1)
     }
 
-    fn runtime_output_logical_width_for_mode(output: &Output, mode: OutputMode, scale: f64) -> i32 {
-        let physical_size = output.current_transform().transform_size(mode.size);
+    fn runtime_output_logical_width_for_mode(
+        transform: Transform,
+        mode: OutputMode,
+        scale: f64,
+    ) -> i32 {
+        let physical_size = transform.transform_size(mode.size);
         ((physical_size.w as f64) / scale.max(0.1)).round().max(1.0) as i32
     }
 
@@ -2650,6 +2663,7 @@ impl ShojiWM {
 
         let mut target_modes = std::collections::BTreeMap::new();
         let mut target_scales = std::collections::BTreeMap::new();
+        let mut target_transforms = std::collections::BTreeMap::new();
         for output in &outputs {
             let target_mode = self
                 .runtime_output_configs
@@ -2660,6 +2674,16 @@ impl ShojiWM {
             target_scales.insert(
                 output.name(),
                 self.runtime_output_target_scale_value(output),
+            );
+            // The config draft is declarative: an omitted transform means
+            // "normal", not "keep whatever was set before".
+            target_transforms.insert(
+                output.name(),
+                self.runtime_output_configs
+                    .get(&output.name())
+                    .and_then(|config| config.transform)
+                    .unwrap_or_default()
+                    .to_smithay(),
             );
         }
 
@@ -2689,10 +2713,13 @@ impl ShojiWM {
         let mut auto_cursor_x = manual_positions
             .iter()
             .filter_map(|(name, (x, _))| {
-                let output = outputs.iter().find(|output| output.name() == *name)?;
                 let mode = target_modes.get(name).and_then(|mode| *mode)?;
                 let scale = target_scales.get(name).copied().unwrap_or(1.0);
-                Some(x + Self::runtime_output_logical_width_for_mode(output, mode, scale))
+                let transform = target_transforms
+                    .get(name)
+                    .copied()
+                    .unwrap_or(Transform::Normal);
+                Some(x + Self::runtime_output_logical_width_for_mode(transform, mode, scale))
             })
             .max()
             .unwrap_or(0);
@@ -2703,11 +2730,14 @@ impl ShojiWM {
         }
         for output_name in auto_outputs {
             target_positions.insert(output_name.clone(), Point::from((auto_cursor_x, 0)));
-            if let Some(output) = outputs.iter().find(|output| output.name() == output_name)
-                && let Some(mode) = target_modes.get(&output_name).and_then(|mode| *mode)
-            {
+            if let Some(mode) = target_modes.get(&output_name).and_then(|mode| *mode) {
                 let scale = target_scales.get(&output_name).copied().unwrap_or(1.0);
-                auto_cursor_x += Self::runtime_output_logical_width_for_mode(output, mode, scale);
+                let transform = target_transforms
+                    .get(&output_name)
+                    .copied()
+                    .unwrap_or(Transform::Normal);
+                auto_cursor_x +=
+                    Self::runtime_output_logical_width_for_mode(transform, mode, scale);
             }
         }
 
@@ -2762,6 +2792,11 @@ impl ShojiWM {
                 .and_then(|config| config.scale)
                 .map(|_| OutputScale::Fractional(target_scales.get(&name).copied().unwrap_or(1.0)));
 
+            let target_transform = target_transforms
+                .get(&name)
+                .copied()
+                .unwrap_or(Transform::Normal);
+
             if let Some(mode) = target_mode {
                 let current_mode = output.current_mode();
                 if current_mode != Some(mode) {
@@ -2769,7 +2804,12 @@ impl ShojiWM {
                 }
             }
 
-            output.change_current_state(target_mode, None, target_scale, Some(target_position));
+            output.change_current_state(
+                target_mode,
+                Some(target_transform),
+                target_scale,
+                Some(target_position),
+            );
             self.create_output_global(&output);
             self.space.map_output(&output, target_position);
         }
@@ -2806,7 +2846,14 @@ impl ShojiWM {
             {
                 let _ = apply_tty_output_mode(self, &name, mode);
             }
-            output.change_current_state(target_mode, None, target_scale, Some(source_position));
+            // Mirror outputs always render untransformed; reset any transform
+            // left over from a previous extend configuration.
+            output.change_current_state(
+                target_mode,
+                Some(Transform::Normal),
+                target_scale,
+                Some(source_position),
+            );
             self.create_output_global(&output);
             self.space.map_output(&output, source_position);
         }

@@ -47,7 +47,7 @@ Each entry has a `mode` that selects one of three shapes:
 
 | `mode` | Meaning | Extra fields |
 | --- | --- | --- |
-| `"extend"` *(default)* | Use the output as part of the desktop | `resolution`, `position`, `scale` |
+| `"extend"` *(default)* | Use the output as part of the desktop | `resolution`, `position`, `scale`, `transform` |
 | `"disabled"` | Turn the output off | — |
 | `"mirror"` | Mirror another output | `source` (name of the output to mirror) |
 
@@ -99,6 +99,38 @@ default config uses values like `1.5`–`1.8`.
 display['eDP-1'] = {resolution: 'best', scale: 1.8};
 ```
 
+### `transform`
+
+Rotation / flip of the output, following the standard `wl_output.transform`
+enum. Use it for vertically mounted (portrait) monitors or inverted panels.
+
+| Value | Meaning |
+| --- | --- |
+| `"normal"` *(default)* | No rotation |
+| `"rotate-90"` / `"rotate-180"` / `"rotate-270"` | Rotate the picture by 90° / 180° / 270° |
+| `"flipped"` | Mirror horizontally |
+| `"flipped-90"` / `"flipped-180"` / `"flipped-270"` | Mirror, then rotate |
+
+```ts
+// A monitor physically rotated into portrait orientation
+display['DP-1'] = {
+  resolution: 'best',
+  position: 'auto',
+  transform: 'rotate-90',
+};
+```
+
+Notes:
+
+- `resolution` always refers to the **physical (unrotated) mode** — a portrait
+  1080×1920 setup still selects `{width: 1920, height: 1080}` (or `'best'`).
+- The config draft is declarative: omitting `transform` (or removing it later)
+  resets the output to `"normal"`.
+- Everything downstream sees the **transformed orientation**: `OutputInfo.
+  resolution` reports the rotated size (so `resolution / scale` is always the
+  logical size), `usableArea`, tiling, screenshots (`grim`) and screen capture
+  (OBS via the portal) all follow the rotation automatically.
+
 ## Reading output state
 
 The controller is also a read-only view, useful inside event handlers and the
@@ -116,8 +148,13 @@ composition function.
 | `reconfigure()` | re-run all registered factories now |
 
 `OutputInfo` includes `name`, `enabled`, `resolution` (`{width, height,
-refreshRate}`), `position` (`{x, y}`), `scale`, `availableModes`, and
-identification fields (`make`, `model`, `serial`, `connector`).
+refreshRate}`), `position` (`{x, y}`), `scale`, `transform`, `availableModes`,
+and identification fields (`make`, `model`, `serial`, `connector`).
+
+On a transformed output, `resolution` is reported in the **rotated
+orientation** (width/height swapped for 90°/270°), while `availableModes` stay
+physical. This keeps `resolution / scale` equal to the logical size in every
+case.
 
 ```ts
 const hz = COMPOSITOR.output.get('DP-1')?.resolution?.refreshRate;

@@ -47,7 +47,7 @@ COMPOSITOR.output.configure((context) => {
 
 | `mode` | 意味 | 追加フィールド |
 | --- | --- | --- |
-| `"extend"`（デフォルト） | デスクトップの一部として使う | `resolution` / `position` / `scale` |
+| `"extend"`（デフォルト） | デスクトップの一部として使う | `resolution` / `position` / `scale` / `transform` |
 | `"disabled"` | 出力をオフにする | — |
 | `"mirror"` | 別の出力をミラーする | `source`（ミラー元の出力名） |
 
@@ -99,6 +99,38 @@ display['DP-2'] = {position: {x: 2560, y: 0}}; // DP-1 の右側
 display['eDP-1'] = {resolution: 'best', scale: 1.8};
 ```
 
+### `transform`
+
+出力の回転・反転です。標準の `wl_output.transform` enum に従います。縦置き
+（ポートレート）モニターや上下反転パネルに使います。
+
+| 値 | 意味 |
+| --- | --- |
+| `"normal"`（デフォルト） | 回転なし |
+| `"rotate-90"` / `"rotate-180"` / `"rotate-270"` | 画面を 90°／180°／270° 回転 |
+| `"flipped"` | 左右反転 |
+| `"flipped-90"` / `"flipped-180"` / `"flipped-270"` | 反転してから回転 |
+
+```ts
+// 物理的に縦置きにしたモニター
+display['DP-1'] = {
+  resolution: 'best',
+  position: 'auto',
+  transform: 'rotate-90',
+};
+```
+
+補足:
+
+- `resolution` は常に**物理（回転前）のモード**を指します。縦置きで 1080×1920 に
+  したい場合も `{width: 1920, height: 1080}`（または `'best'`）を指定します。
+- 設定ドラフトは宣言的です。`transform` を省略（または後から削除）すると
+  `"normal"` に戻ります。
+- 下流はすべて**回転後の向き**で動きます。`OutputInfo.resolution` は回転後の
+  サイズを報告し（そのため `resolution / scale` は常に論理サイズ）、
+  `usableArea`・タイリング・スクリーンショット（`grim`）・画面キャプチャ
+  （ポータル経由の OBS）も自動的に回転へ追従します。
+
 ## 出力の状態を読む
 
 このコントローラは読み取り専用ビューでもあり、イベントハンドラや合成関数の中で
@@ -116,8 +148,12 @@ display['eDP-1'] = {resolution: 'best', scale: 1.8};
 | `reconfigure()` | 登録済みファクトリーを即時再実行 |
 
 `OutputInfo` には `name`・`enabled`・`resolution`（`{width, height, refreshRate}`）・
-`position`（`{x, y}`）・`scale`・`availableModes`、および識別情報（`make`・`model`・
-`serial`・`connector`）が含まれます。
+`position`（`{x, y}`）・`scale`・`transform`・`availableModes`、および識別情報
+（`make`・`model`・`serial`・`connector`）が含まれます。
+
+transform が設定された出力では、`resolution` は**回転後の向き**で報告されます
+（90°／270° では幅と高さが入れ替わる）。一方 `availableModes` は物理のままです。
+これにより `resolution / scale` はどの場合でも論理サイズになります。
 
 ```ts
 const hz = COMPOSITOR.output.get('DP-1')?.resolution?.refreshRate;

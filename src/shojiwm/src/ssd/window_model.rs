@@ -537,7 +537,45 @@ pub struct WaylandOutputSnapshot {
     pub resolution: Option<OutputModeSnapshot>,
     pub position: OutputPositionSnapshot,
     pub scale: f64,
+    pub transform: OutputTransformSnapshot,
     pub available_modes: Vec<OutputModeSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum OutputTransformSnapshot {
+    #[default]
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "rotate-90")]
+    Rotate90,
+    #[serde(rename = "rotate-180")]
+    Rotate180,
+    #[serde(rename = "rotate-270")]
+    Rotate270,
+    #[serde(rename = "flipped")]
+    Flipped,
+    #[serde(rename = "flipped-90")]
+    Flipped90,
+    #[serde(rename = "flipped-180")]
+    Flipped180,
+    #[serde(rename = "flipped-270")]
+    Flipped270,
+}
+
+impl From<smithay::utils::Transform> for OutputTransformSnapshot {
+    fn from(transform: smithay::utils::Transform) -> Self {
+        use smithay::utils::Transform;
+        match transform {
+            Transform::Normal => Self::Normal,
+            Transform::_90 => Self::Rotate90,
+            Transform::_180 => Self::Rotate180,
+            Transform::_270 => Self::Rotate270,
+            Transform::Flipped => Self::Flipped,
+            Transform::Flipped90 => Self::Flipped90,
+            Transform::Flipped180 => Self::Flipped180,
+            Transform::Flipped270 => Self::Flipped270,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]

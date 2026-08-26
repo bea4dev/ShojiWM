@@ -2103,9 +2103,17 @@ fn render_output_capture_mirror(
     let Some(mode) = output.current_mode() else {
         return Ok(None);
     };
-    let size = mode.size;
     let scale: Scale<f64> = output.current_scale().fractional_scale().into();
     let transform = output.current_transform();
+    // The mirror is the canonical *upright* copy of the scene: it is rendered
+    // with Transform::Normal at the transformed-orientation size, in the same
+    // space the scene elements live in. Every consumer then applies its own
+    // transform exactly once — the DRM display pass and wlr-screencopy rotate
+    // it onto the scanout orientation, ext-image-copy-capture keeps it
+    // upright. Rendering the mirror with the output transform instead would
+    // bake the rotation into the texture and every consumer would rotate a
+    // second time.
+    let size = transform.transform_size(mode.size);
 
     let recreate = mirror.as_ref().is_none_or(|mirror| {
         mirror.size != size || mirror.scale != scale || mirror.transform != transform
@@ -2116,7 +2124,7 @@ fn render_output_capture_mirror(
             Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buffer_size)?;
         *mirror = Some(OutputCaptureMirror {
             texture,
-            damage_tracker: OutputDamageTracker::new(size, scale, transform),
+            damage_tracker: OutputDamageTracker::new(size, scale, Transform::Normal),
             size,
             scale,
             transform,

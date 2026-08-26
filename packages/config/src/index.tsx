@@ -443,6 +443,7 @@ COMPOSITOR.output.configure((context) => {
     resolution: "best",
     position: "auto",
     scale: 1.8,
+    transform: "rotate-90",
   };
   display["eDP-2"] = {
     mode: "extend",

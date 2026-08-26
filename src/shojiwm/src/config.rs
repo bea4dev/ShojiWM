@@ -32,6 +32,44 @@ pub struct RuntimeOutputConfig {
     pub resolution: Option<RuntimeDisplayModePreference>,
     pub position: Option<RuntimeOutputPositionPreference>,
     pub scale: Option<f64>,
+    pub transform: Option<RuntimeOutputTransform>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+pub enum RuntimeOutputTransform {
+    #[default]
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "rotate-90")]
+    Rotate90,
+    #[serde(rename = "rotate-180")]
+    Rotate180,
+    #[serde(rename = "rotate-270")]
+    Rotate270,
+    #[serde(rename = "flipped")]
+    Flipped,
+    #[serde(rename = "flipped-90")]
+    Flipped90,
+    #[serde(rename = "flipped-180")]
+    Flipped180,
+    #[serde(rename = "flipped-270")]
+    Flipped270,
+}
+
+impl RuntimeOutputTransform {
+    pub fn to_smithay(self) -> smithay::utils::Transform {
+        use smithay::utils::Transform;
+        match self {
+            Self::Normal => Transform::Normal,
+            Self::Rotate90 => Transform::_90,
+            Self::Rotate180 => Transform::_180,
+            Self::Rotate270 => Transform::_270,
+            Self::Flipped => Transform::Flipped,
+            Self::Flipped90 => Transform::Flipped90,
+            Self::Flipped180 => Transform::Flipped180,
+            Self::Flipped270 => Transform::Flipped270,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -106,4 +144,38 @@ fn normalize_tty_output_name(name: &str) -> &str {
             return rest;
         }
     name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The TS config sends transform as kebab-case strings; a rename drift
+    // would silently drop rotation on every hot reload.
+    #[test]
+    fn runtime_output_config_parses_all_transform_names() {
+        let cases = [
+            ("normal", RuntimeOutputTransform::Normal),
+            ("rotate-90", RuntimeOutputTransform::Rotate90),
+            ("rotate-180", RuntimeOutputTransform::Rotate180),
+            ("rotate-270", RuntimeOutputTransform::Rotate270),
+            ("flipped", RuntimeOutputTransform::Flipped),
+            ("flipped-90", RuntimeOutputTransform::Flipped90),
+            ("flipped-180", RuntimeOutputTransform::Flipped180),
+            ("flipped-270", RuntimeOutputTransform::Flipped270),
+        ];
+        for (name, expected) in cases {
+            let json = format!(r#"{{"mode":"extend","transform":"{name}"}}"#);
+            let config: RuntimeOutputConfig = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("failed to parse transform {name}: {error}"));
+            assert_eq!(config.transform, Some(expected));
+        }
+    }
+
+    #[test]
+    fn runtime_output_config_transform_defaults_to_none() {
+        let config: RuntimeOutputConfig =
+            serde_json::from_str(r#"{"mode":"extend","scale":1.5}"#).unwrap();
+        assert_eq!(config.transform, None);
+    }
 }

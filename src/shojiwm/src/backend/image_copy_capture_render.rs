@@ -130,7 +130,12 @@ pub fn process_image_copy_capture_for_output(
         };
         match render_frame_for_output(renderer, output, &composed_refs, &frame) {
             Ok(()) => {
-                frame.success(output.current_transform(), None, presented);
+                // The buffer is rendered upright at the transformed (logical
+                // orientation) size — see render_frame_for_output — so the
+                // content carries no residual transform for the client to
+                // undo. Reporting the output's transform here would make
+                // transform-aware clients rotate an already-upright image.
+                frame.success(Transform::Normal, None, presented);
             }
             Err(err) => {
                 tracing::warn!(output = %output.name(), "image-copy-capture render failed: {err}");
@@ -351,6 +356,12 @@ fn render_frame_for_output(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = output.current_mode().ok_or("output has no current mode")?;
     let transform = output.current_transform();
+    // The session advertises the buffer at the transformed (logical
+    // orientation) size — see resolve_source_size — and the scene elements
+    // already live in that space. Render them upright with Transform::Normal:
+    // passing the output transform here would rotate the content a second
+    // time AND make the damage tracker derive a swapped output geometry from
+    // the already-swapped size, clipping the scene against the wrong bounds.
     let size = transform.transform_size(mode.size);
     let scale: Scale<f64> = output.current_scale().fractional_scale().into();
 
@@ -365,7 +376,7 @@ fn render_frame_for_output(
         &buffer,
         size,
         scale,
-        transform,
+        Transform::Normal,
         &relocated_elements,
     )
 }

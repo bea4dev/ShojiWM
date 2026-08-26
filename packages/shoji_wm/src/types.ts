@@ -992,11 +992,43 @@ export type OutputPositionPreference =
       y: number;
     };
 
+/**
+ * Output rotation/flip, following the standard `wl_output.transform` enum.
+ * Rotations are counter-clockwise in wl_output terms; visually,
+ * `rotate-90` turns the picture 90° for a monitor physically rotated
+ * clockwise into portrait orientation.
+ * 標準の `wl_output.transform` enum に従う出力の回転・反転。
+ * `rotate-90` は時計回りに縦置きしたモニター向けの回転です。
+ */
+export type OutputTransform =
+  | "normal"
+  | "rotate-90"
+  | "rotate-180"
+  | "rotate-270"
+  | "flipped"
+  | "flipped-90"
+  | "flipped-180"
+  | "flipped-270";
+
 export interface OutputExtendConfigEntry {
   mode?: "extend";
+  /**
+   * Preferred display mode, matched against the physical (untransformed)
+   * mode list regardless of `transform`.
+   * 希望する表示モード。`transform` に関係なく物理（回転前）のモード一覧と
+   * 照合されます。
+   */
   resolution?: OutputResolutionPreference;
   position?: OutputPositionPreference;
   scale?: number;
+  /**
+   * Rotation/flip applied to this output. Omitting the field means
+   * `"normal"` — the draft is declarative, so dropping a previously set
+   * transform resets the output to its unrotated orientation.
+   * この出力に適用する回転・反転。省略時は `"normal"`（ドラフトは宣言的
+   * なので、設定を消すと回転なしに戻ります）。
+   */
+  transform?: OutputTransform;
 }
 
 export interface OutputDisabledConfigEntry {
@@ -1021,18 +1053,30 @@ export interface OutputStateSnapshot {
   serial?: string;
   connector?: string;
   enabled?: boolean;
+  /**
+   * Current mode size in the output's *transformed* orientation: on a
+   * `rotate-90`/`rotate-270` output, width/height are swapped relative to the
+   * physical mode, so `resolution / scale` is always the logical size.
+   * `availableModes` stay physical.
+   * 現在のモードサイズ（transform 適用後の向き）。`rotate-90`/`rotate-270`
+   * では物理モードに対して幅と高さが入れ替わるため、`resolution / scale` が
+   * 常に論理サイズになります。`availableModes` は物理のままです。
+   */
   resolution?: OutputMode;
   position: {
     x: number;
     y: number;
   };
   scale: number;
+  /** Currently applied transform. / 現在適用されている transform。 */
+  transform?: OutputTransform;
   availableModes: OutputMode[];
 }
 
 export interface OutputInfo extends OutputStateSnapshot {
   name: string;
   enabled: boolean;
+  transform: OutputTransform;
 }
 
 export interface OutputConfigureContext {

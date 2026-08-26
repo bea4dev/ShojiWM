@@ -7202,6 +7202,7 @@ COMPOSITOR.window.composition = () => <Box />;
             }),
             position: OutputPositionSnapshot { x: 0, y: 0 },
             scale: 1.0,
+            transform: Default::default(),
             available_modes: Vec::new(),
         }
     }

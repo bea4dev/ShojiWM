@@ -679,6 +679,10 @@ unsafe fn ensure_blur_scratch_fbo(gl: &smithay::backend::renderer::gles::ffi::Gl
 #[derive(Debug, Default)]
 struct BackdropFramebufferCache {
     framebuffer: Option<GlesTexture>,
+    /// Blit staging for transformed outputs: holds the raw framebuffer-space
+    /// pixels (rotated/flipped orientation) before they are rendered back into
+    /// `framebuffer` in untransformed element orientation.
+    transformed_scratch: Option<GlesTexture>,
     rendered: Option<GlesTexture>,
     sample_src: Option<Rectangle<f64, Buffer>>,
 }
@@ -1445,6 +1449,15 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             (dst.size.w as f64, dst.size.h as f64).into(),
         );
 
+        // `dst`/`capture_rect` live in untransformed element space, but the
+        // frame target's pixels are laid out in the output-transformed
+        // orientation. Map the capture region into framebuffer space for the
+        // blit; on transformed outputs the raw pixels are staged in
+        // `transformed_scratch` and rendered back upright below.
+        let render_transform = frame.transformation();
+        let blit_rect = render_transform.transform_rect_in(actual_capture_rect, &output_rect.size);
+        let blit_size = Size::<i32, Buffer>::from((blit_rect.size.w, blit_rect.size.h));
+
         {
             let mut guard = frame.renderer();
             let renderer = guard.as_mut();
@@ -1455,6 +1468,18 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             if recreate {
                 inner.framebuffer = Some(renderer.create_buffer(Fourcc::Abgr8888, size)?);
             }
+            if render_transform == Transform::Normal {
+                inner.transformed_scratch = None;
+            } else {
+                let recreate_scratch = inner
+                    .transformed_scratch
+                    .as_ref()
+                    .is_none_or(|tex| tex.size() != blit_size);
+                if recreate_scratch {
+                    inner.transformed_scratch =
+                        Some(renderer.create_buffer(Fourcc::Abgr8888, blit_size)?);
+                }
+            }
             inner.rendered = None;
             inner.sample_src = Some(sample_src);
         }
@@ -1464,14 +1489,19 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             .as_ref()
             .expect("framebuffer texture should exist")
             .clone();
+        let blit_target_texture = inner
+            .transformed_scratch
+            .as_ref()
+            .unwrap_or(&framebuffer_texture)
+            .clone();
 
         // Reuse the thread-local scratch FBO instead of `glGenFramebuffers`
         // / `glDeleteFramebuffers` per backdrop per frame. See the
         // `BLUR_SCRATCH_FBO` definition for why this is the perf-critical
         // change for NVIDIA proprietary.
-        let target_tex_id = framebuffer_texture.tex_id();
+        let target_tex_id = blit_target_texture.tex_id();
         frame.with_context(|gl| unsafe {
-            with_gpu_timing_gl_span(gl, "backdrop-capture-blit", (size.w, size.h), || {
+            with_gpu_timing_gl_span(gl, "backdrop-capture-blit", (blit_size.w, blit_size.h), || {
                 while gl.GetError() != ffi::NO_ERROR {}
 
                 let mut current_fbo = 0i32;
@@ -1514,18 +1544,18 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                     target_tex_id,
                     0,
                 );
-                gl.Viewport(0, 0, size.w, size.h);
+                gl.Viewport(0, 0, blit_size.w, blit_size.h);
                 gl.ClearColor(0.0, 0.0, 0.0, 0.0);
                 gl.Clear(ffi::COLOR_BUFFER_BIT);
                 gl.BlitFramebuffer(
-                    actual_capture_rect.loc.x,
-                    actual_capture_rect.loc.y,
-                    actual_capture_rect.loc.x + actual_capture_rect.size.w,
-                    actual_capture_rect.loc.y + actual_capture_rect.size.h,
+                    blit_rect.loc.x,
+                    blit_rect.loc.y,
+                    blit_rect.loc.x + blit_rect.size.w,
+                    blit_rect.loc.y + blit_rect.size.h,
                     0,
                     0,
-                    actual_capture_rect.size.w,
-                    actual_capture_rect.size.h,
+                    blit_rect.size.w,
+                    blit_rect.size.h,
                     ffi::COLOR_BUFFER_BIT,
                     ffi::LINEAR,
                 );
@@ -1540,6 +1570,23 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 gl.Enable(ffi::SCISSOR_TEST);
             });
         })?;
+
+        // On transformed outputs the staged blit holds rotated/flipped pixels;
+        // render them back into the capture texture in untransformed element
+        // orientation so the effect pipeline and the final composite (both of
+        // which operate in element space) see upright content.
+        if render_transform != Transform::Normal {
+            let mut guard = frame.renderer();
+            let renderer = guard.as_mut();
+            let mut capture_target = framebuffer_texture.clone();
+            unrotate_captured_texture(
+                renderer,
+                blit_target_texture,
+                render_transform.invert(),
+                &mut capture_target,
+                size,
+            )?;
+        }
 
         let sample_src = inner.sample_src;
         let mut guard = frame.renderer();
@@ -3954,6 +4001,49 @@ fn effect_context_uniforms(
             ],
         ),
     ]
+}
+
+/// Renders framebuffer-orientation `source` pixels into `target` in
+/// untransformed element orientation. `output_transform` is the output's
+/// (non-inverted) transform: the frame target stores content pre-rotated by
+/// its inverse, and drawing the staged pixels as a buffer that carries the
+/// output transform undoes exactly that rotation/flip.
+pub(crate) fn unrotate_captured_texture(
+    renderer: &mut GlesRenderer,
+    source: GlesTexture,
+    output_transform: Transform,
+    target: &mut GlesTexture,
+    target_size: Size<i32, Buffer>,
+) -> Result<(), GlesError> {
+    let element = TextureRenderElement::from_static_texture(
+        Id::new(),
+        renderer.context_id(),
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        source,
+        1,
+        output_transform,
+        Some(1.0),
+        None,
+        Some((target_size.w, target_size.h).into()),
+        None,
+        Kind::Unspecified,
+    );
+    let mut framebuffer = renderer.bind(target)?;
+    let mut damage_tracker = OutputDamageTracker::new(
+        (target_size.w, target_size.h),
+        1.0,
+        Transform::Normal,
+    );
+    damage_tracker
+        .render_output(
+            renderer,
+            &mut framebuffer,
+            0,
+            &[element],
+            [0.0, 0.0, 0.0, 0.0],
+        )
+        .map_err(|_| GlesError::FramebufferBindingError)?;
+    Ok(())
 }
 
 fn align_effect_input_texture(

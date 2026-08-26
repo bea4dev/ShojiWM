@@ -12,7 +12,8 @@ use crate::picker::{PickResult, PickerHandle};
 use crate::pipewire_stream::{self, StreamHandle, StreamSpec};
 use crate::sources::{self, OutputInfo, SourceInfo, SourceKind, ThumbnailUpdate, ToplevelInfo};
 use crate::toplevel_stream::{
-    self, StreamHandle as ToplevelStreamHandle, StreamSpec as ToplevelStreamSpec,
+    self, CaptureSourceSpec, StreamHandle as ToplevelStreamHandle,
+    StreamSpec as ToplevelStreamSpec,
 };
 
 /// SourceTypes bitmask values from the portal spec.
@@ -512,35 +513,62 @@ impl ScreenCast {
                     let hz = (out.refresh_mhz as f32 / 1000.0).round() as u32;
                     hz.max(30)
                 };
-                let spec = StreamSpec {
-                    output_name: out.name.clone(),
-                    width: out.width.max(1) as u32,
-                    height: out.height.max(1) as u32,
-                    framerate,
-                    cursor_visible,
-                };
-                let spec_for_task = spec.clone();
-                let stream_result =
-                    tokio::task::spawn_blocking(move || pipewire_stream::start(spec_for_task))
-                        .await
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
-                let (node_id, handle_owned) = match stream_result {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!("pipewire stream failed: {e}");
-                        return Ok((2, HashMap::new()));
+                // wlr-screencopy delivers frames in scanout orientation, so a
+                // transformed output would reach consumers rotated (OBS has no
+                // way to undo it). Route those through the image-copy-capture
+                // stream instead: the compositor renders its output captures
+                // upright at the as-displayed size.
+                let (logical_w, logical_h) = out.logical_mode_size();
+                let use_screencopy =
+                    matches!(out.transform, wayland_client::protocol::wl_output::Transform::Normal);
+                let (node_id, handle) = if use_screencopy {
+                    let spec = StreamSpec {
+                        output_name: out.name.clone(),
+                        width: out.width.max(1) as u32,
+                        height: out.height.max(1) as u32,
+                        framerate,
+                        cursor_visible,
+                    };
+                    let stream_result =
+                        tokio::task::spawn_blocking(move || pipewire_stream::start(spec))
+                            .await
+                            .map_err(|e| {
+                                zbus::fdo::Error::Failed(format!("stream task panic: {e}"))
+                            })?;
+                    match stream_result {
+                        Ok((node_id, handle)) => (node_id, AnyStreamHandle::Output(handle)),
+                        Err(e) => {
+                            tracing::error!("pipewire stream failed: {e}");
+                            return Ok((2, HashMap::new()));
+                        }
+                    }
+                } else {
+                    let spec = ToplevelStreamSpec {
+                        source: CaptureSourceSpec::Output {
+                            name: out.name.clone(),
+                        },
+                        framerate,
+                        cursor_visible,
+                    };
+                    let stream_result =
+                        tokio::task::spawn_blocking(move || toplevel_stream::start(spec))
+                            .await
+                            .map_err(|e| {
+                                zbus::fdo::Error::Failed(format!("stream task panic: {e}"))
+                            })?;
+                    match stream_result {
+                        Ok((node_id, handle)) => (node_id, AnyStreamHandle::Toplevel(handle)),
+                        Err(e) => {
+                            tracing::error!("image-copy-capture output stream failed: {e}");
+                            return Ok((2, HashMap::new()));
+                        }
                     }
                 };
                 self.inner
                     .streams
                     .lock()
                     .unwrap()
-                    .insert(
-                        session_key.clone(),
-                        AnyStreamHandle::Output(
-                            handle_owned,
-                        ),
-                    );
+                    .insert(session_key.clone(), handle);
                 // In testing the stream took hundreds of ms to start; the frontend may
                 // have Closed the session in that window (Chromium's Go Live
                 // does). Returning success would hand the app a node backed
@@ -570,10 +598,7 @@ impl ScreenCast {
                 }
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();
-                stream_props.insert(
-                    "size".to_string(),
-                    Value::from((spec.width as i32, spec.height as i32)),
-                );
+                stream_props.insert("size".to_string(), Value::from((logical_w, logical_h)));
                 stream_props.insert(
                     "source_type".to_string(),
                     Value::from(source_types::MONITOR),
@@ -593,7 +618,9 @@ impl ScreenCast {
                 // a reasonable cap regardless of which output the window is
                 // currently visible on.
                 let spec = ToplevelStreamSpec {
-                    toplevel_identifier: top.identifier.clone(),
+                    source: CaptureSourceSpec::Toplevel {
+                        identifier: top.identifier.clone(),
+                    },
                     framerate: 60,
                     cursor_visible,
                 };

@@ -42,7 +42,7 @@ use crate::pipewire_stream::{
     fill_header_meta,
     parse_pipewire_max_framerate,
 };
-use wayland_client::protocol::{wl_buffer, wl_registry, wl_shm, wl_shm_pool};
+use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
@@ -51,6 +51,7 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
     ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+    ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
 };
 use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
@@ -58,13 +59,25 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
 
+/// What the ext-image-copy-capture session points at.
+#[derive(Debug, Clone)]
+pub enum CaptureSourceSpec {
+    /// A single window, looked up by its foreign-toplevel identifier.
+    Toplevel { identifier: String },
+    /// A whole output, looked up by its `wl_output.name`. Used instead of the
+    /// wlr-screencopy stream for transformed (rotated/flipped) outputs: the
+    /// compositor renders image-copy-capture output frames upright at the
+    /// as-displayed size, so no consumer-side rotation is needed.
+    Output { name: String },
+}
+
 #[derive(Debug, Clone)]
 pub struct StreamSpec {
-    pub toplevel_identifier: String,
+    pub source: CaptureSourceSpec,
     pub framerate: u32,
-    /// Whether to advertise `paint_cursors` on the session. Honoured by the
-    /// compositor only if it composites cursor for per-toplevel captures
-    /// (which we don't yet — see `image_copy_capture_render.rs`).
+    /// Whether to advertise `paint_cursors` on the session. For output
+    /// sources the compositor composites the cursor; for toplevel captures
+    /// it doesn't yet — see `image_copy_capture_render.rs`.
     pub cursor_visible: bool,
 }
 
@@ -120,11 +133,16 @@ struct AppState {
     shm: Option<wl_shm::WlShm>,
     capture_manager: Option<ExtImageCopyCaptureManagerV1>,
     toplevel_source_manager: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+    output_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
 
     // Toplevel discovery (filled during bootstrap roundtrips).
     toplevels: Vec<DiscoveredToplevel>,
     toplevel_index: HashMap<u32, usize>,
     target_toplevel: Option<ExtForeignToplevelHandleV1>,
+
+    // Output discovery (only consulted for CaptureSourceSpec::Output).
+    outputs: Vec<DiscoveredOutput>,
+    target_output: Option<wl_output::WlOutput>,
 
     // Session + source (created after toplevel found).
     source: Option<ExtImageCaptureSourceV1>,
@@ -194,6 +212,11 @@ struct DiscoveredToplevel {
     identifier: String,
 }
 
+struct DiscoveredOutput {
+    proxy: wl_output::WlOutput,
+    name: Option<String>,
+}
+
 struct PendingFrame {
     frame: ExtImageCopyCaptureFrameV1,
     pw_buffer: usize,
@@ -243,9 +266,12 @@ fn run(
         shm: None,
         capture_manager: None,
         toplevel_source_manager: None,
+        output_source_manager: None,
         toplevels: Vec::new(),
         toplevel_index: HashMap::new(),
         target_toplevel: None,
+        outputs: Vec::new(),
+        target_output: None,
         source: None,
         session: None,
         adv_width: 0,
@@ -283,37 +309,55 @@ fn run(
         let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
         return Err(err.into());
     }
-    if state.toplevel_source_manager.is_none() {
-        let err = "compositor doesn't expose ext_foreign_toplevel_image_capture_source_manager_v1";
-        let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
-        return Err(err.into());
-    }
     if state.shm.is_none() {
         let err = "compositor doesn't expose wl_shm";
         let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
         return Err(err.into());
     }
-    state.target_toplevel = state
-        .toplevels
-        .iter()
-        .find(|t| t.identifier == spec.toplevel_identifier)
-        .map(|t| t.proxy.clone());
-    if state.target_toplevel.is_none() {
-        let err = format!(
-            "toplevel with identifier {:?} not found",
-            spec.toplevel_identifier
-        );
-        let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.clone())));
-        return Err(err.into());
-    }
 
-    // Create source + session, then wait for the session to advertise its
-    // constraints. The PipeWire stream depends on those dims/format.
+    // Resolve the capture target and create source + session, then wait for
+    // the session to advertise its constraints. The PipeWire stream depends
+    // on those dims/format.
     {
-        let manager = state.toplevel_source_manager.clone().unwrap();
         let capture = state.capture_manager.clone().unwrap();
-        let toplevel = state.target_toplevel.clone().unwrap();
-        let source = manager.create_source(&toplevel, &qh, ());
+        let source = match &spec.source {
+            CaptureSourceSpec::Toplevel { identifier } => {
+                let Some(manager) = state.toplevel_source_manager.clone() else {
+                    let err = "compositor doesn't expose ext_foreign_toplevel_image_capture_source_manager_v1";
+                    let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
+                    return Err(err.into());
+                };
+                state.target_toplevel = state
+                    .toplevels
+                    .iter()
+                    .find(|t| &t.identifier == identifier)
+                    .map(|t| t.proxy.clone());
+                let Some(toplevel) = state.target_toplevel.clone() else {
+                    let err = format!("toplevel with identifier {identifier:?} not found");
+                    let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.clone())));
+                    return Err(err.into());
+                };
+                manager.create_source(&toplevel, &qh, ())
+            }
+            CaptureSourceSpec::Output { name } => {
+                let Some(manager) = state.output_source_manager.clone() else {
+                    let err = "compositor doesn't expose ext_output_image_capture_source_manager_v1";
+                    let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
+                    return Err(err.into());
+                };
+                state.target_output = state
+                    .outputs
+                    .iter()
+                    .find(|o| o.name.as_deref() == Some(name.as_str()))
+                    .map(|o| o.proxy.clone());
+                let Some(output) = state.target_output.clone() else {
+                    let err = format!("output {name:?} not found");
+                    let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.clone())));
+                    return Err(err.into());
+                };
+                manager.create_source(&output, &qh, ())
+            }
+        };
         let options = if spec.cursor_visible {
             ext_image_copy_capture_manager_v1::Options::PaintCursors
         } else {
@@ -611,7 +655,38 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
             "ext_foreign_toplevel_list_v1" => {
                 registry.bind::<ExtForeignToplevelListV1, _, _>(name, version.min(1), qh, ());
             }
+            "ext_output_image_capture_source_manager_v1" => {
+                state.output_source_manager =
+                    Some(registry.bind::<ExtOutputImageCaptureSourceManagerV1, _, _>(
+                        name,
+                        version.min(1),
+                        qh,
+                        (),
+                    ));
+            }
+            "wl_output" => {
+                let proxy =
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                state.outputs.push(DiscoveredOutput { proxy, name: None });
+            }
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event
+            && let Some(entry) = state.outputs.iter_mut().find(|o| &o.proxy == output)
+        {
+            entry.name = Some(name);
         }
     }
 }
@@ -636,6 +711,7 @@ empty_dispatch!(wl_shm_pool::WlShmPool);
 empty_dispatch!(wl_buffer::WlBuffer);
 empty_dispatch!(ExtImageCopyCaptureManagerV1);
 empty_dispatch!(ExtForeignToplevelImageCaptureSourceManagerV1);
+empty_dispatch!(ExtOutputImageCaptureSourceManagerV1);
 empty_dispatch!(ExtImageCaptureSourceV1);
 
 impl Dispatch<ExtForeignToplevelListV1, ()> for AppState {
