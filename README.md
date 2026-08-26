@@ -6,7 +6,9 @@
   <img alt="Discord" src="https://img.shields.io/discord/1516819976496091318.svg?label=Discord&logo=Discord&colorB=7289da&style=for-the-badge">
 </a>
 
-<video src="https://github.com/user-attachments/assets/a6af022e-ff36-4fbd-9348-221d5e50d9b8" width="320" height="240" controls></video>
+
+
+<video src="https://github.com/user-attachments/assets/b93d7afa-87cd-4399-8603-d5c6a3d63ebf" width="320" height="240" controls></video>
 </div>
 
 ## Documents
