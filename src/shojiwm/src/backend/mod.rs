@@ -387,6 +387,12 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
                 state.schedule_redraw();
             }
             state.cleanup_popups_with_debug("tty-pre-render-maintenance");
+            // Connectors whose first modeset was rejected -- typically the first
+            // post-resume commit -- hold no surface and will never be offered by
+            // the scanner again, because it already recorded them as connected.
+            // This tick and `resume_tty_session` are the only things that re-arm
+            // them; it is a no-op with an empty queue.
+            tty::retry_pending_connectors(&mut state);
         }
 
         // Cursor fast path: pointer motion whose only visual effect is the
