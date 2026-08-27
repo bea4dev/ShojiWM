@@ -467,6 +467,18 @@ pub struct ShojiWM {
     /// device accepts commits again.
     pub pending_tty_device_changes: Vec<DrmNode>,
 
+    /// Connectors whose first `connector_connected` was rejected by the kernel
+    /// and which own no DRM surface yet.
+    ///
+    /// A rescan cannot recover these. `scan_connectors` commits a connector to
+    /// the scanner's map as `Connected` before handing out the event, so once a
+    /// connect attempt has failed, every later scan compares
+    /// `(Connected, Connected)` with an unchanged mode list and emits nothing --
+    /// including the rescan-everything pass in `resume_tty_session`. Without
+    /// this queue the output is dark for the rest of the session while clients
+    /// still see its `wl_output`.
+    pub pending_connector_retries: Vec<crate::backend::tty::PendingConnectorRetry>,
+
     pub is_running: bool,
     pub needs_redraw: bool,
     /// Pointer motion happened this dispatch cycle and nothing else damaged
@@ -1709,6 +1721,7 @@ impl ShojiWM {
             },
             tty_session_active: true,
             pending_tty_device_changes: Vec::new(),
+            pending_connector_retries: Vec::new(),
 
             is_running: true,
             needs_redraw: true,
