@@ -420,6 +420,15 @@ pub struct ShojiWM {
     pub pending_layer_surfaces: Vec<PendingLayerSurface>,
     pub pending_initial_focus_window_ids: HashSet<String>,
     pub window_keyboard_focus_owner: Option<WlSurface>,
+    /// The window that held the focus-owner slot immediately before the
+    /// current one. Consulted by `elect_focus_successor` when the current
+    /// owner disappears: short-lived helper toplevels (fcitx5-configtool maps
+    /// and destroys two during startup) steal the owner slot via the
+    /// later-created-wins rule, and when they die the focus should return to
+    /// the window they stole it from — not to the previously *used* window
+    /// from the focus chain, which would raise an older window above the
+    /// application the user just launched (issue #79).
+    pub previous_window_keyboard_focus_owner: Option<WlSurface>,
     pub window_keyboard_focus: Option<WlSurface>,
     /// Root surfaces of the windows the user has actually *used*, most recent
     /// first.
@@ -827,6 +836,11 @@ impl ShojiWM {
     ) {
         let root = Self::window_root_surface(window);
 
+        if self.window_keyboard_focus_owner != root
+            && let Some(previous) = self.window_keyboard_focus_owner.take()
+        {
+            self.previous_window_keyboard_focus_owner = Some(previous);
+        }
         self.window_keyboard_focus_owner = root;
         // Popup keyboard grabs temporarily focus popup surfaces themselves.
         // The compositor's persistent window focus target should remain the
@@ -847,6 +861,11 @@ impl ShojiWM {
             .find(|window| self.surface_belongs_to_window(window, surface))
             .and_then(Self::window_root_surface);
         if let Some(owner_root) = owner_root {
+            if self.window_keyboard_focus_owner.as_ref() != Some(&owner_root)
+                && let Some(previous) = self.window_keyboard_focus_owner.take()
+            {
+                self.previous_window_keyboard_focus_owner = Some(previous);
+            }
             self.window_keyboard_focus_owner = Some(owner_root.clone());
             self.window_keyboard_focus = Some(owner_root);
         }
@@ -1012,6 +1031,50 @@ impl ShojiWM {
     /// command into from a window an application opened beside it moments later,
     /// and a key press produces no event the config can observe.
     pub(crate) fn elect_focus_successor(&self) -> Option<Window> {
+        // A window still waiting for its open-time focus delivery (granted at
+        // `onOpen`, parked until first paint) is the freshest statement of
+        // intent and outranks the focus chain. Some clients map short-lived
+        // helper toplevels during startup — fcitx5-configtool creates and
+        // immediately destroys two — and each helper briefly takes the focus
+        // target via the later-created-wins rule in
+        // `automatic_focus_is_superseded`. When the helper dies, electing from
+        // the chain here handed the session back to the previously used
+        // window, raising it above the application the user just launched
+        // (issue #79). Prefer the most recently created pending window,
+        // mirroring the same creation-order rule.
+        // No `window_allows_input` filter here: that flag requires the window
+        // to already render, and a pending window by definition has not
+        // painted yet — filtering on it would drop every candidate this
+        // branch exists for.
+        if let Some(window) = self
+            .space
+            .elements()
+            .filter(|window| {
+                self.pending_initial_focus_window_ids
+                    .contains(&self.snapshot_window(window).id)
+            })
+            .max_by_key(|window| window.id())
+            .cloned()
+        {
+            return Some(window);
+        }
+
+        // The window the dying owner stole the slot from. Covers the same
+        // helper-toplevel startup burst once the real window has already
+        // painted (and therefore left the pending set above): focus returns
+        // to it instead of falling through to an older, previously used
+        // window.
+        if let Some(window) = self
+            .previous_window_keyboard_focus_owner
+            .as_ref()
+            .filter(|root| root.alive())
+            .and_then(|root| self.window_for_root_surface(root))
+            .filter(|window| self.window_allows_input(window))
+            .cloned()
+        {
+            return Some(window);
+        }
+
         for root in &self.focus_chain {
             if let Some(window) = self
                 .window_for_root_surface(root)
@@ -1624,6 +1687,7 @@ impl ShojiWM {
             pending_layer_surfaces: Vec::new(),
             pending_initial_focus_window_ids: HashSet::new(),
             window_keyboard_focus_owner: None,
+            previous_window_keyboard_focus_owner: None,
             window_keyboard_focus: None,
             focus_chain: Vec::new(),
             user_input_in_flight: false,
