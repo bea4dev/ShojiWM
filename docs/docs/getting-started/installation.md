@@ -194,7 +194,8 @@ nix run github:bea4dev/ShojiWM#init-config
 
 This creates `~/.config/shojiwm` if it does not already exist, and links
 `~/.config/shojiwm/node_modules/shoji_wm` to the package in the Nix store. Your
-config remains writable and can still be hot-reloaded.
+config remains writable and can still be hot-reloaded with `Super` + `Shift` +
+`R` (see [Overview → Hot reload](../configuration/overview.md#hot-reload)).
 
 ### Development shell
 

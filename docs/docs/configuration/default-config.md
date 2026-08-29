@@ -8,7 +8,8 @@ ShojiWM ships with a complete default config (`packages/config/src/index.tsx`,
 installed to `~/.config/shojiwm/src/index.tsx`). This page describes what it does
 **out of the box** — keybindings, window behavior, multi-monitor layout, input,
 effects, and the programs it launches. It is also the best worked example: to
-change anything, edit `~/.config/shojiwm/src/index.tsx` and reload.
+change anything, edit `~/.config/shojiwm/src/index.tsx` and hot reload with
+`Super` + `Shift` + `R`.
 
 :::note[Some keybindings launch specific programs]
 The default config is the maintainer's personal setup, so several shortcuts open
@@ -55,6 +56,16 @@ by default (see [Input](#input)).
 | `Super` + `Shift` + `←` / `→` | Move the focused tile left / right |
 | `Super` + `Ctrl` + `↑` / `↓` | Switch to the previous / next workspace |
 | `Super` + `Shift` + `↑` / `↓` | Move the focused window to the previous / next workspace |
+
+### System (built into the compositor)
+
+These are hard-wired in the compositor itself, not defined by the config — so
+they keep working even if your config is broken.
+
+| Shortcut | Action |
+| --- | --- |
+| `Super` + `Shift` + `R` | **Hot reload the config** — apply edits to `index.tsx` without restarting (see [Overview → Hot reload](./overview.md#hot-reload)) |
+| `Super` + `Shift` + `Q` | Quit the ShojiWM session |
 
 ### Debug
 
@@ -139,6 +150,7 @@ These expect the corresponding programs to be installed. Remove or adjust the
 
 ## Customizing
 
-Your config lives at `~/.config/shojiwm/src/index.tsx`. Edit it and reload; the
-window-manager state (workspaces, tiling) is preserved across reloads. From here,
+Your config lives at `~/.config/shojiwm/src/index.tsx`. Edit it and hot reload
+with `Super` + `Shift` + `R`; the window-manager state (workspaces, tiling) is
+preserved across reloads. From here,
 the rest of this section documents every API the default config uses.

@@ -191,7 +191,8 @@ nix run github:bea4dev/ShojiWM#init-config
 
 これにより、存在しない場合は `~/.config/shojiwm` が作成され、
 `~/.config/shojiwm/node_modules/shoji_wm` が Nix store 内の package へリンクされます。
-設定ファイル自体は書き換え可能なままなので、ホットリロードも使えます。
+設定ファイル自体は書き換え可能なままなので、`Super` + `Shift` + `R` による
+ホットリロードも使えます（[概要 → ホットリロード](../configuration/overview.md#ホットリロード) 参照）。
 
 ### 開発シェル
 

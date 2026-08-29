@@ -35,6 +35,21 @@ understand the individual pieces below. For a tour of what it does out of the
 box — keybindings, window behavior, and more — see [Default config](./default-config.md).
 :::
 
+## Hot reload
+
+Press **`Super` + `Shift` + `R`** to apply config edits to the running session —
+no restart needed. This is the edit loop for everything in this section: save
+the file, hit the shortcut, see the result.
+
+- The shortcut is **built into the compositor**, not defined by your config, so
+  it always works — even when your config is broken.
+- If the new config fails to load (a type error, an exception at import time,
+  …), the **previous config keeps running** and an error report is shown on
+  screen. Fix the file and press `Super` + `Shift` + `R` again.
+- State survives reloads: the [lifecycle hooks](./lifecycle-and-events.md) let a
+  config persist state across reloads, and the default config uses them to keep
+  workspaces, tiling, and window placement intact.
+
 ## The `COMPOSITOR` object
 
 `COMPOSITOR` groups every configurable area under a named field. Each gets its

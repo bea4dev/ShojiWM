@@ -7,8 +7,9 @@ sidebar_position: 2
 ## Lifecycle hooks
 
 Your config module is loaded when the compositor starts and re-loaded when you
-edit it (hot reload). Two hooks let you run setup/teardown code and **carry state
-across a reload**.
+edit it and press `Super` + `Shift` + `R`
+([hot reload](./overview.md#hot-reload)). Two hooks let you run setup/teardown
+code and **carry state across a reload**.
 
 ```ts
 COMPOSITOR.onEnable((event) => {

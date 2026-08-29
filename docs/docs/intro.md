@@ -17,7 +17,8 @@ and will be filled in over time.
   React-like TSX API.
 - **Reactive signals** — UI updates automatically when state changes.
 - **GPU effects** — blur, shaders, and per-window transforms.
-- **Hot reload** — iterate on your config without restarting the session.
+- **Hot reload** — iterate on your config without restarting the session
+  (`Super` + `Shift` + `R`).
 
 ## Where to next
 
