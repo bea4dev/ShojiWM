@@ -1931,6 +1931,35 @@ impl ShojiWM {
                     .first()
                     .map(|output| output.name())
             })
+            .or_else(|| {
+                // A window pushed fully outside every output (e.g. a floating
+                // window on a scrolled tiled workspace) must still belong to
+                // some output's refresh pass: returning None makes every
+                // refresh_window_decorations_for_output call skip it, freezing
+                // its decoration layout at the last on-screen position while
+                // the space location keeps moving — visible as a window stuck
+                // at the screen edge. Attribute it to the nearest output.
+                self.space
+                    .outputs()
+                    .min_by_key(|output| {
+                        self.space
+                            .output_geometry(output)
+                            .map_or(i64::MAX, |geometry| {
+                                let dx = i64::from(
+                                    (geometry.loc.x - center.x)
+                                        .max(center.x - (geometry.loc.x + geometry.size.w))
+                                        .max(0),
+                                );
+                                let dy = i64::from(
+                                    (geometry.loc.y - center.y)
+                                        .max(center.y - (geometry.loc.y + geometry.size.h))
+                                        .max(0),
+                                );
+                                dx * dx + dy * dy
+                            })
+                    })
+                    .map(|output| output.name())
+            })
     }
 
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
