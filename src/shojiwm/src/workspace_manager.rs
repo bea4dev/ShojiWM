@@ -149,45 +149,44 @@ impl ExtWorkspaceGroupHandle {
         all_outputs: &[Output],
         workspaces: &[ExtWorkspaceHandle],
     ) -> bool {
-        let (config_changed, resources) = {
+        let config_changed = {
             let mut inner = self.inner.lock().unwrap();
             let next_workspaces: Vec<String> = group
                 .workspaces
                 .iter()
                 .map(|workspace| workspace.id.clone())
                 .collect();
-            let config_changed = if inner.outputs == group.outputs
-                && inner.workspaces == next_workspaces
-            {
+            if inner.outputs == group.outputs && inner.workspaces == next_workspaces {
                 false
             } else {
                 inner.outputs = group.outputs.clone();
                 inner.workspaces = next_workspaces;
                 true
-            };
-            retain_live_group_instances(&mut inner);
-            let resources = inner
-                .instances
-                .iter()
-                .filter_map(|instance| {
-                    instance.resource.upgrade().ok().map(|resource| {
-                        (resource, instance.entered_workspaces.clone())
-                    })
-                })
-                .collect::<Vec<_>>();
-            (config_changed, resources)
+            }
         };
 
         let outputs_changed = self.refresh_outputs(dh, all_outputs);
-        let desired_workspaces = self.inner.lock().unwrap().workspaces.clone();
         let mut workspaces_changed = false;
-        for (resource, mut entered_workspaces) in resources {
-            workspaces_changed |= update_group_workspaces(
-                &resource,
-                &desired_workspaces,
-                workspaces,
-                &mut entered_workspaces,
-            );
+        {
+            // Mutate each instance's `entered_workspaces` in place. Updating a
+            // clone and dropping it would leave the stored list stale, so every
+            // later sync would re-send `workspace_enter` for workspaces added
+            // after the instance was bound — clients that append per enter
+            // event (e.g. noctalia) then show duplicated workspaces.
+            let mut inner = self.inner.lock().unwrap();
+            let desired_workspaces = inner.workspaces.clone();
+            retain_live_group_instances(&mut inner);
+            for instance in &mut inner.instances {
+                let Ok(resource) = instance.resource.upgrade() else {
+                    continue;
+                };
+                workspaces_changed |= update_group_workspaces(
+                    &resource,
+                    &desired_workspaces,
+                    workspaces,
+                    &mut instance.entered_workspaces,
+                );
+            }
         }
         config_changed || outputs_changed || workspaces_changed
     }
@@ -483,19 +482,29 @@ fn update_group_workspaces(
         if desired_ids.iter().any(|id| id == &entered_id) {
             continue;
         }
+        // A workspace missing from `workspaces` here has been removed; its
+        // `removed` event already implies leaving the group, so it is dropped
+        // from the entered list below without an explicit leave.
         let Some(workspace) = workspaces
             .iter()
             .find(|workspace| workspace.id() == entered_id)
         else {
+            changed = true;
             continue;
         };
         if let Some(workspace_resource) = workspace.resource_for_same_client(resource) {
             resource.workspace_leave(&workspace_resource);
-            changed = true;
         }
+        changed = true;
     }
+    // Rebuild the entered list from what was actually sent: a desired
+    // workspace whose per-client resource does not exist yet must NOT be
+    // recorded as entered, or the enter would never be sent once the resource
+    // appears on a later sync.
+    let mut next_entered = Vec::new();
     for id in desired_ids {
         if entered_workspaces.iter().any(|entered| entered == id) {
+            next_entered.push(id.clone());
             continue;
         }
         let Some(workspace) = workspaces.iter().find(|workspace| workspace.id() == *id) else {
@@ -503,12 +512,11 @@ fn update_group_workspaces(
         };
         if let Some(workspace_resource) = workspace.resource_for_same_client(resource) {
             resource.workspace_enter(&workspace_resource);
+            next_entered.push(id.clone());
             changed = true;
         }
     }
-    if changed {
-        *entered_workspaces = desired_ids.to_vec();
-    }
+    *entered_workspaces = next_entered;
     changed
 }
 
