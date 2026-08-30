@@ -179,7 +179,6 @@ mod tests {
             serde_json::from_str(r#"{"mode":"extend","scale":1.5}"#).unwrap();
         assert_eq!(config.transform, None);
     }
-}
 
     /// The `hdr` opt-in arrives from the TypeScript display config; missing
     /// means None so older configs keep their SDR behavior.
