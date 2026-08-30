@@ -12591,9 +12591,23 @@ const CONNECTOR_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// which is precisely the state a failure leaves behind.
 fn unwind_half_connected_output(
     state: &mut ShojiWM,
+    node: DrmNode,
     output: &Output,
     output_name: &str,
 ) {
+    // Remove unconditionally, then destroy the blob if there was one: the
+    // kernel only frees property blobs when the DRM fd closes, and this device
+    // stays open across hotplugs, so a retry loop would otherwise leak one blob
+    // per attempt.
+    let color_state = state.output_color.remove(output_name);
+    if let Some(blob) = color_state.and_then(|color| color.hdr_metadata_blob)
+        && let Some(backend) = state.tty_backends.get(&node)
+    {
+        crate::color::drm_metadata::destroy_metadata_blob(
+            backend.drm_output_manager.device(),
+            blob,
+        );
+    }
     state.space.unmap_output(output);
     state.remove_output_global(output);
     state.screencopy_state.remove_output(output);
@@ -12887,7 +12901,7 @@ fn connector_connected(
     let (drm_output, dmabuf_feedback) = match initialized {
         Ok(pair) => pair,
         Err(err) => {
-            unwind_half_connected_output(state, &output, &output.name());
+            unwind_half_connected_output(state, node, &output, &output.name());
             return Err(err);
         }
     };
