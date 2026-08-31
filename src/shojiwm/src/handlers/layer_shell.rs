@@ -75,6 +75,10 @@ impl WlrLayerShellHandler for ShojiWM {
         if let Some((output, layer)) = destroyed {
             self.mapped_on_demand_layer_surfaces
                 .remove(&layer.wl_surface().id().protocol_id());
+            crate::backend::shader_effect::purge_backdrop_cache_for_layer(
+                &mut self.layer_backdrop_cache,
+                &crate::ssd::layer_runtime_id(&layer),
+            );
             if self.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
                 self.layer_shell_on_demand_focus = None;
             }

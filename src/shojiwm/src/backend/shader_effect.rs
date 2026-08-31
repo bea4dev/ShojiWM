@@ -221,6 +221,52 @@ pub fn purge_shared_effect_pipeline_caches_for_window(window_id: &str) {
     });
 }
 
+/// Drops the `layer_backdrop_cache` entries a layer left behind at its previous
+/// sizes.
+///
+/// The cache key ends in the effect rect's `{width}x{height}`, so a layer that
+/// resizes mints a fresh key — and with it a fresh full-size `GlesTexture` — for
+/// every distinct size it has ever had. Only the current size is read again, and
+/// nothing else drops the rest, so a layer that resizes routinely (the dock
+/// tracks window titles) grows the cache for the lifetime of the session.
+pub fn evict_stale_backdrop_sizes(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    current_key: &str,
+) {
+    // Everything up to the last `_` identifies this layer's variant on this
+    // output; only the size trailing it varies.
+    let Some((variant, _)) = current_key.rsplit_once('_') else {
+        return;
+    };
+    let before = cache.len();
+    cache.retain(|key, _| {
+        key.as_str() == current_key
+            || !(key.len() > variant.len()
+                && key.starts_with(variant)
+                && key.as_bytes()[variant.len()] == b'_')
+    });
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(current_key, removed, "evicted resized layer backdrop textures");
+    }
+}
+
+/// Drops every `layer_backdrop_cache` entry belonging to a destroyed layer, on
+/// every output. The key carries the layer's runtime id delimited by
+/// underscores, after the output name.
+pub fn purge_backdrop_cache_for_layer(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    layer_id: &str,
+) {
+    let needle = format!("_{layer_id}_");
+    let before = cache.len();
+    cache.retain(|key, _| !key.contains(&needle));
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(layer_id, removed, "purged destroyed layer backdrop textures");
+    }
+}
+
 #[derive(Debug, Default)]
 struct SnapshotFallbackAggregate {
     samples: u64,
