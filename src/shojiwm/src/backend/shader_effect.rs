@@ -267,6 +267,35 @@ pub fn purge_backdrop_cache_for_layer(
     }
 }
 
+/// Drops `layer_backdrop_cache` entries whose layer is no longer live.
+///
+/// [`purge_backdrop_cache_for_layer`] is driven by `layer_destroyed`, which does
+/// not fire for every departure — on an abrupt client exit `wl_surface().client()`
+/// is already `None`, so `layer_runtime_id` degrades to `unknown-client:<id>` and
+/// cannot match the keys written while the client was alive. Sweeping against the
+/// live set needs no event to fire, so it also covers a close the compositor
+/// missed. Mirrors `retain_effect_texture_cache_for_live_ids`, which cannot be
+/// reused here: it tests `{id}@` as a key *prefix*, while these keys carry the id
+/// between underscores after the output name.
+pub fn retain_backdrop_cache_for_live_layers(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    live_ids: &std::collections::HashSet<String>,
+) {
+    if cache.is_empty() {
+        return;
+    }
+    let needles = live_ids
+        .iter()
+        .map(|id| format!("_{id}_"))
+        .collect::<Vec<_>>();
+    let before = cache.len();
+    cache.retain(|key, _| needles.iter().any(|needle| key.contains(needle.as_str())));
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(removed, "swept layer backdrop textures for departed layers");
+    }
+}
+
 #[derive(Debug, Default)]
 struct SnapshotFallbackAggregate {
     samples: u64,
