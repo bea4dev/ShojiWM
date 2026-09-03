@@ -221,6 +221,81 @@ pub fn purge_shared_effect_pipeline_caches_for_window(window_id: &str) {
     });
 }
 
+/// Drops the `layer_backdrop_cache` entries a layer left behind at its previous
+/// sizes.
+///
+/// The cache key ends in the effect rect's `{width}x{height}`, so a layer that
+/// resizes mints a fresh key — and with it a fresh full-size `GlesTexture` — for
+/// every distinct size it has ever had. Only the current size is read again, and
+/// nothing else drops the rest, so a layer that resizes routinely (the dock
+/// tracks window titles) grows the cache for the lifetime of the session.
+pub fn evict_stale_backdrop_sizes(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    current_key: &str,
+) {
+    // Everything up to the last `_` identifies this layer's variant on this
+    // output; only the size trailing it varies.
+    let Some((variant, _)) = current_key.rsplit_once('_') else {
+        return;
+    };
+    let before = cache.len();
+    cache.retain(|key, _| {
+        key.as_str() == current_key
+            || !(key.len() > variant.len()
+                && key.starts_with(variant)
+                && key.as_bytes()[variant.len()] == b'_')
+    });
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(current_key, removed, "evicted resized layer backdrop textures");
+    }
+}
+
+/// Drops every `layer_backdrop_cache` entry belonging to a destroyed layer, on
+/// every output. The key carries the layer's runtime id delimited by
+/// underscores, after the output name.
+pub fn purge_backdrop_cache_for_layer(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    layer_id: &str,
+) {
+    let needle = format!("_{layer_id}_");
+    let before = cache.len();
+    cache.retain(|key, _| !key.contains(&needle));
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(layer_id, removed, "purged destroyed layer backdrop textures");
+    }
+}
+
+/// Drops `layer_backdrop_cache` entries whose layer is no longer live.
+///
+/// [`purge_backdrop_cache_for_layer`] is driven by `layer_destroyed`, which does
+/// not fire for every departure — on an abrupt client exit `wl_surface().client()`
+/// is already `None`, so `layer_runtime_id` degrades to `unknown-client:<id>` and
+/// cannot match the keys written while the client was alive. Sweeping against the
+/// live set needs no event to fire, so it also covers a close the compositor
+/// missed. Mirrors `retain_effect_texture_cache_for_live_ids`, which cannot be
+/// reused here: it tests `{id}@` as a key *prefix*, while these keys carry the id
+/// between underscores after the output name.
+pub fn retain_backdrop_cache_for_live_layers(
+    cache: &mut HashMap<String, CachedBackdropTexture>,
+    live_ids: &std::collections::HashSet<String>,
+) {
+    if cache.is_empty() {
+        return;
+    }
+    let needles = live_ids
+        .iter()
+        .map(|id| format!("_{id}_"))
+        .collect::<Vec<_>>();
+    let before = cache.len();
+    cache.retain(|key, _| needles.iter().any(|needle| key.contains(needle.as_str())));
+    let removed = before - cache.len();
+    if removed > 0 {
+        info!(removed, "swept layer backdrop textures for departed layers");
+    }
+}
+
 #[derive(Debug, Default)]
 struct SnapshotFallbackAggregate {
     samples: u64,

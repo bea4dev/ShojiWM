@@ -2597,6 +2597,10 @@ impl ShojiWM {
                 &live_layer_ids,
             );
             retain_effect_texture_cache_for_live_ids(&mut self.layer_effect_cache, &live_layer_ids);
+            crate::backend::shader_effect::retain_backdrop_cache_for_live_layers(
+                &mut self.layer_backdrop_cache,
+                &live_layer_ids,
+            );
             return Ok(());
         }
         let sync_started_at = Instant::now();
@@ -2657,6 +2661,10 @@ impl ShojiWM {
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
         });
+        crate::backend::shader_effect::retain_backdrop_cache_for_live_layers(
+            &mut self.layer_backdrop_cache,
+            &live_layer_ids,
+        );
         let apply_elapsed_ms = apply_started_at.elapsed().as_secs_f64() * 1000.0;
         let elapsed_ms = refresh_started_at.elapsed().as_secs_f64() * 1000.0;
 

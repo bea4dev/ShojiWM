@@ -10177,7 +10177,7 @@ fn configured_background_effect_elements_for_layer(
     let stable_key = format!(
         "__layer_background_effect_{}_{}_top_{}x{}",
         output.name(),
-        layer_surface.wl_surface().id().protocol_id(),
+        layer_id,
         effect_rect.width,
         effect_rect.height
     );
@@ -10500,6 +10500,7 @@ fn configured_background_effect_elements_for_layer(
             entry.commit_counter.increment();
         }
     }
+    crate::backend::shader_effect::evict_stale_backdrop_sizes(layer_backdrop_cache, &stable_key);
     layer_backdrop_cache.insert(
         stable_key.clone(),
         crate::backend::shader_effect::CachedBackdropTexture {
@@ -10924,6 +10925,10 @@ fn lower_layer_scene_elements(
                     entry.commit_counter.increment();
                 }
             }
+            crate::backend::shader_effect::evict_stale_backdrop_sizes(
+                layer_backdrop_cache,
+                &stable_key,
+            );
             layer_backdrop_cache.insert(
                 stable_key.clone(),
                 crate::backend::shader_effect::CachedBackdropTexture {
