@@ -5,22 +5,27 @@ use crate::{
 };
 use calloop::Interest;
 use smithay::{
-    backend::renderer::utils::on_commit_buffer_handler,
+    backend::renderer::{
+        buffer_dimensions,
+        utils::{RendererSurfaceStateUserData, on_commit_buffer_handler},
+    },
     reexports::wayland_server::{
         Client, Resource,
         protocol::{wl_buffer, wl_surface::WlSurface},
     },
+    utils::{Logical, Rectangle, Size, Transform},
     wayland::{
         buffer::BufferHandler,
         commit_timing::CommitTimerStateUserData,
         compositor::{
             BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
-            SurfaceAttributes, add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface,
-            with_states,
+            SurfaceAttributes, SurfaceData, TraversalAction, add_blocker, add_pre_commit_hook,
+            get_parent, is_sync_subsurface, with_states, with_surface_tree_upward,
         },
         dmabuf::get_dmabuf,
         shell::xdg::SurfaceCachedState,
         shm::{ShmHandler, ShmState},
+        viewporter::ViewportCachedState,
     },
 };
 use std::{
@@ -51,6 +56,133 @@ fn browser_geometry_debug_enabled() -> bool {
 fn x11_browser_cpu_debug_enabled() -> bool {
     std::env::var_os("SHOJI_X11_BROWSER_CPU_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+/// Resolution of `wl_fixed`, the wire type every `wp_viewport.set_source` value is rounded to.
+const WL_FIXED_QUANTUM: f64 = 1.0 / 256.0;
+
+/// Snap a viewport source rectangle that overshoots the buffer by at most one `wl_fixed`
+/// quantum back inside it. `None` means the rectangle is either already valid or too far out
+/// to be a rounding artefact; in the latter case smithay posts `out_of_buffer` as the
+/// protocol demands.
+///
+/// `wl_fixed_from_double` rounds x, y, w and h independently, each by up to half a quantum,
+/// so a far edge the client computed as exactly the buffer edge arrives one quantum past it
+/// whenever both terms are half-way ties. Firefox's video layers hit this (Mozilla bug
+/// 2062135, still open in 157.0a1): `y=881.33984375 + h=198.6640625 = 1080 + 1/256`, and
+/// Firefox deliberately crashes on any protocol error. A near edge below zero or a size
+/// larger than the buffer cannot come from rounding a valid rectangle, so those stay errors.
+/// The near edge is moved rather than the size shrunk: an integer size stays integer, and
+/// smithay raises `bad_size` for a fractional source size without a destination size.
+fn snap_viewport_source_overshoot(
+    src: Rectangle<f64, Logical>,
+    bounds: Size<i32, Logical>,
+) -> Option<Rectangle<f64, Logical>> {
+    fn snap_axis(loc: f64, size: f64, bound: f64) -> Option<f64> {
+        // Every operand is a dyadic rational (a multiple of 1/256 or an integer), so this
+        // arithmetic is exact in f64 and the comparisons need no epsilon.
+        let overshoot = loc + size - bound;
+        let snapped = loc - overshoot;
+        (overshoot > 0.0 && overshoot <= WL_FIXED_QUANTUM && snapped >= 0.0).then_some(snapped)
+    }
+
+    let bounds = bounds.to_f64();
+    let x = snap_axis(src.loc.x, src.size.w, bounds.w);
+    let y = snap_axis(src.loc.y, src.size.h, bounds.h);
+    if x.is_none() && y.is_none() {
+        return None;
+    }
+    let mut snapped = src;
+    snapped.loc.x = x.unwrap_or(src.loc.x);
+    snapped.loc.y = y.unwrap_or(src.loc.y);
+    Some(snapped)
+}
+
+/// Runs from `commit`, immediately before `on_commit_buffer_handler` validates every surface
+/// in the tree: pull a committed `wp_viewport` source rectangle that overshoots its buffer by
+/// a single `wl_fixed` quantum back inside it.
+///
+/// Deliberately not a pre-commit hook. The `out_of_buffer` check lives in
+/// `SurfaceView::from_states`, reached from `on_commit_buffer_handler` on the *current* state
+/// once the transaction has applied, so the only state guaranteed to match what it validates
+/// is the current state read at that same point. A hook on the pending state would run
+/// before queued transactions land (dmabuf fence blockers, synchronized subsurfaces), and a
+/// synchronized child's state is committed again from its parent's commit without the
+/// child's hooks running at all. Firefox's video layers are synchronized subsurfaces.
+fn snap_committed_viewport_sources(surface: &WlSurface) {
+    // The same traversal `on_commit_buffer_handler` is about to make.
+    if is_sync_subsurface(surface) {
+        return;
+    }
+    with_surface_tree_upward(
+        surface,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |surface, states, _| snap_current_viewport_source(surface, states),
+        |_, _, _| true,
+    );
+}
+
+/// Snap one surface's committed viewport source. Takes the `SurfaceData` the traversal hands
+/// out rather than calling `with_states`, which would re-lock the surface the traversal
+/// already holds.
+fn snap_current_viewport_source(surface: &WlSurface, states: &SurfaceData) {
+    let src = {
+        let mut viewport_cache = states.cached_state.get::<ViewportCachedState>();
+        viewport_cache.current().src
+    };
+    let Some(src) = src else {
+        return;
+    };
+
+    // The validator compares against the logical size of the buffer this commit leaves
+    // attached, derived exactly as `RendererSurfaceState::update_buffer` derives it: a newly
+    // attached buffer under the scale and transform committed with it, otherwise the size
+    // the renderer state already holds, whose scale and transform were fixed when that
+    // buffer was attached.
+    let attached = {
+        let mut attrs_cache = states.cached_state.get::<SurfaceAttributes>();
+        let attrs = attrs_cache.current();
+        match &attrs.buffer {
+            Some(BufferAssignment::NewBuffer(buffer)) => {
+                Some(buffer_dimensions(buffer).map(|dims| {
+                    dims.to_logical(attrs.buffer_scale, Transform::from(attrs.buffer_transform))
+                }))
+            }
+            Some(BufferAssignment::Removed) => Some(None),
+            None => None,
+        }
+    };
+    let bounds = match attached {
+        Some(bounds) => bounds,
+        None => states
+            .data_map
+            .get::<RendererSurfaceStateUserData>()
+            .and_then(|state| state.lock().unwrap().buffer_size()),
+    };
+    let Some(bounds) = bounds else {
+        return;
+    };
+
+    if let Some(snapped) = snap_viewport_source_overshoot(src, bounds) {
+        info!(
+            surface = ?surface.id(),
+            ?src,
+            ?snapped,
+            ?bounds,
+            "viewport source overshoots the buffer by a wl_fixed rounding quantum, snapped"
+        );
+        let mut viewport_cache = states.cached_state.get::<ViewportCachedState>();
+        viewport_cache.current().src = Some(snapped);
+        // The pending state keeps the client's last `set_source` until it sends another, and
+        // every later commit would re-apply the same overshoot: carry the correction over so
+        // the snap (and this log line) happens once per rectangle, not once per frame. Leave
+        // it alone if the client has already queued a different rectangle.
+        let pending = viewport_cache.pending();
+        if pending.src == Some(src) {
+            pending.src = Some(snapped);
+        }
+    }
 }
 
 fn is_chrome_like_app_id(app_id: Option<&str>) -> bool {
@@ -254,6 +386,7 @@ impl CompositorHandler for ShojiWM {
                     }
                 }
         }
+        snap_committed_viewport_sources(surface);
         on_commit_buffer_handler::<Self>(surface);
         if let Some((window, source_damage)) = pending_source_damage {
             self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
@@ -482,5 +615,103 @@ impl BufferHandler for ShojiWM {
 impl ShmHandler for ShojiWM {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    fn bounds(w: i32, h: i32) -> Size<i32, Logical> {
+        (w, h).into()
+    }
+
+    /// Mirrors the check in smithay's `ensure_viewport_valid`.
+    fn validator_accepts(src: Rectangle<f64, Logical>, bounds: Size<i32, Logical>) -> bool {
+        Rectangle::from_size(bounds.to_f64()).contains_rect(src)
+    }
+
+    #[test]
+    fn snaps_the_1080p_strip_that_killed_firefox_on_2_9_2026() {
+        // wp_viewport#181: x=0,y=881.33984375,w=1920,h=198.6640625 vs 1920x1080
+        let src = rect(0.0, 881.33984375, 1920.0, 198.6640625);
+        assert!(!validator_accepts(src, bounds(1920, 1080)));
+        let snapped = snap_viewport_source_overshoot(src, bounds(1920, 1080)).unwrap();
+        assert_eq!(snapped.loc.y, 881.3359375);
+        assert_eq!(snapped.loc.y + snapped.size.h, 1080.0);
+        assert_eq!(snapped.loc.x, 0.0);
+        assert_eq!(snapped.size, src.size);
+        assert!(validator_accepts(snapped, bounds(1920, 1080)));
+    }
+
+    #[test]
+    fn snaps_the_720p_strip_that_killed_firefox_on_1_9_2026() {
+        // wp_viewport#579: x=0,y=183.44140625,w=1280,h=536.5625 vs 1280x720
+        let src = rect(0.0, 183.44140625, 1280.0, 536.5625);
+        assert!(!validator_accepts(src, bounds(1280, 720)));
+        let snapped = snap_viewport_source_overshoot(src, bounds(1280, 720)).unwrap();
+        assert_eq!(snapped.loc.y, 183.4375);
+        assert_eq!(snapped.loc.y + snapped.size.h, 720.0);
+        assert!(validator_accepts(snapped, bounds(1280, 720)));
+    }
+
+    #[test]
+    fn snaps_both_axes_independently() {
+        // x is a 1/256 tie against an integer width, y is the recorded strip.
+        let src = rect(0.00390625, 881.33984375, 1920.0, 198.6640625);
+        let snapped = snap_viewport_source_overshoot(src, bounds(1920, 1080)).unwrap();
+        assert_eq!(snapped.loc.x, 0.0);
+        assert_eq!(snapped.loc.y, 881.3359375);
+        assert!(validator_accepts(snapped, bounds(1920, 1080)));
+    }
+
+    #[test]
+    fn leaves_valid_rectangles_alone() {
+        assert!(
+            snap_viewport_source_overshoot(rect(0.0, 880.0, 1920.0, 200.0), bounds(1920, 1080))
+                .is_none()
+        );
+        assert!(
+            snap_viewport_source_overshoot(rect(0.0, 0.0, 1920.0, 1080.0), bounds(1920, 1080))
+                .is_none()
+        );
+        assert!(
+            snap_viewport_source_overshoot(rect(10.5, 20.25, 100.0, 50.75), bounds(1920, 1080))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn leaves_real_overshoots_to_the_validator() {
+        // Two quanta over: not a rounding tie.
+        let src = rect(0.0, 881.34375, 1920.0, 198.6640625);
+        assert!(snap_viewport_source_overshoot(src, bounds(1920, 1080)).is_none());
+        // A full pixel over.
+        let src = rect(0.0, 881.0, 1920.0, 200.0);
+        assert!(snap_viewport_source_overshoot(src, bounds(1920, 1080)).is_none());
+    }
+
+    #[test]
+    fn does_not_push_the_near_edge_negative() {
+        // A size larger than the buffer cannot come from rounding a valid rectangle.
+        let src = rect(0.0, 0.0, 1920.0, 1080.00390625);
+        assert!(snap_viewport_source_overshoot(src, bounds(1920, 1080)).is_none());
+        // Nor can a negative origin.
+        let src = rect(0.0, -0.00390625, 1920.0, 1080.0);
+        assert!(snap_viewport_source_overshoot(src, bounds(1920, 1080)).is_none());
+    }
+
+    #[test]
+    fn honours_scaled_bounds() {
+        // A 3840x2160 buffer at scale 2 validates against 1920x1080 logical.
+        let logical: Size<i32, Logical> = Size::<i32, smithay::utils::Buffer>::from((3840, 2160))
+            .to_logical(2, Transform::Normal);
+        assert_eq!(logical, bounds(1920, 1080));
+        let src = rect(0.0, 881.33984375, 1920.0, 198.6640625);
+        assert!(snap_viewport_source_overshoot(src, logical).is_some());
     }
 }
