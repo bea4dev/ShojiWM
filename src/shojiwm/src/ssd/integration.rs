@@ -2782,6 +2782,41 @@ impl ShojiWM {
         Ok(())
     }
 
+    /// The runtime-side end of a window that closed WITHOUT a closing animation: tell the
+    /// config it is gone and drop every per-id set that would otherwise keep electing,
+    /// deferring or dirtying a window that no longer exists.
+    ///
+    /// Two callers. The decoration sweep reaches it for a window it still holds a decoration
+    /// for but can no longer find in the space. The close handlers reach it directly, and
+    /// have to: they prune that decoration entry themselves (to stop the VRAM leak that
+    /// e4befcf fixed), which also hides the window from the sweep — so a toplevel destroyed
+    /// before it ever painted, or any X11 window, used to vanish from the compositor while
+    /// the config went on believing it existed, focused. The maximise button then acted on a
+    /// ghost.
+    pub fn close_window_in_runtime(
+        &mut self,
+        window_id: &str,
+        damage: Option<LogicalRect>,
+    ) -> Result<(), DecorationEvaluationError> {
+        // Local bookkeeping first: it must go whatever the runtime answers, or a failed
+        // request leaves the id in these sets for the process lifetime.
+        self.windows_ready_for_decoration.remove(window_id);
+        // Kept in step with `windows_ready_for_decoration`. A window destroyed before its
+        // first paint otherwise leaves its id here for the process lifetime, which
+        // permanently defeats the `is_empty()` fast path in
+        // `should_defer_initial_keyboard_focus`.
+        self.pending_initial_focus_window_ids.remove(window_id);
+        self.runtime_dirty_window_ids.remove(window_id);
+        self.runtime_managed_only_window_ids.remove(window_id);
+        self.snapshot_dirty_window_ids.remove(window_id);
+        self.live_window_snapshots.remove(window_id);
+        self.live_window_snapshot_trackers.remove(window_id);
+        if let Some(rect) = damage {
+            self.pending_decoration_damage.push(rect);
+        }
+        self.decoration_evaluator.window_closed(window_id)
+    }
+
     pub fn refresh_window_decorations_for_output(
         &mut self,
         target_output_name: Option<&str>,
@@ -2875,20 +2910,7 @@ impl ShojiWM {
                 }
 
                 if !self.promote_window_to_closing_snapshot(window_id, decoration, now_ms)? {
-                    self.decoration_evaluator.window_closed(window_id)?;
-                    self.windows_ready_for_decoration.remove(window_id);
-                    // Kept in step with `windows_ready_for_decoration`. A window
-                    // destroyed before its first paint otherwise leaves its id
-                    // here for the process lifetime, which permanently defeats
-                    // the `is_empty()` fast path in
-                    // `should_defer_initial_keyboard_focus`.
-                    self.pending_initial_focus_window_ids.remove(window_id);
-                    self.runtime_dirty_window_ids.remove(window_id);
-                    self.runtime_managed_only_window_ids.remove(window_id);
-                    self.snapshot_dirty_window_ids.remove(window_id);
-                    self.live_window_snapshots.remove(window_id);
-                    self.live_window_snapshot_trackers.remove(window_id);
-                    self.pending_decoration_damage.push(*root_rect);
+                    self.close_window_in_runtime(window_id, Some(*root_rect))?;
                 } else {
                     promoted_closing = promoted_closing.saturating_add(1);
                 }

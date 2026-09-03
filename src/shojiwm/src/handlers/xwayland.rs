@@ -117,26 +117,47 @@ impl XwmHandler for ShojiWM {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elem) = self.find_x11_window(&window) {
-            let window_id = self
-                .window_decorations
-                .get(&elem)
-                .map(|decoration| decoration.snapshot.id.clone());
+            let decoration = self.window_decorations.get(&elem).cloned();
+            // The runtime id, not the decoration entry's: see toplevel_destroyed.
+            let window_id = self.snapshot_window(&elem).id;
             if let Err(error) = crate::backend::tty::capture_live_snapshot_for_close(self, &elem) {
                 warn!(
                     ?error,
                     "failed to capture unmapped X11 window before closing animation"
                 );
             }
-            // X11 windows never go through promote_window_to_closing_snapshot
-            // (only the xdg_shell toplevel path does), so any snapshot the
-            // capture above just took would otherwise sit in
+            // An X11 unmap is the close, and it gets the same closing animation an xdg
+            // toplevel does when there is something to animate. The decoration sweep used to
+            // promote X11 windows too, until per-window state started being pruned here; if
+            // nothing is promoted, the captured snapshot must not sit in
             // `live_window_snapshots` forever.
-            if let Some(window_id) = window_id.as_deref() {
-                self.prune_unpromoted_window_snapshot(window_id);
+            let mut promoted = false;
+            if let Some(decoration) = decoration.as_ref() {
+                let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+                match self.promote_window_to_closing_snapshot(&window_id, decoration, now_ms) {
+                    Ok(did) => promoted = did,
+                    Err(error) => warn!(
+                        window_id,
+                        ?error,
+                        "failed to promote unmapped X11 window to closing snapshot"
+                    ),
+                }
             }
+            self.prune_unpromoted_window_snapshot(&window_id);
             self.remove_foreign_toplevel(&elem);
             self.prune_window_state(&elem);
             self.space.unmap_elem(&elem);
+            // No animation means nobody else reports this close: the decoration entry is
+            // pruned above, so the sweep cannot, and only the finalize handshake of an
+            // animation would. Tell the config directly.
+            if !promoted
+                && let Err(error) = self.close_window_in_runtime(
+                    &window_id,
+                    decoration.as_ref().map(|decoration| decoration.layout.root.rect),
+                )
+            {
+                warn!(window_id, ?error, "failed to report unmapped X11 window to the runtime");
+            }
             // X11 *unmap* is the real close — `destroyed_window` never touches
             // the space. Re-elect now rather than leaving the stale target to be
             // reaped whenever some unrelated event next runs
