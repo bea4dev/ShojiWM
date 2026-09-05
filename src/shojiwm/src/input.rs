@@ -2855,18 +2855,26 @@ impl ShojiWM {
         }
 
         let location = pointer.current_location();
-        self.pointer_contents = self.pointer_contents_at(location);
-        let under = self.pointer_contents.surface.clone();
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location,
-                serial: SERIAL_COUNTER.next_serial(),
-                time: time_msec,
-            },
-        );
-        pointer.frame(self);
+        let next_contents = self.pointer_contents_at(location);
+        // Layer/popup surfaces re-render on their own cadence (e.g. a clock bar
+        // commits every second); refreshing the pointer then would emit a
+        // zero-delta `wl_pointer.motion` the focused client reads as activity.
+        // When the hit-test target is unchanged there is nothing to retarget,
+        // so only emit when it actually moved (origin included).
+        if next_contents.surface != self.pointer_contents.surface {
+            self.pointer_contents = next_contents;
+            let under = self.pointer_contents.surface.clone();
+            pointer.motion(
+                self,
+                under,
+                &MotionEvent {
+                    location,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: time_msec,
+                },
+            );
+            pointer.frame(self);
+        }
         self.update_decoration_hover_target(location);
         self.update_decoration_cursor_icon(location);
     }
