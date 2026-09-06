@@ -2860,9 +2860,21 @@ impl ShojiWM {
         // commits every second); refreshing the pointer then would emit a
         // zero-delta `wl_pointer.motion` the focused client reads as activity.
         // When the hit-test target is unchanged there is nothing to retarget,
-        // so only emit when it actually moved (origin included).
-        if next_contents.surface != self.pointer_contents.surface {
-            self.pointer_contents = next_contents;
+        // so only emit when it actually moved (origin included). Smithay's
+        // internal focus can still lag `pointer_contents` behind paths that
+        // rewrite it without a motion (the post-restack recompute on button
+        // press, session unlock), so also emit whenever the two disagree —
+        // without that resync the divergence would persist until the next
+        // physical pointer motion.
+        let changed = next_contents.surface != self.pointer_contents.surface;
+        self.pointer_contents = next_contents;
+        let desired_focus = self
+            .pointer_contents
+            .surface
+            .as_ref()
+            .map(|(surface, _)| surface);
+        let stale = pointer.current_focus().as_ref() != desired_focus;
+        if changed || stale {
             let under = self.pointer_contents.surface.clone();
             pointer.motion(
                 self,
