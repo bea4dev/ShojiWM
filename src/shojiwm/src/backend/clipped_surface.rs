@@ -146,6 +146,16 @@ pub struct ClippedSurfaceElement {
     sample_buffer_size: [f32; 2],
     sample_uv_snap_axes: [f32; 2],
     sample_uv_compensation_enabled: f32,
+    /// Per-surface color management, resolved once at element construction.
+    /// `src_transfer == 0.0` is the untagged fast path and makes the shader
+    /// skip the conversion entirely, so nothing changes for sRGB clients.
+    src_transfer: f32,
+    src_primaries: f32,
+    src_ref_nits: f32,
+    /// Tone-mapping knee, already PQ-encoded on the CPU.
+    src_pq_lo: f32,
+    src_pq_hi: f32,
+    dst_pq_hi: f32,
 }
 
 #[derive(Debug)]
@@ -207,6 +217,7 @@ impl ClippedSurfaceElement {
         clip: ContentClip,
         forced_geometry: Option<Rectangle<i32, Physical>>,
         debug_label: Option<String>,
+        image_description: Option<crate::color::ImageDescription>,
     ) -> Result<Self, GlesError> {
         if renderer
             .egl_context()
@@ -271,6 +282,30 @@ impl ClippedSurfaceElement {
                     ),
                     UniformName::new(
                         "sample_uv_compensation_enabled",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_transfer",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_primaries",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_ref_nits",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_pq_lo",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "src_pq_hi",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "dst_pq_hi",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                 ],
@@ -517,6 +552,59 @@ impl ClippedSurfaceElement {
             }
         }
 
+        // Resolve the surface's color-management tag into shader uniforms once,
+        // here, rather than per-fragment. `src_transfer == 0.0` is the untagged
+        // path and makes the shader skip the conversion, so sRGB clients are
+        // byte-identical to before.
+        let (
+            src_transfer, 
+            src_primaries,
+            src_ref_nits, 
+            src_pq_lo,
+            src_pq_hi, 
+            dst_pq_hi,
+        ) = match image_description {
+            Some(description) => {
+                let primaries = match description.primaries {
+                    crate::color::ColorPrimaries::Srgb => 0.0,
+                    crate::color::ColorPrimaries::Bt2020 => 1.0,
+                };
+                let transfer = match description.tf {
+                    // sRGB in sRGB primaries already *is* the compositing
+                    // space. In a wider gamut it still needs the matrix, so it
+                    // takes the decode-only branch instead of the fast path.
+                    crate::color::TransferCharacteristics::Srgb if primaries == 0.0 => 0.0,
+                    crate::color::TransferCharacteristics::Srgb => 3.0,
+                    crate::color::TransferCharacteristics::St2084Pq => 1.0,
+                    crate::color::TransferCharacteristics::ExtLinear => 2.0,
+                };
+                let luminances = description.effective_luminances();
+                // MaxCLL is the measured peak of the content; fall back to the
+                // description's declared maximum when the client didn't send it.
+                let max_nits = description
+                    .max_cll
+                    .map(|cll| cll as f32)
+                    .unwrap_or(luminances.max);
+                // BT.2390 operates on PQ signals, so encode the knee here
+                // rather than paying four pow() calls per fragment for values
+                // that are constant across the surface. The target peak is the
+                // content's own reference white, which is what compositing-space
+                // 1.0 represents.
+                let to_pq = |nits: f32| {
+                    crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32
+                };
+                (
+                    transfer,
+                    primaries,
+                    luminances.reference,
+                    to_pq(luminances.min),
+                    to_pq(max_nits),
+                    to_pq(luminances.reference),
+                )
+            }
+            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        };
+
         Ok(Self {
             inner,
             geometry: render_geometry,
@@ -542,6 +630,12 @@ impl ClippedSurfaceElement {
             } else {
                 0.0
             },
+            src_transfer,
+            src_primaries,
+            src_ref_nits,
+            src_pq_lo,
+            src_pq_hi,
+            dst_pq_hi,
         })
     }
 
@@ -690,6 +784,12 @@ impl ClippedSurfaceElement {
                 "sample_uv_compensation_enabled",
                 self.sample_uv_compensation_enabled,
             ),
+            Uniform::new("src_transfer", self.src_transfer),
+            Uniform::new("src_primaries", self.src_primaries),
+            Uniform::new("src_ref_nits", self.src_ref_nits),
+            Uniform::new("src_pq_lo", self.src_pq_lo),
+            Uniform::new("src_pq_hi", self.src_pq_hi),
+            Uniform::new("dst_pq_hi", self.dst_pq_hi),
         ]
     }
 }

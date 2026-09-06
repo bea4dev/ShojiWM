@@ -1007,7 +1007,51 @@ impl crate::protocols::screencopy::ScreencopyHandler for ShojiWM {
     }
 }
 
+impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
+    fn output_image_description(
+        &mut self,
+        wl_output: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) -> crate::color::ImageDescription {
+        Output::from_resource(wl_output)
+            .and_then(|output| {
+                self.output_color
+                    .get(output.name().as_str())
+                    .map(|state| state.description)
+            })
+            .unwrap_or(crate::color::ImageDescription::SRGB)
+    }
+
+    fn surface_preferred_description(
+        &mut self,
+        _surface: &WlSurface,
+    ) -> crate::color::ImageDescription {
+        // The compositor composites in sRGB, so sRGB content is what we
+        // prefer from every client regardless of the output's signal mode.
+        // Revisit when the fp16 linear blend space (phase 3) lands.
+        crate::color::ImageDescription::SRGB
+    }
+
+    fn defer_image_description_info(
+        &mut self,
+        info: smithay::reexports::wayland_protocols::wp::color_management::v1::server::wp_image_description_info_v1::WpImageDescriptionInfoV1,
+        description: crate::color::ImageDescription,
+    ) {
+        // Idle callbacks run after the current wayland dispatch completes,
+        // so the `done` destructor event cannot destroy the info object
+        // inside the dispatch that created it (wayland-backend would then
+        // write the object's data through a freed pointer; issue #1). If
+        // the client is gone by the time this runs, the sends are no-ops.
+        self.loop_handle.insert_idle(move |_state| {
+            crate::protocols::color_management::send_information(
+                &info,
+                &description,
+            );
+        });
+    }
+}
+
 crate::delegate_screencopy!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
+crate::delegate_color_management!(ShojiWM);
 crate::delegate_wlr_foreign_toplevel!(ShojiWM);
 crate::workspace_manager::delegate_ext_workspace_manager!(ShojiWM);

@@ -278,6 +278,7 @@ pub struct ShojiWM {
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
     pub tearing_control_state: crate::protocols::tearing_control::TearingControlManagerState,
+    pub color_management_state: crate::protocols::color_management::ColorManagementState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
@@ -357,6 +358,10 @@ pub struct ShojiWM {
     pub runtime_scheduler_kick_interval_ms: Option<u64>,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_globals: HashMap<String, GlobalId>,
+    /// Per-output color mode/signal state, keyed by output name (tty only).
+    pub output_color: HashMap<String, crate::color::OutputColorState>,
+    /// Per-output fp16 composite + PQ encode state for HDR10 outputs.
+    pub hdr_pipelines: HashMap<String, crate::backend::hdr_pipeline::HdrPipeline>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1394,6 +1399,8 @@ impl ShojiWM {
             crate::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(&dh, |_| true);
         let tearing_control_state =
             crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&dh);
+        let color_management_state =
+            crate::protocols::color_management::ColorManagementState::new::<Self>(&dh);
         let foreign_toplevel_list_state =
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let wlr_foreign_toplevel_manager_state =
@@ -1582,6 +1589,7 @@ impl ShojiWM {
             fractional_scale_manager_state,
             screencopy_state,
             tearing_control_state,
+            color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
             ext_workspace_manager_state,
@@ -1648,6 +1656,8 @@ impl ShojiWM {
             runtime_scheduler_kick_interval_ms: None,
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
+            output_color: Default::default(),
+            hdr_pipelines: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
@@ -2576,6 +2586,12 @@ impl ShojiWM {
                         scale: output.current_scale().fractional_scale(),
                         transform: transform.into(),
                         available_modes,
+                        hdr_supported: self
+                            .output_color
+                            .get(
+                                &name,
+                            )
+                            .is_some_and(|color| color.edid_hdr.is_some()),
                     },
                 )
             })
@@ -2713,6 +2729,15 @@ impl ShojiWM {
                 }
             }
         }
+        // The HDR opt-in lives in this config: widen/narrow the protocol
+        // advertisement and re-resolve connected outputs, which connect
+        // before the TypeScript config evaluates.
+        crate::color::set_session_hdr_configured(
+            self.runtime_output_configs
+                .values()
+                .any(|config| config.hdr == Some(true)),
+        );
+        crate::backend::tty::refresh_tty_output_color_modes(self);
         self.apply_runtime_display_configuration();
         self.notify_runtime_outputs_changed();
     }
@@ -2844,6 +2869,7 @@ impl ShojiWM {
                 smithay::wayland::image_copy_capture::CaptureFailureReason::Unknown,
             );
             self.output_capture_mirrors.remove(&name);
+            self.hdr_pipelines.remove(&name);
             self.runtime_animation_outputs.remove(&name);
             self.layer_effect_evaluation_cache.remove(&name);
             self.popup_effect_evaluation_cache.remove(&name);

@@ -31,7 +31,13 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         background_effect::BackgroundEffectSurfaceCachedState,
-        compositor::{RectangleKind, RegionAttributes, with_states},
+        compositor::{
+            RectangleKind, 
+            RegionAttributes, 
+            TraversalAction, 
+            with_states,
+            with_surface_tree_downward,
+        },
         session_lock::LockSurface,
         shell::wlr_layer::Layer as WlrLayer,
         shell::xdg::XdgToplevelSurfaceData,
@@ -865,6 +871,55 @@ pub fn clipped_surface_elements(
     // SSD clip is allowed to crop the client surface tree.
     let clip = clip.filter(|clip| clip.clips_surface);
 
+    // Color-management tag for the window's root surface, applied to every
+    // element in its tree. Approximation: subsurfaces are distinct protocol
+    // surfaces and may carry their own descriptions, so a player that puts
+    // video on a subsurface while leaving the toplevel untagged is not handled
+    // yet. The common case — a client tagging its main surface — is.
+    // Color-management tags, keyed by the element id `WaylandSurfaceRenderElement`
+    // derives from each surface. Collected per-surface rather than taken from the
+    // toplevel, because a subsurface carries its own description — players that
+    // put video on a subsurface leave the toplevel untagged.
+    //
+    // Pairing by id rather than rebuilding the element list ourselves keeps
+    // smithay's surface-tree walk (and its view-offset handling) as the single
+    // source of truth for positioning.
+    let surface_descriptions: std::collections::HashMap<Id, crate::color::ImageDescription> =
+        match window.underlying_surface() {
+            // Skipped entirely until something in the session has ever been
+            // tagged, which is one relaxed atomic load in the common case.
+            WindowSurface::Wayland(toplevel)
+                if crate::protocols::color_management::any_surface_tagged() =>
+            {
+                let mut found = std::collections::HashMap::new();
+                with_surface_tree_downward(
+                    toplevel.wl_surface(),
+                    (),
+                    |_, _, _| TraversalAction::DoChildren(()),
+                    // Read the description out of the `SurfaceData` smithay
+                    // hands us. Calling `surface_image_description` here instead
+                    // would re-take the surface's user-data lock that the
+                    // traversal is still holding, and that lock is not
+                    // reentrant — it deadlocks the compositor on the first
+                    // window that maps.
+                    |surface, states, _| {
+                        if let Some(description) =
+                            crate::protocols::color_management::image_description_from_states(
+                                states,
+                            )
+                        {
+                            found.insert(Id::from_wayland_resource(surface), description);
+                        }
+                    },
+                    |_, _, _| true,
+                );
+                found
+            }
+            // X11 has no color-management protocol, so XWayland clients are
+            // always untagged and take the passthrough path.
+            _ => std::collections::HashMap::new(),
+        };
+
     let elements = surface_elements(window, renderer, location, output_scale, alpha);
     if clip.is_none() || std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {
         return Ok(elements.into_iter().map(WindowClipElement::Raw).collect());
@@ -974,6 +1029,14 @@ pub fn clipped_surface_elements(
             let mut output = Vec::with_capacity(elements.len());
             for element in elements {
                 if Element::id(&element) == &root_id {
+                    // Resolve before the move: `element` is consumed below.
+                    let element_description =
+                        surface_descriptions
+                            .get(
+                                Element::id(
+                                    &element,
+                                ),
+                            ).copied();
                     output.push(WindowClipElement::Clipped(ClippedSurfaceElement::new(
                         renderer,
                         element,
@@ -983,6 +1046,7 @@ pub fn clipped_surface_elements(
                         clip,
                         geometry,
                         debug_label.clone(),
+                        element_description,
                     )?));
                 } else {
                     output.push(WindowClipElement::Raw(element));
@@ -1006,6 +1070,13 @@ pub fn clipped_surface_elements(
                         "gap debug clipped surface candidate",
                     );
                 }
+                // Resolve before the move: `element` is consumed below.
+                let element_description = surface_descriptions
+                    .get(
+                        Element::id(
+                            &element,
+                        )
+                    ).copied();
                 if geometry_override.is_some() {
                     ClippedSurfaceElement::new(
                         renderer,
@@ -1016,6 +1087,7 @@ pub fn clipped_surface_elements(
                         clip,
                         geometry_override,
                         debug_label.clone(),
+                        element_description,
                     )
                     .map(WindowClipElement::Clipped)
                 } else {
@@ -1049,6 +1121,11 @@ pub fn clipped_popup_elements(
                 clip,
                 None,
                 Some("popup clipped by ManagedWindow.forceRectSize".to_owned()),
+                // Popups are separate protocol surfaces with their own
+                // descriptions; inheriting the toplevel's would be wrong. They
+                // are effectively never color-tagged, so leave them untagged
+                // rather than guess.
+                None,
             )
         })
         .collect()
