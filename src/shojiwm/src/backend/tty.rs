@@ -6719,6 +6719,7 @@ fn render_surface(
         // sRGB-encoded inside a PQ signal) into the fp16 intermediate, and
         // the DRM pass renders a single PQ-encode element instead.
         let mut hdr_encode_active = false;
+        let mut hdr_stage1_states = None;
         if matches!(
             state
                 .output_color
@@ -6747,11 +6748,15 @@ fn render_surface(
             ) {
                 Ok(
                     Some(
-                        encode_element
+                        (encode_element, stage1_states)
                     )
                 ) => {
                     elements = vec![TtyRenderElements::HdrEncode(encode_element)];
                     hdr_encode_active = true;
+                    // Stage 1 saw the real element list; the DRM pass will not.
+                    // Keep its states so the client surfaces below still count
+                    // as presented on this output.
+                    hdr_stage1_states = Some(stage1_states);
                 }
                 Ok(
                     None
@@ -7174,16 +7179,49 @@ fn render_surface(
         }
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
-        let effective_render_states_storage = mirrored_render_states.map(|mut states| {
-            states.states.extend(
-                result
-                    .states
-                    .states
-                    .iter()
-                    .map(|(id, state)| (id.clone(), *state)),
-            );
-            states
-        });
+        // The capture mirror and the HDR encode pass both replace the whole
+        // element list with ONE synthetic element, so `result.states` names that
+        // element and no client `wl_surface` at all. Merge back the states each
+        // pass captured before it collapsed the list.
+        //
+        // This is not cosmetic. `update_primary_scanout_output` below is called
+        // unconditionally, so a surface missing from these states has its
+        // primary_scanout_output cleared. Combined with the 1s throttle in
+        // send_frame_callbacks that silently caps the client at ~1 frame per
+        // second and drops its wp_presentation feedback entirely — on an HDR
+        // output that hit *every* client on the output, every frame, so a video
+        // player was never told when to present and juddered. Measured 8/9/2026
+        // on HDMI-A-3 with a fullscreen Discord stream.
+        //
+        // `result.states` is extended last so the real DRM pass still wins on
+        // any id collision, exactly as it did when only the mirror merged here.
+        let effective_render_states_storage = {
+            let mut merged = mirrored_render_states;
+            if let Some(hdr_states) = hdr_stage1_states {
+                merged = Some(match merged {
+                    Some(mut states) => {
+                        states.states.extend(
+                            hdr_states
+                                .states
+                                .iter()
+                                .map(|(id, state)| (id.clone(), *state)),
+                        );
+                        states
+                    }
+                    None => hdr_states,
+                });
+            }
+            merged.map(|mut states| {
+                states.states.extend(
+                    result
+                        .states
+                        .states
+                        .iter()
+                        .map(|(id, state)| (id.clone(), *state)),
+                );
+                states
+            })
+        };
         let effective_render_states = effective_render_states_storage
             .as_ref()
             .unwrap_or(&result.states);
