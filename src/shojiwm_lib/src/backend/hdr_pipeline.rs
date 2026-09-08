@@ -20,7 +20,7 @@ use smithay::{
     backend::renderer::{
         Bind, Color32F, Offscreen,
         damage::OutputDamageTracker,
-        element::{Element, Id, Kind, RenderElement},
+        element::{Element, Id, Kind, RenderElement, RenderElementStates},
         gles::{
             GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
             UniformType,
@@ -165,7 +165,18 @@ pub struct HdrPipeline {
 }
 
 /// Composite `elements` into the fp16 intermediate and return the single
-/// PQ-encode element the DRM pass should render instead of the raw list.
+/// PQ-encode element the DRM pass should render instead of the raw list,
+/// together with the `RenderElementStates` stage 1 produced for the *real*
+/// element list.
+///
+/// Those states are load-bearing, not diagnostic. The DRM pass only ever sees
+/// the one synthetic encode element, so the states it returns name no client
+/// `wl_surface` at all. If the caller does not merge these back in,
+/// `update_primary_scanout_output` clears every client's primary scanout
+/// output on every frame, which collapses their frame callbacks to the 1s idle
+/// throttle and stops `wp_presentation` feedback -- a video client is then
+/// never told when to present and judders. See the merge in `render_surface`.
+///
 /// Returns `Ok(None)` if the output has no mode yet.
 pub fn render_hdr_pipeline<E>(
     renderer: &mut GlesRenderer,
@@ -173,7 +184,7 @@ pub fn render_hdr_pipeline<E>(
     output: &Output,
     elements: &[E],
     clear_color: [f32; 4],
-) -> Result<Option<HdrEncodeElement>, Box<dyn std::error::Error>>
+) -> Result<Option<(HdrEncodeElement, RenderElementStates)>, Box<dyn std::error::Error>>
 where
     E: RenderElement<GlesRenderer>,
 {
@@ -257,11 +268,14 @@ where
                 ), 
             )
     };
-    let damaged = match render_result {
+    let (damaged, stage1_states) = match render_result {
         Ok(
             result
-        ) => result.damage
-            .is_some(),
+        ) => (
+            result.damage
+                .is_some(),
+            result.states,
+        ),
         Err(
             error
         ) => {
@@ -285,7 +299,7 @@ where
             1,
             Transform::Normal
         );
-    Ok(Some(HdrEncodeElement {
+    Ok(Some((HdrEncodeElement {
         id: pipeline.element_id
             .clone(),
         commit: pipeline.commit_counter,
@@ -302,7 +316,7 @@ where
             size
         ),
         sdr_nits: sdr_reference_nits(),
-    }))
+    }, stage1_states)))
 }
 
 /// Fullscreen quad that draws the fp16 intermediate through the PQ encode
