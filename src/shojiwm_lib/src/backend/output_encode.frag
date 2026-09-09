@@ -44,6 +44,21 @@ uniform float tint;
 // pixel went to PQ (51.5, 79.4, 27.9) and read as green. Measured 9/9/2026 on a
 // Philips 8505: on a static test pattern every patch except (0,0,0) glowed.
 //
+// BT.2408, which is where the 203 cd/m2 reference white comes from, scales
+// linear SDR *display* light — i.e. the signal through the display EOTF, not
+// through the encoding function's inverse. Using the piecewise curve here took
+// the 203 figure from BT.2408 while ignoring what BT.2408 says to apply it to.
+// KWin fixed the identical bug the identical way, and the wayland
+// colour-management protocol keeps `srgb` and `gamma22` as separate transfer
+// functions precisely because they are not the same curve.
+//
+// IMPORTANT: this is the right default for UNTAGGED surfaces, which is
+// everything today — no client binds wp_color_manager_v1. A surface that DOES
+// declare TRANSFER_FUNCTION_SRGB must still be decoded piecewise, because then
+// the client has told us which curve it encoded with. That is a different
+// question from what an untagged 8-bit desktop buffer means, and this uniform
+// must not be applied to it blindly once that path goes live.
+//
 // Overridable via SHOJI_SDR_GAMMA; 2.2 is sRGB's nominal display gamma, 2.4 is
 // the BT.1886 figure for a dim viewing environment and suits a television.
 vec3 sdr_eotf(vec3 c) {
