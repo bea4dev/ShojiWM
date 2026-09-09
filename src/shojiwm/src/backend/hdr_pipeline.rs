@@ -6,7 +6,8 @@
 //! uses for screencopy, so damage semantics are identical.
 //!
 //! Stage 2 hands the DRM pass a single [`HdrEncodeElement`] that draws the
-//! intermediate through `output_encode.frag`: sRGB EOTF decode →
+//! intermediate through `output_encode.frag`: SDR EOTF decode (pure gamma,
+//! not the piecewise sRGB curve — see the shader) →
 //! BT.709→BT.2020 gamut matrix → scale to `sdr_nits` absolute luminance →
 //! ST 2084 (PQ) encode, straight into the 10-bit scanout buffer.
 //!
@@ -105,6 +106,27 @@ pub(crate) fn sdr_reference_nits() -> f32 {
     })
 }
 
+/// Display gamma assumed for SDR content when encoding it to PQ, from
+/// `SHOJI_SDR_GAMMA`, default 2.2.
+///
+/// 2.2 is sRGB's nominal display gamma. 2.4 is the BT.1886 figure for a dim
+/// viewing environment and is the broadcast convention for television, so it is
+/// worth trying on a TV — it takes the first code off black from PQ 6.6 down to
+/// 3.5, against 51.8 under the piecewise sRGB curve this replaced.
+///
+/// Clamped to a sane range: below about 1.8 shadows lift again, and above 3.0
+/// they crush to nothing.
+pub(crate) fn sdr_reference_gamma() -> f32 {
+    static GAMMA: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *GAMMA.get_or_init(|| {
+        std::env::var("SHOJI_SDR_GAMMA")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|gamma| (1.8..=3.0).contains(gamma))
+            .unwrap_or(2.2)
+    })
+}
+
 struct HdrEncodeProgram(
     GlesTexProgram
 );
@@ -126,7 +148,11 @@ fn ensure_encode_program(
                 UniformName::new(
                     "sdr_nits", 
                     UniformType::_1f
-                )
+                ),
+                UniformName::new(
+                    "sdr_gamma",
+                    UniformType::_1f
+                ),
             ],
         )?;
         renderer
@@ -316,6 +342,7 @@ where
             size
         ),
         sdr_nits: sdr_reference_nits(),
+        sdr_gamma: sdr_reference_gamma(),
     }, stage1_states)))
 }
 
@@ -329,6 +356,7 @@ pub struct HdrEncodeElement {
     src: Rectangle<f64, Buffer>,
     geometry: Rectangle<i32, Physical>,
     sdr_nits: f32,
+    sdr_gamma: f32,
 }
 
 impl Element for HdrEncodeElement {
@@ -400,7 +428,10 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
             Transform::Normal,
             1.0,
             Some(&self.program),
-            &[Uniform::new("sdr_nits", self.sdr_nits)],
+            &[
+                Uniform::new("sdr_nits", self.sdr_nits),
+                Uniform::new("sdr_gamma", self.sdr_gamma),
+            ],
         );
         if let Err(
             error
