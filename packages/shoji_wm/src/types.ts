@@ -1194,6 +1194,20 @@ export interface OutputExtendConfigEntry {
    * 駆動します。実験的機能です。
    */
   hdr?: boolean;
+  /**
+   * Real peak luminance of this display in cd/m². Only needed when the EDID
+   * advertises ST 2084 but omits its luminance fields, which is common — the
+   * compositor otherwise has to assume 1000. Ignored outside 50..=10000.
+   * このディスプレイの実際の最大輝度（cd/m²）。EDID が ST 2084 対応を示し
+   * ながら輝度情報を持たない場合にのみ必要です（その場合は 1000 と仮定され
+   * ます）。50〜10000 の範囲外は無視されます。
+   */
+  hdrMaxLuminance?: number;
+  /**
+   * Real black level of this display in cd/m². Ignored outside 0..=10.
+   * このディスプレイの実際の黒レベル（cd/m²）。0〜10 の範囲外は無視されます。
+   */
+  hdrMinLuminance?: number;
 }
 
 export interface OutputDisabledConfigEntry {
