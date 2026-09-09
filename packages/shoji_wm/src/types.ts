@@ -1091,6 +1091,25 @@ export interface OutputMode {
   width: number;
   height: number;
   refreshRate: number;
+  /**
+   * DRM pixel clock in kHz. Absent on backends with no DRM mode behind them.
+   * Cannot be derived from the fields above — blanking is time actually spent
+   * transmitting, so 3840x2160@60 clocks at 594 MHz, not the 497.7 MHz its
+   * active pixels imply. Link-bandwidth arithmetic must use this.
+   * DRM のピクセルクロック（kHz）。ブランキングを含むため上記の値からは
+   * 算出できません。帯域計算にはこの値を使ってください。
+   */
+  clockKhz?: number;
+}
+
+/** What an HDMI sink says its link can carry. / HDMI シンクのリンク能力。 */
+export interface HdmiLinkInfo {
+  /** Inferred from what the sink advertises, e.g. "HDMI 2.0". */
+  standard: string;
+  /** Max TMDS character rate in kHz, when the sink states one. */
+  maxTmdsKhz?: number;
+  /** Total usable link bandwidth in Gbit/s. */
+  maxBandwidthGbps?: number;
 }
 
 /** Panel power for `COMPOSITOR.output.setPower`. / `COMPOSITOR.output.setPower` で指定する電源状態。 */
@@ -1266,6 +1285,19 @@ export interface OutputStateSnapshot {
   availableModes: OutputMode[];
   /** EDID advertises HDR (CTA-861 static metadata block). */
   hdrSupported: boolean;
+  /**
+   * Link capability for HDMI connectors. Absent for non-HDMI outputs and for
+   * sinks publishing no vendor block.
+   *
+   * Supporting HDR and being able to deliver it are different questions. PQ
+   * needs 10 bits per component, which costs `pixelClock * 10/8` of TMDS
+   * character rate; 3840x2160@60 therefore needs 742.5 MHz and does not fit
+   * HDMI 2.0's 600 MHz ceiling, even on a sink whose EDID advertises both the
+   * mode and ST 2084. The driver then falls back to 8 bpc or subsampled
+   * chroma, and PQ tolerates neither.
+   * HDMI コネクタのリンク能力。HDR 対応と実際に伝送できるかは別問題です。
+   */
+  hdmi?: HdmiLinkInfo;
 }
 
 export interface OutputInfo extends OutputStateSnapshot {

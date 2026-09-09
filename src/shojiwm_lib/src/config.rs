@@ -303,7 +303,6 @@ mod tests {
             assert_eq!(parsed.to_smithay(), subpixel);
         }
     }
-}
 
     /// The `hdr` opt-in arrives from the TypeScript display config; missing
     /// means None so older configs keep their SDR behavior.
