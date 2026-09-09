@@ -3331,6 +3331,18 @@ fn render_surface(
         return Ok(RenderSurfaceOutcome::Skipped);
     };
 
+    // Is this output being driven as HDR10? Captured once, at function scope,
+    // as a plain `bool`: the fullscreen fast-path decision below needs it, and
+    // by that point `state` has been partially destructured into the scene
+    // borrows, so a fresh `state.output_color` lookup there would not compile.
+    let output_is_hdr = matches!(
+        state
+            .output_color
+            .get(output.name().as_str())
+            .map(|color| color.mode),
+        Some(crate::color::OutputColorMode::Hdr10 { .. })
+    );
+
     let redraw_state = state
         .tty_backends
         .get(&node)
@@ -3616,19 +3628,48 @@ fn render_surface(
         // a notification/OSD overlay must not unfullscreen the window, but it
         // must temporarily force compositing and synced flips until it goes
         // away.
-        let fullscreen_window = fullscreen_scanout_window(
-            space,
-            window_decorations,
-            &windows_top_to_bottom,
-            closing_snapshots_on_output(
-                &closing_snapshots,
-                output.name().as_str(),
+        // The fullscreen fast path is unsafe on an HDR10 output because it
+        // renders the client as a BARE surface tree (`window::surface_elements`,
+        // a plain `WaylandSurfaceRenderElement`) instead of going through
+        // `clipped_surface_elements`, which is the only path that carries the
+        // surface's `image_description` into the shader's `src_transfer`
+        // uniform. The tag is silently dropped.
+        //
+        // On an SDR output that costs nothing: untagged and sRGB-tagged content
+        // decode identically. On HDR10 it is actively destructive. ShojiWM
+        // advertises PQ/BT.2020 through `wp_color_manager_v1` as soon as any
+        // output sets `hdr: true` (see `hdr_experiment_enabled`), so a client
+        // that asks — mpv with `target-colorspace-hint`, which is its default —
+        // hands over genuine PQ pixels. Losing the tag makes the HDR pipeline
+        // decode them as sRGB and re-encode: measured 9/9/2026 on a 4K HDR
+        // remux, shadows came out 2.4x too bright and a frame graded to
+        // 133 cd/m2 emerged at 46, which reads as washed out with grain in the
+        // darks. The gate in color_management.rs was written to stop clients
+        // submitting PQ "the render pipeline can't handle yet"; it opens exactly
+        // when HDR is enabled, which is exactly when they do.
+        //
+        // Skipping the fast path here costs nothing real. Its entire purpose is
+        // to collapse the frame to one scanout-capable element, and HDR outputs
+        // set `FrameFlags::empty()` before `render_frame` (nothing may bypass
+        // the PQ encode pass), so plane promotion cannot happen on them at all.
+        // The optimisation could never fire; only its cost was landing.
+        let fullscreen_window = if output_is_hdr {
+            None
+        } else {
+            fullscreen_scanout_window(
+                space,
+                window_decorations,
+                &windows_top_to_bottom,
+                closing_snapshots_on_output(
+                    &closing_snapshots,
+                    output.name().as_str(),
+                    output_geo,
+                ),
+                &output,
                 output_geo,
-            ),
-            &output,
-            output_geo,
-            scale,
-        );
+                scale,
+            )
+        };
         note_fullscreen_fast_path_transition(output.name().as_str(), fullscreen_window.is_some());
         // Overlay-layer backdrop effects must sample the fullscreen window
         // instead of the regular window stack while the fast path is active.
