@@ -227,6 +227,29 @@ pub fn apply_hdr_connector_state(
     )
         .ok_or_else(|| io::Error::other("connector has no HDR_OUTPUT_METADATA property"))?;
 
+    // What we actually put on the wire, as opposed to what the sink can do.
+    //
+    // The HDR pipeline composites an ordinary sRGB desktop and encodes it to PQ,
+    // mapping sRGB full white to exactly `sdr_reference_nits()`. Nothing in the
+    // signal can exceed that: it is a hard ceiling of the encode, not an estimate.
+    // So the compositor *is* the mastering display here, and its peak is known.
+    //
+    // Previously this reported the SINK's luminance as the mastering peak, and
+    // fell back to a hardcoded 1000.0 whenever the EDID omitted the figure — which
+    // many displays do, including a Philips 8505 (measured ~400 cd/m2, and its EDID
+    // supplies no luminance fields at all). MaxCLL/MaxFALL went out as 0, which
+    // CTA-861 defines as "unknown". The sink was therefore told to prepare for
+    // 1000 cd/m2 of range, given no content light level to correct that with, and
+    // then sent a signal peaking at 203 — so it tone-mapped for headroom that never
+    // arrives and squeezed the range actually in use, worst of all at the dark end.
+    //
+    // Note this is deliberately NOT the sink's capability: `max_display_luminance`
+    // still describes the display and still feeds `ImageDescription.luminances`,
+    // which is the right value to advertise to clients. These are two different
+    // quantities and conflating them is what produced the bug.
+    let content_peak_nits = crate::backend::hdr_pipeline::sdr_reference_nits();
+    let content_peak = content_peak_nits.round().clamp(0.0, f32::from(u16::MAX)) as u16;
+
     let chroma = ColorPrimaries::Bt2020.chromaticities();
     let metadata = HdrOutputMetadata {
         metadata_type: HDMI_STATIC_METADATA_TYPE1 as u32,
@@ -251,11 +274,13 @@ pub fn apply_hdr_connector_state(
                 chroma.white.to_cta861().0,
                 chroma.white.to_cta861().1
             ],
-            max_display_mastering_luminance: max_display_luminance.round() as u16,
+            max_display_mastering_luminance: content_peak,
             min_display_mastering_luminance: (min_display_luminance * 10000.0).round() as u16,
-            // 0 = unknown; we don't track content light levels yet.
-            max_cll: 0,
-            max_fall: 0,
+            // Both are exact rather than estimated. MaxCLL is the brightest pixel
+            // the encode can emit; MaxFALL is the brightest frame average, which a
+            // fullscreen white window reaches, so the two coincide at the ceiling.
+            max_cll: content_peak,
+            max_fall: content_peak,
         },
     };
     let blob = device.create_property_blob(&metadata)?;
@@ -275,6 +300,9 @@ pub fn apply_hdr_connector_state(
     debug!(
         connector = ?conn.handle(),
         blob_id,
+        content_peak_nits,
+        sink_max_display_luminance = max_display_luminance,
+        min_display_luminance,
         "applied HDR10 connector state"
     );
     Ok(Some(blob_id))
