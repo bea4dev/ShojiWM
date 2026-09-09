@@ -13671,6 +13671,17 @@ fn connector_connected(
         .and_then(|config| config.hdr)
         .unwrap_or(false)
         || crate::color::hdr_output_requested_via_env(&output_name);
+    // Same lookup as `hdr_requested`: the config may not have arrived yet at
+    // connect time, in which case this is empty and refresh_tty_output_color_modes
+    // re-resolves with the real values once the display config lands.
+    let hdr_luminance_override = state
+        .runtime_output_configs
+        .get(&output_name)
+        .map(|config| crate::color::HdrLuminanceOverride {
+            max: config.hdr_max_luminance,
+            min: config.hdr_min_luminance,
+        })
+        .unwrap_or_default();
     let color_state = {
         let backend = state.tty_backends
             .get(&node)
@@ -13684,7 +13695,8 @@ fn connector_connected(
             crate::color::resolve_output_mode(
                 &output_name,
                 hdr_requested,
-                edid_hdr.as_ref()
+                edid_hdr.as_ref(),
+                hdr_luminance_override,
             )
         } else {
             // The PQ encode pass composites through an fp16 intermediate;
@@ -14238,12 +14250,21 @@ pub fn refresh_tty_output_color_modes(
                 .and_then(|config| config.hdr)
                 .unwrap_or(false)
                 || crate::color::hdr_output_requested_via_env(&output_name);
+            let hdr_luminance_override = state
+                .runtime_output_configs
+                .get(&output_name)
+                .map(|config| crate::color::HdrLuminanceOverride {
+                    max: config.hdr_max_luminance,
+                    min: config.hdr_min_luminance,
+                })
+                .unwrap_or_default();
             let desired_mode = if backend.supports_fp16 {
                 crate::color::resolve_output_mode(
                     &output_name,
                     hdr_requested,
                     current.edid_hdr
                         .as_ref(),
+                    hdr_luminance_override,
                 )
             } else {
                 crate::color::OutputColorMode::Sdr

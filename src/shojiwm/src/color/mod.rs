@@ -8,7 +8,7 @@ pub mod drm_metadata;
 pub mod primaries;
 
 use drm_metadata::EdidHdrMetadata;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Named primaries we support parametrically (no custom chromaticities yet).
 #[derive(
@@ -229,14 +229,65 @@ pub fn hdr_output_requested_via_env(
     })
 }
 
+/// Display luminance supplied by the user, for the very common case of an
+/// EDID that advertises PQ support but omits the luminance fields entirely.
+///
+/// A Philips 8505 does exactly that: `supports_pq: true` with `max_luminance`,
+/// `min_luminance` and `max_frame_avg_luminance` all `None`, on a panel that
+/// measures around 400 cd/m2. With nothing to go on the fallback below claims
+/// 1000, and that figure reaches clients through `ImageDescription::luminances`.
+/// There is no way to derive the truth, so let it be stated.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HdrLuminanceOverride {
+    /// Peak display luminance in cd/m². Ignored outside 50..=10000.
+    pub max: Option<f32>,
+    /// Black level in cd/m². Ignored outside 0..=10.
+    pub min: Option<f32>,
+}
+
+impl HdrLuminanceOverride {
+    fn sanitized_max(self, output_name: &str) -> Option<f32> {
+        self.max.filter(|value| {
+            let ok = (50.0..=10000.0).contains(value);
+            if !ok {
+                warn!(
+                    output = output_name,
+                    value, "hdrMaxLuminance outside 50..=10000 cd/m2; ignoring"
+                );
+            }
+            ok
+        })
+    }
+
+    fn sanitized_min(self, output_name: &str) -> Option<f32> {
+        self.min.filter(|value| {
+            let ok = (0.0..=10.0).contains(value);
+            if !ok {
+                warn!(
+                    output = output_name,
+                    value, "hdrMinLuminance outside 0..=10 cd/m2; ignoring"
+                );
+            }
+            ok
+        })
+    }
+}
+
 /// Decide how to drive a connector: HDR10 only when the user opted the
 /// output in (runtime display config `hdr: true` or the env override,
 /// resolved by the caller into `hdr_requested`) *and* its EDID advertises
 /// ST 2084 support.
+///
+/// Luminance precedence is config override, then EDID, then the fallback
+/// constants. Note this figure describes the DISPLAY, and since the metadata
+/// fix it no longer reaches `HDR_OUTPUT_METADATA` — the mastering peak on the
+/// wire is what the encode actually emits. This value is what gets advertised
+/// to clients as the output's capability.
 pub fn resolve_output_mode(
     output_name: &str,
     hdr_requested: bool,
     edid_hdr: Option<&EdidHdrMetadata>,
+    luminance_override: HdrLuminanceOverride,
 ) -> OutputColorMode {
     if !hdr_requested {
         return OutputColorMode::Sdr;
@@ -255,8 +306,24 @@ pub fn resolve_output_mode(
         );
         return OutputColorMode::Sdr;
     }
+    let max_override = luminance_override.sanitized_max(output_name);
+    let min_override = luminance_override.sanitized_min(output_name);
+    if max_override.is_some() || min_override.is_some() {
+        info!(
+            output = output_name,
+            max_override,
+            min_override,
+            edid_max = ?edid.max_luminance,
+            edid_min = ?edid.min_luminance,
+            "applying configured display luminance override"
+        );
+    }
     OutputColorMode::Hdr10 {
-        max_display_luminance: edid.max_luminance.unwrap_or(1000.0),
-        min_display_luminance: edid.min_luminance.unwrap_or(0.005),
+        max_display_luminance: max_override
+            .or(edid.max_luminance)
+            .unwrap_or(1000.0),
+        min_display_luminance: min_override
+            .or(edid.min_luminance)
+            .unwrap_or(0.005),
     }
 }

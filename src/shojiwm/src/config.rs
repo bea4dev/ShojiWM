@@ -38,6 +38,11 @@ pub struct RuntimeOutputConfig {
     /// connector, which is `unknown` for most panels.
     pub subpixel: Option<RuntimeOutputSubpixel>,
     pub hdr: Option<bool>,
+    /// Real peak luminance of the display in cd/m². Only needed when the
+    /// EDID advertises PQ but omits its luminance fields, which is common.
+    pub hdr_max_luminance: Option<f32>,
+    /// Real black level of the display in cd/m². Same caveat.
+    pub hdr_min_luminance: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
