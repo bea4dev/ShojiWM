@@ -227,6 +227,77 @@ mod tests {
             .abs() < 1e-3);
     }
 
+    /// Pins the SDR display EOTF the HDR encode pass uses, because nothing
+    /// else does and the wrong choice is invisible to every other test here.
+    ///
+    /// `output_encode.frag` originally decoded SDR with the IEC 61966-2-1
+    /// piecewise curve. That function is the inverse of the sRGB *encoding*
+    /// transfer, whose `c/12.92` toe exists for numerical reasons when
+    /// encoding; real SDR displays follow a power law instead. Decoding with
+    /// the piecewise curve emits ~60x the light of gamma 2.2 at code 1 and
+    /// ~16x at code 3, and PQ then spends its densest codes on that error.
+    ///
+    /// Measured 9/9/2026 on a Philips 8505: every patch of a static test
+    /// pattern except (0,0,0) glowed, and dark-scene compression artefacts
+    /// read as bright green. KWin fixed the identical bug the identical way,
+    /// and the wayland colour-management protocol keeps `srgb` and `gamma22`
+    /// as separate transfer functions precisely because they are not the same
+    /// curve.
+    ///
+    /// Note this pins the default for UNTAGGED surfaces. A client that binds
+    /// `wp_color_manager_v1` and declares TRANSFER_FUNCTION_SRGB must still be
+    /// decoded piecewise — that is a different question from what an untagged
+    /// 8-bit desktop buffer means.
+    #[test]
+    fn sdr_eotf_is_pure_gamma_not_the_srgb_toe() {
+        fn piecewise(c: f64) -> f64 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn to_pq10(encoded: f64, eotf: impl Fn(f64) -> f64) -> f64 {
+            pq_inverse_eotf(eotf(encoded) * 203.0) * 1023.0
+        }
+
+        let gamma = crate::backend::hdr_pipeline::sdr_reference_gamma() as f64;
+        assert!(
+            (gamma - 2.2).abs() < 1e-6,
+            "default SDR gamma changed: {gamma}"
+        );
+
+        // Code 3 is where dark-scene artefacts live.
+        let code3 = 3.0 / 255.0;
+        let with_gamma = to_pq10(code3, |c| c.powf(gamma));
+        let with_toe = to_pq10(code3, piecewise);
+        assert!(
+            (with_gamma - 23.6).abs() < 1.0,
+            "sRGB code 3 should reach PQ10 ~23.6 under gamma {gamma}, got {with_gamma}"
+        );
+        assert!(
+            with_toe > 80.0,
+            "sanity: the rejected piecewise toe should still land above PQ10 80, got {with_toe}"
+        );
+        assert!(
+            with_toe / with_gamma > 3.0,
+            "the toe is the amplifier; ratio collapsed to {}",
+            with_toe / with_gamma
+        );
+
+        // The two curves must still agree once out of the shadows, otherwise
+        // the change is not confined to near-black as claimed.
+        for code in [128.0, 200.0, 255.0] {
+            let encoded = code / 255.0;
+            let g = to_pq10(encoded, |c| c.powf(gamma));
+            let t = to_pq10(encoded, piecewise);
+            assert!(
+                (g - t).abs() < 3.0,
+                "curves diverge at code {code}: gamma {g} vs piecewise {t}"
+            );
+        }
+    }
+
     #[test]
     fn pq_roundtrip() {
         for nits in [0.005, 1.0, 80.0, 203.0, 1000.0, 4000.0, 10000.0] {
