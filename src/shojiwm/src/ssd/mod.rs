@@ -44,7 +44,7 @@ pub use window_model::{
     ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
     ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
     ManagedWindowPointSnapshot, ManagedWindowRectAnimationSnapshot, ManagedWindowRectSnapshot,
-    ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
+    HdmiLinkSnapshot, ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
     OutputPositionSnapshot, OutputSubpixelSnapshot, OutputTransformSnapshot,
     PointerHitTargetSnapshot,
     PointerModifierStateSnapshot,

@@ -170,6 +170,184 @@ pub fn parse_edid_hdr(edid: &[u8]) -> Option<EdidHdrMetadata> {
     None
 }
 
+/// What the sink says its HDMI link can carry, read from the EDID's
+/// vendor-specific data blocks.
+///
+/// This exists because link bandwidth, not the compositor, is what decides
+/// whether an HDR mode is usable. 3840x2160@60 has a 594 MHz pixel clock; at
+/// 8 bpc that is 594 MHz of TMDS character rate and fits HDMI 2.0's 600 MHz
+/// ceiling, but PQ needs 10 bpc, which costs 594 * 10/8 = 742.5 MHz and does
+/// not. The driver then silently falls back to 8 bpc or to subsampled chroma,
+/// and PQ tolerates neither — 8-bit PQ bands severely in near-black because
+/// the curve spends most of its code range there by design.
+///
+/// So the mode list has to be filtered against this before an HDR mode is
+/// offered, rather than letting the user pick one that cannot work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HdmiLinkCapability {
+    /// Max TMDS character rate in kHz. HDMI 1.4b/2.0 VSDB byte 7, in units
+    /// of 5 MHz. `None` when the block is absent or truncated.
+    pub max_tmds_khz: Option<u32>,
+    /// HDMI 2.1 `Max_FRL_Rate` code from the HDMI Forum VSDB, 0 meaning FRL
+    /// is not supported. Best-effort: the sink is free to omit the block.
+    pub max_frl_rate: Option<u8>,
+}
+
+impl HdmiLinkCapability {
+    /// Human-readable standard, inferred from what the sink advertises
+    /// rather than from any version field — sinks lie about the latter.
+    pub fn standard(&self) -> &'static str {
+        if self.max_frl_rate.is_some_and(|rate| rate > 0) {
+            "HDMI 2.1"
+        } else {
+            match self.max_tmds_khz {
+                // >340 MHz is the HDMI 2.0 signalling threshold.
+                Some(khz) if khz > 340_000 => "HDMI 2.0",
+                Some(_) => "HDMI 1.4",
+                None => "HDMI (unknown)",
+            }
+        }
+    }
+
+    /// Total usable link bandwidth in Gbit/s.
+    ///
+    /// TMDS carries 10 bits per character on each of 3 data lanes, so the
+    /// ceiling is `rate * 10 * 3`. FRL instead runs 3 or 4 lanes at a fixed
+    /// per-lane rate, enumerated by the `Max_FRL_Rate` code.
+    pub fn max_bandwidth_gbps(&self) -> Option<f32> {
+        if let Some(rate) = self.max_frl_rate.filter(|rate| *rate > 0) {
+            return match rate {
+                1 => Some(9.0),   // 3 Gbps x 3 lanes
+                2 => Some(18.0),  // 6 Gbps x 3 lanes
+                3 => Some(24.0),  // 6 Gbps x 4 lanes
+                4 => Some(32.0),  // 8 Gbps x 4 lanes
+                5 => Some(40.0),  // 10 Gbps x 4 lanes
+                6 => Some(48.0),  // 12 Gbps x 4 lanes
+                _ => None,
+            };
+        }
+        self.max_tmds_khz
+            .map(|khz| khz as f32 / 1_000_000.0 * 10.0 * 3.0)
+    }
+
+    /// Whether a mode fits, given its pixel clock and the bits per component
+    /// the signal needs. RGB 4:4:4 and YCbCr 4:4:4 scale the TMDS character
+    /// rate by `bpc / 8`; this deliberately does NOT model 4:2:2 or 4:2:0,
+    /// because a desktop cannot use subsampled chroma without destroying
+    /// text, so those rates are not honestly available to us.
+    pub fn mode_fits(&self, pixel_clock_khz: u32, bpc: u32) -> Option<bool> {
+        let required = self.required_tmds_khz(pixel_clock_khz, bpc);
+        if let Some(rate) = self.max_frl_rate.filter(|rate| *rate > 0) {
+            // FRL is a different transport; approximate by comparing raw
+            // bitrates rather than character rates.
+            let _ = rate;
+            let needed_gbps = pixel_clock_khz as f32 / 1_000_000.0 * (bpc * 3) as f32;
+            return self
+                .max_bandwidth_gbps()
+                .map(|available| needed_gbps <= available);
+        }
+        self.max_tmds_khz.map(|max| required <= max)
+    }
+
+    /// TMDS character rate a mode needs at the given bit depth, in kHz.
+    pub fn required_tmds_khz(&self, pixel_clock_khz: u32, bpc: u32) -> u32 {
+        pixel_clock_khz.saturating_mul(bpc) / 8
+    }
+}
+
+/// Read the HDMI vendor-specific data blocks describing link capability.
+///
+/// Two blocks matter, both Vendor-Specific Data Blocks (CTA tag 3),
+/// distinguished by their IEEE OUI stored least-significant byte first:
+///   * `00-0C-03` — the HDMI 1.4b VSDB, whose byte 7 is Max_TMDS_Clock.
+///   * `C4-5D-D8` — the HDMI Forum VSDB (HDMI 2.1), carrying Max_FRL_Rate.
+/// A 2.1 sink normally publishes both, so both are collected.
+pub fn parse_edid_hdmi_link(edid: &[u8]) -> Option<HdmiLinkCapability> {
+    if edid.len() < 128 {
+        return None;
+    }
+    let mut caps = HdmiLinkCapability::default();
+    let mut found = false;
+    let extension_count = edid[126] as usize;
+    for block_index in 1..=extension_count {
+        let start = block_index * 128;
+        let Some(block) = edid.get(start..start + 128) else {
+            break;
+        };
+        if block[0] != 0x02 {
+            continue;
+        }
+        let dtd_offset = (block[2] as usize).min(128);
+        if dtd_offset < 4 {
+            continue;
+        }
+        let mut index = 4;
+        while index < dtd_offset {
+            let header = block[index];
+            let tag = header >> 5;
+            let length = (header & 0x1f) as usize;
+            if index + 1 + length > dtd_offset {
+                break;
+            }
+            // Vendor-Specific Data Block.
+            if tag == 0x03 && length >= 3 {
+                let payload = &block[index + 1..index + 1 + length];
+                match payload[0..3] {
+                    // HDMI 1.4b VSDB. Byte 6 of the payload (after the 3-byte
+                    // OUI, 2-byte source physical address and the flags byte)
+                    // is Max_TMDS_Clock in 5 MHz units; 0 means "not stated".
+                    [0x03, 0x0C, 0x00] => {
+                        if let Some(&code) = payload.get(6)
+                            && code != 0
+                        {
+                            caps.max_tmds_khz = Some(u32::from(code) * 5_000);
+                            found = true;
+                        }
+                    }
+                    // HDMI Forum VSDB. Byte 4 restates the TMDS ceiling, and
+                    // Max_FRL_Rate sits in the high nibble of byte 7.
+                    //
+                    // The OUI is C4-5D-D8 written big-endian, but EDID stores
+                    // it least-significant byte first, so the bytes on the wire
+                    // are D8 5D C4. Getting this backwards makes the block
+                    // invisible and the sink looks like plain HDMI 1.4 — which
+                    // is exactly what happened here first time: a 600 MHz sink
+                    // reported as 300 MHz because only the 1.4b block matched.
+                    [0xD8, 0x5D, 0xC4] => {
+                        if let Some(&code) = payload.get(4)
+                            && code != 0
+                        {
+                            caps.max_tmds_khz = caps
+                                .max_tmds_khz
+                                .max(Some(u32::from(code) * 5_000));
+                        }
+                        if let Some(&byte) = payload.get(7) {
+                            caps.max_frl_rate = Some(byte >> 4);
+                        }
+                        found = true;
+                    }
+                    _ => {}
+                }
+            }
+            index += 1 + length;
+        }
+    }
+    found.then_some(caps)
+}
+
+/// Read the connector's EDID and extract its HDMI link capability.
+pub fn read_edid_hdmi_link(
+    device: &impl ControlDevice,
+    conn: &connector::Info,
+) -> Option<HdmiLinkCapability> {
+    let (_, blob_id) = find_connector_property(device, conn, PROP_EDID)?;
+    if blob_id == 0 {
+        return None;
+    }
+    let edid = device.get_property_blob(blob_id).ok()?;
+    parse_edid_hdmi_link(&edid)
+}
+
 /// CTA-861-G luminance code decoding: 50 * 2^(code/32) cd/m².
 fn cta_luminance(code: u8) -> f32 {
     50.0 * 2f32.powf(code as f32 / 32.0)

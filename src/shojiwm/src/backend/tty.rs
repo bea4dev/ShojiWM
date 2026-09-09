@@ -13691,6 +13691,10 @@ fn connector_connected(
             device,
             &connector
         );
+        let hdmi_link = crate::color::drm_metadata::read_edid_hdmi_link(
+            device,
+            &connector,
+        );
         let color_mode = if backend.supports_fp16 {
             crate::color::resolve_output_mode(
                 &output_name,
@@ -13740,6 +13744,7 @@ fn connector_connected(
         crate::color::OutputColorState::new(
             color_mode,
             edid_hdr,
+            hdmi_link,
             hdr_metadata_blob
         )
     };
@@ -14177,6 +14182,32 @@ pub fn device_removed(state: &mut ShojiWM, node: DrmNode) {
     info!(?node, "removed tty drm device");
 }
 
+/// Available modes paired with their DRM pixel clock in kHz.
+///
+/// `WlMode` carries only size and refresh, and the clock cannot be recovered
+/// from those — blanking is real transmitted time, so 3840x2160@60 clocks at
+/// 594 MHz rather than the 497.7 MHz its active pixels imply. Anything
+/// reasoning about link bandwidth has to start here.
+pub fn tty_output_available_mode_clocks(
+    state: &crate::state::ShojiWM,
+    output_name: &str,
+) -> Option<Vec<(WlMode, u32)>> {
+    for backend in state.tty_backends.values() {
+        for surface in backend.surfaces.values() {
+            if surface.output.name() == output_name {
+                return Some(
+                    surface
+                        .available_modes
+                        .iter()
+                        .map(|mode| (WlMode::from(*mode), mode.clock()))
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
+}
+
 pub fn tty_output_available_modes(
     state: &crate::state::ShojiWM,
     output_name: &str,
@@ -14336,6 +14367,7 @@ pub fn refresh_tty_output_color_modes(
                     crate::color::OutputColorState::new(
                         mode,
                         current.edid_hdr,
+                        current.hdmi_link,
                         hdr_metadata_blob
                     ),
                 );

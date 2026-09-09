@@ -144,6 +144,10 @@ pub struct OutputColorState {
     pub description: ImageDescription,
     /// EDID-derived HDR capabilities (CTA-861-G static metadata block).
     pub edid_hdr: Option<EdidHdrMetadata>,
+    /// EDID-derived HDMI link capability. Kept beside `edid_hdr` because the
+    /// two are read from the same blob and answer the same question together:
+    /// whether an HDR mode is not merely supported but actually deliverable.
+    pub hdmi_link: Option<drm_metadata::HdmiLinkCapability>,
     /// DRM blob id of the HDR_OUTPUT_METADATA currently applied to the
     /// connector; destroyed on disconnect.
     pub hdr_metadata_blob: Option<u64>,
@@ -153,6 +157,7 @@ impl OutputColorState {
     pub fn new(
         mode: OutputColorMode,
         edid_hdr: Option<EdidHdrMetadata>,
+        hdmi_link: Option<drm_metadata::HdmiLinkCapability>,
         hdr_metadata_blob: Option<u64>,
     ) -> Self {
         let description = match mode {
@@ -182,6 +187,7 @@ impl OutputColorState {
             blend_space: BlendSpace::Srgb,
             description,
             edid_hdr,
+            hdmi_link,
             hdr_metadata_blob,
         }
     }

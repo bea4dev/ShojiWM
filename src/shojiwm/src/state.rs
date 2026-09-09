@@ -2750,15 +2750,32 @@ impl ShojiWM {
             .map(|output| {
                 let name = output.name();
                 let physical = output.physical_properties();
-                let available_modes = tty_output_available_modes(self, &name)
-                    .unwrap_or_else(|| output.modes())
-                    .into_iter()
-                    .map(|mode| OutputModeSnapshot {
-                        width: mode.size.w,
-                        height: mode.size.h,
-                        refresh_rate: mode.refresh as f64 / 1000.0,
-                    })
-                    .collect::<Vec<_>>();
+                // Prefer the DRM-backed list, which still carries each mode's
+                // pixel clock; fall back to the wl_output modes (no clock) for
+                // backends with no DRM behind them.
+                let available_modes = match crate::backend::tty::
+                    tty_output_available_mode_clocks(self, &name)
+                {
+                    Some(modes) => modes
+                        .into_iter()
+                        .map(|(mode, clock_khz)| OutputModeSnapshot {
+                            width: mode.size.w,
+                            height: mode.size.h,
+                            refresh_rate: mode.refresh as f64 / 1000.0,
+                            clock_khz: Some(clock_khz),
+                        })
+                        .collect::<Vec<_>>(),
+                    None => tty_output_available_modes(self, &name)
+                        .unwrap_or_else(|| output.modes())
+                        .into_iter()
+                        .map(|mode| OutputModeSnapshot {
+                            width: mode.size.w,
+                            height: mode.size.h,
+                            refresh_rate: mode.refresh as f64 / 1000.0,
+                            clock_khz: None,
+                        })
+                        .collect::<Vec<_>>(),
+                };
                 // Report the mode size in the output's transformed orientation
                 // so config-side logical-size math (`resolution / scale`) stays
                 // correct on rotated outputs. `availableModes` stay physical.
@@ -2769,6 +2786,7 @@ impl ShojiWM {
                         width: size.w,
                         height: size.h,
                         refresh_rate: mode.refresh as f64 / 1000.0,
+                        clock_khz: None,
                     }
                 });
                 let location = output.current_location();
@@ -2798,6 +2816,17 @@ impl ShojiWM {
                                 &name,
                             )
                             .is_some_and(|color| color.edid_hdr.is_some()),
+                        hdmi: self
+                            .output_color
+                            .get(&name)
+                            .and_then(|color| color.hdmi_link)
+                            .map(|link| {
+                                crate::ssd::HdmiLinkSnapshot {
+                                    standard: link.standard(),
+                                    max_tmds_khz: link.max_tmds_khz,
+                                    max_bandwidth_gbps: link.max_bandwidth_gbps(),
+                                }
+                            }),
                     },
                 )
             })
