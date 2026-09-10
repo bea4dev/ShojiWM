@@ -40,6 +40,12 @@ struct WlrForeignToplevelHandleInner {
     closed: bool,
     rectangle: Option<WlrForeignToplevelRectangle>,
     instances: Vec<WlrForeignToplevelInstance>,
+    /// Names of the outputs the window last overlapped. When its rect stops
+    /// overlapping every output (e.g. a window at the screen edge whose
+    /// minimize animation slides it fully off-screen) it keeps advertising
+    /// these instead of leaving every output, so per-output taskbars never
+    /// see a "window on no screen" interval.
+    home_outputs: Vec<String>,
 }
 
 struct WlrForeignToplevelInstance {
@@ -86,8 +92,18 @@ impl WlrForeignToplevelHandle {
                 closed: false,
                 rectangle: None,
                 instances: Vec::new(),
+                home_outputs: Vec::new(),
             })),
         }
+    }
+
+    fn home_outputs(&self) -> Vec<String> {
+        self.inner.lock().unwrap().home_outputs.clone()
+    }
+
+    fn set_home_outputs(&self, outputs: &[Output]) {
+        let names: Vec<String> = outputs.iter().map(Output::name).collect();
+        self.inner.lock().unwrap().home_outputs = names;
     }
 
     fn window_id(&self) -> String {
@@ -838,6 +854,11 @@ impl ShojiWM {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+            if !outputs.is_empty()
+                && let Some(handle) = window.user_data().get::<WlrForeignToplevelHandle>()
+            {
+                handle.set_home_outputs(&outputs);
+            }
             return outputs;
         }
         let rect = smithay::utils::Rectangle::new(
@@ -851,16 +872,61 @@ impl ShojiWM {
             )
                 .into(),
         );
-        
-        self.wlr_outputs_for_rect(rect)
+        self.wlr_outputs_for_window_rect(window, rect)
     }
 
     fn wlr_outputs_for_unmanaged_window(&self, window: &Window) -> Vec<Output> {
         let Some(rect) = self.space.element_bbox(window) else {
             return Vec::new();
         };
-        
-        self.wlr_outputs_for_rect(rect)
+        self.wlr_outputs_for_window_rect(window, rect)
+    }
+
+    /// Outputs a window at `rect` advertises. A window must always belong to
+    /// some output: when `rect` overlaps none, keep the outputs it last
+    /// overlapped (its home outputs), and only for a window with no such
+    /// history fall back to the nearest output.
+    fn wlr_outputs_for_window_rect(
+        &self,
+        window: &Window,
+        rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> Vec<Output> {
+        let handle = window.user_data().get::<WlrForeignToplevelHandle>();
+        let intersecting = self.wlr_outputs_for_rect(rect);
+        if !intersecting.is_empty() {
+            if let Some(handle) = handle {
+                handle.set_home_outputs(&intersecting);
+            }
+            return intersecting;
+        }
+        if let Some(handle) = handle {
+            let home_names = handle.home_outputs();
+            let home = self
+                .space
+                .outputs()
+                .filter(|output| {
+                    self.runtime_output_render_enabled(&output.name())
+                        && home_names.iter().any(|name| name == &output.name())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !home.is_empty() {
+                return home;
+            }
+        }
+        let center = smithay::utils::Point::from((
+            rect.loc.x + rect.size.w / 2,
+            rect.loc.y + rect.size.h / 2,
+        ));
+        let nearest = self
+            .nearest_output_to_point(center)
+            .filter(|output| self.runtime_output_render_enabled(&output.name()))
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(handle) = handle {
+            handle.set_home_outputs(&nearest);
+        }
+        nearest
     }
 
     fn wlr_all_outputs(&self) -> Vec<Output> {
@@ -871,7 +937,8 @@ impl ShojiWM {
         &self,
         rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     ) -> Vec<Output> {
-        self.space
+        let intersecting = self
+            .space
             .outputs()
             .filter(|output| self.runtime_output_render_enabled(&output.name()))
             .filter(|output| {
@@ -881,6 +948,23 @@ impl ShojiWM {
                     .is_some()
             })
             .cloned()
+            .collect::<Vec<_>>();
+        if !intersecting.is_empty() {
+            return intersecting;
+        }
+        // The rect overlaps no output — e.g. a floating window dragged to the
+        // screen edge whose minimize animation slides it fully off-screen.
+        // Sending output_leave for every output here would tell per-output
+        // taskbars the window is on no screen, so they drop its entry (the
+        // icon vanishes until something re-sends output_enter). A toplevel
+        // always belongs to some screen; attribute it to the nearest output.
+        let center = smithay::utils::Point::from((
+            rect.loc.x + rect.size.w / 2,
+            rect.loc.y + rect.size.h / 2,
+        ));
+        self.nearest_output_to_point(center)
+            .filter(|output| self.runtime_output_render_enabled(&output.name()))
+            .into_iter()
             .collect()
     }
 }

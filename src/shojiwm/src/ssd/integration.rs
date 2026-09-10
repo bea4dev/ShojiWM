@@ -1939,27 +1939,37 @@ impl ShojiWM {
                 // its decoration layout at the last on-screen position while
                 // the space location keeps moving — visible as a window stuck
                 // at the screen edge. Attribute it to the nearest output.
-                self.space
-                    .outputs()
-                    .min_by_key(|output| {
-                        self.space
-                            .output_geometry(output)
-                            .map_or(i64::MAX, |geometry| {
-                                let dx = i64::from(
-                                    (geometry.loc.x - center.x)
-                                        .max(center.x - (geometry.loc.x + geometry.size.w))
-                                        .max(0),
-                                );
-                                let dy = i64::from(
-                                    (geometry.loc.y - center.y)
-                                        .max(center.y - (geometry.loc.y + geometry.size.h))
-                                        .max(0),
-                                );
-                                dx * dx + dy * dy
-                            })
-                    })
-                    .map(|output| output.name())
+                self.nearest_output_to_point(center).map(|output| output.name())
             })
+    }
+
+    /// The output whose geometry is closest to `point` (the output containing
+    /// it when one does). Used to keep windows that sit entirely outside every
+    /// output attributed to *some* output instead of to none.
+    pub(crate) fn nearest_output_to_point(
+        &self,
+        point: Point<i32, Logical>,
+    ) -> Option<smithay::output::Output> {
+        self.space
+            .outputs()
+            .min_by_key(|output| {
+                self.space
+                    .output_geometry(output)
+                    .map_or(i64::MAX, |geometry| {
+                        let dx = i64::from(
+                            (geometry.loc.x - point.x)
+                                .max(point.x - (geometry.loc.x + geometry.size.w))
+                                .max(0),
+                        );
+                        let dy = i64::from(
+                            (geometry.loc.y - point.y)
+                                .max(point.y - (geometry.loc.y + geometry.size.h))
+                                .max(0),
+                        );
+                        dx * dx + dy * dy
+                    })
+            })
+            .cloned()
     }
 
     pub fn refresh_window_decorations(&mut self) -> Result<(), DecorationEvaluationError> {
