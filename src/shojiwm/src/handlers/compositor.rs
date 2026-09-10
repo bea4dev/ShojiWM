@@ -98,6 +98,96 @@ fn snap_viewport_source_overshoot(
     Some(snapped)
 }
 
+/// The destination a viewport commit needs when the client left it unset but its source size
+/// is fractional, or `None` when the commit is already legal.
+///
+/// The protocol makes that combination `bad_size`, and Firefox produces it every time a video
+/// layer scrolls to under a pixel of the window edge: `NativeLayerWayland` still considers the
+/// layer visible from its float rect, rounds the destination to a zero height, and
+/// `WaylandSurface::SetViewPortDestLocked` sanitises that to "unset" while the fractional
+/// source it just sent stays. smithay then posts the error and Firefox crashes on it, as it
+/// does on every protocol error. Mutter never checks the rule, so the sliver renders there
+/// and nobody upstream notices.
+///
+/// The destination supplied is the one such a client meant: the source at the scale the
+/// previous commit established (`previous` is that commit's source and destination), never
+/// below a pixel -- a one-frame sliver the width of the layer where it is leaving the window.
+/// With no previous scale, the source rounded up to whole pixels.
+fn viewport_destination_for_fractional_source(
+    src: Rectangle<f64, Logical>,
+    previous: Option<(Rectangle<f64, Logical>, Size<i32, Logical>)>,
+) -> Option<Size<i32, Logical>> {
+    let whole = |v: f64| v.fract() == 0.0;
+    if whole(src.size.w) && whole(src.size.h) {
+        return None;
+    }
+    let scaled = |extent: f64, prev_src: f64, prev_dst: i32| -> i32 {
+        if prev_src > 0.0 {
+            ((extent * f64::from(prev_dst) / prev_src).round() as i32).max(1)
+        } else {
+            (extent.ceil() as i32).max(1)
+        }
+    };
+    Some(match previous {
+        Some((prev_src, prev_dst)) => Size::from((
+            scaled(src.size.w, prev_src.size.w, prev_dst.w),
+            scaled(src.size.h, prev_src.size.h, prev_dst.h),
+        )),
+        None => Size::from(((src.size.w.ceil() as i32).max(1), (src.size.h.ceil() as i32).max(1))),
+    })
+}
+
+/// The destination `supply_viewport_destination` invented for a surface, kept so the next
+/// commit can tell an invented value from one the client sent. It has to live in the pending
+/// state between commits -- smithay re-commits a synchronized child's pending from every
+/// parent commit without running the child's hooks -- but it must not outlive the condition
+/// it was invented for: a client that later sends a whole source and, believing its
+/// destination unset, no set_destination, would otherwise have that whole source squeezed
+/// into the sliver.
+#[derive(Default)]
+struct SuppliedViewportDestination(Mutex<Option<Size<i32, Logical>>>);
+
+/// Pre-commit: give a viewport whose destination is unset but whose source size is fractional
+/// the destination it needs, before smithay's own viewporter hook refuses the commit. This hook
+/// is registered at surface creation, ahead of the viewporter's, and hooks run in that order.
+fn supply_viewport_destination(surface: &WlSurface) {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(SuppliedViewportDestination::default);
+        let memo = states.data_map.get::<SuppliedViewportDestination>().unwrap();
+        let mut supplied = memo.0.lock().unwrap();
+        let mut viewport_cache = states.cached_state.get::<ViewportCachedState>();
+        let previous = {
+            let current = viewport_cache.current();
+            current.src.zip(current.dst)
+        };
+        let pending = viewport_cache.pending();
+        // What this hook invented last time is not the client's word: forget it before judging
+        // this commit, unless the client has since set a destination of its own.
+        if supplied.is_some() && pending.dst == *supplied {
+            pending.dst = None;
+        }
+        *supplied = None;
+        if pending.dst.is_some() {
+            return;
+        }
+        let Some(src) = pending.src else {
+            return;
+        };
+        if let Some(dst) = viewport_destination_for_fractional_source(src, previous) {
+            info!(
+                surface = ?surface.id(),
+                ?src,
+                ?dst,
+                "viewport source is fractional with no destination, supplied one"
+            );
+            pending.dst = Some(dst);
+            *supplied = Some(dst);
+        }
+    });
+}
+
 /// Runs from `commit`, immediately before `on_commit_buffer_handler` validates every surface
 /// in the tree: pull a committed `wp_viewport` source rectangle that overshoots its buffer by
 /// a single `wl_fixed` quantum back inside it.
@@ -559,6 +649,8 @@ impl CompositorHandler for ShojiWM {
         // visual noise. To prevent this, we explicitly wait for the dmabuf's fences
         // to signal when a commit occurs (by blocking the commit until then).
         add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
+            supply_viewport_destination(surface);
+
             let maybe_dmabuf = with_states(surface, |data| {
                 data.cached_state
                     .get::<SurfaceAttributes>()
@@ -703,6 +795,23 @@ mod tests {
         // Nor can a negative origin.
         let src = rect(0.0, -0.00390625, 1920.0, 1080.0);
         assert!(snap_viewport_source_overshoot(src, bounds(1920, 1080)).is_none());
+    }
+
+    #[test]
+    fn a_fractional_source_with_no_destination_gets_one_at_the_layer_scale() {
+        // Firefox, 3/9/2026: the frame before had source 1920 x 13.28 shown at 1156 x 8; then
+        // the destination was sanitised to unset and the source 1920 x 1.328125 kept.
+        let previous = Some((rect(0.0, 1066.71875, 1920.0, 13.28125), bounds(1156, 8)));
+        let dst = viewport_destination_for_fractional_source(
+            rect(0.0, 1078.671875, 1920.0, 1.328125), previous);
+        assert_eq!(dst, Some(bounds(1156, 1)), "the layer's width, and never under a pixel");
+        // No previous scale: the source rounded up.
+        assert_eq!(viewport_destination_for_fractional_source(rect(0.0, 1078.671875, 1920.0, 1.328125), None),
+                   Some(bounds(1920, 2)));
+        // A whole source needs nothing: an unset destination is legal then.
+        assert_eq!(viewport_destination_for_fractional_source(rect(0.0, 10.0, 1920.0, 200.0), None), None);
+        // A fractional origin alone is legal too; only the size is judged.
+        assert_eq!(viewport_destination_for_fractional_source(rect(0.5, 10.25, 100.0, 50.0), previous), None);
     }
 
     #[test]
