@@ -40,6 +40,7 @@ function cloneOutputState(
         detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
         hdrSupported: snapshot.hdrSupported,
+        hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),
   );
@@ -73,6 +74,7 @@ function normalizeOutputState(
         detectedSubpixel: snapshot.detectedSubpixel ?? "unknown",
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
         hdrSupported: snapshot.hdrSupported,
+        hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),
   );
@@ -112,6 +114,8 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     subpixel: config.subpixel,
     transform: config.transform,
     hdr: config.hdr,
+    hdrMaxLuminance: config.hdrMaxLuminance,
+    hdrMinLuminance: config.hdrMinLuminance,
   };
 }
 
