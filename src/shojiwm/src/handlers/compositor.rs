@@ -13,7 +13,7 @@ use smithay::{
         Client, Resource,
         protocol::{wl_buffer, wl_surface::WlSurface},
     },
-    utils::{Logical, Rectangle, Size, Transform},
+    utils::{Logical, Point, Rectangle, Size, Transform},
     wayland::{
         buffer::BufferHandler,
         commit_timing::CommitTimerStateUserData,
@@ -282,6 +282,77 @@ fn is_chrome_like_app_id(app_id: Option<&str>) -> bool {
     })
 }
 
+/// The window-geometry origin a toplevel had at its last commit, kept in the window's user data.
+#[derive(Default)]
+struct CommittedGeometryOrigin(Mutex<Option<Point<i32, Logical>>>);
+
+impl CommittedGeometryOrigin {
+    /// Records `origin` as this commit's origin and returns the previous one if it differs.
+    fn replace(&self, origin: Point<i32, Logical>) -> Option<Point<i32, Logical>> {
+        let previous = self.0.lock().unwrap().replace(origin);
+        previous.filter(|previous| *previous != origin)
+    }
+}
+
+/// The `Space` location that keeps a window's client rect still when its geometry origin moves.
+///
+/// ShojiWM stores a window's location as its surface origin, which is the client rect's origin
+/// minus `geometry().loc`. The client rect origin is `location + origin`, so shifting the location
+/// by `previous - current` leaves that sum unchanged.
+fn location_keeping_client_origin(
+    location: Point<i32, Logical>,
+    previous_origin: Point<i32, Logical>,
+    current_origin: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    location + previous_origin - current_origin
+}
+
+impl ShojiWM {
+    /// Keeps a toplevel's client rect in place when a commit moves its window-geometry origin.
+    ///
+    /// `apply_managed_window_rects` resolves the stored location from the geometry origin at the
+    /// moment a rect is applied, and it skips relocation when the rect has not changed. Rendering
+    /// re-reads the origin every frame, but hit-testing and window snapshots use the stored
+    /// location. A client that moves its origin after the rect settles therefore left pointer
+    /// input offset until the window next moved. Firefox's client-side shadow margin is (26, 23)
+    /// floating and (0, 0) maximised, committed after the configure, so a maximise that finished
+    /// its rect first offset every click by that margin (13/9/2026).
+    fn keep_client_origin_across_geometry_change(&mut self, window: &smithay::desktop::Window) {
+        if window.toplevel().is_none() {
+            return;
+        }
+        let origin = window.geometry().loc;
+        window
+            .user_data()
+            .insert_if_missing(CommittedGeometryOrigin::default);
+        let Some(previous_origin) = window
+            .user_data()
+            .get::<CommittedGeometryOrigin>()
+            .and_then(|committed| committed.replace(origin))
+        else {
+            return;
+        };
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+        let next_location = location_keeping_client_origin(location, previous_origin, origin);
+        self.space.relocate_element(window, next_location);
+        // debug, not info: GTK animates its shadow margin in, one origin per commit.
+        debug!(
+            window_id = %self.snapshot_window(window).id,
+            ?previous_origin,
+            ?origin,
+            ?location,
+            ?next_location,
+            "window geometry origin moved; kept its client rect in place"
+        );
+        // A pointer resting over the window keeps the surface-local position it was last sent
+        // until it moves. Refresh now so a click without motion lands where the cursor is.
+        let now_ms = Duration::from(self.clock.now()).as_millis() as u32;
+        self.refresh_pointer_focus(now_ms);
+    }
+}
+
 fn previous_transform_snapshot_source_damage_time(
     window_id: &str,
     now: Duration,
@@ -481,6 +552,8 @@ impl CompositorHandler for ShojiWM {
         if let Some((window, source_damage)) = pending_source_damage {
             self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
             window.on_commit();
+            // Before the snapshot below, which derives the window position from the location.
+            self.keep_client_origin_across_geometry_change(&window);
             // Title / app_id may have changed via xdg_toplevel set_title /
             // set_app_id between commits. sync_foreign_toplevel short-circuits
             // when nothing changed so this is cheap.
@@ -822,5 +895,45 @@ mod tests {
         assert_eq!(logical, bounds(1920, 1080));
         let src = rect(0.0, 881.33984375, 1920.0, 198.6640625);
         assert!(snap_viewport_source_overshoot(src, logical).is_some());
+    }
+
+    fn point(x: i32, y: i32) -> Point<i32, Logical> {
+        (x, y).into()
+    }
+
+    #[test]
+    fn committed_geometry_origin_reports_only_changes() {
+        let committed = CommittedGeometryOrigin::default();
+        assert_eq!(
+            committed.replace(point(26, 23)),
+            None,
+            "the first commit has nothing to compare"
+        );
+        assert_eq!(
+            committed.replace(point(26, 23)),
+            None,
+            "an unchanged origin needs no relocation"
+        );
+        assert_eq!(committed.replace(point(0, 0)), Some(point(26, 23)));
+        assert_eq!(committed.replace(point(0, 0)), None);
+        assert_eq!(committed.replace(point(26, 23)), Some(point(0, 0)));
+    }
+
+    #[test]
+    fn firefox_shadow_margin_change_keeps_the_client_rect_still() {
+        // Firefox on 13/9/2026: set_window_geometry(26, 23, ..) floating, (0, 0, ..) maximised.
+        let floating = point(26, 23);
+        let maximised = point(0, 0);
+        let client_origin = point(192, 1080);
+
+        // Maximising: the location was resolved while the shadow margin was still committed.
+        let stale = client_origin - floating;
+        let relocated = location_keeping_client_origin(stale, floating, maximised);
+        assert_eq!(relocated + maximised, client_origin);
+
+        // Unmaximising: the location was resolved with no margin, then the margin came back.
+        let stale = client_origin - maximised;
+        let relocated = location_keeping_client_origin(stale, maximised, floating);
+        assert_eq!(relocated + floating, client_origin);
     }
 }
