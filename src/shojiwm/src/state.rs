@@ -429,6 +429,16 @@ pub struct ShojiWM {
     /// from the focus chain, which would raise an older window above the
     /// application the user just launched (issue #79).
     pub previous_window_keyboard_focus_owner: Option<WlSurface>,
+    /// The window that held the keyboard when the session was locked.
+    ///
+    /// `SessionLockHandler::lock` clears the focus owner so nothing behind the
+    /// lock screen can keep or take the keyboard; `unlock` hands it back here.
+    /// Electing a successor at unlock instead is wrong: the focus owner did
+    /// not *die*, so `elect_focus_successor`'s "the window the dying owner
+    /// stole the slot from" rule picked the window used *before* the locked
+    /// one, and the config raised it on focus — after every unlock the two
+    /// most recent windows swapped places (issue #92).
+    pub session_lock_focus_owner: Option<WlSurface>,
     pub window_keyboard_focus: Option<WlSurface>,
     /// Root surfaces of the windows the user has actually *used*, most recent
     /// first.
@@ -924,7 +934,7 @@ impl ShojiWM {
     /// focused window disappears, so this is a memory bound, not a policy.
     const FOCUS_CHAIN_LIMIT: usize = 32;
 
-    fn window_for_root_surface(&self, root: &WlSurface) -> Option<&Window> {
+    pub(crate) fn window_for_root_surface(&self, root: &WlSurface) -> Option<&Window> {
         self.space
             .elements()
             .find(|window| Self::window_matches_root_surface(window, root))
@@ -1700,6 +1710,7 @@ impl ShojiWM {
             pending_initial_focus_window_ids: HashSet::new(),
             window_keyboard_focus_owner: None,
             previous_window_keyboard_focus_owner: None,
+            session_lock_focus_owner: None,
             window_keyboard_focus: None,
             focus_chain: Vec::new(),
             user_input_in_flight: false,

@@ -228,7 +228,11 @@ impl SessionLockHandler for ShojiWM {
     fn lock(&mut self, confirmation: SessionLocker) {
         self.session_lock_active = true;
         self.layer_shell_on_demand_focus = None;
-        self.window_keyboard_focus_owner = None;
+        // Park the focus owner rather than dropping it: `unlock` restores it.
+        // Taken directly instead of through
+        // `set_window_keyboard_focus_target_surface` so the lock is not
+        // recorded as a focus change in `previous_window_keyboard_focus_owner`.
+        self.session_lock_focus_owner = self.window_keyboard_focus_owner.take();
         self.window_keyboard_focus = None;
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(
@@ -253,17 +257,26 @@ impl SessionLockHandler for ShojiWM {
             );
         }
         self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
-        // `lock()` cleared the focus target and nothing elected a replacement,
+        // `lock()` parked the focus target and nothing elected a replacement,
         // so the session came back with the keyboard on a panel or on nothing at
         // all — `update_keyboard_focus`'s fallback chain is exclusive layer,
-        // on-demand layer, then the target `lock()` erased. The focus chain
-        // deliberately survives the lock, so put the user back in the window
-        // they were working in.
-        if self.window_keyboard_focus.is_none()
-            && let Some(window) = self.elect_focus_successor()
-        {
-            self.set_window_keyboard_focus_target_surface(&window, None);
-            self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+        // on-demand layer, then the target `lock()` erased. Put the user back in
+        // the window they were working in: the one that held the keyboard when
+        // the lock began, if it is still there and can take input. Only if it is
+        // gone (closed or minimized behind the lock screen) is a successor
+        // elected — the election's rules are written for an owner that *died*
+        // and would otherwise pick the window used before the locked one
+        // (issue #92).
+        let parked_owner = self.session_lock_focus_owner.take();
+        if self.window_keyboard_focus.is_none() {
+            let restored = parked_owner
+                .filter(|root| smithay::utils::IsAlive::alive(root))
+                .and_then(|root| self.window_for_root_surface(&root).cloned())
+                .filter(|window| self.window_allows_input(window));
+            if let Some(window) = restored.or_else(|| self.elect_focus_successor()) {
+                self.set_window_keyboard_focus_target_surface(&window, None);
+                self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+            }
         }
         self.schedule_redraw();
     }
