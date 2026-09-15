@@ -386,6 +386,9 @@ COMPOSITOR.key.bind("close-focused-window", "Super+Q", () => {
 COMPOSITOR.key.bind("toggle-focused-window-maximize", "Super+M", () => {
   HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
 });
+COMPOSITOR.key.bind("toggle-focused-window-fullscreen", "Super+F", () => {
+  HYBRID_WINDOW_MANAGER.toggleFocusedWindowFullscreen();
+});
 COMPOSITOR.key.bind("tile-focus-left-quick", "Super+Left", () => {
   HYBRID_WINDOW_MANAGER.focusTile(-1);
 });

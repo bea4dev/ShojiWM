@@ -1977,6 +1977,27 @@ impl ShojiWM {
             return;
         };
 
+        // Never advertise Maximized alongside Fullscreen. xwayland-satellite
+        // mirrors every configured state into `_NET_WM_STATE`, and SDL2 turns a
+        // MAXIMIZED atom appearing on a fullscreen window into a
+        // SDL_WINDOWEVENT_MAXIMIZED (then RESTORED when the game strips it
+        // again) — Unity reacts to those by re-deriving its own screen mode,
+        // and once its idea of "fullscreen" diverges from SDL's flag its
+        // toggle becomes a no-op inside SDL_SetWindowFullscreen. The config's
+        // maximized flag survives fullscreen on its own; the protocol state is
+        // restored by `prepare_xdg_fullscreen_hint` when fullscreen ends.
+        let fullscreen = toplevel
+            .with_pending_state(|state| state.states.contains(xdg_toplevel::State::Fullscreen));
+        if fullscreen {
+            if maximized {
+                self.fullscreen_suppressed_maximized_window_ids
+                    .insert(window_id.to_string());
+                return;
+            }
+            self.fullscreen_suppressed_maximized_window_ids
+                .remove(window_id);
+        }
+
         let changed = toplevel.with_pending_state(|state| {
             let was_maximized = state.states.contains(xdg_toplevel::State::Maximized);
             if maximized {
@@ -2059,15 +2080,33 @@ impl ShojiWM {
             return false;
         };
 
+        let restore_maximized = !fullscreen
+            && self
+                .fullscreen_suppressed_maximized_window_ids
+                .remove(window_id);
+        let mut suppressed_maximized = false;
         let changed = toplevel.with_pending_state(|state| {
             let was_fullscreen = state.states.contains(xdg_toplevel::State::Fullscreen);
             if fullscreen {
                 state.states.set(xdg_toplevel::State::Fullscreen);
+                // See `set_xdg_maximized_hint`: Maximized is withheld while
+                // fullscreen and handed back on the way out.
+                if state.states.contains(xdg_toplevel::State::Maximized) {
+                    state.states.unset(xdg_toplevel::State::Maximized);
+                    suppressed_maximized = true;
+                }
             } else {
                 state.states.unset(xdg_toplevel::State::Fullscreen);
+                if restore_maximized {
+                    state.states.set(xdg_toplevel::State::Maximized);
+                }
             }
             was_fullscreen != fullscreen
         });
+        if suppressed_maximized {
+            self.fullscreen_suppressed_maximized_window_ids
+                .insert(window_id.to_string());
+        }
 
         if changed {
             self.pending_xdg_state_configure_window_ids
@@ -2095,9 +2134,16 @@ impl ShojiWM {
         };
 
         if !invoked {
+            let restore_maximized = fullscreen
+                && self
+                    .fullscreen_suppressed_maximized_window_ids
+                    .remove(window_id);
             toplevel.with_pending_state(|state| {
                 if fullscreen {
                     state.states.unset(xdg_toplevel::State::Fullscreen);
+                    if restore_maximized {
+                        state.states.set(xdg_toplevel::State::Maximized);
+                    }
                 } else {
                     state.states.set(xdg_toplevel::State::Fullscreen);
                 }

@@ -978,6 +978,10 @@ pub fn init_winit(
                             output_geo,
                             scale,
                         );
+                        crate::backend::tty::note_fullscreen_fast_path_transition(
+                            output.name().as_str(),
+                            fullscreen_scanout.is_some(),
+                        );
                         let fullscreen_backdrop_windows: Vec<smithay::desktop::Window>;
                         let upper_layer_backdrop_windows: &[smithay::desktop::Window] =
                             if let Some(window) = fullscreen_scanout.as_ref() {

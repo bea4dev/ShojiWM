@@ -792,6 +792,23 @@ export class HybridWindowManager {
       window.state[WINDOW_STATE_MAXIMIZED].set(true);
     }
 
+    // A window that is already fullscreen when it joins keeps the fullscreen
+    // rect. xwayland-satellite requests fullscreen at creation for an X window
+    // sized like the output, and that request lands before the first commit,
+    // so `onWindowFullscreenRequest` has already run — but `addWindow` above
+    // just placed the window at its centered/floating rect, and that went out
+    // as a Fullscreen configure carrying a windowed size (960x676 for a
+    // 1600x1000 output). SDL2 treats a fullscreen configure at the wrong size
+    // as a failed switch and leaves fullscreen ~1s later, which is why the
+    // first entry into fullscreen only sometimes took.
+    if (window.state[WINDOW_STATE_FULLSCREEN]() || window.isFullscreen()) {
+      const fullscreenRect = this.fullscreenRectForWindow(window);
+      window.state[WINDOW_STATE_FULLSCREEN].set(true);
+      stopRectAnimation(window, WINDOW_STATE_RECT);
+      window.state[WINDOW_STATE_RECT].set(fullscreenRect);
+      workspace?.syncFloatingWindowRect(window, fullscreenRect);
+    }
+
     if (restoredExistingWindow) {
       this.restoredDuringInitialConfigure.add(window.id);
     }
@@ -1323,6 +1340,29 @@ export class HybridWindowManager {
       return;
     }
 
+    // While fullscreen, the fullscreen rect owns the window: only track the
+    // maximized flag here and leave the geometry alone. SDL2 (Unity/Source
+    // games via xwayland-satellite) drops _NET_WM_STATE_MAXIMIZED the moment
+    // it enters fullscreen, which arrived here as an unmaximize a few ms after
+    // the fullscreen request and animated the fullscreen window back to its
+    // pre-maximize rect — fullscreen "on" with the shell showing through.
+    // `onWindowFullscreenRequest(false)` picks the maximized rect back up
+    // when the flag is still set on the way out.
+    if (window.state[WINDOW_STATE_FULLSCREEN]()) {
+      if (event.maximized && !window.state[WINDOW_STATE_MAXIMIZED]()) {
+        const fullscreenRestoreRect =
+          window.state[WINDOW_STATE_FULLSCREEN_RESTORE_RECT]();
+        if (fullscreenRestoreRect) {
+          window.state[WINDOW_STATE_RESTORE_RECT].set(fullscreenRestoreRect);
+        }
+      }
+      if (!event.maximized) {
+        window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+      }
+      window.state[WINDOW_STATE_MAXIMIZED].set(event.maximized);
+      return;
+    }
+
     if (!event.maximized) {
       const restoreRect = window.state[WINDOW_STATE_RESTORE_RECT]();
       if (restoreRect) {
@@ -1362,6 +1402,31 @@ export class HybridWindowManager {
   }
 
   public onWindowMinimizeRequest(event: WindowMinimizeRequestEvent) {
+    // A fullscreen window has no minimize button, so a client-originated
+    // minimize while fullscreen is never the user: it is the X11 focus-loss
+    // reflex of game toolkits (GLFW's GLFW_AUTO_ICONIFY, SDL2's
+    // SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS) arriving through
+    // xwayland-satellite as WM_CHANGE_STATE → set_minimized the instant the
+    // window loses X input focus — which under a workspace model happens on
+    // every workspace switch, on every X11 popup another app opens (Steam
+    // notifications) and on every satellite unfocus. Honoring it dropped the
+    // game out of its workspace: coming back showed nothing until a taskbar
+    // click, and the reflex also fired mid-toggle so fullscreen ended up
+    // "on" with the window minimized. Wayland-native games have no such
+    // reflex; give X11 games the same behaviour. Taskbar/keybind minimizes
+    // carry other sources and still work.
+    if (
+      event.minimized &&
+      event.source === "client-csd" &&
+      event.window.state[WINDOW_STATE_FULLSCREEN]()
+    ) {
+      hotReloadDebug("minimize-request-ignored-fullscreen", {
+        windowId: event.window.id,
+        appId: event.window.appId(),
+        focused: event.window.isFocused(),
+      });
+      return;
+    }
     const wasMinimized = event.window.state[WINDOW_STATE_MINIMIZED]();
     const workspace = this.findWorkspaceForWindow(event.window);
     if (wasMinimized !== event.minimized) {
@@ -1601,6 +1666,30 @@ export class HybridWindowManager {
         focused.unmaximize();
       } else {
         focused.maximize();
+      }
+      return;
+    }
+  }
+
+  /**
+   * Compositor-side fullscreen toggle. Exists mainly as an escape hatch for
+   * Wine/Proton games: win32u treats any window whose rect covers a monitor
+   * as fullscreen and winex11 then keeps `_NET_WM_STATE_FULLSCREEN` set, so
+   * a game whose "windowed" resolution equals the desktop can never leave
+   * fullscreen on its own. A WM-initiated unfullscreen is different: Wine
+   * adopts an unexpected `_NET_WM_STATE`/configure as its new desired state
+   * and resizes the Win32 window to match.
+   */
+  public toggleFocusedWindowFullscreen() {
+    for (const workspace of this.workspaces.values()) {
+      const focused = workspace.focusedWindow();
+      if (!focused) {
+        continue;
+      }
+      if (focused.state[WINDOW_STATE_FULLSCREEN]()) {
+        focused.unfullscreen();
+      } else {
+        focused.fullscreen();
       }
       return;
     }
@@ -2629,12 +2718,17 @@ export class HybridWindowManager {
         this.applyWorkspaceStackPolicy(workspace);
         return;
       }
-      if (restoreRect) {
-        workspace?.syncFloatingWindowRect(window, restoreRect);
+      // A window that was (or became) maximized while fullscreen goes back
+      // to the maximized rect, not to the rect it had before maximizing.
+      const targetRect = window.state[WINDOW_STATE_MAXIMIZED]()
+        ? this.maximizedRectForWindow(window)
+        : restoreRect;
+      if (targetRect) {
+        workspace?.syncFloatingWindowRect(window, targetRect);
         playRectAnimation(
           window,
           WINDOW_STATE_RECT,
-          restoreRect,
+          targetRect,
           WINDOW_MANAGEMENT_EASING,
           WINDOW_MANAGEMENT_ANIMATION_DURATION,
         );

@@ -1250,6 +1250,34 @@ impl ShojiWM {
         fallback_acc
     }
 
+    /// Put the space element where the laid-out client rect says it is.
+    ///
+    /// The apply loop only relocates the element when the desired rect
+    /// differs from the current layout, so any path that rewrites the layout
+    /// without going through it leaves the element where the last frame that
+    /// *did* go through put it. That happens at the end of a rect animation
+    /// whose completion re-evaluates the window straight from the static rect
+    /// (see the close-opacity fix): the last animated frame — an overshoot or
+    /// a half-pixel rounding of the eased value — mapped the element at, say,
+    /// y = 1 or y = −34, the completion wrote y = 0 into the layout, and the
+    /// following frames were no-ops. The client surface then rendered offset
+    /// from its own decoration by that residue, and for a fullscreen window
+    /// the residue alone kept the fast path off, so the bars stayed visible
+    /// over a game that believed it was fullscreen. Cheap enough to run on
+    /// every no-op frame: one geometry read and one point compare.
+    fn sync_space_location_to_client_rect(&mut self, window: &Window, client_rect: LogicalRect) {
+        let geometry = window.geometry();
+        let location = Point::from((
+            client_rect.x - geometry.loc.x,
+            client_rect.y - geometry.loc.y,
+        ));
+        if self.space.element_location(window) != Some(location) {
+            record_managed_rect_path_event(ManagedRectPathEvent::ApplyPositionFast);
+            self.space.relocate_element(window, location);
+            self.schedule_redraw();
+        }
+    }
+
     pub fn apply_runtime_handler_invocation(
         &mut self,
         window: &Window,
@@ -2162,7 +2190,7 @@ impl ShojiWM {
         let _ = self.advance_managed_window_animations(started_at_ms);
         let mut just_scheduled = std::collections::HashSet::new();
         just_scheduled.insert(inserted_window_id.clone());
-        self.apply_managed_window_rects(&just_scheduled);
+        self.apply_managed_window_rects(&just_scheduled, true);
         if (managed_animation_debug_enabled()
             || hot_reload_debug_enabled()
             || minimize_debug_enabled())
@@ -4295,7 +4323,7 @@ impl ShojiWM {
         }
         {
             timescope::scope!("ssd apply managed window rects");
-            self.apply_managed_window_rects(&managed_rect_apply_window_ids);
+            self.apply_managed_window_rects(&managed_rect_apply_window_ids, false);
         }
 
         let closing_pass_started_at = Instant::now();
@@ -5044,7 +5072,25 @@ impl ShojiWM {
         ))
     }
 
-    fn apply_managed_window_rects(&mut self, dirty_window_ids: &std::collections::HashSet<String>) {
+    /// `defer_state_configures`: the caller is the animation-schedule path,
+    /// which runs *inside* the TS handler that requested a fullscreen or
+    /// maximize state change — before the composition it also changed has
+    /// been re-evaluated. The client size derived here still uses the old
+    /// chrome insets (a fullscreen request computed 1596x966 for a 1600x1000
+    /// output; the unfullscreen computed 1604x1034 for a windowed client), and
+    /// the corrected configure followed a moment later. SDL2 games (Unity,
+    /// Source) memorise whatever size they were last configured at while
+    /// windowed and XResizeWindow back to it on their next mode switch, so the
+    /// stale first size came back as a 1604x1034 X window and the fullscreen
+    /// state machine never settled. Leaving the state transition's configure
+    /// to the refresh pass — which runs after the re-evaluation and still
+    /// sees `pending_xdg_state_configure_window_ids` — sends exactly one
+    /// configure with the final size and state.
+    fn apply_managed_window_rects(
+        &mut self,
+        dirty_window_ids: &std::collections::HashSet<String>,
+        defer_state_configures: bool,
+    ) {
         timescope::scope!("ssd apply managed window rects body");
         if managed_rect_debug_enabled() {
             let mut dirty_ids = dirty_window_ids.iter().cloned().collect::<Vec<_>>();
@@ -5288,6 +5334,7 @@ impl ShojiWM {
                         "managed rect debug: apply noop root"
                     );
                 }
+                self.sync_space_location_to_client_rect(&window, current_client);
                 continue;
             }
 
@@ -5331,6 +5378,7 @@ impl ShojiWM {
                         "managed rect debug: apply noop client"
                     );
                 }
+                self.sync_space_location_to_client_rect(&window, current_client);
                 continue;
             }
 
@@ -5393,7 +5441,19 @@ impl ShojiWM {
             // Only push a configure when the size actually changes from what
             // the client was last told. `needs_xdg_state_configure` still
             // forces one through for non-size state updates (maximize, etc.).
-            if should_configure {
+            let send_configure =
+                should_configure && !(defer_state_configures && needs_xdg_state_configure);
+            if should_configure && !send_configure {
+                // Stage the size anyway so a state-only configure sent by the
+                // request finisher (when no refresh follows) carries it.
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some(Size::from(configure_client_size));
+                    });
+                }
+                record_managed_rect_path_event(ManagedRectPathEvent::ApplyConfigureOnly);
+            }
+            if send_configure {
                 timescope::scope!("ssd apply managed configure client");
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|state| {

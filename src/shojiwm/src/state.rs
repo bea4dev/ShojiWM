@@ -321,6 +321,11 @@ pub struct ShojiWM {
     pub window_primary_output_names: HashMap<Window, String>,
     pub windows_ready_for_decoration: HashSet<String>,
     pub pending_xdg_state_configure_window_ids: HashSet<String>,
+    /// Windows whose xdg `Maximized` state is being withheld because they are
+    /// fullscreen. The config keeps its own maximized flag across fullscreen;
+    /// the protocol state gets it back when fullscreen ends. See
+    /// `set_xdg_maximized_hint`.
+    pub fullscreen_suppressed_maximized_window_ids: HashSet<String>,
     pub live_window_snapshots: HashMap<String, LiveWindowSnapshot>,
     pub live_window_snapshot_trackers:
         HashMap<String, smithay::backend::renderer::damage::OutputDamageTracker>,
@@ -1624,6 +1629,7 @@ impl ShojiWM {
             window_primary_output_names: HashMap::new(),
             windows_ready_for_decoration: HashSet::new(),
             pending_xdg_state_configure_window_ids: HashSet::new(),
+            fullscreen_suppressed_maximized_window_ids: HashSet::new(),
             live_window_snapshots: HashMap::new(),
             live_window_snapshot_trackers: HashMap::new(),
             complete_window_snapshots: HashMap::new(),

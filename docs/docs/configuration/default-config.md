@@ -45,7 +45,20 @@ by default (see [Input](#input)).
 | `Super` + drag | Move a window — hold `Super` and drag anywhere on it |
 | `Super` + `Q` | Close the focused window |
 | `Super` + `M` | Toggle maximize on the focused window |
+| `Super` + `F` | Toggle fullscreen on the focused window (compositor-side, see below) |
 | `Super` + `S` | Toggle tiling mode for the current workspace |
+
+:::tip[`Super` + `F` and Wine / Proton games]
+Most applications toggle fullscreen themselves, so you rarely need this key.
+It exists for games running under Wine or Proton (through xwayland-satellite):
+Wine treats any window whose rectangle covers the whole monitor as
+fullscreen, so a game whose "windowed" mode uses the desktop resolution can
+never leave fullscreen on its own, and its in-game toggle appears to do
+nothing. `Super` + `F` forces the state from the compositor side; Wine
+accepts a state change the window manager initiates and resizes the window
+to match. If the game is set to fullscreen it will re-enter fullscreen a
+moment later — switch the game to windowed mode first, then press the key.
+:::
 
 ### Tiling & workspaces
 

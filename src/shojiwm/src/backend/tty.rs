@@ -548,7 +548,7 @@ fn note_overlay_plane_transition(output_name: &str, count: usize, details: &[Str
 /// scanout-plane log so we can distinguish "fast path engaged but the buffer
 /// was not promoted to a plane (e.g. shm or unsupported modifier)" from "fast
 /// path never engaged".
-fn note_fullscreen_fast_path_transition(output_name: &str, active: bool) {
+pub(crate) fn note_fullscreen_fast_path_transition(output_name: &str, active: bool) {
     let Ok(mut guard) = fullscreen_fast_path_state_map().lock() else {
         return;
     };
@@ -735,14 +735,20 @@ pub(crate) fn fullscreen_scanout_window(
     // Closing-window animations draw above live windows; let the normal
     // pipeline run while one is active. Count must be scoped to THIS output —
     // see `closing_snapshots_on_output`.
-    if closing_snapshot_count != 0 {
-        return None;
-    }
     let output_name = output.name();
+    // `kind` is the edge-trigger key (stable across frames of one animation);
+    // `detail` carries the numbers and is only printed when the kind changes.
+    let reject = |kind: &'static str, detail: String| {
+        note_fullscreen_fast_path_reject(output_name.as_str(), Some((kind, detail)));
+        None
+    };
+    if closing_snapshot_count != 0 {
+        return reject("closing-snapshot", format!("closing snapshots on output: {closing_snapshot_count}"));
+    }
     // Topmost window that actually renders on this output. If that is not
     // the fullscreen window (e.g. a floating window stacked above it), the
     // fast path must stay off so the upper window remains visible.
-    let window = windows_top_to_bottom.iter().find(|window| {
+    let Some(window) = windows_top_to_bottom.iter().find(|window| {
         let Some(decoration) = window_decorations.get(window) else {
             return false;
         };
@@ -752,24 +758,85 @@ pub(crate) fn fullscreen_scanout_window(
         space
             .element_geometry(window)
             .is_some_and(|geometry| geometry.intersection(output_geo).is_some())
-    })?;
-    let toplevel = window.toplevel()?;
-    let fullscreen = toplevel.with_committed_state(|state| {
-        state.is_some_and(|state| {
+    }) else {
+        return reject("no-window", "no renderable window on output".to_string());
+    };
+    let describe = |window: &smithay::desktop::Window| {
+        window
+            .toplevel()
+            .map(|toplevel| {
+                let mut title = None;
+                let mut app_id = None;
+                smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    if let Some(data) = states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                    {
+                        let data = data.lock().unwrap();
+                        title = data.title.clone();
+                        app_id = data.app_id.clone();
+                    }
+                });
+                format!(
+                    "{:?} title={title:?} app_id={app_id:?}",
+                    toplevel.wl_surface().id()
+                )
+            })
+            .unwrap_or_else(|| "<no toplevel>".to_string())
+    };
+    let Some(toplevel) = window.toplevel() else {
+        return reject("no-toplevel", format!("topmost window has no xdg toplevel: {}", describe(window)));
+    };
+    let (fullscreen, pending_fullscreen) = {
+        let committed = toplevel.with_committed_state(|state| {
+            state.is_some_and(|state| {
+                state
+                    .states
+                    .contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
+            })
+        });
+        let pending = toplevel.with_pending_state(|state| {
             state
                 .states
                 .contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
-        })
-    });
+        });
+        (committed, pending)
+    };
     if !fullscreen {
-        return None;
+        return reject(
+            if pending_fullscreen { "not-committed" } else { "not-fullscreen" },
+            format!(
+                "topmost window not committed fullscreen (pending_fullscreen={pending_fullscreen}): {}",
+                describe(window)
+            ),
+        );
     }
     // The committed window must actually cover the output; during the
     // fullscreen transition (configure sent, buffer not resized yet) the
     // normal pipeline keeps rendering the scene below.
-    let geometry = space.element_geometry(window)?;
+    let Some(geometry) = space.element_geometry(window) else {
+        return reject("no-geometry", format!("fullscreen window has no geometry: {}", describe(window)));
+    };
     if geometry.intersection(output_geo) != Some(output_geo) {
-        return None;
+        // Everything that feeds the space geometry, so a stuck offset can be
+        // attributed: the static managed rect (config state), the laid-out
+        // root/client rects, the xdg geometry/bbox (client-side offsets such
+        // as subsurfaces above the surface) and whether an animation is live.
+        let decoration = window_decorations.get(window);
+        return reject(
+            "not-covering",
+            format!(
+                "fullscreen window does not cover output: geometry={geometry:?} output={output_geo:?} \
+                 xdg_geometry={:?} bbox={:?} root={:?} client={:?} managed_rect={:?} animation_active={:?} {}",
+                window.geometry(),
+                window.bbox(),
+                decoration.map(|decoration| decoration.layout.root.rect),
+                decoration.map(|decoration| decoration.client_rect),
+                decoration.and_then(|decoration| decoration.managed_window.rect.as_ref()),
+                decoration.map(|decoration| decoration.managed_window_animation_active),
+                describe(window)
+            ),
+        );
     }
     // No animation transform/fade: effect and transform elements cannot ride
     // direct scanout, so fall back to compositing until the window settles.
@@ -781,9 +848,68 @@ pub(crate) fn fullscreen_scanout_window(
         scale,
     );
     if !is_identity_visual_geometry(visual_state) || visual_state.opacity < 1.0 {
-        return None;
+        return reject(
+            "animating",
+            format!(
+                "fullscreen window animating: visual={visual_state:?} root={:?} {}",
+                decoration.layout.root.rect,
+                describe(window)
+            ),
+        );
     }
+    note_fullscreen_fast_path_reject(output_name.as_str(), None);
     Some(window.clone())
+}
+
+/// Per output: the last rejection kind, the last logged detail, and when it
+/// was logged.
+type FullscreenRejectEntry = (Option<&'static str>, String, Instant);
+
+fn fullscreen_fast_path_reject_map() -> &'static Mutex<HashMap<String, FullscreenRejectEntry>> {
+    static MAP: OnceLock<Mutex<HashMap<String, FullscreenRejectEntry>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// How often a *changing* detail under an unchanged rejection kind is
+/// re-logged. Frames of one animation share a kind, so this is what keeps a
+/// 60 Hz slide from producing 60 lines a second while still showing whether
+/// a "not-covering" window is drifting or stuck.
+const FULLSCREEN_REJECT_DETAIL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Logs *why* the fullscreen fast path is off (debug level), edge-triggered
+/// per output: one line whenever the rejection kind changes, plus the changing
+/// detail at most once per `FULLSCREEN_REJECT_DETAIL_INTERVAL`. The
+/// engaged/disengaged log only says that the path dropped; this says which
+/// precondition failed, which is what distinguishes "a bar popped over the
+/// game" from "the client committed an undersized buffer" from "the config
+/// left the window on an animation". Enable with `RUST_LOG=shoji_wm=debug`.
+fn note_fullscreen_fast_path_reject(output_name: &str, reason: Option<(&'static str, String)>) {
+    let Ok(mut guard) = fullscreen_fast_path_reject_map().lock() else {
+        return;
+    };
+    let now = Instant::now();
+    let kind = reason.as_ref().map(|(kind, _)| *kind);
+    let detail = reason.as_ref().map(|(_, detail)| detail.as_str()).unwrap_or_default();
+    let (kind_changed, detail_due) = match guard.get(output_name) {
+        Some((previous_kind, previous_detail, logged_at)) => (
+            *previous_kind != kind,
+            previous_detail != detail && logged_at.elapsed() >= FULLSCREEN_REJECT_DETAIL_INTERVAL,
+        ),
+        None => (true, false),
+    };
+    if !kind_changed && !detail_due {
+        return;
+    }
+    if let Some(kind) = kind {
+        tracing::debug!(
+            output = %output_name,
+            kind,
+            detail,
+            still = !kind_changed,
+            "fullscreen fast path rejected"
+        );
+    }
+    guard.insert(output_name.to_string(), (kind, detail.to_string(), now));
 }
 
 /// How many close animations are in flight *on this output*.
