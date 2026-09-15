@@ -3716,7 +3716,7 @@ fn lower_layer_scene_elements(
                 entry.commit_counter.increment();
             }
         }
-        crate::backend::shader_effect::evict_stale_backdrop_sizes(
+        crate::backend::shader_effect::evict_stale_backdrop_variants(
             &mut state.layer_backdrop_cache,
             &stable_key,
         );
@@ -4209,7 +4209,7 @@ fn configured_background_effect_elements_for_layer(
             entry.commit_counter.increment();
         }
     }
-    crate::backend::shader_effect::evict_stale_backdrop_sizes(
+    crate::backend::shader_effect::evict_stale_backdrop_variants(
         &mut state.layer_backdrop_cache,
         &stable_key,
     );
@@ -4410,7 +4410,8 @@ fn configured_background_framebuffer_effect_elements_for_layer(
     effect_config: &crate::ssd::BackgroundEffectConfig,
 ) -> Vec<WinitRenderElements> {
     let layer_id = crate::ssd::layer_runtime_id(layer_surface);
-    let stable_key = format!("winit:layer-top-framebuffer:{}:{}", output.name(), layer_id);
+    // `{id}@` first, so the live-layer sweep and layer_destroyed can drop it.
+    let stable_key = format!("{}@layer-top-framebuffer@{}", layer_id, output.name());
     crate::backend::shader_effect::framebuffer_backdrop_element_for_output_rects(
         renderer,
         state

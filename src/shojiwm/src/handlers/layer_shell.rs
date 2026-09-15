@@ -75,10 +75,14 @@ impl WlrLayerShellHandler for ShojiWM {
         if let Some((output, layer)) = destroyed {
             self.mapped_on_demand_layer_surfaces
                 .remove(&layer.wl_surface().id().protocol_id());
+            let layer_id = crate::ssd::layer_runtime_id(&layer);
             crate::backend::shader_effect::purge_backdrop_cache_for_layer(
                 &mut self.layer_backdrop_cache,
-                &crate::ssd::layer_runtime_id(&layer),
+                &layer_id,
             );
+            let framebuffer_prefix = format!("{layer_id}@");
+            self.layer_framebuffer_effect_states
+                .retain(|key, _| !key.starts_with(&framebuffer_prefix));
             if self.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
                 self.layer_shell_on_demand_focus = None;
             }
@@ -119,6 +123,15 @@ impl ShojiWM {
         for layer in &mapped_layers {
             self.mapped_on_demand_layer_surfaces
                 .remove(&layer.wl_surface().id().protocol_id());
+            // The output is going away, so these layers never render here again.
+            let layer_id = crate::ssd::layer_runtime_id(layer);
+            crate::backend::shader_effect::purge_backdrop_cache_for_layer(
+                &mut self.layer_backdrop_cache,
+                &layer_id,
+            );
+            let framebuffer_prefix = format!("{layer_id}@");
+            self.layer_framebuffer_effect_states
+                .retain(|key, _| !key.starts_with(&framebuffer_prefix));
             if self.layer_shell_on_demand_focus.as_ref() == Some(layer) {
                 self.layer_shell_on_demand_focus = None;
                 focus_changed = true;

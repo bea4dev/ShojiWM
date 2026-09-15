@@ -221,78 +221,203 @@ pub fn purge_shared_effect_pipeline_caches_for_window(window_id: &str) {
     });
 }
 
-/// Drops the `layer_backdrop_cache` entries a layer left behind at its previous
-/// sizes.
+/// The part of a layer backdrop key that names one layer on one output: every
+/// variant of that layer shares it, whatever its size, stack position or kind.
 ///
-/// The cache key ends in the effect rect's `{width}x{height}`, so a layer that
-/// resizes mints a fresh key — and with it a fresh full-size `GlesTexture` — for
-/// every distinct size it has ever had. Only the current size is read again, and
-/// nothing else drops the rest, so a layer that resizes routinely (the dock
-/// tracks window titles) grows the cache for the lifetime of the session.
-pub fn evict_stale_backdrop_sizes(
+/// Keys are `__layer_background_effect_{output}_{layer_id}_{index|top}_{w}x{h}`.
+/// Neither the position nor the size contains `_`, so they are the last two
+/// `_`-separated segments; output names and layer runtime ids contain none
+/// either, so what remains names exactly one layer on one output.
+fn layer_backdrop_variant_prefix(key: &str) -> Option<&str> {
+    let (without_size, _) = key.rsplit_once('_')?;
+    let (layer, _) = without_size.rsplit_once('_')?;
+    Some(&key[..layer.len() + 1])
+}
+
+/// Shared effect pipeline keys that belong to a layer rather than a window. Every
+/// `layer-top:` and `layer-lower:` key, on both backends, embeds the layer's
+/// backdrop key; winit's layer-effect slots embed the layer id between colons.
+/// tty's layer effect slots go through `tty:window-effect:` and are matched by
+/// placement in [`is_layer_pipeline_key`].
+const LAYER_PIPELINE_KEY_PREFIXES: [&str; 5] = [
+    "tty:layer-top:",
+    "tty:layer-lower:",
+    "winit:layer-top:",
+    "winit:layer-lower:",
+    "winit:layer-effect:",
+];
+
+fn is_layer_pipeline_key(key: &str) -> bool {
+    LAYER_PIPELINE_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        || window_effect_slot_placement(key)
+            .is_some_and(|placement| placement.starts_with("layer-"))
+}
+
+/// Shared pipeline keys of popup effect slots: tty renders them through the window
+/// effect path (`tty:window-effect:{output}:{popup_id}:popup-*`), winit under its
+/// own prefix.
+fn is_popup_pipeline_key(key: &str) -> bool {
+    key.starts_with("winit:popup-effect:")
+        || window_effect_slot_placement(key)
+            .is_some_and(|placement| placement.starts_with("popup-"))
+}
+
+/// The placement of a `tty:window-effect:{output}:{id}:{placement}` key. Windows,
+/// layers and popups all render slots through that path; the placement names say
+/// which (`layer-behind`, `popup-in-front`, ...). Layer and popup ids contain `:`
+/// (`{client}:{protocol_id}`), so the placement is whatever follows the last one.
+fn window_effect_slot_placement(key: &str) -> Option<&str> {
+    key.strip_prefix("tty:window-effect:")?
+        .rsplit_once(':')
+        .map(|(_, placement)| placement)
+}
+
+/// Of a layer's other cached variants, the one to keep: the most recently used.
+/// One spare variant absorbs a layer that flips between two shapes (an overlay
+/// raised above windows and lowered to the background again, or a panel whose
+/// width alternates) without reallocating a full pipeline on every flip.
+fn most_recent_variant<'a>(variants: impl Iterator<Item = (&'a str, u64)>) -> Option<&'a str> {
+    variants
+        .max_by_key(|(_, last_used)| *last_used)
+        .map(|(key, _)| key)
+}
+
+/// Whether a cache key was written for `layer_id`, in either delimiter scheme.
+/// Both delimiters close the id, so `:4` never matches a key for `:42`.
+fn key_names_layer(key: &str, layer_id: &str) -> bool {
+    key.contains(&format!("_{layer_id}_")) || key.contains(&format!(":{layer_id}:"))
+}
+
+/// Whether a shared pipeline key is another variant of the layer backdrop that
+/// `current_backdrop_key` now names: same layer, same output, but an old size, an
+/// old stack position, or the other layer kind (top vs lower).
+fn is_stale_layer_pipeline_variant(key: &str, current_backdrop_key: &str) -> bool {
+    stale_variant_backdrop_key(key, current_backdrop_key).is_some()
+}
+
+/// The backdrop key a stale variant's pipeline key was built on, if `key` is one.
+fn stale_variant_backdrop_key<'a>(key: &'a str, current_backdrop_key: &str) -> Option<&'a str> {
+    let variant = layer_backdrop_variant_prefix(current_backdrop_key)?;
+    [
+        "tty:layer-top:",
+        "tty:layer-lower:",
+        "winit:layer-top:",
+        "winit:layer-lower:",
+    ]
+    .iter()
+    .find_map(|prefix| key.strip_prefix(prefix))
+    .filter(|rest| rest.starts_with(variant) && *rest != current_backdrop_key)
+}
+
+/// Drops the cached effect state a layer left behind for effect rects it no
+/// longer has: previous sizes, previous stack positions, and the other layer kind.
+/// The most recently used other variant is kept (see [`most_recent_variant`]).
+///
+/// Both caches have to go together. The texture in `layer_backdrop_cache` is a
+/// clone of the shared pipeline's finish target (a `GlesTexture` is an `Arc`), so
+/// dropping only the alias frees nothing while the pipeline entry lives, and the
+/// pipeline entry alone keeps its blur pyramid, shader target and finish target.
+/// Left in the pipeline cache, every size a layer has had (a panel whose width
+/// tracks window titles) and every stack position it has held (a client that
+/// recreates its surfaces maps the new background in front of the old one) would
+/// keep about 3.3x the effect rect in GPU memory until 128 newer keys pushed it
+/// out.
+pub fn evict_stale_backdrop_variants(
     cache: &mut HashMap<String, CachedBackdropTexture>,
     current_key: &str,
 ) {
-    // Everything up to the last `_` identifies this layer's variant on this
-    // output; only the size trailing it varies.
-    let Some((variant, _)) = current_key.rsplit_once('_') else {
+    let Some(variant) = layer_backdrop_variant_prefix(current_key) else {
         return;
     };
+    let (pipelines_removed, kept) = SHARED_EFFECT_PIPELINE_CACHES
+        .with(|caches| caches.borrow_mut().evict_stale_layer_variants(current_key));
     let before = cache.len();
+    // An alias is only valid while its own pipeline lives: it is that pipeline's
+    // finish target.
     cache.retain(|key, _| {
         key.as_str() == current_key
-            || !(key.len() > variant.len()
-                && key.starts_with(variant)
-                && key.as_bytes()[variant.len()] == b'_')
+            || kept.as_deref() == Some(key.as_str())
+            || !key.starts_with(variant)
     });
     let removed = before - cache.len();
-    if removed > 0 {
-        info!(current_key, removed, "evicted resized layer backdrop textures");
+    if removed > 0 || pipelines_removed > 0 {
+        info!(
+            current_key,
+            removed, pipelines_removed, "evicted stale layer backdrop variants"
+        );
     }
 }
 
-/// Drops every `layer_backdrop_cache` entry belonging to a destroyed layer, on
-/// every output. The key carries the layer's runtime id delimited by
-/// underscores, after the output name.
+/// Drops a destroyed layer's `layer_backdrop_cache` entries and every shared
+/// effect pipeline keyed to it (backdrop and effect-slot pipelines), on every
+/// output (see [`evict_stale_backdrop_variants`] for why both caches). Its
+/// `layer_framebuffer_effect_states` entries are dropped by the caller, and its
+/// `layer_effect_cache` entries by the live-layer sweep.
 pub fn purge_backdrop_cache_for_layer(
     cache: &mut HashMap<String, CachedBackdropTexture>,
     layer_id: &str,
 ) {
-    let needle = format!("_{layer_id}_");
     let before = cache.len();
-    cache.retain(|key, _| !key.contains(&needle));
+    cache.retain(|key, _| !key_names_layer(key, layer_id));
     let removed = before - cache.len();
-    if removed > 0 {
-        info!(layer_id, removed, "purged destroyed layer backdrop textures");
+    let pipelines_removed =
+        SHARED_EFFECT_PIPELINE_CACHES.with(|caches| caches.borrow_mut().purge_layer(layer_id));
+    if removed > 0 || pipelines_removed > 0 {
+        info!(
+            layer_id,
+            removed, pipelines_removed, "purged destroyed layer backdrop textures"
+        );
     }
 }
 
-/// Drops `layer_backdrop_cache` entries whose layer is no longer live.
+/// Drops shared effect pipelines of popups that no longer exist. Popup effect
+/// slots are keyed by popup id and nothing else removes them, so every menu
+/// opened under a new protocol id would keep its blur pipeline until the
+/// 128-entry cap pushed it out.
+pub fn retain_shared_effect_pipeline_caches_for_live_popups(
+    live_ids: &std::collections::HashSet<String>,
+) {
+    let removed = SHARED_EFFECT_PIPELINE_CACHES
+        .with(|caches| caches.borrow_mut().retain_live_popups(live_ids));
+    if removed > 0 {
+        info!(removed, "swept popup effect pipelines for closed popups");
+    }
+}
+
+/// Drops `layer_backdrop_cache` entries and shared effect pipelines whose layer
+/// is no longer live.
 ///
-/// [`purge_backdrop_cache_for_layer`] is driven by `layer_destroyed`, which does
-/// not fire for every departure — on an abrupt client exit `wl_surface().client()`
-/// is already `None`, so `layer_runtime_id` degrades to `unknown-client:<id>` and
-/// cannot match the keys written while the client was alive. Sweeping against the
-/// live set needs no event to fire, so it also covers a close the compositor
-/// missed. Mirrors `retain_effect_texture_cache_for_live_ids`, which cannot be
-/// reused here: it tests `{id}@` as a key *prefix*, while these keys carry the id
-/// between underscores after the output name.
+/// [`purge_backdrop_cache_for_layer`] is driven by `layer_destroyed` and output
+/// removal, neither of which fires for every departure — on an abrupt client
+/// exit `wl_surface().client()` is already `None`, so `layer_runtime_id` degrades
+/// to `unknown-client:<id>` and cannot match the keys written while the client
+/// was alive. Sweeping against the live set needs no event to fire, so it also
+/// covers a close the compositor missed. Mirrors
+/// `retain_effect_texture_cache_for_live_ids`, which cannot be reused here: it
+/// tests `{id}@` as a key *prefix*, while these keys carry the id between
+/// delimiters after the output name.
 pub fn retain_backdrop_cache_for_live_layers(
     cache: &mut HashMap<String, CachedBackdropTexture>,
     live_ids: &std::collections::HashSet<String>,
 ) {
-    if cache.is_empty() {
-        return;
-    }
-    let needles = live_ids
-        .iter()
-        .map(|id| format!("_{id}_"))
-        .collect::<Vec<_>>();
     let before = cache.len();
-    cache.retain(|key, _| needles.iter().any(|needle| key.contains(needle.as_str())));
+    if !cache.is_empty() {
+        let needles = live_ids
+            .iter()
+            .map(|id| format!("_{id}_"))
+            .collect::<Vec<_>>();
+        cache.retain(|key, _| needles.iter().any(|needle| key.contains(needle.as_str())));
+    }
     let removed = before - cache.len();
-    if removed > 0 {
-        info!(removed, "swept layer backdrop textures for departed layers");
+    let pipelines_removed = SHARED_EFFECT_PIPELINE_CACHES
+        .with(|caches| caches.borrow_mut().retain_live_layers(live_ids));
+    if removed > 0 || pipelines_removed > 0 {
+        info!(
+            removed,
+            pipelines_removed, "swept layer backdrop textures for departed layers"
+        );
     }
 }
 
@@ -992,9 +1117,86 @@ struct SharedEffectPipelineCache {
 struct SharedEffectPipelineCaches {
     generation: u64,
     entries: HashMap<String, SharedEffectPipelineCache>,
+    /// Fingerprint of the live layer set at the last sweep.
+    swept_live_layers: Option<u64>,
+    /// Fingerprint of the live popup set at the last sweep.
+    swept_live_popups: Option<u64>,
+}
+
+/// Order-independent fingerprint of a set of surface ids.
+fn live_set_fingerprint(live_ids: &std::collections::HashSet<String>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    live_ids.iter().fold(live_ids.len() as u64, |acc, id| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        acc ^ hasher.finish()
+    })
 }
 
 impl SharedEffectPipelineCaches {
+    fn purge_layer(&mut self, layer_id: &str) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|key, _| !(is_layer_pipeline_key(key) && key_names_layer(key, layer_id)));
+        before.saturating_sub(self.entries.len())
+    }
+
+    /// Evicts the other variants of the layer `current_backdrop_key` names, except
+    /// the most recently used one, whose backdrop key is returned so its alias can
+    /// stay too.
+    fn evict_stale_layer_variants(
+        &mut self,
+        current_backdrop_key: &str,
+    ) -> (usize, Option<String>) {
+        let kept_pipeline = most_recent_variant(self.entries.iter().filter_map(|(key, entry)| {
+            stale_variant_backdrop_key(key, current_backdrop_key)
+                .map(|_| (key.as_str(), entry.last_used))
+        }))
+        .map(str::to_string);
+        let before = self.entries.len();
+        self.entries.retain(|key, _| {
+            kept_pipeline.as_deref() == Some(key.as_str())
+                || !is_stale_layer_pipeline_variant(key, current_backdrop_key)
+        });
+        let kept = kept_pipeline.as_deref().and_then(|key| {
+            stale_variant_backdrop_key(key, current_backdrop_key).map(str::to_string)
+        });
+        (before.saturating_sub(self.entries.len()), kept)
+    }
+
+    /// Drops popup slot pipelines whose popup is gone; skipped while the live set
+    /// is unchanged, for the same reason as [`Self::retain_live_layers`].
+    fn retain_live_popups(&mut self, live_ids: &std::collections::HashSet<String>) -> usize {
+        let fingerprint = live_set_fingerprint(live_ids);
+        if self.swept_live_popups == Some(fingerprint) {
+            return 0;
+        }
+        self.swept_live_popups = Some(fingerprint);
+        let before = self.entries.len();
+        self.entries.retain(|key, _| {
+            !is_popup_pipeline_key(key)
+                || live_ids.iter().any(|id| key.contains(&format!(":{id}:")))
+        });
+        before.saturating_sub(self.entries.len())
+    }
+
+    /// Drops layer pipelines whose layer is not in `live_ids`. Runs every frame
+    /// per output, so the scan is skipped while the live set is unchanged: a
+    /// pipeline can only be created while its layer renders, so no dead layer's
+    /// entry can appear until a layer departs and the set changes.
+    fn retain_live_layers(&mut self, live_ids: &std::collections::HashSet<String>) -> usize {
+        let fingerprint = live_set_fingerprint(live_ids);
+        if self.swept_live_layers == Some(fingerprint) {
+            return 0;
+        }
+        self.swept_live_layers = Some(fingerprint);
+        let before = self.entries.len();
+        self.entries.retain(|key, _| {
+            !is_layer_pipeline_key(key) || live_ids.iter().any(|id| key_names_layer(key, id))
+        });
+        before.saturating_sub(self.entries.len())
+    }
+
     fn purge_window(&mut self, window_id: &str) -> usize {
         let before = self.entries.len();
         let window_token = format!(":{window_id}:");
@@ -5062,4 +5264,131 @@ fn blur_texture_pass(
         offset,
     )?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod layer_cache_key_tests {
+    use super::*;
+
+    const ID: &str = "InnerClientId { ptr: 0x562f09941360, alive: true }:42";
+
+    fn lower(output: &str, id: &str, index: usize, size: &str) -> String {
+        format!("__layer_background_effect_{output}_{id}_{index}_{size}")
+    }
+
+    fn top(output: &str, id: &str, size: &str) -> String {
+        format!("__layer_background_effect_{output}_{id}_top_{size}")
+    }
+
+    #[test]
+    fn variant_prefix_names_the_layer_on_its_output() {
+        assert_eq!(
+            layer_backdrop_variant_prefix(&lower("HDMI-A-3", ID, 1, "3840x2160")),
+            Some(format!("__layer_background_effect_HDMI-A-3_{ID}_").as_str())
+        );
+        assert_eq!(
+            layer_backdrop_variant_prefix(&top("eDP-1", ID, "743x44")),
+            Some(format!("__layer_background_effect_eDP-1_{ID}_").as_str())
+        );
+        assert_eq!(layer_backdrop_variant_prefix("no-underscores"), None);
+    }
+
+    #[test]
+    fn stale_variants_are_other_sizes_positions_and_kinds_of_the_same_layer() {
+        let current = lower("DP-1", ID, 1, "1520x471");
+        let stale = [
+            format!("tty:layer-lower:{}", lower("DP-1", ID, 0, "1520x471")),
+            format!("tty:layer-lower:{}", lower("DP-1", ID, 1, "1520x427")),
+            format!("tty:layer-top:{}", top("DP-1", ID, "1520x471")),
+            format!("winit:layer-lower:{}", lower("DP-1", ID, 2, "1520x471")),
+        ];
+        for key in &stale {
+            assert!(is_stale_layer_pipeline_variant(key, &current), "{key}");
+        }
+        let kept = [
+            format!("tty:layer-lower:{current}"),
+            format!("tty:layer-lower:{}", lower("eDP-1", ID, 0, "1520x471")),
+            format!(
+                "tty:layer-lower:{}",
+                lower(
+                    "DP-1",
+                    "InnerClientId { ptr: 0x562f09941360, alive: true }:4",
+                    0,
+                    "1520x471"
+                )
+            ),
+            format!("tty:window-backdrop:0x26:{current}"),
+        ];
+        for key in &kept {
+            assert!(!is_stale_layer_pipeline_variant(key, &current), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_layer_id_never_matches_a_longer_id_with_the_same_start() {
+        let short = "InnerClientId { ptr: 0x562f09941360, alive: true }:4";
+        assert!(key_names_layer(&lower("eDP-1", ID, 0, "1920x1080"), ID));
+        assert!(!key_names_layer(&lower("eDP-1", ID, 0, "1920x1080"), short));
+        assert!(key_names_layer(
+            &format!("winit:layer-effect:eDP-1:{ID}:behind"),
+            ID
+        ));
+        assert!(!key_names_layer(
+            &format!("winit:layer-effect:eDP-1:{ID}:behind"),
+            short
+        ));
+    }
+
+    #[test]
+    fn the_most_recently_used_other_variant_is_kept() {
+        assert_eq!(
+            most_recent_variant([("a", 3), ("b", 9), ("c", 5)].into_iter()),
+            Some("b")
+        );
+        assert_eq!(most_recent_variant(std::iter::empty()), None);
+        let current = top("DP-1", ID, "1920x515");
+        let lower_key = format!("tty:layer-lower:{}", lower("DP-1", ID, 0, "1920x515"));
+        assert_eq!(
+            stale_variant_backdrop_key(&lower_key, &current),
+            Some(lower("DP-1", ID, 0, "1920x515").as_str())
+        );
+        assert_eq!(
+            stale_variant_backdrop_key(&format!("tty:layer-top:{current}"), &current),
+            None
+        );
+    }
+
+    #[test]
+    fn layer_and_popup_slots_under_the_window_effect_path_are_told_apart() {
+        let layer_slot = format!("tty:window-effect:eDP-1:{ID}:layer-behind");
+        let popup_slot = format!("tty:window-effect:eDP-1:{ID}:popup-in-front");
+        let window_slot = "tty:window-effect:eDP-1:0x26:behind";
+        assert!(is_layer_pipeline_key(&layer_slot));
+        assert!(!is_popup_pipeline_key(&layer_slot));
+        assert!(is_popup_pipeline_key(&popup_slot));
+        assert!(!is_layer_pipeline_key(&popup_slot));
+        assert!(!is_layer_pipeline_key(window_slot));
+        assert!(!is_popup_pipeline_key(window_slot));
+        assert!(is_popup_pipeline_key(&format!(
+            "winit:popup-effect:eDP-1:{ID}:popup-behind"
+        )));
+    }
+
+    #[test]
+    fn only_layer_pipelines_are_swept() {
+        assert!(is_layer_pipeline_key(&format!(
+            "tty:layer-top:{}",
+            top("eDP-1", ID, "743x44")
+        )));
+        assert!(is_layer_pipeline_key(&format!(
+            "tty:layer-lower:{}",
+            lower("eDP-1", ID, 0, "1x1")
+        )));
+        assert!(is_layer_pipeline_key(&format!(
+            "winit:layer-effect:eDP-1:{ID}:behind"
+        )));
+        assert!(!is_layer_pipeline_key("tty:window-backdrop:0x26:key"));
+        assert!(!is_layer_pipeline_key("tty:protocol-window:0x26:key"));
+        assert!(!is_layer_pipeline_key("winit:window-backdrop:0x26:key"));
+    }
 }
