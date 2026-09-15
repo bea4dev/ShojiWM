@@ -975,6 +975,25 @@ export interface OutputMode {
   width: number;
   height: number;
   refreshRate: number;
+  /**
+   * DRM pixel clock in kHz. Absent on backends with no DRM mode behind them.
+   * Cannot be derived from the fields above — blanking is time actually spent
+   * transmitting, so 3840x2160@60 clocks at 594 MHz, not the 497.7 MHz its
+   * active pixels imply. Link-bandwidth arithmetic must use this.
+   * DRM のピクセルクロック（kHz）。ブランキングを含むため上記の値からは
+   * 算出できません。帯域計算にはこの値を使ってください。
+   */
+  clockKhz?: number;
+}
+
+/** What an HDMI sink says its link can carry. / HDMI シンクのリンク能力。 */
+export interface HdmiLinkInfo {
+  /** Inferred from what the sink advertises, e.g. "HDMI 2.0". */
+  standard: string;
+  /** Max TMDS character rate in kHz, when the sink states one. */
+  maxTmdsKhz?: number;
+  /** Total usable link bandwidth in Gbit/s. */
+  maxBandwidthGbps?: number;
 }
 
 export type OutputResolutionPreference =
@@ -1010,6 +1029,22 @@ export type OutputTransform =
   | "flipped-180"
   | "flipped-270";
 
+/**
+ * How a panel's subpixels are physically arranged, as advertised to clients in
+ * `wl_output.geometry`. Describes the panel as built: never adjust it for
+ * `transform`.
+ * パネルのサブピクセルの物理的な配列（`wl_output.geometry` でクライアントに
+ * 通知されます）。製造時のパネルそのものを表すため、`transform` に合わせて
+ * 変えないでください。
+ */
+export type OutputSubpixel =
+  | "unknown"
+  | "none"
+  | "horizontal-rgb"
+  | "horizontal-bgr"
+  | "vertical-rgb"
+  | "vertical-bgr";
+
 export interface OutputExtendConfigEntry {
   mode?: "extend";
   /**
@@ -1029,6 +1064,37 @@ export interface OutputExtendConfigEntry {
    * なので、設定を消すと回転なしに戻ります）。
    */
   transform?: OutputTransform;
+  /**
+   * Drive this output as HDR10 (PQ/BT.2020 signaling) when its EDID
+   * advertises ST 2084 support; ignored otherwise. Experimental: SDR
+   * content is composited in sRGB and PQ-encoded as a final pass.
+   * この出力の EDID が ST 2084 対応を示す場合、HDR10(PQ/BT.2020)で
+   * 駆動します。実験的機能です。
+   */
+  hdr?: boolean;
+  /**
+   * Real peak luminance of this display in cd/m². Only needed when the EDID
+   * advertises ST 2084 but omits its luminance fields, which is common — the
+   * compositor otherwise has to assume 1000. Ignored outside 50..=10000.
+   * このディスプレイの実際の最大輝度（cd/m²）。EDID が ST 2084 対応を示し
+   * ながら輝度情報を持たない場合にのみ必要です（その場合は 1000 と仮定され
+   * ます）。50〜10000 の範囲外は無視されます。
+   */
+  hdrMaxLuminance?: number;
+  /**
+   * Real black level of this display in cd/m². Ignored outside 0..=10.
+   * このディスプレイの実際の黒レベル（cd/m²）。0〜10 の範囲外は無視されます。
+   */
+  hdrMinLuminance?: number;
+  /**
+   * Physical subpixel layout of this panel, which clients such as foot use for
+   * subpixel text antialiasing. Omit it to keep what the kernel reported,
+   * which is `"unknown"` for most panels.
+   * このパネルの物理的なサブピクセル配列。foot などのクライアントがサブピクセル
+   * 単位の文字のアンチエイリアスに使います。省略するとカーネルが報告した値
+   * （多くのパネルでは `"unknown"`）のままになります。
+   */
+  subpixel?: OutputSubpixel;
 }
 
 export interface OutputDisabledConfigEntry {
@@ -1038,6 +1104,8 @@ export interface OutputDisabledConfigEntry {
 export interface OutputMirrorConfigEntry {
   mode: "mirror";
   source: string;
+  /** Same as {@link OutputExtendConfigEntry.subpixel}. / 同上。 */
+  subpixel?: OutputSubpixel;
 }
 
 export type OutputConfigEntry =
@@ -1070,7 +1138,34 @@ export interface OutputStateSnapshot {
   scale: number;
   /** Currently applied transform. / 現在適用されている transform。 */
   transform?: OutputTransform;
+  /**
+   * Subpixel layout currently advertised in `wl_output.geometry`.
+   * 現在 `wl_output.geometry` で通知しているサブピクセル配列。
+   */
+  subpixel?: OutputSubpixel;
+  /**
+   * Subpixel layout the kernel reported for this connector, which `subpixel`
+   * falls back to when the display config names none.
+   * このコネクタについてカーネルが報告したサブピクセル配列。表示設定で指定が
+   * ない場合、`subpixel` はこの値になります。
+   */
+  detectedSubpixel?: OutputSubpixel;
   availableModes: OutputMode[];
+  /** EDID advertises HDR (CTA-861 static metadata block). */
+  hdrSupported: boolean;
+  /**
+   * Link capability for HDMI connectors. Absent for non-HDMI outputs and for
+   * sinks publishing no vendor block.
+   *
+   * Supporting HDR and being able to deliver it are different questions. PQ
+   * needs 10 bits per component, which costs `pixelClock * 10/8` of TMDS
+   * character rate; 3840x2160@60 therefore needs 742.5 MHz and does not fit
+   * HDMI 2.0's 600 MHz ceiling, even on a sink whose EDID advertises both the
+   * mode and ST 2084. The driver then falls back to 8 bpc or subsampled
+   * chroma, and PQ tolerates neither.
+   * HDMI コネクタのリンク能力。HDR 対応と実際に伝送できるかは別問題です。
+   */
+  hdmi?: HdmiLinkInfo;
 }
 
 export interface OutputInfo extends OutputStateSnapshot {

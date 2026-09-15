@@ -36,7 +36,11 @@ function cloneOutputState(
         position: { ...snapshot.position },
         scale: snapshot.scale,
         transform: snapshot.transform,
+        subpixel: snapshot.subpixel,
+        detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
+        hdrSupported: snapshot.hdrSupported,
+        hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),
   );
@@ -66,7 +70,11 @@ function normalizeOutputState(
         position: { ...snapshot.position },
         scale: snapshot.scale,
         transform: snapshot.transform ?? "normal",
+        subpixel: snapshot.subpixel,
+        detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
+        hdrSupported: snapshot.hdrSupported,
+        hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),
   );
@@ -86,7 +94,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     return { mode: "disabled" };
   }
   if (config.mode === "mirror") {
-    return { mode: "mirror", source: config.source };
+    return { mode: "mirror", source: config.source, subpixel: config.subpixel };
   }
   return {
     mode: "extend",
@@ -103,7 +111,11 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
           ? { ...config.position }
           : undefined,
     scale: config.scale,
+    subpixel: config.subpixel,
     transform: config.transform,
+    hdr: config.hdr,
+    hdrMaxLuminance: config.hdrMaxLuminance,
+    hdrMinLuminance: config.hdrMinLuminance,
   };
 }
 

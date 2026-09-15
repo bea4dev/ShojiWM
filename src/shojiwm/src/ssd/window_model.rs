@@ -539,6 +539,62 @@ pub struct WaylandOutputSnapshot {
     pub scale: f64,
     pub transform: OutputTransformSnapshot,
     pub available_modes: Vec<OutputModeSnapshot>,
+    /// EDID advertises HDR (CTA-861 static metadata). Can
+    /// be used to check display capabilities.
+    pub hdr_supported: bool,
+    /// Link capability for HDMI connectors, so a config UI can tell which
+    /// modes are actually reachable at a given bit depth. `None` for non-HDMI
+    /// outputs and for sinks that publish no vendor block.
+    pub hdmi: Option<HdmiLinkSnapshot>,
+    /// Subpixel layout currently advertised in `wl_output.geometry`.
+    pub subpixel: OutputSubpixelSnapshot,
+    /// Subpixel layout the kernel reported for the connector: what `subpixel`
+    /// falls back to when the display config names none.
+    pub detected_subpixel: OutputSubpixelSnapshot,
+}
+
+/// A panel's physical subpixel layout, spelled as the display config accepts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum OutputSubpixelSnapshot {
+    #[default]
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "horizontal-rgb")]
+    HorizontalRgb,
+    #[serde(rename = "horizontal-bgr")]
+    HorizontalBgr,
+    #[serde(rename = "vertical-rgb")]
+    VerticalRgb,
+    #[serde(rename = "vertical-bgr")]
+    VerticalBgr,
+}
+
+impl From<smithay::output::Subpixel> for OutputSubpixelSnapshot {
+    fn from(subpixel: smithay::output::Subpixel) -> Self {
+        use smithay::output::Subpixel;
+        match subpixel {
+            Subpixel::Unknown => Self::Unknown,
+            Subpixel::None => Self::None,
+            Subpixel::HorizontalRgb => Self::HorizontalRgb,
+            Subpixel::HorizontalBgr => Self::HorizontalBgr,
+            Subpixel::VerticalRgb => Self::VerticalRgb,
+            Subpixel::VerticalBgr => Self::VerticalBgr,
+        }
+    }
+}
+
+/// What the HDMI sink says its link can carry.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HdmiLinkSnapshot {
+    /// Inferred from what the sink advertises, e.g. "HDMI 2.0".
+    pub standard: &'static str,
+    /// Max TMDS character rate in kHz, when the sink states one.
+    pub max_tmds_khz: Option<u32>,
+    /// Total usable link bandwidth in Gbit/s.
+    pub max_bandwidth_gbps: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
@@ -584,6 +640,14 @@ pub struct OutputModeSnapshot {
     pub width: i32,
     pub height: i32,
     pub refresh_rate: f64,
+    /// DRM pixel clock in kHz. `None` for outputs with no DRM mode behind
+    /// them (nested/winit backends).
+    ///
+    /// Link-bandwidth arithmetic needs this and cannot derive it: width *
+    /// height * refresh understates the real rate, because blanking is time
+    /// actually spent transmitting. 3840x2160@60 is 594 MHz, not the 497.7
+    /// MHz the active pixels alone suggest.
+    pub clock_khz: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

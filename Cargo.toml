@@ -30,3 +30,11 @@ debug = "line-tables-only"
 # the fastest possible edit-rebuild loop.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Build against the MinkaDE/smithay submodule (Sophie's fork: upstream + bea4dev's
+# branch + her patches) instead of the bea4dev rev pinned in src/shojiwm/Cargo.toml.
+# Cargo requires the patch path to exist, so a checkout without the sibling
+# submodule must drop this section to fall back to the pinned rev.
+[patch."https://github.com/bea4dev/smithay.git"]
+smithay = { path = "../smithay" }
+smithay-drm-extras = { path = "../smithay/smithay-drm-extras" }

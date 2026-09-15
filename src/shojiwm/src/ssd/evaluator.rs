@@ -7199,7 +7199,12 @@ COMPOSITOR.window.composition = () => <Box />;
                 width: 1920,
                 height: 1080,
                 refresh_rate: 60.0,
+                clock_khz: None,
             }),
+            hdr_supported: false,
+            hdmi: None,
+            subpixel: Default::default(),
+            detected_subpixel: Default::default(),
             position: OutputPositionSnapshot { x: 0, y: 0 },
             scale: 1.0,
             transform: Default::default(),
@@ -7377,6 +7382,97 @@ COMPOSITOR.event.onPointerMove(() => {{}});
             vec!["DP-1".to_string(), "HDMI-1".to_string()],
             "a later change must reopen the gate"
         );
+
+        evaluator
+            .lifecycle_disable("test")
+            .expect("embedded runtime should disable");
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    // The runtime copies output snapshots and config entries field by field
+    // (packages/shoji_wm/src/output.ts), so a field missing there vanishes
+    // without an error: `hdmi` never reached MinkaConf and the HDR luminance
+    // override never reached the compositor, until 11/9/2026.
+    #[test]
+    fn runtime_keeps_hdmi_and_hdr_luminance_through_output_state_and_config() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-output-fields-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let socket_path = test_dir.join("fields.sock");
+        let socket_literal =
+            serde_json::to_string(&socket_path.to_string_lossy()).expect("path should serialize");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+ipc.handle("outputs", () => COMPOSITOR.output.current);
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.output.configure(() => ({{
+  "TEST-1": {{ hdr: true, hdrMaxLuminance: 420, hdrMinLuminance: 0.05 }},
+}}));
+"#
+            ),
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let mut output = test_output_snapshot("TEST-1");
+        output.hdmi = Some(crate::ssd::HdmiLinkSnapshot {
+            standard: "HDMI 2.0",
+            max_tmds_khz: Some(600_000),
+            max_bandwidth_gbps: Some(18.0),
+        });
+        evaluator.set_display_state(std::collections::BTreeMap::from([(
+            "TEST-1".to_string(),
+            output,
+        )]));
+        let invocation = evaluator
+            .lifecycle_enable("initial", None)
+            .expect("embedded runtime should enable the config");
+
+        let config = invocation
+            .display_config
+            .expect("the output factory should produce a display config")
+            .outputs
+            .remove("TEST-1")
+            .flatten()
+            .expect("TEST-1 should be configured");
+        assert_eq!(config.hdr_max_luminance, Some(420.0));
+        assert_eq!(config.hdr_min_luminance, Some(0.05));
+
+        let mut socket =
+            UnixStream::connect(&socket_path).expect("IPC server should be listening");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout should be configured");
+        socket
+            .write_all(b"{\"id\":1,\"method\":\"outputs\"}\n")
+            .expect("IPC request should be written");
+        let mut response = String::new();
+        BufReader::new(socket)
+            .read_line(&mut response)
+            .expect("IPC response should be read");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("IPC response should be JSON");
+        let hdmi = &parsed["result"]["TEST-1"]["hdmi"];
+        assert_eq!(hdmi["standard"], "HDMI 2.0");
+        assert_eq!(hdmi["maxTmdsKhz"], 600_000);
 
         evaluator
             .lifecycle_disable("test")
@@ -7578,5 +7674,103 @@ COMPOSITOR.event.onPointerMoveAsync(() => {});
         };
 
         assert!(validate_popup_effect_config(effects).is_ok());
+    }
+
+    // Same field-by-field copy as above, for the subpixel layout: the config
+    // entry (extend and mirror) must reach Rust, and the snapshot's advertised
+    // and detected layouts must reach COMPOSITOR.output.current for MinkaConf.
+    #[test]
+    fn runtime_keeps_subpixel_through_output_state_and_config() {
+        use crate::config::RuntimeOutputSubpixel;
+        use crate::ssd::OutputSubpixelSnapshot;
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-output-subpixel-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let socket_path = test_dir.join("subpixel.sock");
+        let socket_literal =
+            serde_json::to_string(&socket_path.to_string_lossy()).expect("path should serialize");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+ipc.handle("outputs", () => COMPOSITOR.output.current);
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.output.configure(() => ({{
+  "TEST-1": {{ subpixel: "horizontal-bgr" }},
+  "TEST-2": {{ mode: "mirror", source: "TEST-1", subpixel: "none" }},
+}}));
+"#
+            ),
+        )
+        .expect("test config should be written");
+
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        let mut first = test_output_snapshot("TEST-1");
+        first.subpixel = OutputSubpixelSnapshot::HorizontalRgb;
+        first.detected_subpixel = OutputSubpixelSnapshot::VerticalRgb;
+        evaluator.set_display_state(std::collections::BTreeMap::from([
+            ("TEST-1".to_string(), first),
+            ("TEST-2".to_string(), test_output_snapshot("TEST-2")),
+        ]));
+        let invocation = evaluator
+            .lifecycle_enable("initial", None)
+            .expect("embedded runtime should enable the config");
+
+        let mut outputs = invocation
+            .display_config
+            .expect("the output factory should produce a display config")
+            .outputs;
+        let subpixel_of = |config: Option<Option<crate::config::RuntimeOutputConfig>>| {
+            config.flatten().expect("output should be configured").subpixel
+        };
+        assert_eq!(
+            subpixel_of(outputs.remove("TEST-1")),
+            Some(RuntimeOutputSubpixel::HorizontalBgr)
+        );
+        assert_eq!(
+            subpixel_of(outputs.remove("TEST-2")),
+            Some(RuntimeOutputSubpixel::None),
+            "a mirror entry keeps its panel's layout"
+        );
+
+        let mut socket =
+            UnixStream::connect(&socket_path).expect("IPC server should be listening");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout should be configured");
+        socket
+            .write_all(b"{\"id\":1,\"method\":\"outputs\"}\n")
+            .expect("IPC request should be written");
+        let mut response = String::new();
+        BufReader::new(socket)
+            .read_line(&mut response)
+            .expect("IPC response should be read");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response).expect("IPC response should be JSON");
+        let current = &parsed["result"]["TEST-1"];
+        assert_eq!(current["subpixel"], "horizontal-rgb");
+        assert_eq!(current["detectedSubpixel"], "vertical-rgb");
+
+        evaluator
+            .lifecycle_disable("test")
+            .expect("embedded runtime should disable");
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }
