@@ -2635,6 +2635,10 @@ impl ShojiWM {
                 &live_layer_ids,
             );
             retain_effect_texture_cache_for_live_ids(&mut self.layer_effect_cache, &live_layer_ids);
+            retain_effect_texture_cache_for_live_ids(
+                &mut self.layer_framebuffer_effect_states,
+                &live_layer_ids,
+            );
             crate::backend::shader_effect::retain_backdrop_cache_for_live_layers(
                 &mut self.layer_backdrop_cache,
                 &live_layer_ids,
@@ -2699,6 +2703,10 @@ impl ShojiWM {
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
         });
+        retain_effect_texture_cache_for_live_ids(
+            &mut self.layer_framebuffer_effect_states,
+            &live_layer_ids,
+        );
         crate::backend::shader_effect::retain_backdrop_cache_for_live_layers(
             &mut self.layer_backdrop_cache,
             &live_layer_ids,
@@ -2758,6 +2766,9 @@ impl ShojiWM {
                 &live_popup_ids,
             );
             retain_effect_texture_cache_for_live_ids(&mut self.popup_effect_cache, &live_popup_ids);
+            crate::backend::shader_effect::retain_shared_effect_pipeline_caches_for_live_popups(
+                &live_popup_ids,
+            );
             return Ok(());
         }
         self.sync_runtime_display_state();
@@ -2816,6 +2827,9 @@ impl ShojiWM {
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
         });
+        crate::backend::shader_effect::retain_shared_effect_pipeline_caches_for_live_popups(
+            &live_popup_ids,
+        );
 
         Ok(())
     }
