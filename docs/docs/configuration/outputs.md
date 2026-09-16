@@ -47,9 +47,9 @@ Each entry has a `mode` that selects one of three shapes:
 
 | `mode` | Meaning | Extra fields |
 | --- | --- | --- |
-| `"extend"` *(default)* | Use the output as part of the desktop | `resolution`, `position`, `scale`, `transform` |
+| `"extend"` *(default)* | Use the output as part of the desktop | `resolution`, `position`, `scale`, `transform`, `subpixel` |
 | `"disabled"` | Turn the output off | — |
-| `"mirror"` | Mirror another output | `source` (name of the output to mirror) |
+| `"mirror"` | Mirror another output | `source` (name of the output to mirror), `subpixel` |
 
 ```ts
 display['HDMI-A-1'] = {mode: 'mirror', source: 'eDP-1'};
@@ -131,6 +131,39 @@ Notes:
   logical size), `usableArea`, tiling, screenshots (`grim`) and screen capture
   (OBS via the portal) all follow the rotation automatically.
 
+### `subpixel`
+
+Physical arrangement of the panel's subpixels, advertised to clients in
+`wl_output.geometry`. Clients such as foot and Firefox use it to decide how to
+antialias text; most panels report `"unknown"` to the kernel, so this is often
+the only way a client can learn the real layout.
+
+| Value | Meaning |
+| --- | --- |
+| `"unknown"` | Layout not known (what most connectors report) |
+| `"none"` | No subpixel structure, e.g. a projector |
+| `"horizontal-rgb"` / `"horizontal-bgr"` | Subpixels side by side, in that order |
+| `"vertical-rgb"` / `"vertical-bgr"` | Subpixels stacked, in that order |
+
+```ts
+// A laptop panel the kernel reports as "unknown", known to be RGB stripe
+display['eDP-1'] = {
+  resolution: 'best',
+  position: 'auto',
+  subpixel: 'horizontal-rgb',
+};
+```
+
+Notes:
+
+- Give the **physical** layout of the panel. The compositor sends it alongside
+  `transform` in the same event, and clients combine the two themselves, so do
+  not pre-rotate it for a rotated output.
+- Omitting `subpixel` (or removing it later) restores whatever the kernel
+  reported for the connector, which `OutputInfo.detectedSubpixel` always shows.
+- Clients are told at once: every bound `wl_output` receives a fresh `geometry`
+  event, so a config reload takes effect without a reconnect.
+
 ## Reading output state
 
 The controller is also a read-only view, useful inside event handlers and the
@@ -148,8 +181,13 @@ composition function.
 | `reconfigure()` | re-run all registered factories now |
 
 `OutputInfo` includes `name`, `enabled`, `resolution` (`{width, height,
-refreshRate}`), `position` (`{x, y}`), `scale`, `transform`, `availableModes`,
-and identification fields (`make`, `model`, `serial`, `connector`).
+refreshRate}`), `position` (`{x, y}`), `scale`, `transform`, `subpixel`,
+`detectedSubpixel`, `availableModes`, and identification fields (`make`,
+`model`, `serial`, `connector`).
+
+`subpixel` is the layout currently advertised, and `detectedSubpixel` the one
+the kernel reported, so a settings UI can show what a connector claims before
+anything overrides it.
 
 On a transformed output, `resolution` is reported in the **rotated
 orientation** (width/height swapped for 90°/270°), while `availableModes` stay

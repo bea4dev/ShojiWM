@@ -539,6 +539,43 @@ pub struct WaylandOutputSnapshot {
     pub scale: f64,
     pub transform: OutputTransformSnapshot,
     pub available_modes: Vec<OutputModeSnapshot>,
+    /// Subpixel layout currently advertised in `wl_output.geometry`.
+    pub subpixel: OutputSubpixelSnapshot,
+    /// Subpixel layout the kernel reported for the connector: what `subpixel`
+    /// falls back to when the display config names none.
+    pub detected_subpixel: OutputSubpixelSnapshot,
+}
+
+/// A panel's physical subpixel layout, spelled as the display config accepts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum OutputSubpixelSnapshot {
+    #[default]
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "horizontal-rgb")]
+    HorizontalRgb,
+    #[serde(rename = "horizontal-bgr")]
+    HorizontalBgr,
+    #[serde(rename = "vertical-rgb")]
+    VerticalRgb,
+    #[serde(rename = "vertical-bgr")]
+    VerticalBgr,
+}
+
+impl From<smithay::output::Subpixel> for OutputSubpixelSnapshot {
+    fn from(subpixel: smithay::output::Subpixel) -> Self {
+        use smithay::output::Subpixel;
+        match subpixel {
+            Subpixel::Unknown => Self::Unknown,
+            Subpixel::None => Self::None,
+            Subpixel::HorizontalRgb => Self::HorizontalRgb,
+            Subpixel::HorizontalBgr => Self::HorizontalBgr,
+            Subpixel::VerticalRgb => Self::VerticalRgb,
+            Subpixel::VerticalBgr => Self::VerticalBgr,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]

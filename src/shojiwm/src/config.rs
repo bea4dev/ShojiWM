@@ -33,6 +33,10 @@ pub struct RuntimeOutputConfig {
     pub position: Option<RuntimeOutputPositionPreference>,
     pub scale: Option<f64>,
     pub transform: Option<RuntimeOutputTransform>,
+    /// Physical subpixel layout of the panel, advertised to clients in
+    /// `wl_output.geometry`. Unset keeps what the kernel reported for the
+    /// connector, which is `unknown` for most panels.
+    pub subpixel: Option<RuntimeOutputSubpixel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -70,6 +74,48 @@ impl RuntimeOutputTransform {
             Self::Flipped270 => Transform::Flipped270,
         }
     }
+}
+
+/// How a panel's subpixels are physically arranged: the `wl_output.subpixel`
+/// values, kebab-cased like [`RuntimeOutputTransform`]. It describes the panel
+/// as built, so it is never adjusted for the output's transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub enum RuntimeOutputSubpixel {
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "horizontal-rgb")]
+    HorizontalRgb,
+    #[serde(rename = "horizontal-bgr")]
+    HorizontalBgr,
+    #[serde(rename = "vertical-rgb")]
+    VerticalRgb,
+    #[serde(rename = "vertical-bgr")]
+    VerticalBgr,
+}
+
+impl RuntimeOutputSubpixel {
+    pub fn to_smithay(self) -> smithay::output::Subpixel {
+        use smithay::output::Subpixel;
+        match self {
+            Self::Unknown => Subpixel::Unknown,
+            Self::None => Subpixel::None,
+            Self::HorizontalRgb => Subpixel::HorizontalRgb,
+            Self::HorizontalBgr => Subpixel::HorizontalBgr,
+            Self::VerticalRgb => Subpixel::VerticalRgb,
+            Self::VerticalBgr => Subpixel::VerticalBgr,
+        }
+    }
+}
+
+/// The subpixel layout an output should advertise: the display config's when
+/// it names one, otherwise the one detected for the connector.
+pub fn resolve_output_subpixel(
+    configured: Option<RuntimeOutputSubpixel>,
+    detected: smithay::output::Subpixel,
+) -> smithay::output::Subpixel {
+    configured.map_or(detected, RuntimeOutputSubpixel::to_smithay)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -177,5 +223,78 @@ mod tests {
         let config: RuntimeOutputConfig =
             serde_json::from_str(r#"{"mode":"extend","scale":1.5}"#).unwrap();
         assert_eq!(config.transform, None);
+    }
+
+    // These names are part of the display config format, so a rename drift
+    // would make the whole display config update fail to parse.
+    #[test]
+    fn runtime_output_config_parses_all_subpixel_names() {
+        let cases = [
+            ("unknown", RuntimeOutputSubpixel::Unknown),
+            ("none", RuntimeOutputSubpixel::None),
+            ("horizontal-rgb", RuntimeOutputSubpixel::HorizontalRgb),
+            ("horizontal-bgr", RuntimeOutputSubpixel::HorizontalBgr),
+            ("vertical-rgb", RuntimeOutputSubpixel::VerticalRgb),
+            ("vertical-bgr", RuntimeOutputSubpixel::VerticalBgr),
+        ];
+        for (name, expected) in cases {
+            let json = format!(r#"{{"mode":"extend","subpixel":"{name}"}}"#);
+            let config: RuntimeOutputConfig = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("failed to parse subpixel {name}: {error}"));
+            assert_eq!(config.subpixel, Some(expected));
+        }
+    }
+
+    /// Absent and `null` both mean "keep the detected layout".
+    #[test]
+    fn runtime_output_config_subpixel_absent_or_null_is_none() {
+        let absent: RuntimeOutputConfig =
+            serde_json::from_str(r#"{"mode":"extend"}"#).unwrap();
+        assert_eq!(absent.subpixel, None);
+        let null: RuntimeOutputConfig =
+            serde_json::from_str(r#"{"mode":"mirror","source":"eDP-1","subpixel":null}"#)
+                .unwrap();
+        assert_eq!(null.subpixel, None);
+    }
+
+    #[test]
+    fn configured_subpixel_wins_and_unset_keeps_the_detected_layout() {
+        use smithay::output::Subpixel;
+        assert_eq!(
+            resolve_output_subpixel(None, Subpixel::VerticalBgr),
+            Subpixel::VerticalBgr,
+        );
+        assert_eq!(
+            resolve_output_subpixel(Some(RuntimeOutputSubpixel::HorizontalRgb), Subpixel::Unknown),
+            Subpixel::HorizontalRgb,
+        );
+        // An explicit "unknown" still overrides a kernel report the user
+        // knows to be wrong.
+        assert_eq!(
+            resolve_output_subpixel(Some(RuntimeOutputSubpixel::Unknown), Subpixel::HorizontalBgr),
+            Subpixel::Unknown,
+        );
+    }
+
+    /// The snapshot reports layouts in the same spelling the config accepts,
+    /// so a value read back from a snapshot can be written straight into the
+    /// config. Pin the two enums to each other through smithay's.
+    #[test]
+    fn subpixel_snapshot_names_parse_back_as_config_values() {
+        use crate::ssd::OutputSubpixelSnapshot;
+        use smithay::output::Subpixel;
+        for subpixel in [
+            Subpixel::Unknown,
+            Subpixel::None,
+            Subpixel::HorizontalRgb,
+            Subpixel::HorizontalBgr,
+            Subpixel::VerticalRgb,
+            Subpixel::VerticalBgr,
+        ] {
+            let json = serde_json::to_string(&OutputSubpixelSnapshot::from(subpixel)).unwrap();
+            let parsed: RuntimeOutputSubpixel = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("snapshot name {json} does not parse: {error}"));
+            assert_eq!(parsed.to_smithay(), subpixel);
+        }
     }
 }
