@@ -318,8 +318,6 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     state.enable_initial_decoration_runtime();
     state.warp_cursor_to_initial_output_center();
     state.warmup_decoration_runtime();
-    std::process::Command::new("weston-terminal").spawn().ok();
-    info!("spawned weston-terminal");
 
     let maintenance_debug = tty_maintenance_debug_enabled();
     let mut last_idle_maintenance_at = Instant::now();
