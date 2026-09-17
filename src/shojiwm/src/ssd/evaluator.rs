@@ -6044,7 +6044,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("tiled window should have a managed rect")
             .x;
         assert_eq!(
-            x, 12.0,
+            x,
+            tile_metrics().flush_left_x(),
             "the center-closest tile must snap flush to the edge it leans \
              toward (0xb at the viewport left edge)"
         );
@@ -6150,7 +6151,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("tiled window should have a managed rect")
             .x;
         assert_eq!(
-            x, 1104.0,
+            x,
+            tile_metrics().flush_right_x(),
             "the fully-visible tile must stay on screen (flush at the \
              viewport right edge), not be yanked away to center the cut \
              maximized neighbor"
@@ -6266,13 +6268,13 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         let result = evaluator
             .evaluate_cached_window("0xb", None, now + 1, false)
             .expect("cached evaluation should succeed");
-        let x = result
+        let rect = result
             .managed_window
             .rect
-            .expect("tiled window should have a managed rect")
-            .x;
+            .expect("tiled window should have a managed rect");
         assert_eq!(
-            x, 8.0,
+            rect.x,
+            tile_metrics().centered_x(rect.width),
             "the maximized tile must settle centered on screen"
         );
     }
@@ -6376,7 +6378,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("tiled window should have a managed rect")
             .x;
         assert_eq!(
-            x, 1104.0,
+            x,
+            tile_metrics().flush_right_x(),
             "the center-closest tile must snap flush to the edge it leans \
              toward (0xc at the viewport right edge)"
         );
@@ -7183,6 +7186,79 @@ COMPOSITOR.window.composition = () => <Box />;
         );
 
         let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// Tile geometry the shipped config produces, probed instead of hard-coded.
+    ///
+    /// These tests assert where a tile settles, which depends on the config's
+    /// tile margin, gap and window chrome. Those are the config's to choose, so
+    /// a literal here only tests the config that happened to ship.
+    #[derive(Clone, Copy, Debug)]
+    struct TileMetrics {
+        /// Left inset of the tile viewport: where a tile sits at scroll 0.
+        margin: f64,
+        /// Width of a tile holding an 800px client.
+        width: f64,
+    }
+
+    impl TileMetrics {
+        fn viewport_width(self) -> f64 {
+            1920.0 - self.margin * 2.0
+        }
+
+        /// A tile flush against the left edge of the viewport.
+        fn flush_left_x(self) -> f64 {
+            self.margin
+        }
+
+        /// A tile flush against the right edge of the viewport.
+        fn flush_right_x(self) -> f64 {
+            self.margin + self.viewport_width() - self.width
+        }
+
+        /// A tile of `width` centered in the viewport.
+        fn centered_x(self, width: f64) -> f64 {
+            self.margin + (self.viewport_width() - width) / 2.0
+        }
+    }
+
+    /// Open one tile in a fresh runtime and read the geometry back: a single
+    /// tile is narrower than the viewport, so it sits unscrolled at the
+    /// viewport's left edge.
+    fn probe_tile_metrics() -> TileMetrics {
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+
+        let window = make_named_window("0x1", "kitty", false, false);
+        evaluator
+            .evaluate_window_preview(&window, 0)
+            .expect("preview should evaluate");
+        let focused = make_named_window("0x1", "kitty", true, false);
+        evaluator
+            .evaluate_window(&focused, 50)
+            .expect("evaluation should succeed");
+
+        let rect = evaluator
+            .evaluate_cached_window("0x1", None, 100, false)
+            .expect("cached evaluation should succeed")
+            .managed_window
+            .rect
+            .expect("tiled window should have a managed rect");
+        TileMetrics {
+            margin: rect.x,
+            width: rect.width,
+        }
+    }
+
+    /// Probed once per test binary: the geometry cannot change between tests.
+    fn tile_metrics() -> TileMetrics {
+        static METRICS: std::sync::OnceLock<TileMetrics> = std::sync::OnceLock::new();
+        *METRICS.get_or_init(probe_tile_metrics)
     }
 
     fn test_output_snapshot(name: &str) -> WaylandOutputSnapshot {
