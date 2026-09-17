@@ -1257,6 +1257,9 @@ pub struct BackendData {
         DrmDeviceFd,
     >,
     pub renderer: GlesRenderer,
+    /// This GPU can render into fp16 targets (probed once at device_added);
+    /// gates HDR10 output modes, which need the fp16 intermediate.
+    pub supports_fp16: bool,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     /// Per-CRTC (window start, count) of recent surface rebuilds after failed
     /// atomic commit tests. Bounds the recovery path: a configuration the
@@ -1377,14 +1380,28 @@ pub fn device_added(
         allocator,
         exporter,
         Some(gbm),
-        [Format::Argb8888],
+        [
+            Format::Abgr2101010,
+            Format::Argb2101010,
+            Format::Argb8888
+        ],
         render_formats,
+    );
+
+    let supports_fp16 = crate::backend::hdr_pipeline::probe_fp16_render_support(
+        &mut renderer
+    );
+    info!(
+        ?node,
+        supports_fp16,
+        "probed fp16 render target support"
     );
 
     let backend = BackendData {
         drm_scanner: DrmScanner::new(),
         drm_output_manager,
         renderer,
+        supports_fp16,
         surfaces: HashMap::new(),
         surface_reset_attempts: HashMap::new(),
     };
@@ -2326,6 +2343,7 @@ render_elements! {
     RelocatedBackdrop=RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>,
     TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>>,
     Cursor=PointerRenderElement<GlesRenderer>,
+    HdrEncode=crate::backend::hdr_pipeline::HdrEncodeElement,
 }
 
 fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
@@ -2350,6 +2368,7 @@ fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
         TtyRenderElements::RelocatedBackdrop(_) => "RelocatedBackdrop",
         TtyRenderElements::TransformedBackdrop(_) => "TransformedBackdrop",
         TtyRenderElements::Cursor(_) => "Cursor",
+        TtyRenderElements::HdrEncode(_) => "HdrEncode",
         _ => "Generic",
     }
 }
@@ -2944,6 +2963,18 @@ fn render_surface(
         return Ok(RenderSurfaceOutcome::Skipped);
     };
 
+    // Is this output being driven as HDR10? Captured once, at function scope,
+    // as a plain `bool`: the fullscreen fast-path decision below needs it, and
+    // by that point `state` has been partially destructured into the scene
+    // borrows, so a fresh `state.output_color` lookup there would not compile.
+    let output_is_hdr = matches!(
+        state
+            .output_color
+            .get(output.name().as_str())
+            .map(|color| color.mode),
+        Some(crate::color::OutputColorMode::Hdr10 { .. })
+    );
+
     let redraw_state = state
         .tty_backends
         .get(&node)
@@ -3258,19 +3289,48 @@ fn render_surface(
         // a notification/OSD overlay must not unfullscreen the window, but it
         // must temporarily force compositing and synced flips until it goes
         // away.
-        let fullscreen_window = fullscreen_scanout_window(
-            space,
-            window_decorations,
-            &windows_top_to_bottom,
-            closing_snapshots_on_output(
-                &closing_snapshots,
-                output.name().as_str(),
+        // The fullscreen fast path is unsafe on an HDR10 output because it
+        // renders the client as a BARE surface tree (`window::surface_elements`,
+        // a plain `WaylandSurfaceRenderElement`) instead of going through
+        // `clipped_surface_elements`, which is the only path that carries the
+        // surface's `image_description` into the shader's `src_transfer`
+        // uniform. The tag is silently dropped.
+        //
+        // On an SDR output that costs nothing: untagged and sRGB-tagged content
+        // decode identically. On HDR10 it is actively destructive. ShojiWM
+        // advertises PQ/BT.2020 through `wp_color_manager_v1` as soon as any
+        // output sets `hdr: true` (see `hdr_experiment_enabled`), so a client
+        // that asks — mpv with `target-colorspace-hint`, which is its default —
+        // hands over genuine PQ pixels. Losing the tag makes the HDR pipeline
+        // decode them as sRGB and re-encode: measured 9/9/2026 on a 4K HDR
+        // remux, shadows came out 2.4x too bright and a frame graded to
+        // 133 cd/m2 emerged at 46, which reads as washed out with grain in the
+        // darks. The gate in color_management.rs was written to stop clients
+        // submitting PQ "the render pipeline can't handle yet"; it opens exactly
+        // when HDR is enabled, which is exactly when they do.
+        //
+        // Skipping the fast path here costs nothing real. Its entire purpose is
+        // to collapse the frame to one scanout-capable element, and HDR outputs
+        // set `FrameFlags::empty()` before `render_frame` (nothing may bypass
+        // the PQ encode pass), so plane promotion cannot happen on them at all.
+        // The optimisation could never fire; only its cost was landing.
+        let fullscreen_window = if output_is_hdr {
+            None
+        } else {
+            fullscreen_scanout_window(
+                space,
+                window_decorations,
+                &windows_top_to_bottom,
+                closing_snapshots_on_output(
+                    &closing_snapshots,
+                    output.name().as_str(),
+                    output_geo,
+                ),
+                &output,
                 output_geo,
-            ),
-            &output,
-            output_geo,
-            scale,
-        );
+                scale,
+            )
+        };
         note_fullscreen_fast_path_transition(output.name().as_str(), fullscreen_window.is_some());
         // Overlay-layer backdrop effects must sample the fullscreen window
         // instead of the regular window stack while the fast path is active.
@@ -6260,6 +6320,82 @@ fn render_surface(
             elements.extend(content_for_capture);
         }
 
+        // HDR10 outputs composite the full element list (cursor and overlays
+        // included — anything drawn outside the encode pass would end up
+        // sRGB-encoded inside a PQ signal) into the fp16 intermediate, and
+        // the DRM pass renders a single PQ-encode element instead.
+        let mut hdr_encode_active = false;
+        let mut hdr_stage1_states = None;
+        if matches!(
+            state
+                .output_color
+                .get(
+                output
+                .name()
+                .as_str()
+            )
+                .map(
+                |color| color.mode
+            ),
+            Some(crate::color::OutputColorMode::Hdr10 { .. })
+        ) {
+            let output_name = output
+                .name();
+            let mut pipeline = state.hdr_pipelines
+                .remove(
+                    &output_name
+                );
+            match crate::backend::hdr_pipeline::render_hdr_pipeline(
+                &mut backend.renderer,
+                &mut pipeline,
+                &output,
+                &elements,
+                CLEAR_COLOR,
+            ) {
+                Ok(
+                    Some(
+                        (encode_element, stage1_states)
+                    )
+                ) => {
+                    elements = vec![TtyRenderElements::HdrEncode(encode_element)];
+                    hdr_encode_active = true;
+                    // Stage 1 saw the real element list; the DRM pass will not.
+                    // Keep its states so the client surfaces below still count
+                    // as presented on this output.
+                    hdr_stage1_states = Some(stage1_states);
+                }
+                Ok(
+                    None
+                ) => {}
+                Err(
+                    err
+                ) => {
+                    // Fall through with the raw element list: the frame shows
+                    // washed-out colors on the PQ signal but stays visible.
+                    warn!(
+                        output = %output_name,
+                        ?err,
+                        "HDR encode pipeline failed; rendering unencoded frame"
+                    );
+                }
+            }
+            if let Some(
+                pipeline
+            ) = pipeline {
+                state.hdr_pipelines
+                    .insert(
+                        output_name,
+                        pipeline,
+                    );
+            }
+        } else {
+            state.hdr_pipelines
+                .remove(
+                    output.name()
+                        .as_str()
+                );
+        }
+
         let fullscreen_scanout_candidate = if fullscreen_overlay_visible {
             None
         } else {
@@ -6332,6 +6468,11 @@ fn render_surface(
         }
         if should_tear {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
+        }
+        if hdr_encode_active {
+            // Nothing may bypass the encode pass: direct scanout or plane
+            // promotion would put sRGB pixels straight into the PQ signal.
+            frame_flags = FrameFlags::empty();
         }
         // Keep every real damage frame asynchronous for the whole tearing period. In
         // particular, a visible software-cursor update must not fall back to a synced flip:
@@ -6639,16 +6780,49 @@ fn render_surface(
         }
         surface.estimated_render_duration =
             blend_render_duration(surface.estimated_render_duration, render_elapsed);
-        let effective_render_states_storage = mirrored_render_states.map(|mut states| {
-            states.states.extend(
-                result
-                    .states
-                    .states
-                    .iter()
-                    .map(|(id, state)| (id.clone(), *state)),
-            );
-            states
-        });
+        // The capture mirror and the HDR encode pass both replace the whole
+        // element list with ONE synthetic element, so `result.states` names that
+        // element and no client `wl_surface` at all. Merge back the states each
+        // pass captured before it collapsed the list.
+        //
+        // This is not cosmetic. `update_primary_scanout_output` below is called
+        // unconditionally, so a surface missing from these states has its
+        // primary_scanout_output cleared. Combined with the 1s throttle in
+        // send_frame_callbacks that silently caps the client at ~1 frame per
+        // second and drops its wp_presentation feedback entirely — on an HDR
+        // output that hit *every* client on the output, every frame, so a video
+        // player was never told when to present and juddered. Measured 8/9/2026
+        // on HDMI-A-3 with a fullscreen Discord stream.
+        //
+        // `result.states` is extended last so the real DRM pass still wins on
+        // any id collision, exactly as it did when only the mirror merged here.
+        let effective_render_states_storage = {
+            let mut merged = mirrored_render_states;
+            if let Some(hdr_states) = hdr_stage1_states {
+                merged = Some(match merged {
+                    Some(mut states) => {
+                        states.states.extend(
+                            hdr_states
+                                .states
+                                .iter()
+                                .map(|(id, state)| (id.clone(), *state)),
+                        );
+                        states
+                    }
+                    None => hdr_states,
+                });
+            }
+            merged.map(|mut states| {
+                states.states.extend(
+                    result
+                        .states
+                        .states
+                        .iter()
+                        .map(|(id, state)| (id.clone(), *state)),
+                );
+                states
+            })
+        };
         let effective_render_states = effective_render_states_storage
             .as_ref()
             .unwrap_or(&result.states);
@@ -12730,9 +12904,23 @@ const CONNECTOR_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// which is precisely the state a failure leaves behind.
 fn unwind_half_connected_output(
     state: &mut ShojiWM,
+    node: DrmNode,
     output: &Output,
     output_name: &str,
 ) {
+    // Remove unconditionally, then destroy the blob if there was one: the
+    // kernel only frees property blobs when the DRM fd closes, and this device
+    // stays open across hotplugs, so a retry loop would otherwise leak one blob
+    // per attempt.
+    let color_state = state.output_color.remove(output_name);
+    if let Some(blob) = color_state.and_then(|color| color.hdr_metadata_blob)
+        && let Some(backend) = state.tty_backends.get(&node)
+    {
+        crate::color::drm_metadata::destroy_metadata_blob(
+            backend.drm_output_manager.device(),
+            blob,
+        );
+    }
     state.space.unmap_output(output);
     state.remove_output_global(output);
     state.screencopy_state.remove_output(output);
@@ -12853,6 +13041,111 @@ fn connector_connected(
     }
 
     let mode = select_output_mode(&connector, &state.display_config.default_mode);
+
+    // Resolve the output's color pipeline before the DRM surface exists so
+    // the connector properties (max bpc / Colorspace / HDR_OUTPUT_METADATA)
+    // are already part of the connector state when initialize_output performs
+    // the first atomic commit on this CRTC.
+    // Note: at startup and on hotplug the connector connects before the
+    // TypeScript config evaluates, so a config-side `hdr: true` usually
+    // isn't visible here yet — refresh_tty_output_color_modes re-resolves
+    // once the display config update lands.
+    let hdr_requested = state
+        .runtime_output_configs
+        .get(&output_name)
+        .and_then(|config| config.hdr)
+        .unwrap_or(false)
+        || crate::color::hdr_output_requested_via_env(&output_name);
+    // Same lookup as `hdr_requested`: the config may not have arrived yet at
+    // connect time, in which case this is empty and refresh_tty_output_color_modes
+    // re-resolves with the real values once the display config lands.
+    let hdr_luminance_override = state
+        .runtime_output_configs
+        .get(&output_name)
+        .map(|config| crate::color::HdrLuminanceOverride {
+            max: config.hdr_max_luminance,
+            min: config.hdr_min_luminance,
+        })
+        .unwrap_or_default();
+    let color_state = {
+        let backend = state.tty_backends
+            .get(&node)
+            .unwrap();
+        let device = backend.drm_output_manager.device();
+        let edid_hdr = crate::color::drm_metadata::read_edid_hdr(
+            device,
+            &connector
+        );
+        let hdmi_link = crate::color::drm_metadata::read_edid_hdmi_link(
+            device,
+            &connector,
+        );
+        let color_mode = if backend.supports_fp16 {
+            crate::color::resolve_output_mode(
+                &output_name,
+                hdr_requested,
+                edid_hdr.as_ref(),
+                hdr_luminance_override,
+            )
+        } else {
+            // The PQ encode pass composites through an fp16 intermediate;
+            // without renderable fp16 targets HDR10 cannot be driven.
+            if hdr_requested {
+                warn!(
+                    output = %output_name,
+                    "HDR requested but GPU lacks fp16 render targets; staying SDR"
+                );
+            }
+            crate::color::OutputColorMode::Sdr
+        };
+        let hdr_metadata_blob = match color_mode {
+            crate::color::OutputColorMode::Hdr10 { .. } => {
+                match crate::color::drm_metadata::apply_hdr_connector_state(
+                    device,
+                    &connector,
+                    &color_mode,
+                ) {
+                    Ok(blob) => blob,
+                    Err(error) => {
+                        warn!(
+                            output = %output_name,
+                            ?error,
+                            "failed to apply HDR connector state; falling back to SDR signaling"
+                        );
+                        None
+                    }
+                }
+            }
+            crate::color::OutputColorMode::Sdr => {
+                // Clear leftovers from a previous session so the sink drops
+                // out of HDR mode.
+                crate::color::drm_metadata::reset_hdr_connector_state(
+                    device,
+                    &connector
+                );
+                None
+            }
+        };
+        crate::color::OutputColorState::new(
+            color_mode,
+            edid_hdr,
+            hdmi_link,
+            hdr_metadata_blob
+        )
+    };
+    info!(
+        output = %output_name,
+        mode = ?color_state.mode,
+        edid_hdr = ?color_state.edid_hdr,
+        "resolved output color mode"
+    );
+    state
+        .output_color
+        .insert(
+            output_name.clone(),
+            color_state
+        );
+
     let available_modes = connector
         .modes()
         .iter()
@@ -12938,7 +13231,7 @@ fn connector_connected(
     let (drm_output, dmabuf_feedback) = match initialized {
         Ok(pair) => pair,
         Err(err) => {
-            unwind_half_connected_output(state, &output, &output.name());
+            unwind_half_connected_output(state, node, &output, &output.name());
             return Err(err);
         }
     };
@@ -13019,6 +13312,23 @@ fn connector_disconnected(
     let Some(surface) = backend.surfaces.remove(&crtc) else {
         return;
     };
+    if let Some(
+        color_state
+    ) = state.output_color.remove(
+        &output_name
+    )
+        && let Some(
+            blob
+        ) = color_state.hdr_metadata_blob {
+            // The kernel only frees property blobs when the DRM fd closes,
+            // and this device stays open across hotplugs — destroy explicitly
+            // so replug cycles don't leak blobs.
+            crate::color::drm_metadata::destroy_metadata_blob(
+                backend.drm_output_manager
+                    .device(),
+                blob,
+            );
+        }
     let output = surface.output;
     state.space.unmap_output(&output);
     state.remove_output_global(&output);
@@ -13028,6 +13338,7 @@ fn connector_disconnected(
     // instance. Keep it across hot-unplug so a reconnected connector receives its mode, scale,
     // and position immediately. The TS runtime suppresses unchanged configuration payloads, so
     // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
+    state.hdr_pipelines.remove(&output_name);
     state.runtime_animation_outputs.remove(&output_name);
     state.damage_blink_visible.remove(&output_name);
     state.damage_blink_pending.remove(&output_name);
@@ -13254,6 +13565,32 @@ pub fn device_removed(state: &mut ShojiWM, node: DrmNode) {
     info!(?node, "removed tty drm device");
 }
 
+/// Available modes paired with their DRM pixel clock in kHz.
+///
+/// `WlMode` carries only size and refresh, and the clock cannot be recovered
+/// from those — blanking is real transmitted time, so 3840x2160@60 clocks at
+/// 594 MHz rather than the 497.7 MHz its active pixels imply. Anything
+/// reasoning about link bandwidth has to start here.
+pub fn tty_output_available_mode_clocks(
+    state: &crate::state::ShojiWM,
+    output_name: &str,
+) -> Option<Vec<(WlMode, u32)>> {
+    for backend in state.tty_backends.values() {
+        for surface in backend.surfaces.values() {
+            if surface.output.name() == output_name {
+                return Some(
+                    surface
+                        .available_modes
+                        .iter()
+                        .map(|mode| (WlMode::from(*mode), mode.clock()))
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
+}
+
 pub fn tty_output_available_modes(
     state: &crate::state::ShojiWM,
     output_name: &str,
@@ -13273,6 +13610,172 @@ pub fn tty_output_available_modes(
         }
     }
     None
+}
+
+/// Re-resolve every connected output's color mode against the current
+/// runtime display config (`hdr: true` opt-in). Outputs connect before the
+/// TypeScript config evaluates — both at session startup and on hotplug —
+/// so this is where a config-side HDR request actually takes effect. It is
+/// a live switch: the connector properties persist across smithay's
+/// commits (legacy SET_PROPERTY), and the render path re-reads
+/// `output_color` every frame to engage or drop the PQ encode pass.
+pub fn refresh_tty_output_color_modes(
+    state: &mut crate::state::ShojiWM
+) {
+    let mut changed = false;
+    for backend in state.tty_backends
+        .values() {
+        let connectors = backend
+            .drm_scanner
+            .crtcs()
+            .map(
+                |(info, crtc)| (
+                    info
+                        .clone(),
+                    crtc,
+                )
+            ).collect::<Vec<_>>();
+        for (connector, crtc) in connectors {
+            if !backend.surfaces.contains_key(
+                &crtc
+            ) {
+                continue;
+            }
+            let output_name = format!(
+                "{}-{}",
+                connector
+                    .interface()
+                    .as_str(),
+                connector
+                    .interface_id(),
+            );
+            let Some(current) = state.output_color
+                .get(
+                    &output_name
+                )
+                .copied() else {
+                continue;
+            };
+            let hdr_requested = state
+                .runtime_output_configs
+                .get(
+                    &output_name
+                )
+                .and_then(|config| config.hdr)
+                .unwrap_or(false)
+                || crate::color::hdr_output_requested_via_env(&output_name);
+            let hdr_luminance_override = state
+                .runtime_output_configs
+                .get(&output_name)
+                .map(|config| crate::color::HdrLuminanceOverride {
+                    max: config.hdr_max_luminance,
+                    min: config.hdr_min_luminance,
+                })
+                .unwrap_or_default();
+            let desired_mode = if backend.supports_fp16 {
+                crate::color::resolve_output_mode(
+                    &output_name,
+                    hdr_requested,
+                    current.edid_hdr
+                        .as_ref(),
+                    hdr_luminance_override,
+                )
+            } else {
+                crate::color::OutputColorMode::Sdr
+            };
+            if desired_mode == current.mode {
+                continue;
+            }
+
+            let device = backend.drm_output_manager.device();
+            if let Some(blob) = current.hdr_metadata_blob {
+                crate::color::drm_metadata::destroy_metadata_blob(
+                    device,
+                    blob,
+                );
+            }
+            let (
+                mode,
+                hdr_metadata_blob
+            ) = match desired_mode {
+                crate::color::OutputColorMode::Hdr10 { .. } => {
+                    match crate::color::drm_metadata::apply_hdr_connector_state(
+                        device,
+                        &connector,
+                        &desired_mode,
+                    ) {
+                        Ok(blob) => (
+                            desired_mode,
+                            blob,
+                        ),
+                        Err(error) => {
+                            warn!(
+                                output = %output_name,
+                                ?error,
+                                "failed to apply HDR connector state; staying SDR"
+                            );
+                            crate::color::drm_metadata::reset_hdr_connector_state(
+                                device,
+                                &connector,
+                            );
+                            (
+                                crate::color::OutputColorMode::Sdr,
+                                None,
+                            )
+                        }
+                    }
+                }
+                crate::color::OutputColorMode::Sdr => {
+                    crate::color::drm_metadata::reset_hdr_connector_state(
+                        device,
+                        &connector,
+                    );
+                    (
+                        crate::color::OutputColorMode::Sdr,
+                        None,
+                    )
+                }
+            };
+            if mode == current.mode {
+                continue;
+            }
+            info!(
+                output = %output_name,
+                ?mode,
+                "output color mode changed by runtime display config"
+            );
+            state.output_color
+                .insert(
+                    output_name,
+                    crate::color::OutputColorState::new(
+                        mode,
+                        current.edid_hdr,
+                        current.hdmi_link,
+                        hdr_metadata_blob
+                    ),
+                );
+            changed = true;
+        }
+    }
+    if changed {
+        // Force a full repaint on every output so the first frame after the
+        // switch is (de)PQ-encoded; the render path picks the pipeline from
+        // `output_color` per frame.
+        for output in state.space.outputs() {
+            if let Some(geometry) = state.space.output_geometry(output) {
+                state.pending_decoration_damage
+                    .push(
+                        crate::ssd::LogicalRect::new(
+                            geometry.loc.x,
+                            geometry.loc.y,
+                            geometry.size.w,
+                            geometry.size.h,
+                        )
+                    );
+            }
+        }
+        state.schedule_redraw();
+    }
 }
 
 pub fn tty_connected_outputs(state: &crate::state::ShojiWM) -> Vec<Output> {

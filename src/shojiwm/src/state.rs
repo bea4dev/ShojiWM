@@ -278,6 +278,7 @@ pub struct ShojiWM {
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
     pub tearing_control_state: crate::protocols::tearing_control::TearingControlManagerState,
+    pub color_management_state: crate::protocols::color_management::ColorManagementState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
@@ -362,6 +363,10 @@ pub struct ShojiWM {
     pub runtime_scheduler_kick_interval_ms: Option<u64>,
     pub runtime_animation_outputs: std::collections::HashSet<String>,
     pub runtime_output_globals: HashMap<String, GlobalId>,
+    /// Per-output color mode/signal state, keyed by output name (tty only).
+    pub output_color: HashMap<String, crate::color::OutputColorState>,
+    /// Per-output fp16 composite + PQ encode state for HDR10 outputs.
+    pub hdr_pipelines: HashMap<String, crate::backend::hdr_pipeline::HdrPipeline>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1409,6 +1414,8 @@ impl ShojiWM {
             crate::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(&dh, |_| true);
         let tearing_control_state =
             crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&dh);
+        let color_management_state =
+            crate::protocols::color_management::ColorManagementState::new::<Self>(&dh);
         let foreign_toplevel_list_state =
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let wlr_foreign_toplevel_manager_state =
@@ -1597,6 +1604,7 @@ impl ShojiWM {
             fractional_scale_manager_state,
             screencopy_state,
             tearing_control_state,
+            color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
             ext_workspace_manager_state,
@@ -1664,6 +1672,8 @@ impl ShojiWM {
             runtime_scheduler_kick_interval_ms: None,
             runtime_animation_outputs: Default::default(),
             runtime_output_globals: Default::default(),
+            output_color: Default::default(),
+            hdr_pipelines: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
@@ -2553,15 +2563,32 @@ impl ShojiWM {
             .map(|output| {
                 let name = output.name();
                 let physical = output.physical_properties();
-                let available_modes = tty_output_available_modes(self, &name)
-                    .unwrap_or_else(|| output.modes())
-                    .into_iter()
-                    .map(|mode| OutputModeSnapshot {
-                        width: mode.size.w,
-                        height: mode.size.h,
-                        refresh_rate: mode.refresh as f64 / 1000.0,
-                    })
-                    .collect::<Vec<_>>();
+                // Prefer the DRM-backed list, which still carries each mode's
+                // pixel clock; fall back to the wl_output modes (no clock) for
+                // backends with no DRM behind them.
+                let available_modes = match crate::backend::tty::
+                    tty_output_available_mode_clocks(self, &name)
+                {
+                    Some(modes) => modes
+                        .into_iter()
+                        .map(|(mode, clock_khz)| OutputModeSnapshot {
+                            width: mode.size.w,
+                            height: mode.size.h,
+                            refresh_rate: mode.refresh as f64 / 1000.0,
+                            clock_khz: Some(clock_khz),
+                        })
+                        .collect::<Vec<_>>(),
+                    None => tty_output_available_modes(self, &name)
+                        .unwrap_or_else(|| output.modes())
+                        .into_iter()
+                        .map(|mode| OutputModeSnapshot {
+                            width: mode.size.w,
+                            height: mode.size.h,
+                            refresh_rate: mode.refresh as f64 / 1000.0,
+                            clock_khz: None,
+                        })
+                        .collect::<Vec<_>>(),
+                };
                 // Report the mode size in the output's transformed orientation
                 // so config-side logical-size math (`resolution / scale`) stays
                 // correct on rotated outputs. `availableModes` stay physical.
@@ -2572,6 +2599,7 @@ impl ShojiWM {
                         width: size.w,
                         height: size.h,
                         refresh_rate: mode.refresh as f64 / 1000.0,
+                        clock_khz: None,
                     }
                 });
                 let location = output.current_location();
@@ -2593,6 +2621,23 @@ impl ShojiWM {
                         scale: output.current_scale().fractional_scale(),
                         transform: transform.into(),
                         available_modes,
+                        hdr_supported: self
+                            .output_color
+                            .get(
+                                &name,
+                            )
+                            .is_some_and(|color| color.edid_hdr.is_some()),
+                        hdmi: self
+                            .output_color
+                            .get(&name)
+                            .and_then(|color| color.hdmi_link)
+                            .map(|link| {
+                                crate::ssd::HdmiLinkSnapshot {
+                                    standard: link.standard(),
+                                    max_tmds_khz: link.max_tmds_khz,
+                                    max_bandwidth_gbps: link.max_bandwidth_gbps(),
+                                }
+                            }),
                     },
                 )
             })
@@ -2730,6 +2775,15 @@ impl ShojiWM {
                 }
             }
         }
+        // The HDR opt-in lives in this config: widen/narrow the protocol
+        // advertisement and re-resolve connected outputs, which connect
+        // before the TypeScript config evaluates.
+        crate::color::set_session_hdr_configured(
+            self.runtime_output_configs
+                .values()
+                .any(|config| config.hdr == Some(true)),
+        );
+        crate::backend::tty::refresh_tty_output_color_modes(self);
         self.apply_runtime_display_configuration();
         self.notify_runtime_outputs_changed();
     }
@@ -2861,6 +2915,7 @@ impl ShojiWM {
                 smithay::wayland::image_copy_capture::CaptureFailureReason::Unknown,
             );
             self.output_capture_mirrors.remove(&name);
+            self.hdr_pipelines.remove(&name);
             self.runtime_animation_outputs.remove(&name);
             self.layer_effect_evaluation_cache.remove(&name);
             self.popup_effect_evaluation_cache.remove(&name);

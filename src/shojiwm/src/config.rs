@@ -33,6 +33,12 @@ pub struct RuntimeOutputConfig {
     pub position: Option<RuntimeOutputPositionPreference>,
     pub scale: Option<f64>,
     pub transform: Option<RuntimeOutputTransform>,
+    pub hdr: Option<bool>,
+    /// Real peak luminance of the display in cd/m². Only needed when the
+    /// EDID advertises PQ but omits its luminance fields, which is common.
+    pub hdr_max_luminance: Option<f32>,
+    /// Real black level of the display in cd/m². Same caveat.
+    pub hdr_min_luminance: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -177,5 +183,30 @@ mod tests {
         let config: RuntimeOutputConfig =
             serde_json::from_str(r#"{"mode":"extend","scale":1.5}"#).unwrap();
         assert_eq!(config.transform, None);
+    }
+
+    /// The `hdr` opt-in arrives from the TypeScript display config; missing
+    /// means None so older configs keep their SDR behavior.
+    #[test]
+    fn runtime_output_config_parses_hdr_flag() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{
+                "HDMI-A-3":{"mode":"extend","resolution":"best","hdr":true},
+                "eDP-1":{"mode":"extend","resolution":"best"}
+            }}"#,
+        )
+        .expect("display config update should parse");
+        assert_eq!(
+            update
+                .outputs["HDMI-A-3"]
+                .as_ref()
+                .unwrap()
+                .hdr,
+            Some(true)
+        );
+        assert_eq!(
+            update.outputs["eDP-1"].as_ref().unwrap().hdr,
+            None,
+        );
     }
 }
