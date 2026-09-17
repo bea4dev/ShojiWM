@@ -47,9 +47,9 @@ COMPOSITOR.output.configure((context) => {
 
 | `mode` | 意味 | 追加フィールド |
 | --- | --- | --- |
-| `"extend"`（デフォルト） | デスクトップの一部として使う | `resolution` / `position` / `scale` / `transform` |
+| `"extend"`（デフォルト） | デスクトップの一部として使う | `resolution` / `position` / `scale` / `transform` / `subpixel` |
 | `"disabled"` | 出力をオフにする | — |
-| `"mirror"` | 別の出力をミラーする | `source`（ミラー元の出力名） |
+| `"mirror"` | 別の出力をミラーする | `source`（ミラー元の出力名）/ `subpixel` |
 
 ```ts
 display['HDMI-A-1'] = {mode: 'mirror', source: 'eDP-1'};
@@ -131,6 +131,39 @@ display['DP-1'] = {
   `usableArea`・タイリング・スクリーンショット（`grim`）・画面キャプチャ
   （ポータル経由の OBS）も自動的に回転へ追従します。
 
+### `subpixel`
+
+パネルのサブピクセルの物理的な配列です。`wl_output.geometry` でクライアントに
+通知されます。foot や Firefox などは、この値を見て文字のアンチエイリアス方法を
+決めます。多くのパネルはカーネルに `"unknown"` としか報告しないため、実際の配列を
+クライアントに伝える手段はこの設定だけであることがほとんどです。
+
+| 値 | 意味 |
+| --- | --- |
+| `"unknown"` | 配列が不明（多くのコネクターはこれを報告します） |
+| `"none"` | サブピクセル構造なし（プロジェクターなど） |
+| `"horizontal-rgb"` / `"horizontal-bgr"` | 横方向に並ぶ（その順序） |
+| `"vertical-rgb"` / `"vertical-bgr"` | 縦方向に並ぶ（その順序） |
+
+```ts
+// カーネルは "unknown" と報告するが、RGB ストライプだと分かっているノート PC のパネル
+display['eDP-1'] = {
+  resolution: 'best',
+  position: 'auto',
+  subpixel: 'horizontal-rgb',
+};
+```
+
+補足:
+
+- 指定するのは**物理**配列です。コンポジターは `transform` と同じイベントで送り、
+  クライアント側が両者を組み合わせるため、回転した出力でも事前に回転させる必要は
+  ありません。
+- `subpixel` を省略（または後から削除）すると、カーネルがそのコネクターについて
+  報告した値に戻ります。その値は `OutputInfo.detectedSubpixel` で常に確認できます。
+- 反映は即時です。バインド済みの `wl_output` すべてに新しい `geometry` イベントが
+  送られるため、設定のリロードだけで反映され、再接続は不要です。
+
 ## 出力の状態を読む
 
 このコントローラは読み取り専用ビューでもあり、イベントハンドラや合成関数の中で
@@ -148,8 +181,12 @@ display['DP-1'] = {
 | `reconfigure()` | 登録済みファクトリーを即時再実行 |
 
 `OutputInfo` には `name`・`enabled`・`resolution`（`{width, height, refreshRate}`）・
-`position`（`{x, y}`）・`scale`・`transform`・`availableModes`、および識別情報
-（`make`・`model`・`serial`・`connector`）が含まれます。
+`position`（`{x, y}`）・`scale`・`transform`・`subpixel`・`detectedSubpixel`・
+`availableModes`、および識別情報（`make`・`model`・`serial`・`connector`）が
+含まれます。
+
+`subpixel` は現在通知している配列、`detectedSubpixel` はカーネルが報告した配列です。
+設定 UI は、上書きされる前にコネクターが何を報告しているかを表示できます。
 
 transform が設定された出力では、`resolution` は**回転後の向き**で報告されます
 （90°／270° では幅と高さが入れ替わる）。一方 `availableModes` は物理のままです。
