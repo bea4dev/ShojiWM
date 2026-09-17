@@ -2875,6 +2875,16 @@ fn run_runtime(
                 script_path.display()
             )
         })?;
+    // Two runtimes created at once race inside deno_core, and the loser's first
+    // dynamic `import()` rejects with no value, which reaches the caller as
+    // `loadRuntimeConfig` failing with the bare string "undefined". Only isolate
+    // creation and the entry module load are serialised; the guard is released
+    // before the runtime serves requests.
+    static RUNTIME_INIT_LOCK: Mutex<()> = Mutex::new(());
+    let init_guard = RUNTIME_INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     let module = Module::load(script_path)
         .map_err(|error| format!("failed to read {}: {error}", script_path.display()))?;
     let mut runtime = Runtime::new(RuntimeOptions {
@@ -2891,6 +2901,8 @@ fn run_runtime(
     let handle = runtime
         .load_module(&module)
         .map_err(|error| format!("failed to load TypeScript runtime: {error:?}"))?;
+    drop(init_guard);
+
     ready
         .send(Ok(()))
         .map_err(|_| "runtime owner disappeared during initialization".to_owned())?;
