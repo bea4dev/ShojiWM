@@ -257,7 +257,7 @@ package を指定できます。
 ShojiWM はコンポジター単体であり、バーやランチャーなどのシェル UI を自前では同梱して
 いません。標準のシェル実装は別途提供されています。
 
-- **shoji-bar-2** —— [github.com/bea4dev/shoji-bar-2](https://github.com/bea4dev/shoji-bar-2)
+- **shoji-bar-3** —— [github.com/bea4dev/shoji-bar-3](https://github.com/bea4dev/shoji-bar-3)
 
 インストールと有効化の手順は、そのリポジトリの `README.md` を参照してください。
-（ShojiWM のデフォルト設定は、`shoji-bar-2` が存在すれば自動的に起動します。）
+（ShojiWM のデフォルト設定は、`shoji-bar-3` が存在すれば自動的に起動します。）

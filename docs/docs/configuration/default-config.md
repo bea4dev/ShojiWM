@@ -14,7 +14,7 @@ change anything, edit `~/.config/shojiwm/src/index.tsx` and hot reload with
 :::note[Some keybindings launch specific programs]
 The default config is the maintainer's personal setup, so several shortcuts open
 specific apps (kitty, Google Chrome, Discord, Dolphin) and rely on helper tools
-(hyprshot, swappy, cliphist, fcitx5, shoji-bar-2). If you don't have one, the
+(hyprshot, swappy, cliphist, fcitx5, shoji-bar-3). If you don't have one, the
 shortcut simply does nothing — rebind it to your preferred program. See
 [Keybindings & Pointer](./keybindings-and-pointer.md).
 :::
@@ -32,9 +32,9 @@ by default (see [Input](#input)).
 | `Super` + `B` | Browser (Google Chrome, Wayland) |
 | `Super` + `D` | Discord |
 | `Super` + `E` | File manager (Dolphin) |
-| `Super` + `A` | Toggle the start menu (shoji-bar-2) |
+| `Super` + `A` | Toggle the start menu (shoji-bar-3) |
 | `Super` (tap) | Toggle the start menu — a quick tap with no other key |
-| `Super` + `V` | Toggle clipboard history (shoji-bar-2) |
+| `Super` + `V` | Toggle clipboard history (shoji-bar-3) |
 | `Super` + `P` | Screenshot a region (hyprshot → swappy) |
 | `Super` + `Ctrl` + `P` | Screenshot a region, freezing the screen first |
 
@@ -112,7 +112,7 @@ and floating per workspace:
 - Open/close, move, resize, and workspace switches are animated.
 
 The default config also exposes the workspace layout over an IPC socket so an
-external bar (shoji-bar-2) can render workspace indicators and react to changes.
+external bar (shoji-bar-3) can render workspace indicators and react to changes.
 
 ## Multi-monitor
 
@@ -154,7 +154,7 @@ On launch the default config:
 
 - Sets environment variables for Wayland and the fcitx5 input method
   (`QT_QPA_PLATFORM`, `QT_IM_MODULE`, etc.).
-- Starts **fcitx5** (input method), **shoji-bar-2** (the shell), and **cliphist**
+- Starts **fcitx5** (input method), **shoji-bar-3** (the shell), and **cliphist**
   clipboard-history watchers.
 
 These expect the corresponding programs to be installed. Remove or adjust the

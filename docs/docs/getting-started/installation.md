@@ -259,8 +259,8 @@ provides a `bin/xwayland-satellite` executable.
 ShojiWM is just the compositor — it does not ship a bar, launcher, or other shell
 UI on its own. A standard shell implementation is provided separately:
 
-- **shoji-bar-2** — [github.com/bea4dev/shoji-bar-2](https://github.com/bea4dev/shoji-bar-2)
+- **shoji-bar-3** — [github.com/bea4dev/shoji-bar-3](https://github.com/bea4dev/shoji-bar-3)
 
 Follow the setup instructions in that repository's `README.md` to install and
-enable it. (The default ShojiWM config already launches `shoji-bar-2` if it is
+enable it. (The default ShojiWM config already launches `shoji-bar-3` if it is
 present.)

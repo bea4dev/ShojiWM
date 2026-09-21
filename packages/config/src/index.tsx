@@ -350,8 +350,7 @@ COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
   COMPOSITOR.process.spawn({ command: "playerctl previous" });
 });
 
-// shoji-bar-3's application launcher, on the monitor under the cursor. This is
-// where shoji-bar-2's StartMenu used to be bound: same keys, new shell.
+// shoji-bar-3's application launcher, on the monitor under the cursor.
 //
 // The bar answers on Quickshell's IPC socket, which is addressed by the config
 // it was started with rather than by a running instance id, so this works
@@ -373,7 +372,6 @@ COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
   on: "release",
 });
 // The same launcher panel with its field pointed at the clipboard's history.
-// Same key shoji-bar-2 used for it.
 function toggleClipboard() {
   const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   COMPOSITOR.process.spawn({
