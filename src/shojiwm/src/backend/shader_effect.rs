@@ -2420,13 +2420,24 @@ fn append_shader_uniform_values(
 
 type ShaderFileStamp = Option<(std::time::SystemTime, u64)>;
 
+struct FailedShader {
+    /// Stamp of the shader file when it failed; a different stamp means "try again".
+    stamp: ShaderFileStamp,
+    message: String,
+    /// False after a config reload until the key is requested again. The key is derived from
+    /// the shader's path, so a config that was fixed by pointing at a different file never asks
+    /// for the old key again; without this its failure stayed on the overlay forever. An
+    /// unconfirmed entry is not shown and is rebuilt (not served from cache) on its next use.
+    confirmed: bool,
+}
+
 thread_local! {
     /// Pipeline failures seen since the last config reload (deduplicated).
     static REPORTED_EFFECT_ERRORS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    /// Program cache key -> (stamp of the shader file when it failed to build, what went wrong).
-    /// An entry lives exactly as long as the stand-in is in use, so the overlay text is derived
-    /// from this map: fixing the file removes the entry, and with it the message.
-    static FAILED_SHADERS: RefCell<HashMap<String, (ShaderFileStamp, String)>> =
+    /// Program cache key -> the failed build of that shader. An entry lives as long as the
+    /// stand-in is cached under that key, and the overlay text is derived from the entries that
+    /// are `confirmed`: fixing the file removes the entry, and with it the message.
+    static FAILED_SHADERS: RefCell<HashMap<String, FailedShader>> =
         RefCell::new(HashMap::new());
     /// The set of current effect failures changed since the backend last looked.
     static EFFECT_ERRORS_DIRTY: Cell<bool> = const { Cell::new(false) };
@@ -2453,7 +2464,8 @@ pub fn take_effect_error_update() -> Option<Option<String>> {
         entries.sort_by(|a, b| a.0.cmp(b.0));
         entries
             .into_iter()
-            .map(|(_, (_, message))| message.clone())
+            .filter(|(_, failure)| failure.confirmed)
+            .map(|(_, failure)| failure.message.clone())
             .collect::<Vec<_>>()
     });
     // The same file can fail under several cache keys (one per uniform/texture layout).
@@ -2469,6 +2481,13 @@ pub fn take_effect_error_update() -> Option<Option<String>> {
 /// that are still there report themselves again on the next frame.
 pub fn reset_effect_error_reports() {
     REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().clear());
+    // Shader failures too: the reloaded config may no longer use those shaders at all. The ones
+    // it still uses are rebuilt on their next use and confirm themselves again if still broken.
+    FAILED_SHADERS.with(|failed| {
+        for failure in failed.borrow_mut().values_mut() {
+            failure.confirmed = false;
+        }
+    });
     EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
 }
 
@@ -2489,10 +2508,14 @@ fn shader_file_stamp(path: &str) -> ShaderFileStamp {
 /// True when `cache_key` currently holds a stand-in and the shader file has changed since it
 /// failed, i.e. the cached stand-in should be dropped and the real shader tried again.
 fn shader_failure_is_outdated(cache_key: &str, path: &str) -> bool {
-    let recorded =
-        FAILED_SHADERS.with(|failed| failed.borrow().get(cache_key).map(|(stamp, _)| *stamp));
+    let recorded = FAILED_SHADERS.with(|failed| {
+        failed
+            .borrow()
+            .get(cache_key)
+            .map(|failure| (failure.stamp, failure.confirmed))
+    });
     match recorded {
-        Some(stamp) if stamp != shader_file_stamp(path) => {
+        Some((stamp, confirmed)) if !confirmed || stamp != shader_file_stamp(path) => {
             FAILED_SHADERS.with(|failed| failed.borrow_mut().remove(cache_key));
             EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
             true
@@ -2594,8 +2617,16 @@ fn compile_shader_or_fallback<P>(
     let message =
         format!("{failure}\nThe effect using it is disabled until the file is fixed.");
     warn!(%message, "shader failed to build; continuing without it");
-    FAILED_SHADERS
-        .with(|failed| failed.borrow_mut().insert(cache_key.to_owned(), (stamp, message)));
+    FAILED_SHADERS.with(|failed| {
+        failed.borrow_mut().insert(
+            cache_key.to_owned(),
+            FailedShader {
+                stamp,
+                message,
+                confirmed: true,
+            },
+        )
+    });
     EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
     STAND_IN_SHADER_USED.with(|used| used.set(true));
     compile(renderer, fallback_source)
@@ -5797,6 +5828,7 @@ fn blur_texture_pass(
 
 #[cfg(test)]
 mod layer_cache_key_tests {
+
     use super::*;
 
     const ID: &str = "InnerClientId { ptr: 0x562f09941360, alive: true }:42";
@@ -5919,5 +5951,64 @@ mod layer_cache_key_tests {
         assert!(!is_layer_pipeline_key("tty:window-backdrop:0x26:key"));
         assert!(!is_layer_pipeline_key("tty:protocol-window:0x26:key"));
         assert!(!is_layer_pipeline_key("winit:window-backdrop:0x26:key"));
+    }
+}
+
+#[cfg(test)]
+mod effect_error_tests {
+    use super::*;
+
+
+    /// The failure of a shader the reloaded config no longer references must leave the overlay.
+    /// The cache key is derived from the shader path, so after the config is fixed by pointing
+    /// at another file the old key is never requested again.
+    #[test]
+    fn shader_failure_drops_off_the_overlay_after_a_reload_unless_it_recurs() {
+        let record = |key: &str, message: &str| {
+            FAILED_SHADERS.with(|failed| {
+                failed.borrow_mut().insert(
+                    key.to_owned(),
+                    FailedShader {
+                        stamp: None,
+                        message: message.to_owned(),
+                        confirmed: true,
+                    },
+                )
+            });
+            EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+        };
+        FAILED_SHADERS.with(|failed| failed.borrow_mut().clear());
+        REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().clear());
+
+        record("stage:/cfg/missing.frag", "shader /cfg/missing.frag could not be read");
+        assert_eq!(
+            take_effect_error_update(),
+            Some(Some("shader /cfg/missing.frag could not be read".to_owned()))
+        );
+        // Nothing changed: no update.
+        assert_eq!(take_effect_error_update(), None);
+
+        // Config reload. The fixed config never asks for that key again.
+        reset_effect_error_reports();
+        assert_eq!(take_effect_error_update(), Some(None));
+
+        // Had the config still used it, the next request must rebuild instead of serving the
+        // cached stand-in silently: an unconfirmed entry counts as outdated even though the
+        // (still missing) file has the same stamp.
+        assert!(shader_failure_is_outdated(
+            "stage:/cfg/missing.frag",
+            "/cfg/missing.frag"
+        ));
+        assert!(FAILED_SHADERS.with(|failed| failed.borrow().is_empty()));
+
+        // A confirmed failure whose file did not change keeps serving the stand-in.
+        record("stage:/cfg/missing.frag", "shader /cfg/missing.frag could not be read");
+        STAND_IN_SHADER_USED.with(|used| used.set(false));
+        assert!(!shader_failure_is_outdated(
+            "stage:/cfg/missing.frag",
+            "/cfg/missing.frag"
+        ));
+        assert!(STAND_IN_SHADER_USED.with(Cell::get));
+        FAILED_SHADERS.with(|failed| failed.borrow_mut().clear());
     }
 }
