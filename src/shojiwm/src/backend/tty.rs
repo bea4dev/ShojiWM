@@ -10717,13 +10717,9 @@ fn configured_background_effect_elements_for_layer(
     if effect_config.effect.uses_layer_source_input() && layer_source_texture.is_none() {
         return Ok(Vec::new());
     }
-    let cache_key = format!(
-        "tty:layer-top:{}:{}:{}x{}",
-        output.name(),
-        layer_id,
-        effect_rect.width,
-        effect_rect.height
-    );
+    // Built on the backdrop key so its size and stack-position variants can be
+    // evicted together with the backdrop texture that aliases this pipeline's output.
+    let cache_key = format!("tty:layer-top:{}", stable_key);
     let input_size = crate::backend::visual::logical_size_to_physical_buffer_size(
         actual_capture_geo.size.w,
         actual_capture_geo.size.h,
@@ -10809,7 +10805,7 @@ fn configured_background_effect_elements_for_layer(
             entry.commit_counter.increment();
         }
     }
-    crate::backend::shader_effect::evict_stale_backdrop_sizes(layer_backdrop_cache, &stable_key);
+    crate::backend::shader_effect::evict_stale_backdrop_variants(layer_backdrop_cache, &stable_key);
     layer_backdrop_cache.insert(
         stable_key.clone(),
         crate::backend::shader_effect::CachedBackdropTexture {
@@ -11242,7 +11238,7 @@ fn lower_layer_scene_elements(
                     entry.commit_counter.increment();
                 }
             }
-            crate::backend::shader_effect::evict_stale_backdrop_sizes(
+            crate::backend::shader_effect::evict_stale_backdrop_variants(
                 layer_backdrop_cache,
                 &stable_key,
             );
@@ -11461,7 +11457,8 @@ fn configured_background_framebuffer_effect_elements_for_layer(
     effect_config: &crate::ssd::BackgroundEffectConfig,
 ) -> Result<Vec<TtyRenderElements>, crate::backend::shader_effect::ShaderEffectError> {
     let layer_id = crate::ssd::layer_runtime_id(layer_surface);
-    let stable_key = format!("tty:layer-top-framebuffer:{}:{}", output.name(), layer_id);
+    // `{id}@` first, so the live-layer sweep and layer_destroyed can drop it.
+    let stable_key = format!("{}@layer-top-framebuffer@{}", layer_id, output.name());
     Ok(
         crate::backend::shader_effect::framebuffer_backdrop_element_for_output_rects(
             renderer,
