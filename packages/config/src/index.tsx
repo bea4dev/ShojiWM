@@ -572,7 +572,7 @@ const LAYER_BLUR_MASK = compileLayerEffect({
   alpha: "preserve",
   pipeline: [
     dualKawaseBlur({ radius: 4, passes: 2 }),
-    shaderStage(loadShader("./src/layer-blur-mask.frag"), {
+    shaderStage(loadShader("./src/effect/layer-blur-mask.frag"), {
       textures: {
         layer_mask: layerSource(),
       },
@@ -610,7 +610,7 @@ const POPUP_BLUR = compilePopupEffect({
   alpha: "preserve",
   pipeline: [
     dualKawaseBlur({ radius: 4, passes: 2 }),
-    shaderStage(loadShader("./src/layer-blur-mask.frag"), {
+    shaderStage(loadShader("./src/effect/layer-blur-mask.frag"), {
       textures: {
         layer_mask: popupSource(),
       },
@@ -853,7 +853,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
     pipeline: [
       dualKawaseBlur({ radius: 4, passes: 2 }),
-      shaderStage(loadShader("./src/liquid-glass.frag"), {
+      shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
         uniforms: {
           glass_radius_px: 10.0,
           distortion_depth: 0.2,
