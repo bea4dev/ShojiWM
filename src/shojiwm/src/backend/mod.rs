@@ -416,8 +416,24 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         // (it is an `Err` return, not a panic). Log it via tracing first so the
         // failure is captured in the session log before we tear down.
         if let Err(err) = render_if_needed(&mut state, &event_loop.handle()) {
-            error!(error = ?err, "tty render iteration failed; shutting down");
-            return Err(err);
+            // Safety net. Effect failures are normally absorbed where they happen (a broken
+            // shader becomes a pass-through, a failing pipeline hands back its input); anything
+            // config-caused that still gets this far costs a frame, not the session. A GLSL
+            // typo used to end up here as `Gles(ShaderCompileError)` and killed the compositor
+            // — on startup as well, leaving a session that could not boot.
+            if crate::backend::tty::render_error_is_config_caused(err.as_ref()) {
+                error!(error = ?err, "tty render iteration failed on a config-caused effect error; continuing");
+                if state.config_error_report.is_none() {
+                    state.config_error_report = Some(
+                        crate::config_error::ConfigErrorReport::runtime(format!(
+                            "rendering failed because of an effect in the config: {err}"
+                        )),
+                    );
+                }
+            } else {
+                error!(error = ?err, "tty render iteration failed; shutting down");
+                return Err(err);
+            }
         }
 
         // Always flush client output buffers, even on iterations where we skipped

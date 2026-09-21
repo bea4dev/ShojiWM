@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::{
     cmp::max,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::{CStr, CString},
     fs,
     io::Cursor,
@@ -2403,6 +2403,204 @@ fn append_shader_uniform_values(
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Config-caused effect failures must never take the session down.
+//
+// Everything in an effect description comes from the user's config: shader files, texture
+// names, inputs. A GLSL typo used to surface as `GlesError::ShaderCompileError`, travel up
+// through `render_surface` and end the compositor — at startup too, which made the session
+// unbootable until the file was fixed from a TTY. Instead:
+//   * a shader that cannot be read or compiled is replaced by a harmless stand-in with the same
+//     entry point (identity for texture stages, transparent for pixel shaders), cached like the
+//     real program so it is not recompiled every frame, and retried once the file changes;
+//   * any other failing pipeline stage is skipped for that run;
+//   * every such failure is queued here, and the backends show it on the config-error overlay.
+// ---------------------------------------------------------------------------------------------
+
+type ShaderFileStamp = Option<(std::time::SystemTime, u64)>;
+
+thread_local! {
+    /// Pipeline failures seen since the last config reload (deduplicated).
+    static REPORTED_EFFECT_ERRORS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Program cache key -> (stamp of the shader file when it failed to build, what went wrong).
+    /// An entry lives exactly as long as the stand-in is in use, so the overlay text is derived
+    /// from this map: fixing the file removes the entry, and with it the message.
+    static FAILED_SHADERS: RefCell<HashMap<String, (ShaderFileStamp, String)>> =
+        RefCell::new(HashMap::new());
+    /// The set of current effect failures changed since the backend last looked.
+    static EFFECT_ERRORS_DIRTY: Cell<bool> = const { Cell::new(false) };
+    /// Set whenever a compile function hands out a stand-in program.
+    static STAND_IN_SHADER_USED: Cell<bool> = const { Cell::new(false) };
+    /// Nesting depth of `run_effect_pipeline` (sub-pipelines of `unit()` / `renderTo()`).
+    static EFFECT_PIPELINE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+const FALLBACK_TEXTURE_SHADER: &str =
+    "vec4 shader_main(EffectContext effect) { return texture2D(tex, effect.texture_uv); }\n";
+const FALLBACK_PIXEL_SHADER: &str =
+    "vec4 shader_main(EffectContext effect) { return vec4(0.0); }\n";
+
+/// `None`: nothing changed since the last call. `Some(None)`: there are no effect failures
+/// (any more). `Some(Some(text))`: the current failures, for the config-error overlay.
+pub fn take_effect_error_update() -> Option<Option<String>> {
+    if !EFFECT_ERRORS_DIRTY.with(|dirty| dirty.replace(false)) {
+        return None;
+    }
+    let mut messages = FAILED_SHADERS.with(|failed| {
+        let failed = failed.borrow();
+        let mut entries = failed.iter().collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        entries
+            .into_iter()
+            .map(|(_, (_, message))| message.clone())
+            .collect::<Vec<_>>()
+    });
+    // The same file can fail under several cache keys (one per uniform/texture layout).
+    messages.dedup();
+    let mut pipeline_errors =
+        REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow().iter().cloned().collect::<Vec<_>>());
+    pipeline_errors.sort();
+    messages.extend(pipeline_errors);
+    Some((!messages.is_empty()).then(|| messages.join("\n\n")))
+}
+
+/// Forget the pipeline failures seen so far: a config reload may have fixed them, and the ones
+/// that are still there report themselves again on the next frame.
+pub fn reset_effect_error_reports() {
+    REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().clear());
+    EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+}
+
+fn report_effect_error(message: String) {
+    let first_time =
+        REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().insert(message.clone()));
+    if first_time {
+        warn!(%message, "effect failed; continuing without it");
+        EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+    }
+}
+
+fn shader_file_stamp(path: &str) -> ShaderFileStamp {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// True when `cache_key` currently holds a stand-in and the shader file has changed since it
+/// failed, i.e. the cached stand-in should be dropped and the real shader tried again.
+fn shader_failure_is_outdated(cache_key: &str, path: &str) -> bool {
+    let recorded =
+        FAILED_SHADERS.with(|failed| failed.borrow().get(cache_key).map(|(stamp, _)| *stamp));
+    match recorded {
+        Some(stamp) if stamp != shader_file_stamp(path) => {
+            FAILED_SHADERS.with(|failed| failed.borrow_mut().remove(cache_key));
+            EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+            true
+        }
+        Some(_) => {
+            // Still broken: the cached program for this key is the stand-in.
+            STAND_IN_SHADER_USED.with(|used| used.set(true));
+            false
+        }
+        None => false,
+    }
+}
+
+/// The driver's compile log for `wrapped`, with line numbers translated to lines of the user's
+/// own file (the wrapper prepends a header, so the driver's numbers are off by its length).
+fn shader_compile_log(
+    renderer: &mut GlesRenderer,
+    wrapped: &str,
+    user_source: &str,
+    path: &str,
+) -> Option<String> {
+    let full = if wrapped.trim_start().starts_with("#version") {
+        wrapped.to_owned()
+    } else {
+        format!("#version 100\n{wrapped}")
+    };
+    let header_lines = full
+        .find(user_source)
+        .map(|offset| full[..offset].matches('\n').count())?;
+    let source = CString::new(full).ok()?;
+    let log = renderer
+        .with_context(|gl| unsafe {
+            let shader = gl.CreateShader(ffi::FRAGMENT_SHADER);
+            gl.ShaderSource(shader, 1, &source.as_ptr(), std::ptr::null());
+            gl.CompileShader(shader);
+            let mut length = 0;
+            gl.GetShaderiv(shader, ffi::INFO_LOG_LENGTH, &mut length);
+            let mut buffer = vec![0u8; length.max(1) as usize];
+            let mut written = 0;
+            gl.GetShaderInfoLog(shader, length, &mut written, buffer.as_mut_ptr().cast());
+            gl.DeleteShader(shader);
+            buffer.truncate(written.max(0) as usize);
+            String::from_utf8_lossy(&buffer).into_owned()
+        })
+        .ok()?;
+    let user_lines = user_source.lines().count();
+    let translated = log
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            // Mesa: "0:44(1): error: ...". Other drivers: "ERROR: 0:44: ...".
+            let after_unit = line.find("0:").map(|index| &line[index + 2..]);
+            let number = after_unit.and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<usize>().ok()
+            });
+            match number.and_then(|number| number.checked_sub(header_lines)) {
+                Some(user_line) if (1..=user_lines).contains(&user_line) => {
+                    format!("{path}:{user_line}: {}", line.trim())
+                }
+                _ => line.trim().to_owned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    (!translated.is_empty()).then(|| translated.join("\n"))
+}
+
+/// Builds the program for the shader at `path`; on any failure reports it and builds the
+/// stand-in from `fallback_source` instead. `compile` receives the user-level source (it does
+/// the wrapping itself); `wrap` is the same wrapping, used only to fetch a readable compile log.
+fn compile_shader_or_fallback<P>(
+    renderer: &mut GlesRenderer,
+    cache_key: &str,
+    path: &str,
+    fallback_source: &'static str,
+    wrap: impl Fn(&str) -> String,
+    mut compile: impl FnMut(&mut GlesRenderer, &str) -> Result<P, ShaderEffectError>,
+) -> Result<P, ShaderEffectError> {
+    let stamp = shader_file_stamp(path);
+    let failure = match fs::read_to_string(path) {
+        Ok(source) => match compile(renderer, &source) {
+            Ok(program) => {
+                if FAILED_SHADERS
+                    .with(|failed| failed.borrow_mut().remove(cache_key))
+                    .is_some()
+                {
+                    EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+                }
+                return Ok(program);
+            }
+            Err(error) => {
+                let log = shader_compile_log(renderer, &wrap(&source), &source, path)
+                    .unwrap_or_else(|| error.to_string());
+                format!("shader {path} failed to compile:\n{log}")
+            }
+        },
+        Err(error) => format!("shader {path} could not be read: {error}"),
+    };
+    let message =
+        format!("{failure}\nThe effect using it is disabled until the file is fixed.");
+    warn!(%message, "shader failed to build; continuing without it");
+    FAILED_SHADERS
+        .with(|failed| failed.borrow_mut().insert(cache_key.to_owned(), (stamp, message)));
+    EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(true));
+    STAND_IN_SHADER_USED.with(|used| used.set(true));
+    compile(renderer, fallback_source)
+}
+
 fn compile_shader_program(
     renderer: &mut GlesRenderer,
     shader: &CompiledEffect,
@@ -2430,6 +2628,17 @@ fn compile_shader_program(
         cache_key.push(':');
         cache_key.push_str(&kind);
     }
+    if shader_failure_is_outdated(&cache_key, &shader_module.shader.path) {
+        renderer
+            .egl_context()
+            .user_data()
+            .get::<ShaderProgramCache>()
+            .expect("shader effect cache should be initialized")
+            .0
+            .lock()
+            .unwrap()
+            .remove(&cache_key);
+    }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -2444,12 +2653,6 @@ fn compile_shader_program(
         return Ok(program);
     }
 
-    let source = fs::read_to_string(&shader_module.shader.path).map_err(|source| {
-        ShaderEffectError::ReadShader {
-            path: shader_module.shader.path.clone(),
-            source,
-        }
-    })?;
     let mut uniform_names = vec![
         UniformName::new(
             "render_scale",
@@ -2471,8 +2674,17 @@ fn compile_shader_program(
     for (name, value) in &shader_module.uniforms {
         append_shader_uniform_names(&mut uniform_names, name, value);
     }
-    let program =
-        renderer.compile_custom_pixel_shader(wrap_pixel_shader_source(&source), &uniform_names)?;
+    let program = compile_shader_or_fallback(
+        renderer,
+        &cache_key,
+        &shader_module.shader.path,
+        FALLBACK_PIXEL_SHADER,
+        wrap_pixel_shader_source,
+        |renderer, source| {
+            Ok(renderer
+                .compile_custom_pixel_shader(wrap_pixel_shader_source(source), &uniform_names)?)
+        },
+    )?;
     renderer
         .egl_context()
         .user_data()
@@ -2888,6 +3100,17 @@ fn multi_texture_stage_program(
         cache_key.push(':');
         cache_key.push_str(&kind);
     }
+    if shader_failure_is_outdated(&cache_key, &stage.shader.path) {
+        renderer
+            .egl_context()
+            .user_data()
+            .get::<MultiTextureStageProgramCache>()
+            .expect("multi texture stage cache should be initialized")
+            .0
+            .lock()
+            .unwrap()
+            .remove(&cache_key);
+    }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -2902,13 +3125,15 @@ fn multi_texture_stage_program(
         return Ok(program);
     }
 
-    let source =
-        fs::read_to_string(&stage.shader.path).map_err(|source| ShaderEffectError::ReadShader {
-            path: stage.shader.path.clone(),
-            source,
-        })?;
-    let wrapped = wrap_multi_texture_stage_source(&source);
     let renderer_context_id = renderer.context_id();
+    let program = compile_shader_or_fallback(
+        renderer,
+        &cache_key,
+        &stage.shader.path,
+        FALLBACK_TEXTURE_SHADER,
+        wrap_multi_texture_stage_source,
+        |renderer, source| {
+    let wrapped = wrap_multi_texture_stage_source(source);
     let program = renderer.with_context(|gl| unsafe {
         let program = link_program(gl, include_str!("backdrop_blur.vert"), &wrapped)?;
         let location = |name: &str| {
@@ -2942,9 +3167,12 @@ fn multi_texture_stage_program(
                 })
                 .collect(),
             attrib_vert: gl.GetAttribLocation(program, c"vert".as_ptr()),
-            renderer_context_id,
+            renderer_context_id: renderer_context_id.clone(),
         })
     })??;
+    Ok(program)
+        },
+    )?;
     renderer
         .egl_context()
         .user_data()
@@ -2986,6 +3214,17 @@ fn compile_texture_program(
             cache_key.push_str(&kind);
         }
     }
+    if shader_failure_is_outdated(&cache_key, path) {
+        renderer
+            .egl_context()
+            .user_data()
+            .get::<TextureStageProgramCache>()
+            .expect("texture stage cache should be initialized")
+            .0
+            .lock()
+            .unwrap()
+            .remove(&cache_key);
+    }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
@@ -3000,14 +3239,12 @@ fn compile_texture_program(
         return Ok(program);
     }
 
-    let source = fs::read_to_string(path).map_err(|source| ShaderEffectError::ReadShader {
-        path: path.to_string(),
-        source,
-    })?;
-    let wrapped = if with_clip {
-        wrap_backdrop_shader_source(&source)
-    } else {
-        wrap_texture_stage_source(&source)
+    let wrap = move |source: &str| {
+        if with_clip {
+            wrap_backdrop_shader_source(source)
+        } else {
+            wrap_texture_stage_source(source)
+        }
     };
     let mut uniform_names = if with_clip {
         vec![
@@ -3057,7 +3294,16 @@ fn compile_texture_program(
             append_shader_uniform_names(&mut uniform_names, name, value);
         }
     }
-    let program = renderer.compile_custom_texture_shader(wrapped, &uniform_names)?;
+    let program = compile_shader_or_fallback(
+        renderer,
+        &cache_key,
+        path,
+        FALLBACK_TEXTURE_SHADER,
+        wrap,
+        |renderer, source| {
+            Ok(renderer.compile_custom_texture_shader(wrap(source), &uniform_names)?)
+        },
+    )?;
     renderer
         .egl_context()
         .user_data()
@@ -4154,7 +4400,73 @@ fn record_render_to_if_dirty(ran: bool) {
     }
 }
 
+/// Runs a pipeline, and never lets a config-caused failure inside it propagate (see the note
+/// above `take_pending_effect_errors`). When the pipeline failed, or ran with a stand-in for a
+/// shader that does not compile, its result is not shown: an identity stage in the middle of a
+/// pipeline exposes whatever intermediate it happened to receive (a mask, a distance field —
+/// typically a large black box). The whole effect degrades to "its input, cropped like the real
+/// output" instead, which for a backdrop effect looks exactly like having no effect at all.
 fn run_effect_pipeline(
+    renderer: &mut GlesRenderer,
+    effect: &CompiledEffect,
+    ctx: &mut EffectExecutionContext,
+    sample_region: Option<Rectangle<f64, Buffer>>,
+    output_size: Option<(i32, i32)>,
+    mut cache: Option<&mut EffectPipelineCache>,
+    finish_mode: BackdropFinishMode,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let depth = EFFECT_PIPELINE_DEPTH.with(|depth| {
+        depth.set(depth.get() + 1);
+        depth.get()
+    });
+    if depth == 1 {
+        STAND_IN_SHADER_USED.with(|used| used.set(false));
+    }
+    let result = run_effect_pipeline_inner(
+        renderer,
+        effect,
+        ctx,
+        sample_region,
+        output_size,
+        cache.as_deref_mut(),
+        finish_mode,
+    );
+    EFFECT_PIPELINE_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    if depth > 1 {
+        // A sub-pipeline: let the outermost level decide what to show.
+        return result;
+    }
+    let degraded = match &result {
+        Ok(_) => STAND_IN_SHADER_USED.with(Cell::get),
+        Err(error) => {
+            report_effect_error(format!(
+                "effect pipeline failed: {error}\nThe effect is disabled until the config is fixed."
+            ));
+            true
+        }
+    };
+    if !degraded {
+        return result;
+    }
+    let unprocessed = CompiledEffect {
+        pipeline: Vec::new(),
+        ..effect.clone()
+    };
+    EFFECT_PIPELINE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let fallback = run_effect_pipeline_inner(
+        renderer,
+        &unprocessed,
+        ctx,
+        sample_region,
+        output_size,
+        cache,
+        finish_mode,
+    );
+    EFFECT_PIPELINE_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    Ok(fallback.unwrap_or_else(|_| ctx.backdrop.clone()))
+}
+
+fn run_effect_pipeline_inner(
     renderer: &mut GlesRenderer,
     effect: &CompiledEffect,
     ctx: &mut EffectExecutionContext,

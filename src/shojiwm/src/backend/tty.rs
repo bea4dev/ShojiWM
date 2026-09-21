@@ -1159,6 +1159,59 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
 /// the one that names the original cause, later frames usually repeat it, and
 /// the existing reload paths clear the field once a config loads cleanly again.
 /// That mirrors `scheduler_tick`, which also reports once rather than per tick.
+/// Effect failures recorded while building or drawing the previous frame (a shader that does
+/// not compile, a pipeline stage that failed) go on the config-error overlay. The effect code
+/// has no access to the compositor state, so it queues them and the render path collects them.
+pub(crate) fn report_pending_effect_errors(state: &mut ShojiWM) {
+    let Some(update) = crate::backend::shader_effect::take_effect_error_update() else {
+        return;
+    };
+    let showing_effect_error = state.config_error_report.as_ref().is_some_and(|report| {
+        matches!(report.kind, crate::config_error::ConfigErrorKind::Effect)
+    });
+    match update {
+        // Another kind of config error is on screen: it is the more fundamental one, keep it.
+        Some(_) if state.config_error_report.is_some() && !showing_effect_error => return,
+        Some(message) => {
+            state.config_error_report =
+                Some(crate::config_error::ConfigErrorReport::effect(message));
+        }
+        // Everything was fixed (shader files are re-read when they change, without a config
+        // reload), so take our own report down again.
+        None if showing_effect_error => state.config_error_report = None,
+        None => return,
+    }
+    state.schedule_redraw();
+}
+
+/// Whether a render error comes from the user's effect configuration (shader source, effect
+/// description) rather than from the display pipeline. Such an error must not end the session.
+pub(crate) fn render_error_is_config_caused(error: &(dyn std::error::Error + 'static)) -> bool {
+    use smithay::backend::renderer::gles::GlesError;
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if error.is::<crate::backend::shader_effect::ShaderEffectError>()
+            || matches!(
+                error.downcast_ref::<crate::backend::decoration::DecorationSceneError>(),
+                Some(crate::backend::decoration::DecorationSceneError::Shader(_))
+            )
+            || matches!(
+                error.downcast_ref::<GlesError>(),
+                Some(
+                    GlesError::ShaderCompileError
+                        | GlesError::ProgramLinkError
+                        | GlesError::UnknownUniform(_)
+                        | GlesError::UniformTypeMismatch { .. }
+                )
+            )
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
     if state.config_error_report.is_none() {
         state.config_error_report = Some(crate::config_error::ConfigErrorReport::runtime(error));
@@ -2933,6 +2986,7 @@ fn render_surface(
         }
     }
     let gap_threshold_ms = animation_gap_threshold_ms();
+    report_pending_effect_errors(state);
 
     // Skip gate, deliberately *before* the refresh below. `render_if_needed` runs after every
     // event-loop dispatch, so while a flip is pending this function is entered once per input

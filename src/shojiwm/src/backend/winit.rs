@@ -919,6 +919,7 @@ pub fn init_winit(
                     }
                     let decorations_refresh_elapsed_ms =
                         decorations_refresh_started_at.elapsed().as_secs_f64() * 1000.0;
+                    crate::backend::tty::report_pending_effect_errors(state);
                     let layer_effects_started_at = Instant::now();
                     {
                         timescope::scope!("winit refresh_layer_and_popup_effects");

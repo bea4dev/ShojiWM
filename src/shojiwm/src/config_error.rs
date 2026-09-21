@@ -23,6 +23,9 @@ pub enum ConfigErrorKind {
     InitialLoad,
     HotReload,
     Runtime,
+    /// A shader or effect pipeline from the config failed. Unlike the others this one is owned
+    /// by the render path, which replaces or clears it as the set of failures changes.
+    Effect,
 }
 
 impl ConfigErrorReport {
@@ -36,6 +39,13 @@ impl ConfigErrorReport {
     pub fn hot_reload(error: impl ToString) -> Self {
         Self {
             kind: ConfigErrorKind::HotReload,
+            message: error.to_string(),
+        }
+    }
+
+    pub fn effect(error: impl ToString) -> Self {
+        Self {
+            kind: ConfigErrorKind::Effect,
             message: error.to_string(),
         }
     }
@@ -90,6 +100,7 @@ pub fn text_elements_for_output(
         ConfigErrorKind::InitialLoad => "ShojiWM config initial load failed",
         ConfigErrorKind::HotReload => "ShojiWM config hot reload failed",
         ConfigErrorKind::Runtime => "ShojiWM config runtime error",
+        ConfigErrorKind::Effect => "ShojiWM effect error (the effect is disabled)",
     };
     let body = truncate_error_message(&report.message, 3200);
     let lines = wrap_lines(&body, 120);

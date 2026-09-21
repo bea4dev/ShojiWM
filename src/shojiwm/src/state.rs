@@ -2487,6 +2487,8 @@ impl ShojiWM {
         self.decoration_evaluator = DecorationRuntimeEvaluator::Embedded(next);
         self.mark_all_window_decoration_policies_reloaded();
         self.config_error_report = None;
+        // The overlay was just cleared: effect failures that are still there must show up again.
+        crate::backend::shader_effect::reset_effect_error_reports();
         self.runtime_poll_dirty = true;
         let live_window_ids = self
             .space
@@ -2542,6 +2544,8 @@ impl ShojiWM {
         }
 
         self.config_error_report = None;
+        // The overlay was just cleared: effect failures that are still there must show up again.
+        crate::backend::shader_effect::reset_effect_error_reports();
         self.runtime_poll_dirty = true;
         self.request_tty_maintenance("config-initial-load");
         self.schedule_redraw();

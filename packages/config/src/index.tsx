@@ -44,6 +44,7 @@ import {
   WINDOW_STATE_WORKSPACE_OFFSET_Y,
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
+import { ISLAND_GLASS } from "./effect/island-glass";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -291,13 +292,15 @@ COMPOSITOR.process.once("fcitx5", {
   runPolicy: "once-per-session",
 });
 
-// GTK_A11Y=none disables the AT-SPI accessibility bridge for the bar. A status
-// bar never needs a screen reader, and GTK 4.22's accessibility relation
-// handling can melt down into a recursive notify storm (100% CPU) when a
-// GMenuModel-backed popover's model is destroyed while open — e.g. quitting an
-// app from its system-tray menu. Must be set before GTK init, hence here.
+// shoji-bar-3, the session's shell: bar, wallpaper, notification daemon and
+// tray host.
+//
+// The shader is compiled first. The built .qsb is not in the repository, and
+// without it the islands have no silhouette at all. The two are sequenced with
+// `;` rather than `&&` on purpose: if the build fails, starting anyway with a
+// previously built .qsb is far better than a session with no shell in it.
 COMPOSITOR.process.once("shell", {
-  command: "cd ~/.config/shoji-bar-2 && GTK_A11Y=none ags run app.tsx",
+  command: "cd ~/.config/shoji-bar-3 && bash build.sh; exec quickshell --path .",
   runPolicy: "once-per-session",
 });
 // cliphist clipboard history watchers. Text and image need separate watchers;
@@ -347,25 +350,46 @@ COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
   COMPOSITOR.process.spawn({ command: "playerctl previous" });
 });
 
-// Resolve the monitor under the cursor and toggle shoji-bar-2's StartMenu via ags request.
-function toggleStartMenu() {
+// shoji-bar-3's application launcher, on the monitor under the cursor. This is
+// where shoji-bar-2's StartMenu used to be bound: same keys, new shell.
+//
+// The bar answers on Quickshell's IPC socket, which is addressed by the config
+// it was started with rather than by a running instance id, so this works
+// whether the bar was started by hand or by a service.
+//
+//   quickshell -p ~/.config/shoji-bar-3 ipc show
+//
+// lists the rest of the target's functions (open / close / toggle, each also
+// in a `...On <screen>` form). An empty screen name would open it everywhere.
+function toggleLauncher() {
   const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   COMPOSITOR.process.spawn({
-    command: ["ags", "request", "-i", "ags", "start-menu", "toggle", monitor],
+    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher toggleOn "${monitor}"`,
   });
 }
-COMPOSITOR.key.bind("start-menu", "Super+A", toggleStartMenu);
+COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
 // Super tap (fires on release only, when no other key/button was pressed in between).
-COMPOSITOR.key.bind("start-menu-tap", "Super", toggleStartMenu, {
+COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
   on: "release",
 });
-// Toggle shoji-bar-2's clipboard history on the monitor under the cursor.
-COMPOSITOR.key.bind("clipboard", "Super+V", () => {
+// The same launcher panel with its field pointed at the clipboard's history.
+// Same key shoji-bar-2 used for it.
+function toggleClipboard() {
   const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   COMPOSITOR.process.spawn({
-    command: ["ags", "request", "-i", "ags", "clipboard", "toggle", monitor],
+    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher clipboardOn "${monitor}"`,
+  });
+}
+COMPOSITOR.key.bind("clipboard", "Super+V", toggleClipboard);
+
+// Lock the session. No monitor argument: a lock covers every screen there is,
+// and the shell refuses to expose an unlock over the same socket.
+COMPOSITOR.key.bind("lock", "Super+L", () => {
+  COMPOSITOR.process.spawn({
+    command: "quickshell -p ~/.config/shoji-bar-3 ipc call session lock",
   });
 });
+
 COMPOSITOR.key.bind("screenshot", "Super+P", () => {
   COMPOSITOR.process.spawn({
     command: "hyprshot -m region --raw | swappy -f -",
@@ -561,7 +585,13 @@ const LAYER_BLUR_MASK = compileLayerEffect({
 });
 
 COMPOSITOR.effect.layer = (layer) => {
-  if (layer.namespace() === "no_blur") {
+  const namespace = layer.namespace();
+  // Both the LiquidIsland experiment and shoji-bar-3 draw only a translucent
+  // silhouette and let the compositor recover the shape from its alpha.
+  if (namespace === "liquid-island-qs" || namespace === "shoji-bar-3") {
+    return { behind: ISLAND_GLASS };
+  }
+  if (namespace === "no_blur") {
     return {};
   }
 
