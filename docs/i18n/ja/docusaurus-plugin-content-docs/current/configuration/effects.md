@@ -113,6 +113,7 @@ COMPOSITOR.effect.popup = (popup) => {
 | `save(name)` / `blend(input, {...})` | 中間結果の保存／合成 |
 | `unit(effect)` | コンパイル済みの再利用可能なサブエフェクトを埋め込む |
 | `renderTo(state, {...})` | 永続状態へサイドパイプラインを実行 |
+| `renderToIfDirty(state, {dependsOn, ...})` | `renderTo` と同じだが、宣言したソースが変化したときだけ再実行 |
 
 `dualKawaseBlur`の`radius`はデフォルト`8`でサンプリング間隔を制御し、`passes`は
 デフォルト`2`でダウン／アップサンプルの深さを制御します（`0`〜`8`に制限）。どちらを
@@ -202,6 +203,52 @@ const fluid = compileLayerEffect({
 `clear`なら透明黒から再開し、`stretch`なら直前の状態を新しい大きさへ引き伸ばします。
 互換性のあるホットリロードでは状態を維持し、所有するエフェクトインスタンスのキャッシュが
 破棄または追い出されたときに解放します。
+
+#### 変化のないサイドパイプラインを飛ばす：`renderToIfDirty()`
+
+`renderTo()`は外側のパイプラインが走るたびに毎回実行されます。時間方向に蓄積する
+エフェクトにはこれが必要です。一方で、レイヤーのシルエットから作る距離場やマスクのように
+「重いが対象そのものにしか依存しない」サイドパイプラインもあります。外側のパイプラインは
+背景が変わるたびに再実行されるので、そのたびに作り直すのは無駄です。
+`renderToIfDirty()`は、`dependsOn`に挙げたソースが前回の書き込みから変化したときだけ
+サイドパイプラインを再実行し、それ以外では丸ごとスキップします。
+
+```ts
+const field = stateTexture('silhouette-field', {format: 'rgba16f'});
+
+const glass = compileLayerEffect({
+  input: backdropSource(),
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 64},
+  pipeline: [
+    dualKawaseBlur({radius: 2, passes: 2}),
+    renderToIfDirty(field, {
+      dependsOn: [layerSource()],
+      input: layerSource(),
+      pipeline: [shaderStage(loadShader('./src/field.frag'))],
+    }),
+    shaderStage(loadShader('./src/glass.frag'), {
+      textures: {field: stateSource(field)},
+    }),
+  ],
+});
+```
+
+- `dependsOn`には`windowSource()`・`layerSource()`・`popupSource()`を指定できます。
+  そのソースとしてキャプチャされた内容（新しいコミット、キャプチャ内でのサイズや位置）が
+  変わると「変化した」と判定されます。
+- **サイドパイプラインが実際に読むソースはすべて宣言してください。** コンポジターは
+  GLSLの中身を見られないため、宣言漏れがあると古い結果が残ります。`shaderStage`は
+  前段の出力を必ず`tex`として受け取る点に注意してください。シェーダーがそれを読むなら、
+  その前段を作ったものも依存先です。`SHOJI_RENDER_TO_IF_DIRTY_ALWAYS=1`を付けて
+  コンポジターを起動すると、すべての`renderToIfDirty()`が`renderTo()`と同じ動作になり、
+  表示の乱れが宣言漏れによるものか切り分けられます。
+- **結果は`stateSource(state)`で読みます。** サイドパイプライン内で`save()`した名前は
+  スキップされた実行では存在しないため、サイドパイプラインの外から`get()`すると
+  設定エラーになります。内側で使うのは問題ありません。
+- 状態にはサイドパイプラインの最終テクスチャがそのまま入ります。`renderTo()`が行う
+  コピーを経ないので、サイドパイプライン内の`save()`/`get()`と同じ座標系です。
+- 状態が再確保されたとき（初回・リサイズ・フォーマット変更）と、サイドパイプライン自身の
+  ユニフォームが変化したときは、依存先に関係なく再実行されます。
 
 ### 無効化ポリシー
 

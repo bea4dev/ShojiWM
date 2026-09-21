@@ -870,7 +870,21 @@ pub enum EffectStage {
     RenderTo {
         target: EffectStateTexture,
         effect: Box<CompiledEffect>,
+        /// `None`: plain `renderTo()`, re-run every time the outer pipeline runs (temporal
+        /// feedback relies on this). `Some(deps)`: `renderToIfDirty()`, re-run only when one of
+        /// the declared subject sources changed since the state was last written.
+        depends_on: Option<Vec<EffectDependency>>,
     },
+}
+
+/// A subject source a `renderToIfDirty()` side pipeline declares it depends on. The executor
+/// compares a content signature of the captured subject; the include mode is part of what
+/// gets captured, so it does not need separate handling here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectDependency {
+    WindowSource,
+    LayerSource,
+    PopupSource,
 }
 
 /// How the alpha channel of an effect's output is treated when the pipeline

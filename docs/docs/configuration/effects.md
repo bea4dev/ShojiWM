@@ -114,6 +114,7 @@ Options:
 | `save(name)` / `blend(input, {...})` | Save/composite intermediate results |
 | `unit(effect)` | Embed a compiled reusable sub-effect |
 | `renderTo(state, {...})` | Run a side pipeline into persistent state |
+| `renderToIfDirty(state, {dependsOn, ...})` | Like `renderTo`, but only re-run when a declared source changed |
 
 For `dualKawaseBlur`, `radius` defaults to `8` and controls the sampling offset;
 `passes` defaults to `2` and controls the downsample/upsample depth (clamped to
@@ -207,6 +208,55 @@ and exposes the meaningful state in the R/G channels. On resize, `clear`
 restarts from transparent black while `stretch` preserves and scales the latest
 state. State survives compatible hot reloads and is released with or evicted
 from the owning effect-instance cache.
+
+#### Skipping a side pipeline that did not change: `renderToIfDirty()`
+
+`renderTo()` runs every time the outer pipeline runs, which is what temporal
+effects need. Some side pipelines are different: they are expensive but depend
+only on the subject itself — a distance field or mask built from a layer's
+silhouette, for example — while the outer pipeline has to re-run whenever the
+backdrop underneath changes. `renderToIfDirty()` re-runs such a side pipeline
+only when one of the sources listed in `dependsOn` changed since the state was
+last written, and skips it entirely otherwise.
+
+```ts
+const field = stateTexture('silhouette-field', {format: 'rgba16f'});
+
+const glass = compileLayerEffect({
+  input: backdropSource(),
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 64},
+  pipeline: [
+    dualKawaseBlur({radius: 2, passes: 2}),
+    renderToIfDirty(field, {
+      dependsOn: [layerSource()],
+      input: layerSource(),
+      pipeline: [shaderStage(loadShader('./src/field.frag'))],
+    }),
+    shaderStage(loadShader('./src/glass.frag'), {
+      textures: {field: stateSource(field)},
+    }),
+  ],
+});
+```
+
+- `dependsOn` takes `windowSource()`, `layerSource()` and `popupSource()`. A
+  source counts as changed when the content captured for it changed (a new
+  commit, a different size or position inside the capture).
+- **Declare every source the side pipeline really reads.** The compositor
+  cannot look inside GLSL, so an undeclared dependency leaves a stale result.
+  Note that a `shaderStage` always receives the previous stage as `tex`; if the
+  shader samples it, whatever produced it is a dependency too. Start the
+  compositor with `SHOJI_RENDER_TO_IF_DIRTY_ALWAYS=1` to make every
+  `renderToIfDirty()` behave like `renderTo()` and check whether a glitch is a
+  missing dependency.
+- **Read the result with `stateSource(state)`.** Names `save()`d inside the
+  side pipeline do not exist on skipped runs, so `get()`ting one from outside
+  the side pipeline is a configuration error. Using them inside is fine.
+- The state keeps the side pipeline's final texture as-is, without the copy
+  `renderTo()` performs, so it is in the same coordinate system as the
+  textures `save()` / `get()` expose inside the side pipeline.
+- It also re-runs by itself when the state is reallocated (first use, resize,
+  format change) and when the side pipeline's own uniforms change.
 
 ### Invalidation policy
 

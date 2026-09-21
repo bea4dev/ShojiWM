@@ -3612,7 +3612,7 @@ fn lower_layer_scene_elements(
         } else {
             None
         };
-        let layer_source_texture = config
+        let layer_source_capture = config
             .effect
             .uses_layer_source_input()
             .then(|| {
@@ -3634,6 +3634,8 @@ fn lower_layer_scene_elements(
                     scale,
                     layer_surface,
                 );
+                let signature =
+                    crate::backend::snapshot::render_element_scene_signature(&scene, scale);
                 capture_scene_texture_for_effect(
                     renderer,
                     "winit-layer-lower-source",
@@ -3641,8 +3643,11 @@ fn lower_layer_scene_elements(
                     scale,
                     &scene,
                 )
+                .map(|texture| (texture, signature))
             })
             .flatten();
+        let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+        let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
         // Skip the effect this frame when the layer source could not be
         // captured (empty scene / zero-sized geometry); running the pipeline
         // without it would fail inside resolve_effect_input.
@@ -3679,6 +3684,7 @@ fn lower_layer_scene_elements(
                 input_texture,
                 xray_texture,
                 layer_source_texture,
+                layer_source_signature,
                 input_size,
                 sample_region,
                 output_size,
@@ -4083,7 +4089,7 @@ fn configured_background_effect_elements_for_layer(
                 })
                 .collect();
         }
-    let layer_source_texture = config
+    let layer_source_capture = config
         .effect
         .uses_layer_source_input()
         .then(|| {
@@ -4105,6 +4111,8 @@ fn configured_background_effect_elements_for_layer(
                 scale,
                 layer_surface,
             );
+            let signature =
+                crate::backend::snapshot::render_element_scene_signature(&scene, scale);
             capture_scene_texture_for_effect(
                 renderer,
                 "winit-layer-top-source",
@@ -4112,8 +4120,11 @@ fn configured_background_effect_elements_for_layer(
                 scale,
                 &scene,
             )
+            .map(|texture| (texture, signature))
         })
         .flatten();
+    let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+    let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
     // Skip the effect this frame when the layer source could not be captured
     // (empty scene / zero-sized geometry); running the pipeline without it
     // would fail inside resolve_effect_input.
@@ -4146,6 +4157,7 @@ fn configured_background_effect_elements_for_layer(
             input_texture,
             xray_texture,
             layer_source_texture,
+            layer_source_signature,
             input_size,
             sample_region,
             output_size,

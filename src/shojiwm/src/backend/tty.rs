@@ -991,6 +991,10 @@ struct SurfaceData {
     queued_at: Option<Instant>,
     queued_cpu_duration: Duration,
     skipped_while_pending_count: u32,
+    /// When the decoration/effect refresh last ran for this output. A `render_surface` call
+    /// that cannot render (flip still pending) skips the refresh; this is the watchdog that
+    /// lets one through anyway if the output has gone unusually long without one.
+    last_decoration_refresh_at: Option<Instant>,
     frame_callback_timer_armed: bool,
     frame_callback_timer_generation: u64,
     commit_timing_timer_armed: bool,
@@ -2778,6 +2782,57 @@ fn retire_unmapped_surface(state: &mut ShojiWM, node: DrmNode, crtc: crtc::Handl
     surface.next_frame_target = None;
 }
 
+/// Bookkeeping for a `render_surface` call that cannot render right now (the output is not
+/// `Queued`, typically because the previous flip is still pending).
+fn note_render_surface_skipped(
+    state: &mut ShojiWM,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    output: &Output,
+    redraw_state: TtyRedrawState,
+    gap_threshold_ms: f64,
+) {
+    if let Some(surface) = state
+        .tty_backends
+        .get_mut(&node)
+        .and_then(|backend| backend.surfaces.get_mut(&crtc))
+    {
+        if surface.frame_pending {
+            surface.skipped_while_pending_count =
+                surface.skipped_while_pending_count.saturating_add(1);
+        }
+        if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
+            tracing::info!(
+                output = %output.name(),
+                redraw_state = ?redraw_state,
+                frame_pending = surface.frame_pending,
+                skipped_while_pending_count = surface.skipped_while_pending_count,
+                "transform snapshot tty skipped render_surface"
+            );
+        }
+        if animation_gap_debug_enabled() {
+            let queued_wait_ms = surface
+                .queued_at
+                .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
+            if queued_wait_ms.is_some_and(|queued_wait_ms| queued_wait_ms >= gap_threshold_ms)
+                || surface.frame_pending
+            {
+                warn!(
+                    output = %output.name(),
+                    redraw_state = ?redraw_state,
+                    frame_pending = surface.frame_pending,
+                    queued_wait_ms,
+                    skipped_while_pending_count = surface.skipped_while_pending_count,
+                    frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                    last_presented_at = ?surface.last_presented_at,
+                    next_frame_target = ?surface.next_frame_target,
+                    "animation gap: tty render_surface skipped"
+                );
+            }
+        }
+    }
+}
+
 fn render_surface(
     state: &mut ShojiWM,
     loop_handle: &LoopHandle<'_, ShojiWM>,
@@ -2879,6 +2934,54 @@ fn render_surface(
     }
     let gap_threshold_ms = animation_gap_threshold_ms();
 
+    // Skip gate, deliberately *before* the refresh below. `render_if_needed` runs after every
+    // event-loop dispatch, so while a flip is pending this function is entered once per input
+    // event (measured: 3491 entries for 453 rendered frames during a window drag). The refresh
+    // is the expensive part — it re-evaluates dirty windows through a synchronous round trip
+    // to the TypeScript runtime and re-runs layout — and its result is only ever consumed by a
+    // render. Running it for entries that then return `Skipped` burned ~7 ms of main-thread
+    // time per displayed frame and saturated the 8.33 ms budget at 120 Hz. A skipped entry is
+    // always retried: `queue_tty_redraws` marked the pending flip `redraw_needed`, and
+    // `frame_finish` re-enters here as `Queued`, where the refresh runs once against the
+    // latest state. Nothing in the refresh can turn this output `Queued` (the redraw state is
+    // private to this backend), so deciding before it is equivalent to deciding after it.
+    //
+    // Watchdog: if this output somehow has not been refreshed for a while (a lost vblank, a
+    // flip that never completes), let the refresh through so window evaluation and configures
+    // cannot stall behind a stuck flip.
+    const SKIPPED_REFRESH_WATCHDOG: Duration = Duration::from_millis(100);
+    let (redraw_state_at_entry, refresh_overdue) = state
+        .tty_backends
+        .get(&node)
+        .and_then(|backend| backend.surfaces.get(&crtc))
+        .map(|surface| {
+            (
+                surface.redraw_state,
+                surface
+                    .last_decoration_refresh_at
+                    .is_none_or(|at| at.elapsed() >= SKIPPED_REFRESH_WATCHDOG),
+            )
+        })
+        .unwrap_or((TtyRedrawState::Idle, true));
+    if redraw_state_at_entry != TtyRedrawState::Queued && !refresh_overdue {
+        note_render_surface_skipped(
+            state,
+            node,
+            crtc,
+            &output,
+            redraw_state_at_entry,
+            gap_threshold_ms,
+        );
+        return Ok(RenderSurfaceOutcome::Skipped);
+    }
+    if let Some(surface) = state
+        .tty_backends
+        .get_mut(&node)
+        .and_then(|backend| backend.surfaces.get_mut(&crtc))
+    {
+        surface.last_decoration_refresh_at = Some(Instant::now());
+    }
+
     let decoration_refresh_started_at = Instant::now();
     {
         timescope::scope!("tty refresh_window_decorations");
@@ -2952,45 +3055,7 @@ fn render_surface(
         .unwrap_or(TtyRedrawState::Idle);
 
     if redraw_state != TtyRedrawState::Queued {
-        if let Some(surface) = state
-            .tty_backends
-            .get_mut(&node)
-            .and_then(|backend| backend.surfaces.get_mut(&crtc))
-        {
-            if surface.frame_pending {
-                surface.skipped_while_pending_count =
-                    surface.skipped_while_pending_count.saturating_add(1);
-            }
-            if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() {
-                tracing::info!(
-                    output = %output.name(),
-                    redraw_state = ?redraw_state,
-                    frame_pending = surface.frame_pending,
-                    skipped_while_pending_count = surface.skipped_while_pending_count,
-                    "transform snapshot tty skipped render_surface"
-                );
-            }
-            if animation_gap_debug_enabled() {
-                let queued_wait_ms = surface
-                    .queued_at
-                    .map(|queued_at| queued_at.elapsed().as_secs_f64() * 1000.0);
-                if queued_wait_ms.is_some_and(|queued_wait_ms| queued_wait_ms >= gap_threshold_ms)
-                    || surface.frame_pending
-                {
-                    warn!(
-                        output = %output.name(),
-                        redraw_state = ?redraw_state,
-                        frame_pending = surface.frame_pending,
-                        queued_wait_ms,
-                        skipped_while_pending_count = surface.skipped_while_pending_count,
-                        frame_callback_timer_armed = surface.frame_callback_timer_armed,
-                        last_presented_at = ?surface.last_presented_at,
-                        next_frame_target = ?surface.next_frame_target,
-                        "animation gap: tty render_surface skipped"
-                    );
-                }
-            }
-        }
+        note_render_surface_skipped(state, node, crtc, &output, redraw_state, gap_threshold_ms);
         return Ok(RenderSurfaceOutcome::Skipped);
     }
 
@@ -8621,6 +8686,10 @@ fn window_effect_elements(
                 placement
             ),
             source.texture,
+            Some(crate::backend::snapshot::render_element_scene_signature(
+                window_elements,
+                scale,
+            )),
             (texture_size.w, texture_size.h),
             None,
             Some((texture_size.w, texture_size.h)),
@@ -10605,7 +10674,7 @@ fn configured_background_effect_elements_for_layer(
     else {
         return Ok(Vec::new());
     };
-    let layer_source_texture = if effect_config.effect.uses_layer_source_input() {
+    let layer_source_capture = if effect_config.effect.uses_layer_source_input() {
         let layer_source_geo = smithay::utils::Rectangle::new(
             smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
             (effect_rect.width, effect_rect.height).into(),
@@ -10624,6 +10693,10 @@ fn configured_background_effect_elements_for_layer(
             scale,
             layer_surface,
         )?;
+        // The signature (element ids, commit counters, geometry) is what
+        // `renderToIfDirty({ dependsOn: [layerSource()] })` compares.
+        let signature =
+            crate::backend::snapshot::render_element_scene_signature(&scene, scale);
         capture_scene_texture_for_effect(
             renderer,
             "tty-layer-top-source",
@@ -10631,9 +10704,12 @@ fn configured_background_effect_elements_for_layer(
             scale,
             &scene,
         )
+        .map(|texture| (texture, signature))
     } else {
         None
     };
+    let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+    let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
     // Layer source capture can legitimately come up empty (first frame after
     // the surface maps, zero-sized geometry during animations, capture
     // failure). Running the pipeline without it would fail inside
@@ -10674,6 +10750,7 @@ fn configured_background_effect_elements_for_layer(
             input_texture,
             xray_texture,
             layer_source_texture,
+            layer_source_signature,
             input_size,
             sample_region,
             output_size,
@@ -11060,7 +11137,7 @@ fn lower_layer_scene_elements(
             } else {
                 None
             };
-            let layer_source_texture = if effect_config.effect.uses_layer_source_input() {
+            let layer_source_capture = if effect_config.effect.uses_layer_source_input() {
                 let layer_source_geo = smithay::utils::Rectangle::new(
                     smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
                     (effect_rect.width, effect_rect.height).into(),
@@ -11079,6 +11156,10 @@ fn lower_layer_scene_elements(
                     scale,
                     layer_surface,
                 )?;
+                // The signature (element ids, commit counters, geometry) is what
+                // `renderToIfDirty({ dependsOn: [layerSource()] })` compares.
+                let signature =
+                    crate::backend::snapshot::render_element_scene_signature(&scene, scale);
                 capture_scene_texture_for_effect(
                     renderer,
                     "tty-layer-lower-source",
@@ -11086,9 +11167,12 @@ fn lower_layer_scene_elements(
                     scale,
                     &scene,
                 )
+                .map(|texture| (texture, signature))
             } else {
                 None
             };
+            let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+            let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
             // Skip the effect this frame when the layer source could not be
             // captured (empty scene / zero-sized geometry); running the
             // pipeline without it would fail inside resolve_effect_input.
@@ -11125,6 +11209,7 @@ fn lower_layer_scene_elements(
                     input_texture,
                     xray_texture,
                     layer_source_texture,
+                    layer_source_signature,
                     input_size,
                     sample_region,
                     output_size,
@@ -12966,6 +13051,7 @@ fn connector_connected(
         queued_at: None,
         queued_cpu_duration: Duration::ZERO,
         skipped_while_pending_count: 0,
+        last_decoration_refresh_at: None,
         frame_callback_timer_armed: false,
         frame_callback_timer_generation: 0,
         commit_timing_timer_armed: false,

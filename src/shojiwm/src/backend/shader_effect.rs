@@ -769,7 +769,9 @@ struct BackdropFramebufferCache {
 #[derive(Debug, Default)]
 struct EffectPipelineCache {
     targets: Vec<EffectPipelineTarget>,
-    next_target: usize,
+    /// Incremented by `begin_frame`; a target is in use for the current pipeline run when its
+    /// `last_used_run` equals this.
+    run: u64,
     blur_pyramids: Vec<Vec<GlesTexture>>,
     next_blur_pyramid: usize,
     states: HashMap<String, EffectStateSlot>,
@@ -798,46 +800,137 @@ impl EffectInstancePipelineCache {
 struct EffectPipelineTarget {
     texture: GlesTexture,
     format: Fourcc,
+    last_used_run: u64,
 }
+
+/// Pipeline runs a pooled target may sit unused before it is freed. Long enough that a
+/// `renderToIfDirty()` side pipeline that re-runs every few seconds keeps its textures, short
+/// enough that sizes left behind by a resize do not pile up.
+const EFFECT_TARGET_IDLE_RUNS: u64 = 600;
 
 #[derive(Debug)]
 struct EffectStateSlot {
     descriptor: EffectStateTexture,
     textures: [GlesTexture; 2],
     current: usize,
+    /// `renderToIfDirty()`: signature of everything the last write depended on. `None` until
+    /// the first write, and again whenever the slot is reallocated (resize, format change).
+    dirty_key: Option<u64>,
 }
 
 impl EffectPipelineCache {
     fn begin_frame(&mut self) {
-        self.next_target = 0;
+        self.run = self.run.wrapping_add(1);
+        let run = self.run;
+        self.targets
+            .retain(|target| run.wrapping_sub(target.last_used_run) <= EFFECT_TARGET_IDLE_RUNS);
         self.next_blur_pyramid = 0;
     }
 
+    /// Hands out a scratch target for the current pipeline run. Targets are pooled by
+    /// (size, format) rather than by call order: a `renderToIfDirty()` side pipeline that is
+    /// skipped on some runs would otherwise shift every later stage onto a slot of the wrong
+    /// size or format and force a reallocation each time it toggles.
     fn target(
         &mut self,
         renderer: &mut GlesRenderer,
         size: (i32, i32),
     ) -> Result<GlesTexture, ShaderEffectError> {
-        let index = self.next_target;
-        self.next_target += 1;
         let expected = Size::<i32, Buffer>::from(size);
         let format = self.target_format.unwrap_or(Fourcc::Abgr8888);
-        if self
-            .targets
-            .get(index)
-            .is_none_or(|target| target.texture.size() != expected || target.format != format)
-        {
-            let target = EffectPipelineTarget {
-                texture: Offscreen::<GlesTexture>::create_buffer(renderer, format, expected)?,
-                format,
-            };
-            if index == self.targets.len() {
-                self.targets.push(target);
-            } else {
-                self.targets[index] = target;
-            }
+        let run = self.run;
+        if let Some(target) = self.targets.iter_mut().find(|target| {
+            target.last_used_run != run
+                && target.format == format
+                && target.texture.size() == expected
+        }) {
+            target.last_used_run = run;
+            return Ok(target.texture.clone());
         }
-        Ok(self.targets[index].texture.clone())
+        // A miss means this pipeline's working size changed (a window being resized or
+        // animated changes it every frame). Targets of any other size that this run has not
+        // touched are leftovers of the previous size: free them now, before allocating, the way
+        // the old index-based pool replaced its slots in place. Keeping them around — they are
+        // full-window textures — piled up hundreds of megabytes within a second of resizing
+        // and stalled the GPU on memory pressure. Same-size idle targets stay: that is what a
+        // skipped `renderToIfDirty()` side pipeline comes back to.
+        self.targets
+            .retain(|target| target.last_used_run == run || target.texture.size() == expected);
+        let texture = Offscreen::<GlesTexture>::create_buffer(renderer, format, expected)?;
+        self.targets.push(EffectPipelineTarget {
+            texture: texture.clone(),
+            format,
+            last_used_run: run,
+        });
+        Ok(texture)
+    }
+
+    /// `renderToIfDirty()`: whether the state must be (re)written for `dirty_key`.
+    fn state_is_dirty(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        descriptor: &EffectStateTexture,
+        base_size: (i32, i32),
+        dirty_key: u64,
+    ) -> Result<bool, ShaderEffectError> {
+        self.ensure_state(renderer, descriptor, base_size)?;
+        Ok(self
+            .states
+            .get(&descriptor.name)
+            .is_none_or(|slot| slot.dirty_key != Some(dirty_key)))
+    }
+
+    /// `renderToIfDirty()`: make `source` the state's current texture *without copying it*.
+    /// The texture is taken out of the scratch pool so later runs cannot overwrite it, which
+    /// also keeps it bit-identical to (and in the same coordinate system as) what `save()` /
+    /// `get()` would have exposed inside the side pipeline. A texture that does not come from
+    /// the pool (an input passed straight through) is owned elsewhere, so that case falls back
+    /// to the copying commit.
+    fn adopt_state(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        descriptor: &EffectStateTexture,
+        base_size: (i32, i32),
+        source: &GlesTexture,
+        dirty_key: u64,
+    ) -> Result<(), ShaderEffectError> {
+        self.ensure_state(renderer, descriptor, base_size)?;
+        let expected_size = Size::<i32, Buffer>::from(effect_state_size(base_size, descriptor.scale));
+        let expected_format = effect_state_fourcc(descriptor.format);
+        let pooled = self.targets.iter().position(|target| {
+            target.texture.tex_id() == source.tex_id()
+                && target.format == expected_format
+                && target.texture.size() == expected_size
+        });
+        match pooled {
+            Some(index) => {
+                let slot = self
+                    .states
+                    .get_mut(&descriptor.name)
+                    .expect("state was ensured");
+                let next = 1 - slot.current;
+                // Swap rather than drop: the state texture being replaced goes back into the
+                // pool in the adopted one's place, so a side pipeline that is dirty every
+                // frame (the layer is animating) settles into zero allocations per run instead
+                // of creating and freeing a full-size float texture each time.
+                let replaced = std::mem::replace(&mut slot.textures[next], source.clone());
+                slot.current = next;
+                let pooled = &mut self.targets[index];
+                if replaced.size() == expected_size {
+                    pooled.texture = replaced;
+                    // Free for reuse from the next request on; nothing reads it any more.
+                    pooled.last_used_run = self.run.wrapping_sub(1);
+                } else {
+                    self.targets.swap_remove(index);
+                }
+            }
+            None => self.commit_state(renderer, descriptor, base_size, source)?,
+        }
+        self.states
+            .get_mut(&descriptor.name)
+            .expect("state was ensured")
+            .dirty_key = Some(dirty_key);
+        Ok(())
     }
 
     fn blur_pyramid(&mut self) -> &mut Vec<GlesTexture> {
@@ -918,6 +1011,7 @@ impl EffectPipelineCache {
                 descriptor: descriptor.clone(),
                 textures,
                 current: 0,
+                dirty_key: None,
             },
         );
         Ok(())
@@ -1096,6 +1190,58 @@ struct EffectExecutionContext {
     state_base_size: (i32, i32),
     content_rect: Rectangle<i32, Buffer>,
     named: HashMap<String, GlesTexture>,
+    source_signatures: EffectSourceSignatures,
+}
+
+/// Content signatures of the subject sources the current pipeline run can sample, as computed
+/// by the caller from the scene it captured (element ids, commit counters, geometry). `None`
+/// means the caller does not know, which `renderToIfDirty()` treats as "always dirty".
+#[derive(Debug, Clone, Copy, Default)]
+struct EffectSourceSignatures {
+    window: Option<u64>,
+    layer: Option<u64>,
+    popup: Option<u64>,
+}
+
+impl EffectSourceSignatures {
+    fn get(&self, dependency: crate::ssd::EffectDependency) -> Option<u64> {
+        match dependency {
+            crate::ssd::EffectDependency::WindowSource => self.window,
+            crate::ssd::EffectDependency::LayerSource => self.layer,
+            crate::ssd::EffectDependency::PopupSource => self.popup,
+        }
+    }
+}
+
+/// `SHOJI_RENDER_TO_IF_DIRTY_ALWAYS=1` makes every `renderToIfDirty()` behave like `renderTo()`.
+/// A stale result caused by an under-declared `dependsOn` disappears with it set, which is the
+/// quickest way to tell that apart from any other rendering problem.
+fn render_to_if_dirty_forced() -> bool {
+    static FORCED: OnceLock<bool> = OnceLock::new();
+    *FORCED.get_or_init(|| {
+        std::env::var_os("SHOJI_RENDER_TO_IF_DIRTY_ALWAYS")
+            .is_some_and(|value| value != "0" && !value.is_empty())
+    })
+}
+
+/// `None` when any declared dependency has no known signature (treated as always dirty).
+fn render_to_dirty_key(
+    dependencies: &[crate::ssd::EffectDependency],
+    signatures: &EffectSourceSignatures,
+    effect: &CompiledEffect,
+    state_size: (i32, i32),
+) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for dependency in dependencies {
+        dependency.hash(&mut hasher);
+        signatures.get(*dependency)?.hash(&mut hasher);
+    }
+    // Uniform values (including runtime-patched slots) and shader sources live in the effect
+    // description, so a change to either re-runs the side pipeline too.
+    format!("{effect:?}").hash(&mut hasher);
+    state_size.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3322,6 +3468,7 @@ fn apply_effect_pipeline_with_cache(
         state_base_size: size,
         content_rect,
         named: HashMap::new(),
+        source_signatures: EffectSourceSignatures::default(),
     };
     with_gpu_timing_renderer_span(renderer, "effect-pipeline-total", size, |renderer| {
         run_effect_pipeline(
@@ -3346,6 +3493,8 @@ pub fn apply_effect_pipeline_cached_for_key_with_captured_subject(
     renderer: &mut GlesRenderer,
     cache_key: String,
     subject: GlesTexture,
+    // Content signature of the captured subject, for `renderToIfDirty()`; `None` = unknown.
+    subject_signature: Option<u64>,
     size: (i32, i32),
     sample_region: Option<Rectangle<f64, Buffer>>,
     output_size: Option<(i32, i32)>,
@@ -3364,6 +3513,12 @@ pub fn apply_effect_pipeline_cached_for_key_with_captured_subject(
             state_base_size: size,
             content_rect: effect_content_rect(size, sample_region),
             named: HashMap::new(),
+            // The captured subject feeds every subject alias, so its signature does too.
+            source_signatures: EffectSourceSignatures {
+                window: subject_signature,
+                layer: subject_signature,
+                popup: subject_signature,
+            },
         };
         with_gpu_timing_renderer_span(renderer, "effect-pipeline-total", size, |renderer| {
             run_effect_pipeline(
@@ -3385,6 +3540,8 @@ pub fn apply_effect_pipeline_cached_for_key_with_layer_source(
     texture: GlesTexture,
     xray_texture: Option<GlesTexture>,
     layer_source: GlesTexture,
+    // Content signature of the captured layer, for `renderToIfDirty()`; `None` = unknown.
+    layer_source_signature: Option<u64>,
     size: (i32, i32),
     sample_region: Option<Rectangle<f64, Buffer>>,
     output_size: Option<(i32, i32)>,
@@ -3402,6 +3559,10 @@ pub fn apply_effect_pipeline_cached_for_key_with_layer_source(
             state_base_size: size,
             content_rect: effect_content_rect(size, sample_region),
             named: HashMap::new(),
+            source_signatures: EffectSourceSignatures {
+                layer: layer_source_signature,
+                ..Default::default()
+            },
         };
         run_effect_pipeline(
             renderer,
@@ -3465,6 +3626,7 @@ fn apply_effect_pipeline_cached_with_popup_source_and_finish_mode(
         state_base_size: size,
         content_rect: effect_content_rect(size, sample_region),
         named: HashMap::new(),
+        source_signatures: EffectSourceSignatures::default(),
     };
     run_effect_pipeline(
         renderer,
@@ -3768,6 +3930,28 @@ fn source_damage_intersects_policy(
     }
 }
 
+/// `SHOJI_GPU_TIMING_DEBUG`: once a second, how many `renderToIfDirty()` side pipelines ran and
+/// how many were skipped.
+fn record_render_to_if_dirty(ran: bool) {
+    if !gpu_timing_debug_enabled() {
+        return;
+    }
+    static STATE: OnceLock<Mutex<(u64, u64, Instant)>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new((0, 0, Instant::now())));
+    let Ok(mut state) = state.lock() else {
+        return;
+    };
+    if ran {
+        state.0 += 1;
+    } else {
+        state.1 += 1;
+    }
+    if state.2.elapsed() >= GPU_TIMING_REPORT_INTERVAL {
+        info!(ran = state.0, skipped = state.1, "renderToIfDirty aggregate");
+        *state = (0, 0, Instant::now());
+    }
+}
+
 fn run_effect_pipeline(
     renderer: &mut GlesRenderer,
     effect: &CompiledEffect,
@@ -3901,8 +4085,32 @@ fn run_effect_pipeline(
                 )?;
                 current
             }
-            EffectStage::RenderTo { target, effect } => {
+            EffectStage::RenderTo {
+                target,
+                effect,
+                depends_on,
+            } => {
                 let state_size = effect_state_size(ctx.state_base_size, target.scale);
+                // `renderToIfDirty()`: skip the whole side pipeline while nothing it declared a
+                // dependency on has changed since the state was last written.
+                let dirty_key = depends_on
+                    .as_deref()
+                    .filter(|_| !render_to_if_dirty_forced())
+                    .and_then(|dependencies| {
+                        render_to_dirty_key(dependencies, &ctx.source_signatures, effect, state_size)
+                    });
+                if let Some(dirty_key) = dirty_key
+                    && !cache
+                        .as_deref_mut()
+                        .ok_or(ShaderEffectError::StateRequiresCache)?
+                        .state_is_dirty(renderer, target, ctx.state_base_size, dirty_key)?
+                {
+                    record_render_to_if_dirty(false);
+                    continue;
+                }
+                if depends_on.is_some() {
+                    record_render_to_if_dirty(true);
+                }
                 let target_format = effect_state_fourcc(target.format);
                 let previous_target_format = cache
                     .as_deref_mut()
@@ -3929,10 +4137,19 @@ fn run_effect_pipeline(
                 ctx.size = previous_size;
                 ctx.content_rect = previous_content_rect;
                 let rendered = rendered?;
-                cache
+                let state_cache = cache
                     .as_deref_mut()
-                    .ok_or(ShaderEffectError::StateRequiresCache)?
-                    .commit_state(renderer, target, ctx.state_base_size, &rendered)?;
+                    .ok_or(ShaderEffectError::StateRequiresCache)?;
+                match dirty_key {
+                    Some(dirty_key) => state_cache.adopt_state(
+                        renderer,
+                        target,
+                        ctx.state_base_size,
+                        &rendered,
+                        dirty_key,
+                    )?,
+                    None => state_cache.commit_state(renderer, target, ctx.state_base_size, &rendered)?,
+                }
                 current
             }
         };

@@ -21,6 +21,7 @@ import type {
   EffectStateTextureFormat,
   EffectStateResizePolicy,
   RenderToStageHandle,
+  EffectDependencyHandle,
   ShaderUniformArrayElement,
   ShaderUniformArrayHandle,
   ShaderUniformArrayValues,
@@ -495,6 +496,93 @@ export function renderTo(
       ...options,
       invalidate: { kind: "always" },
     }),
+  };
+}
+
+/**
+ * Like `renderTo()`, but the side pipeline only re-runs when one of the sources
+ * listed in `dependsOn` changed since the state was last written. On every
+ * other run it is skipped entirely and the state keeps its previous contents.
+ *
+ * Use it for expensive work that depends only on the subject itself — a
+ * distance field or mask derived from a layer's silhouette, say — inside an
+ * effect whose outer pipeline has to re-run whenever the backdrop changes.
+ *
+ * `renderTo()` と同じですが、`dependsOn` に挙げたソースが前回の書き込みから
+ * 変化したときだけサイドパイプラインを再実行します。それ以外の実行では丸ごと
+ * スキップされ、state は前回の内容を保持します。レイヤーのシルエットから作る
+ * 距離場やマスクのように「対象そのものにしか依存しない重い処理」を、背景が
+ * 変わるたびに再実行される外側パイプラインの中へ置くためのものです。
+ *
+ * Rules / ルール:
+ * - **Declare every source the side pipeline really reads.** The compositor
+ *   cannot see inside GLSL, so an undeclared dependency leaves a stale result.
+ *   `SHOJI_RENDER_TO_IF_DIRTY_ALWAYS=1` makes it behave like `renderTo()` to
+ *   check for that.
+ *   サイドパイプラインが実際に読むソースはすべて宣言してください。宣言漏れは
+ *   古い結果が残る原因になります（上記の環境変数で切り分けできます）。
+ * - **Read the result with `stateSource(target)`.** Names `save()`d inside the
+ *   side pipeline do not exist on skipped runs, so `get()`ting them from
+ *   outside is a compile error.
+ *   結果は `stateSource(target)` で読みます。サイドパイプライン内で `save()`
+ *   した名前はスキップ時に存在しないため、外から `get()` するとコンパイル
+ *   エラーになります。
+ * - The state holds the side pipeline's final texture as-is (no copy), in the
+ *   same coordinate system `save()` / `get()` expose inside it.
+ * - It also re-runs on its own when the state is reallocated (first use,
+ *   resize, format change) or when the side pipeline's uniforms change.
+ *
+ * @example
+ * ```ts
+ * const field = stateTexture("silhouette-field", { format: "rgba16f" });
+ * compileLayerEffect({
+ *   input: backdropSource(),
+ *   pipeline: [
+ *     dualKawaseBlur({ radius: 2, passes: 2 }),
+ *     renderToIfDirty(field, {
+ *       dependsOn: [layerSource()],
+ *       input: layerSource(),
+ *       pipeline: [shaderStage(loadShader("./field.frag"))],
+ *     }),
+ *     shaderStage(loadShader("./glass.frag"), {
+ *       textures: { field: stateSource(field) },
+ *     }),
+ *   ],
+ * });
+ * ```
+ */
+export function renderToIfDirty(
+  target: StateTextureHandle,
+  options: Omit<CompileEffectOptions, "invalidate"> & {
+    dependsOn: EffectDependencyHandle[];
+  },
+): RenderToStageHandle {
+  const { dependsOn, ...effectOptions } = options;
+  if (!Array.isArray(dependsOn) || dependsOn.length === 0) {
+    throw new Error(
+      "renderToIfDirty(): dependsOn must list at least one of windowSource(), layerSource(), popupSource()",
+    );
+  }
+  for (const dependency of dependsOn) {
+    const kind = (dependency as { kind?: string } | undefined)?.kind;
+    if (
+      kind !== "window-source" &&
+      kind !== "layer-source" &&
+      kind !== "popup-source"
+    ) {
+      throw new Error(
+        `renderToIfDirty(): unsupported dependency ${JSON.stringify(kind)}; use windowSource(), layerSource() or popupSource()`,
+      );
+    }
+  }
+  return {
+    kind: "render-to",
+    target,
+    effect: compileEffect({
+      ...effectOptions,
+      invalidate: { kind: "always" },
+    }),
+    dependsOn,
   };
 }
 

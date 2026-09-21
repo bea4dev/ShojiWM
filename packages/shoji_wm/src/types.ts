@@ -670,7 +670,21 @@ export interface RenderToStageHandle {
   kind: "render-to";
   target: StateTextureHandle;
   effect: CompiledEffectHandle;
+  /**
+   * Set by `renderToIfDirty()` only. When present, the side pipeline is
+   * skipped while none of these sources changed since the state was written.
+   */
+  dependsOn?: EffectDependencyHandle[];
 }
+
+/**
+ * A subject source a `renderToIfDirty()` side pipeline can depend on.
+ * `renderToIfDirty()` のサイドパイプラインが依存先として宣言できるソース。
+ */
+export type EffectDependencyHandle =
+  | WindowSourceHandle
+  | LayerSourceHandle
+  | PopupSourceHandle;
 
 export type EffectInputHandle =
   | BackdropSourceHandle

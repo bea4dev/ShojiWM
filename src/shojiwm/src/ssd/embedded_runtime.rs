@@ -1393,7 +1393,11 @@ impl ShojiRuntimeBridge {
         timescope::scope!("runtime native effect decode");
         let request_id = checked_request_id(request_id)?;
         let bridge_error = |error: super::DecorationBridgeError| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            // `ErrorKind::Other`, not `InvalidData`: deno maps the kind to a JS error class,
+            // and this embedded runtime has no `InvalidData` class registered, so the throw
+            // surfaced as a bare `undefined` and the message below never reached the config
+            // error overlay. `Other` maps to a plain `Error`, which carries it.
+            std::io::Error::other(error.to_string())
         };
         let update = match update {
             WireNativeEffectUpdate::Background { effect } => NativeEffectUpdate::Background(

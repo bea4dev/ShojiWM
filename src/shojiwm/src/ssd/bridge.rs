@@ -228,6 +228,9 @@ pub struct WireStateTexture {
 pub struct WireRenderToStageFields {
     pub target: WireStateTexture,
     pub effect: WireCompiledEffect,
+    /// Present only for `renderToIfDirty()`.
+    #[serde(default)]
+    pub depends_on: Option<Vec<WireEffectInput>>,
 }
 
 pub type WireBackgroundEffectConfig = WireCompiledEffect;
@@ -373,6 +376,14 @@ pub enum DecorationBridgeError {
     InvalidShaderType(String),
     #[error("invalid effect input")]
     InvalidEffectInput,
+    #[error("invalid renderToIfDirty dependency: {0}")]
+    InvalidRenderToDependency(String),
+    #[error(
+        "get(\"{0}\") reads a texture that is save()d inside a renderToIfDirty() side pipeline. \
+         That pipeline is skipped while its dependencies are unchanged, so the name does not \
+         exist on those frames. Read the result through stateSource(<its target>) instead."
+    )]
+    ConditionalNamedTextureEscapes(String),
     #[error("unsupported dimension keyword: {0}")]
     UnsupportedDimensionKeyword(String),
     #[error("invalid direction: {0}")]
@@ -611,9 +622,41 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
                     stages.push(EffectStage::Unit(Box::new(stage.effect.try_into()?)));
                 }
                 WireEffectStage::RenderTo(stage) => {
+                    let depends_on = match stage.depends_on {
+                        None => None,
+                        Some(dependencies) => {
+                            if dependencies.is_empty() {
+                                return Err(DecorationBridgeError::InvalidRenderToDependency(
+                                    "dependsOn must list at least one source".into(),
+                                ));
+                            }
+                            Some(
+                                dependencies
+                                    .into_iter()
+                                    .map(|dependency| match dependency {
+                                        WireEffectInput::WindowSource { .. } => {
+                                            Ok(crate::ssd::EffectDependency::WindowSource)
+                                        }
+                                        WireEffectInput::LayerSource { .. } => {
+                                            Ok(crate::ssd::EffectDependency::LayerSource)
+                                        }
+                                        WireEffectInput::PopupSource { .. } => {
+                                            Ok(crate::ssd::EffectDependency::PopupSource)
+                                        }
+                                        _ => Err(DecorationBridgeError::InvalidRenderToDependency(
+                                            "dependsOn accepts windowSource(), layerSource() \
+                                             and popupSource() only"
+                                                .into(),
+                                        )),
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?,
+                            )
+                        }
+                    };
                     stages.push(EffectStage::RenderTo {
                         target: decode_state_texture(stage.target)?,
                         effect: Box::new(stage.effect.try_into()?),
+                        depends_on,
                     });
                 }
             }
@@ -656,6 +699,7 @@ impl TryFrom<WireCompiledEffect> for CompiledEffect {
             alpha,
         };
         validate_effect_state_descriptors(&effect)?;
+        validate_conditional_render_to_names(&effect)?;
         Ok(effect)
     }
 }
@@ -842,6 +886,78 @@ fn decode_state_texture(
     })
 }
 
+/// A `renderToIfDirty()` side pipeline is skipped on frames where its dependencies did not
+/// change, so nothing it `save()`s exists on those frames. Reading such a name from outside
+/// the side pipeline would work on dirty frames and fail (or silently read a stale texture
+/// saved earlier under the same name) on clean ones. Reject it when the effect is compiled:
+/// the persistent way out of a conditional side pipeline is its state texture
+/// (`stateSource(target)`).
+fn validate_conditional_render_to_names(effect: &CompiledEffect) -> Result<(), DecorationBridgeError> {
+    use std::collections::BTreeMap;
+
+    fn count_input(input: &EffectInput, gets: &mut BTreeMap<String, usize>) {
+        match input {
+            EffectInput::Named(name) => *gets.entry(name.clone()).or_default() += 1,
+            EffectInput::Shader(shader) => {
+                for input in shader.textures.values() {
+                    count_input(input, gets);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk(
+        effect: &CompiledEffect,
+        gets: &mut BTreeMap<String, usize>,
+        saves: &mut Vec<String>,
+        conditionals: &mut Vec<*const CompiledEffect>,
+    ) {
+        count_input(&effect.input, gets);
+        for stage in &effect.pipeline {
+            match stage {
+                EffectStage::Shader(shader) => {
+                    for input in shader.textures.values() {
+                        count_input(input, gets);
+                    }
+                }
+                EffectStage::Blend { input, .. } => count_input(input, gets),
+                EffectStage::Save(name) => saves.push(name.clone()),
+                EffectStage::Unit(effect) => walk(effect, gets, saves, conditionals),
+                EffectStage::RenderTo {
+                    effect, depends_on, ..
+                } => {
+                    if depends_on.is_some() {
+                        conditionals.push(&**effect as *const CompiledEffect);
+                    }
+                    walk(effect, gets, saves, conditionals);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut all_gets = BTreeMap::new();
+    let mut conditionals = Vec::new();
+    walk(effect, &mut all_gets, &mut Vec::new(), &mut conditionals);
+
+    for conditional in conditionals {
+        // SAFETY: the pointers were taken from `effect`, which is borrowed for this whole call.
+        let conditional = unsafe { &*conditional };
+        let mut inner_gets = BTreeMap::new();
+        let mut inner_saves = Vec::new();
+        walk(conditional, &mut inner_gets, &mut inner_saves, &mut Vec::new());
+        for name in inner_saves {
+            let total = all_gets.get(&name).copied().unwrap_or(0);
+            let inside = inner_gets.get(&name).copied().unwrap_or(0);
+            if total > inside {
+                return Err(DecorationBridgeError::ConditionalNamedTextureEscapes(name));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_effect_state_descriptors(effect: &CompiledEffect) -> Result<(), DecorationBridgeError> {
     fn insert(
         descriptors: &mut std::collections::BTreeMap<String, crate::ssd::EffectStateTexture>,
@@ -887,7 +1003,7 @@ fn validate_effect_state_descriptors(effect: &CompiledEffect) -> Result<(), Deco
                 }
                 EffectStage::Blend { input, .. } => visit_input(input, descriptors)?,
                 EffectStage::Unit(effect) => visit_effect(effect, descriptors)?,
-                EffectStage::RenderTo { target, effect } => {
+                EffectStage::RenderTo { target, effect, .. } => {
                     insert(descriptors, target)?;
                     visit_effect(effect, descriptors)?;
                 }
@@ -1565,9 +1681,16 @@ mod tests {
         .expect("persistent state effect should deserialize");
 
         let effect: CompiledEffect = wire.try_into().expect("state effect should decode");
-        let EffectStage::RenderTo { target, effect } = &effect.pipeline[0] else {
+        let EffectStage::RenderTo {
+            target,
+            effect,
+            depends_on,
+        } = &effect.pipeline[0]
+        else {
             panic!("expected render-to stage");
         };
+        // Plain renderTo(): unconditional, as temporal feedback relies on.
+        assert_eq!(*depends_on, None);
         assert_eq!(target.name, "velocity");
         assert_eq!(target.scale, 0.5);
         assert!(matches!(
@@ -1582,6 +1705,125 @@ mod tests {
                 ..
             }) if name == "velocity"
         ));
+    }
+
+    /// A `renderToIfDirty()` effect whose side pipeline saves "field-ready"; `outer_reader`
+    /// is the texture input of the outer stage that follows it.
+    fn conditional_render_to_effect(depends_on: &str, outer_reader: &str) -> String {
+        format!(
+            r#"{{
+                "kind": "compiled-effect",
+                "input": {{ "kind": "backdrop-source" }},
+                "pipeline": [
+                    {{
+                        "kind": "render-to",
+                        "target": {{
+                            "kind": "state-texture", "name": "field", "scale": 1.0,
+                            "format": "rgba16f", "resize": "clear"
+                        }},
+                        "dependsOn": {depends_on},
+                        "effect": {{
+                            "kind": "compiled-effect",
+                            "input": {{ "kind": "layer-source", "include": "full" }},
+                            "invalidate": {{ "kind": "always" }},
+                            "pipeline": [
+                                {{
+                                    "kind": "shader-stage",
+                                    "shader": {{ "kind": "shader-module", "path": "/tmp/seed.frag" }}
+                                }},
+                                {{ "kind": "save", "name": "field-step" }},
+                                {{
+                                    "kind": "shader-stage",
+                                    "shader": {{ "kind": "shader-module", "path": "/tmp/jump.frag" }},
+                                    "textures": {{ "field_input": {{ "kind": "named-texture", "name": "field-step" }} }}
+                                }},
+                                {{ "kind": "save", "name": "field-ready" }}
+                            ]
+                        }}
+                    }},
+                    {{
+                        "kind": "shader-stage",
+                        "shader": {{ "kind": "shader-module", "path": "/tmp/glass.frag" }},
+                        "textures": {{ "field": {outer_reader} }}
+                    }}
+                ]
+            }}"#
+        )
+    }
+
+    const FIELD_STATE_SOURCE: &str = r#"{
+        "kind": "state-source",
+        "state": {
+            "kind": "state-texture", "name": "field", "scale": 1.0,
+            "format": "rgba16f", "resize": "clear"
+        }
+    }"#;
+
+    #[test]
+    fn decode_render_to_if_dirty_dependencies() {
+        let wire: WireCompiledEffect = serde_json::from_str(&conditional_render_to_effect(
+            r#"[{ "kind": "layer-source", "include": "full" }, { "kind": "window-source" }]"#,
+            FIELD_STATE_SOURCE,
+        ))
+        .expect("conditional render-to should deserialize");
+        let effect: CompiledEffect = wire.try_into().expect("conditional render-to should decode");
+        let EffectStage::RenderTo { depends_on, .. } = &effect.pipeline[0] else {
+            panic!("expected render-to stage");
+        };
+        assert_eq!(
+            depends_on.as_deref(),
+            Some(
+                &[
+                    crate::ssd::EffectDependency::LayerSource,
+                    crate::ssd::EffectDependency::WindowSource
+                ][..]
+            )
+        );
+    }
+
+    #[test]
+    fn render_to_if_dirty_rejects_bad_dependencies() {
+        for depends_on in ["[]", r#"[{ "kind": "backdrop-source" }]"#] {
+            let wire: WireCompiledEffect = serde_json::from_str(&conditional_render_to_effect(
+                depends_on,
+                FIELD_STATE_SOURCE,
+            ))
+            .expect("should deserialize");
+            let error = CompiledEffect::try_from(wire).expect_err("dependency must be rejected");
+            assert!(
+                matches!(error, DecorationBridgeError::InvalidRenderToDependency(_)),
+                "{depends_on}: {error}"
+            );
+        }
+    }
+
+    /// A name saved inside a conditional side pipeline does not exist on skipped runs, so
+    /// reading it from outside is a compile error. Reading it *inside* stays legal, and so
+    /// does the same read when the side pipeline is an unconditional `renderTo()`.
+    #[test]
+    fn render_to_if_dirty_rejects_named_texture_read_from_outside() {
+        let outer_get = r#"{ "kind": "named-texture", "name": "field-ready" }"#;
+        let layer = r#"[{ "kind": "layer-source", "include": "full" }]"#;
+
+        let wire: WireCompiledEffect =
+            serde_json::from_str(&conditional_render_to_effect(layer, outer_get))
+                .expect("should deserialize");
+        let error = CompiledEffect::try_from(wire).expect_err("escaping name must be rejected");
+        assert!(
+            matches!(
+                &error,
+                DecorationBridgeError::ConditionalNamedTextureEscapes(name) if name == "field-ready"
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("stateSource"), "{error}");
+
+        // Same pipeline as a plain renderTo(): the name exists on every run.
+        let unconditional = conditional_render_to_effect(layer, outer_get)
+            .replace(&format!(r#""dependsOn": {layer},"#), "");
+        let wire: WireCompiledEffect =
+            serde_json::from_str(&unconditional).expect("should deserialize");
+        CompiledEffect::try_from(wire).expect("plain renderTo may expose saved names");
     }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
