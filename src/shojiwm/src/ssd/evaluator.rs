@@ -5796,9 +5796,22 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
             .expect("tiled lifecycle should succeed");
 
-        // Four 804px tiles in a 1896px viewport (1920 minus 2x TILE_MARGIN):
-        // content 3252, max scroll 1356, snap offsets {540, 816}. Opening 0xd
-        // last leaves the scroll at 1356.
+        // Four tiles; opening 0xd last scrolls the strip to its maximum, 0xd
+        // flush at the viewport right edge. The scroll offsets this test
+        // crosses, in strip coordinates, follow from the config's tile
+        // geometry, so they are derived rather than written in.
+        let metrics = tile_metrics();
+        let viewport = metrics.viewport_width();
+        let max_scroll = 3.0 * metrics.pitch() + metrics.width - viewport;
+        // Snap offset with 0xb flush at the viewport left edge.
+        let b_flush_left = metrics.pitch();
+        // Snap offset with 0xc flush at the viewport right edge.
+        let c_flush_right = 2.0 * metrics.pitch() + metrics.width - viewport;
+        assert!(
+            0.0 < c_flush_right && c_flush_right < b_flush_left && b_flush_left < max_scroll,
+            "the scenario needs a scrolled strip with the 0xc snap below the 0xb one: \
+             {c_flush_right} < {b_flush_left} < {max_scroll} for {metrics:?}"
+        );
         let mut now = 0;
         let mut previous: Option<&str> = None;
         for id in ["0xa", "0xb", "0xc", "0xd"] {
@@ -5841,6 +5854,9 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         };
         // The repo config maps scroll delta as -delta_x * 1.5 and compares
         // -velocity_x * 1.5 against the 300 px/s snap threshold.
+        const SLOW_STEP: f64 = 30.0; // delta_x 20 at 150 px/s: catchable
+        const FAST_STEP: f64 = 60.0; // delta_x -40 at 3000 px/s: too fast to catch
+        const BREAKOUT: f64 = 48.0; // the config's workspaceScrollSnapBreakoutPx
         // Read rects the way the compositor does after a managed-window-only
         // scroll update: through the cached evaluation path. A full
         // evaluate_window with a fresh snapshot would reconcile against the
@@ -5857,13 +5873,14 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         };
 
         // Slow drag towards lower offsets: 30px of scroll per event at
-        // 150 px/s. Crossing snap offset 816 must catch and hold there:
-        // tile 0xb sits exactly at the viewport left edge (x = 12).
+        // 150 px/s. Crossing the 0xb snap offset must catch and hold there,
+        // tile 0xb exactly at the viewport left edge. The crossing event is
+        // caught on the offset itself; its overshoot is dropped, not carried.
         evaluator
             .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
             .expect("begin should evaluate");
-        // 18 updates x 30px land exactly on snap offset 816 (1356 - 540).
-        for _ in 0..18 {
+        let slow_updates = ((max_scroll - b_flush_left) / SLOW_STEP).ceil() as usize;
+        for _ in 0..slow_updates {
             now += 10;
             evaluator
                 .gesture_swipe(
@@ -5874,7 +5891,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
         assert_eq!(
             rect_x("0xb", now + 1),
-            12.0,
+            metrics.flush_left_x(),
             "slow scroll should catch with tile 0xb flush at the viewport left edge"
         );
 
@@ -5888,16 +5905,20 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("update should evaluate");
         assert_eq!(
             rect_x("0xb", now + 1),
-            12.0,
+            metrics.flush_left_x(),
             "movement within the breakout distance must not move the caught scroll"
         );
 
         // Keep dragging: the accumulated travel exceeds the breakout, the
-        // catch releases, and the scroll then catches the next snap offset
-        // (540) where tile 0xc is flush at the viewport right edge.
-        // First event exceeds the breakout (releases with the 12px excess),
-        // the rest scroll on until snap offset 540 is crossed and caught.
-        for _ in 0..10 {
+        // catch releases, and the scroll then catches the next snap offset,
+        // where tile 0xc is flush at the viewport right edge.
+        // The first event exceeds the breakout and releases with the excess
+        // (two steps of travel less the breakout); the rest scroll on until
+        // the 0xc snap offset is crossed and caught.
+        let release_excess = 2.0 * SLOW_STEP - BREAKOUT;
+        let updates_to_c =
+            1 + ((b_flush_left - release_excess - c_flush_right) / SLOW_STEP).ceil() as usize;
+        for _ in 0..updates_to_c {
             now += 10;
             evaluator
                 .gesture_swipe(
@@ -5908,7 +5929,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
         assert_eq!(
             rect_x("0xc", now + 1),
-            1104.0,
+            metrics.flush_right_x(),
             "after breaking out the scroll should catch the next snap position \
              (0xc flush at the viewport right edge)"
         );
@@ -5920,17 +5941,19 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .expect("end should evaluate");
         assert_eq!(
             rect_x("0xc", now + 1),
-            1104.0,
+            metrics.flush_right_x(),
             "lifting the fingers while caught must stay on the snap position"
         );
 
-        // Fast drag back up: crossing snap offset 816 at 3000 px/s must pass
-        // straight through (0xb ends past the viewport edge, not flush).
+        // Fast drag back up: crossing the 0xb snap offset at 3000 px/s must
+        // pass straight through (0xb ends past the viewport edge, not flush).
+        // Just enough events to carry the scroll past it.
+        let fast_updates = ((b_flush_left - c_flush_right) / FAST_STEP).floor() as usize + 1;
         now += 10;
         evaluator
             .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, 0.0, now), now)
             .expect("begin should evaluate");
-        for _ in 0..5 {
+        for _ in 0..fast_updates {
             now += 10;
             evaluator
                 .gesture_swipe(
@@ -5941,7 +5964,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
         assert_eq!(
             rect_x("0xb", now + 1),
-            -12.0,
+            metrics.flush_left_x() + b_flush_left
+                - (c_flush_right + fast_updates as f64 * FAST_STEP),
             "a fast scroll must pass through the snap position without catching"
         );
     }
@@ -7199,11 +7223,18 @@ COMPOSITOR.window.composition = () => <Box />;
         margin: f64,
         /// Width of a tile holding an 800px client.
         width: f64,
+        /// Space between adjacent tiles.
+        gap: f64,
     }
 
     impl TileMetrics {
         fn viewport_width(self) -> f64 {
             1920.0 - self.margin * 2.0
+        }
+
+        /// Distance from one tile's left edge to the next one's.
+        fn pitch(self) -> f64 {
+            self.width + self.gap
         }
 
         /// A tile flush against the left edge of the viewport.
@@ -7224,7 +7255,7 @@ COMPOSITOR.window.composition = () => <Box />;
 
     /// Open one tile in a fresh runtime and read the geometry back: a single
     /// tile is narrower than the viewport, so it sits unscrolled at the
-    /// viewport's left edge.
+    /// viewport's left edge. A second tile then gives the gap.
     fn probe_tile_metrics() -> TileMetrics {
         let evaluator = real_config_evaluator();
         let mut display_state = std::collections::BTreeMap::new();
@@ -7249,9 +7280,36 @@ COMPOSITOR.window.composition = () => <Box />;
             .managed_window
             .rect
             .expect("tiled window should have a managed rect");
+
+        // Measured against the first tile at the same instant, well after any
+        // open animation, so the gap holds even if the second tile scrolls
+        // the strip.
+        let window = make_named_window("0x2", "kitty", false, false);
+        evaluator
+            .evaluate_window_preview(&window, 200)
+            .expect("preview should evaluate");
+        let unfocused = make_named_window("0x1", "kitty", false, false);
+        evaluator
+            .evaluate_window(&unfocused, 225)
+            .expect("defocus evaluation should succeed");
+        let focused = make_named_window("0x2", "kitty", true, false);
+        evaluator
+            .evaluate_window(&focused, 250)
+            .expect("evaluation should succeed");
+        let settled_x = |id: &str| {
+            evaluator
+                .evaluate_cached_window(id, None, 5_000, false)
+                .expect("cached evaluation should succeed")
+                .managed_window
+                .rect
+                .expect("tiled window should have a managed rect")
+                .x
+        };
+
         TileMetrics {
             margin: rect.x,
             width: rect.width,
+            gap: settled_x("0x2") - settled_x("0x1") - rect.width,
         }
     }
 
