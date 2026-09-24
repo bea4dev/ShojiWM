@@ -1357,7 +1357,7 @@ struct BlurShaderPrograms {
 struct BlurShaderProgramCache(Mutex<Option<BlurShaderPrograms>>);
 #[derive(Debug, Default)]
 struct TextureStageProgramCache(Mutex<HashMap<String, GlesTexProgram>>);
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct MultiTextureStageProgram {
     program: ffi::types::GLuint,
     uniform_tex: ffi::types::GLint,
@@ -1367,9 +1367,36 @@ struct MultiTextureStageProgram {
     value_uniforms: Vec<(String, ffi::types::GLint)>,
     attrib_vert: ffi::types::GLint,
     renderer_context_id: ContextId<GlesTexture>,
+    retired_programs: Arc<Mutex<Vec<ffi::types::GLuint>>>,
 }
+
+impl Drop for MultiTextureStageProgram {
+    fn drop(&mut self) {
+        // The last Arc may be dropped without this program's GL context current.
+        // Keep the handle until the owning cache can delete it in that context.
+        self.retired_programs.lock().unwrap().push(self.program);
+    }
+}
+
 #[derive(Debug, Default)]
-struct MultiTextureStageProgramCache(Mutex<HashMap<String, MultiTextureStageProgram>>);
+struct MultiTextureStageProgramCache {
+    programs: Mutex<HashMap<String, Arc<MultiTextureStageProgram>>>,
+    retired_programs: Arc<Mutex<Vec<ffi::types::GLuint>>>,
+}
+
+/// Delete retired programs with the cache's GL context current.
+///
+/// # Safety
+/// `gl` must belong to a current context sharing the programs in `retired_programs`.
+unsafe fn delete_retired_multi_texture_programs(
+    gl: &ffi::Gles2,
+    retired_programs: &Mutex<Vec<ffi::types::GLuint>>,
+) {
+    for program in retired_programs.lock().unwrap().drain(..) {
+        unsafe { gl.DeleteProgram(program) };
+    }
+}
+
 #[derive(Debug)]
 struct DisplayTextureProgram(GlesTexProgram);
 #[derive(Debug)]
@@ -3107,7 +3134,7 @@ void main() {{
 fn multi_texture_stage_program(
     renderer: &mut GlesRenderer,
     stage: &ShaderStage,
-) -> Result<MultiTextureStageProgram, ShaderEffectError> {
+) -> Result<Arc<MultiTextureStageProgram>, ShaderEffectError> {
     if renderer
         .egl_context()
         .user_data()
@@ -3137,17 +3164,33 @@ fn multi_texture_stage_program(
             .user_data()
             .get::<MultiTextureStageProgramCache>()
             .expect("multi texture stage cache should be initialized")
-            .0
+            .programs
             .lock()
             .unwrap()
             .remove(&cache_key);
+    }
+    let retired_programs = renderer
+        .egl_context()
+        .user_data()
+        .get::<MultiTextureStageProgramCache>()
+        .expect("multi texture stage cache should be initialized")
+        .retired_programs
+        .clone();
+    // A retry evicts a cached stand-in, but a caller may still hold an Arc to it.
+    // Only the final drop queues deletion. Do not make the context current on
+    // healthy cache hits, and leave the queue intact if context activation fails.
+    let cleanup_pending = !retired_programs.lock().unwrap().is_empty();
+    if cleanup_pending {
+        renderer.with_context(|gl| unsafe {
+            delete_retired_multi_texture_programs(gl, &retired_programs);
+        })?;
     }
     if let Some(program) = renderer
         .egl_context()
         .user_data()
         .get::<MultiTextureStageProgramCache>()
         .expect("multi texture stage cache should be initialized")
-        .0
+        .programs
         .lock()
         .unwrap()
         .get(&cache_key)
@@ -3173,7 +3216,7 @@ fn multi_texture_stage_program(
                 .map(|name| gl.GetUniformLocation(program, name.as_ptr()))
                 .unwrap_or(-1)
         };
-        Ok::<_, GlesError>(MultiTextureStageProgram {
+        Ok::<_, GlesError>(Arc::new(MultiTextureStageProgram {
             program,
             uniform_tex: location("tex"),
             uniform_texture_size: location("effect_texture_size_px"),
@@ -3199,7 +3242,8 @@ fn multi_texture_stage_program(
                 .collect(),
             attrib_vert: gl.GetAttribLocation(program, c"vert".as_ptr()),
             renderer_context_id: renderer_context_id.clone(),
-        })
+            retired_programs: retired_programs.clone(),
+        }))
     })??;
     Ok(program)
         },
@@ -3209,7 +3253,7 @@ fn multi_texture_stage_program(
         .user_data()
         .get::<MultiTextureStageProgramCache>()
         .expect("multi texture stage cache should be initialized")
-        .0
+        .programs
         .lock()
         .unwrap()
         .insert(cache_key, program.clone());
@@ -5951,6 +5995,187 @@ mod layer_cache_key_tests {
         assert!(!is_layer_pipeline_key("tty:window-backdrop:0x26:key"));
         assert!(!is_layer_pipeline_key("tty:protocol-window:0x26:key"));
         assert!(!is_layer_pipeline_key("winit:window-backdrop:0x26:key"));
+    }
+}
+
+#[cfg(test)]
+mod multi_texture_program_tests {
+    use super::*;
+
+    thread_local! {
+        static DELETED_PROGRAMS: RefCell<Vec<ffi::types::GLuint>> = const { RefCell::new(Vec::new()) };
+    }
+
+    extern "system" fn record_program_deletion(program: ffi::types::GLuint) {
+        DELETED_PROGRAMS.with(|deleted| deleted.borrow_mut().push(program));
+    }
+
+    fn mock_gl() -> ffi::Gles2 {
+        DELETED_PROGRAMS.with(|deleted| deleted.borrow_mut().clear());
+        ffi::Gles2::load_with(|name| match name {
+            "glDeleteProgram" => record_program_deletion as *const () as *const std::ffi::c_void,
+            _ => std::ptr::null(),
+        })
+    }
+
+    fn program(cache: &MultiTextureStageProgramCache, id: u32) -> Arc<MultiTextureStageProgram> {
+        Arc::new(MultiTextureStageProgram {
+            program: id,
+            uniform_tex: -1,
+            uniform_texture_size: -1,
+            uniform_content_rect: -1,
+            texture_uniforms: Vec::new(),
+            value_uniforms: Vec::new(),
+            attrib_vert: -1,
+            renderer_context_id: ContextId::new(),
+            retired_programs: cache.retired_programs.clone(),
+        })
+    }
+
+    #[test]
+    fn eviction_waits_for_the_last_draw_reference() {
+        let gl = mock_gl();
+        let cache = MultiTextureStageProgramCache::default();
+        let drawing = program(&cache, 7);
+        cache
+            .programs
+            .lock()
+            .unwrap()
+            .insert("stage".into(), drawing.clone());
+        cache.programs.lock().unwrap().remove("stage");
+        assert!(cache.retired_programs.lock().unwrap().is_empty());
+        // The mocked GL function just records deletion, so no real context is needed.
+        unsafe { delete_retired_multi_texture_programs(&gl, &cache.retired_programs) };
+        assert!(DELETED_PROGRAMS.with(|deleted| deleted.borrow().is_empty()));
+
+        drop(drawing);
+        assert_eq!(*cache.retired_programs.lock().unwrap(), vec![7]);
+        // Dropping ownership must not itself make any GL call.
+        assert!(DELETED_PROGRAMS.with(|deleted| deleted.borrow().is_empty()));
+        unsafe { delete_retired_multi_texture_programs(&gl, &cache.retired_programs) };
+        unsafe { delete_retired_multi_texture_programs(&gl, &cache.retired_programs) };
+        assert_eq!(
+            DELETED_PROGRAMS.with(|deleted| deleted.borrow().clone()),
+            vec![7]
+        );
+    }
+
+    #[test]
+    fn repeated_retry_evictions_delete_every_program_once() {
+        let gl = mock_gl();
+        let cache = MultiTextureStageProgramCache::default();
+        for id in 1..=32 {
+            cache
+                .programs
+                .lock()
+                .unwrap()
+                .insert("stage".into(), program(&cache, id));
+            cache.programs.lock().unwrap().remove("stage");
+            unsafe { delete_retired_multi_texture_programs(&gl, &cache.retired_programs) };
+            assert!(cache.retired_programs.lock().unwrap().is_empty());
+        }
+        assert_eq!(
+            DELETED_PROGRAMS.with(|deleted| deleted.borrow().clone()),
+            (1..=32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cleanup_is_scoped_to_the_owning_context() {
+        let gl = mock_gl();
+        let first = MultiTextureStageProgramCache::default();
+        let second = MultiTextureStageProgramCache::default();
+        // Unrelated contexts may allocate the same numeric GL name.
+        drop(program(&first, 7));
+        drop(program(&second, 7));
+        unsafe { delete_retired_multi_texture_programs(&gl, &first.retired_programs) };
+        assert!(first.retired_programs.lock().unwrap().is_empty());
+        assert_eq!(*second.retired_programs.lock().unwrap(), vec![7]);
+        assert_eq!(
+            DELETED_PROGRAMS.with(|deleted| deleted.borrow().clone()),
+            vec![7]
+        );
+        unsafe { delete_retired_multi_texture_programs(&gl, &second.retired_programs) };
+        assert_eq!(
+            DELETED_PROGRAMS.with(|deleted| deleted.borrow().clone()),
+            vec![7, 7]
+        );
+    }
+
+    #[test]
+    fn replacing_or_clearing_the_cache_also_retires_programs() {
+        let gl = mock_gl();
+        let cache = MultiTextureStageProgramCache::default();
+        cache
+            .programs
+            .lock()
+            .unwrap()
+            .insert("stage".into(), program(&cache, 1));
+        cache
+            .programs
+            .lock()
+            .unwrap()
+            .insert("stage".into(), program(&cache, 2));
+        assert_eq!(*cache.retired_programs.lock().unwrap(), vec![1]);
+        cache.programs.lock().unwrap().clear();
+        assert_eq!(*cache.retired_programs.lock().unwrap(), vec![1, 2]);
+        unsafe { delete_retired_multi_texture_programs(&gl, &cache.retired_programs) };
+        assert_eq!(
+            DELETED_PROGRAMS.with(|deleted| deleted.borrow().clone()),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a surfaceless EGL/OpenGL ES driver"]
+    fn shader_reload_deletes_retired_programs_in_gl() {
+        use smithay::backend::egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay};
+
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.unwrap();
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context) }.unwrap();
+        let stage = ShaderStage {
+            shader: ShaderModule {
+                // Guaranteed unreadable without creating or modifying any shader file.
+                path: "/dev/null/shojiwm-shader-retry-test.frag".into(),
+            },
+            uniforms: Default::default(),
+            textures: Default::default(),
+        };
+
+        for _ in 0..16 {
+            let old = multi_texture_stage_program(&mut renderer, &stage).unwrap();
+            assert!(Arc::ptr_eq(
+                &old,
+                &multi_texture_stage_program(&mut renderer, &stage).unwrap()
+            ));
+            reset_effect_error_reports();
+            let replacement = multi_texture_stage_program(&mut renderer, &stage).unwrap();
+            let old_id = old.program;
+            // Keep the old draw reference alive until the replacement is allocated,
+            // both to test deferred deletion and to prevent numeric GL-name reuse.
+            assert_ne!(old_id, replacement.program);
+            renderer
+                .with_context(|gl| unsafe {
+                    assert_eq!(gl.IsProgram(old_id), ffi::TRUE);
+                    assert_eq!(gl.IsProgram(replacement.program), ffi::TRUE);
+                })
+                .unwrap();
+
+            drop(old);
+            let cached = multi_texture_stage_program(&mut renderer, &stage).unwrap();
+            assert!(Arc::ptr_eq(&cached, &replacement));
+            renderer
+                .with_context(|gl| unsafe {
+                    assert_eq!(gl.IsProgram(old_id), ffi::FALSE);
+                    assert_eq!(gl.IsProgram(replacement.program), ffi::TRUE);
+                })
+                .unwrap();
+        }
+        FAILED_SHADERS.with(|failed| failed.borrow_mut().clear());
+        REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().clear());
+        EFFECT_ERRORS_DIRTY.with(|dirty| dirty.set(false));
+        STAND_IN_SHADER_USED.with(|used| used.set(false));
     }
 }
 
