@@ -724,8 +724,9 @@ impl CompositorHandler for ShojiWM {
         add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
             supply_viewport_destination(surface);
 
-            let maybe_dmabuf = with_states(surface, |data| {
-                data.cached_state
+            let (maybe_dmabuf, acquire_point) = with_states(surface, |data| {
+                let dmabuf = data
+                    .cached_state
                     .get::<SurfaceAttributes>()
                     .pending()
                     .buffer
@@ -733,21 +734,50 @@ impl CompositorHandler for ShojiWM {
                     .and_then(|assignment| match assignment {
                         BufferAssignment::NewBuffer(buffer) => get_dmabuf(buffer).cloned().ok(),
                         _ => None,
-                    })
+                    });
+                // Explicit sync (`linux-drm-syncobj-v1`): the client told us exactly when the
+                // buffer is ready. Takes precedence over the implicit fence below, which the
+                // NVIDIA proprietary driver never provides (see `drm_syncobj_state`).
+                let acquire_point = data
+                    .cached_state
+                    .get::<smithay::wayland::drm_syncobj::DrmSyncobjCachedState>()
+                    .pending()
+                    .acquire_point
+                    .clone();
+                (dmabuf, acquire_point)
             });
             if let Some(dmabuf) = maybe_dmabuf
-                && let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ)
                 && let Some(client) = surface.client()
             {
-                let res = state.loop_handle.insert_source(source, move |_, _, state| {
-                    let dh = state.display_handle.clone();
+                let explicit = acquire_point.and_then(|acquire_point| {
+                    let client = client.clone();
+                    let (blocker, source) = acquire_point.generate_blocker().ok()?;
                     state
-                        .client_compositor_state(&client)
-                        .blocker_cleared(state, &dh);
-                    Ok(())
-                });
-                if res.is_ok() {
+                        .loop_handle
+                        .insert_source(source, move |_, _, state| {
+                            let dh = state.display_handle.clone();
+                            state
+                                .client_compositor_state(&client)
+                                .blocker_cleared(state, &dh);
+                            Ok(())
+                        })
+                        .ok()?;
                     add_blocker(surface, blocker);
+                    Some(())
+                });
+                if explicit.is_none()
+                    && let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ)
+                {
+                    let res = state.loop_handle.insert_source(source, move |_, _, state| {
+                        let dh = state.display_handle.clone();
+                        state
+                            .client_compositor_state(&client)
+                            .blocker_cleared(state, &dh);
+                        Ok(())
+                    });
+                    if res.is_ok() {
+                        add_blocker(surface, blocker);
+                    }
                 }
             }
 

@@ -347,6 +347,12 @@ pub struct ShojiWM {
     pub decoration_evaluator: DecorationRuntimeEvaluator,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// `linux-drm-syncobj-v1` (explicit sync). `None` when the primary GPU cannot wait on
+    /// syncobj timelines. Without this, drivers that provide no implicit dma-buf fences (the
+    /// NVIDIA proprietary driver) let the compositor sample a client buffer before the client
+    /// finished rendering into it: a freshly allocated, still-zeroed buffer then shows up as a
+    /// fully transparent window for one frame.
+    pub drm_syncobj_state: Option<smithay::wayland::drm_syncobj::DrmSyncobjState>,
     pub background_effect_state: BackgroundEffectState,
     pub damage_blink_enabled: bool,
     pub damage_blink_visible: HashMap<String, Vec<LogicalRect>>,
@@ -1649,6 +1655,7 @@ impl ShojiWM {
             decoration_evaluator,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
+            drm_syncobj_state: None,
             background_effect_state,
             damage_blink_enabled,
             damage_blink_visible: HashMap::new(),

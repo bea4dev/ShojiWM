@@ -995,6 +995,14 @@ struct SurfaceData {
     /// that cannot render (flip still pending) skips the refresh; this is the watchdog that
     /// lets one through anyway if the output has gone unusually long without one.
     last_decoration_refresh_at: Option<Instant>,
+    /// Client buffers the in-flight frame's GL render read from, kept alive until that frame's
+    /// page flip completes (`frame_finish`). Dropping a `Buffer` sends `wl_buffer.release` and
+    /// signals its explicit-sync release point; smithay does that as soon as the client attaches
+    /// its next buffer, i.e. possibly while the GPU is still sampling the old one. Drivers with
+    /// implicit dma-buf fences (Mesa) make the client's next render wait anyway; the NVIDIA
+    /// proprietary driver has none, so the client cleared and re-rendered a buffer we were still
+    /// compositing — a window that flashed transparent for one frame.
+    held_client_buffers: Vec<smithay::backend::renderer::utils::Buffer>,
     frame_callback_timer_armed: bool,
     frame_callback_timer_generation: u64,
     commit_timing_timer_armed: bool,
@@ -1223,6 +1231,8 @@ fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
     surface.deferred_submit = None;
     surface.deferred_submit_generation = surface.deferred_submit_generation.wrapping_add(1);
     surface.frame_pending = false;
+    // The flip is done, so the GPU finished reading these: release them to their clients now.
+    surface.held_client_buffers.clear();
     surface.queued_at = None;
     surface.queued_cpu_duration = Duration::ZERO;
     surface.skipped_while_pending_count = 0;
@@ -1402,6 +1412,27 @@ pub fn device_added(
         state.dmabuf_global = Some(global);
         info!(?node, "initialized linux-dmabuf global");
     }
+    // Explicit sync (`linux-drm-syncobj-v1`), on the same (primary) node as the dmabuf global.
+    // The commit hook in `handlers/compositor.rs` blocks a commit on its acquire point, which
+    // is the only synchronization available on drivers without implicit dma-buf fences (the
+    // NVIDIA proprietary driver): without it a client's not-yet-rendered buffer got composited,
+    // visible as the window turning transparent for a frame.
+    if state.drm_syncobj_state.is_none() {
+        if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&fd) {
+            state.drm_syncobj_state = Some(
+                smithay::wayland::drm_syncobj::DrmSyncobjState::new::<ShojiWM>(
+                    &state.display_handle,
+                    fd.clone(),
+                ),
+            );
+            info!(?node, "initialized linux-drm-syncobj global (explicit sync)");
+        } else {
+            warn!(
+                ?node,
+                "drm device does not support syncobj eventfd; explicit sync unavailable"
+            );
+        }
+    }
 
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -1473,6 +1504,55 @@ pub fn device_added(
     }
 
     Ok(())
+}
+
+/// Every client buffer the next render of `output` can sample: toplevels with their popups and
+/// subsurfaces, layer surfaces, the session-lock surface and a surface cursor. See
+/// `SurfaceData::held_client_buffers` for why they are held past the render.
+fn collect_client_buffers_for_hold(
+    state: &ShojiWM,
+    output: &Output,
+) -> Vec<smithay::backend::renderer::utils::Buffer> {
+    use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+    use smithay::wayland::compositor::{SurfaceData, TraversalAction, with_surface_tree_downward};
+
+    let mut held = Vec::new();
+    // Read through the `SurfaceData` the traversal already holds. Going back in through
+    // `with_states` / `with_renderer_surface_state` for the same surface re-locks its mutex
+    // from inside the traversal and deadlocks the compositor on its first frame.
+    let mut hold = |states: &SurfaceData| {
+        if let Some(buffer) = states
+            .data_map
+            .get::<RendererSurfaceStateUserData>()
+            .and_then(|renderer_state| renderer_state.lock().ok()?.buffer().cloned())
+        {
+            held.push(buffer);
+        }
+    };
+    for window in state.space.elements() {
+        window.with_surfaces(|_, states| hold(states));
+    }
+    for layer in layer_map_for_output(output).layers() {
+        layer.with_surfaces(|_, states| hold(states));
+    }
+    let roots = state
+        .session_lock_surface_for_output(output)
+        .map(|lock_surface| lock_surface.wl_surface().clone())
+        .into_iter()
+        .chain(match &state.cursor_status {
+            CursorImageStatus::Surface(surface) => Some(surface.clone()),
+            _ => None,
+        });
+    for root in roots {
+        with_surface_tree_downward(
+            &root,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            |_, states, _| hold(states),
+            |_, _, _| true,
+        );
+    }
+    held
 }
 
 fn frame_finish(
@@ -1676,6 +1756,8 @@ fn frame_finish(
         }
 
     surface.frame_pending = false;
+    // The flip is done, so the GPU finished reading these: release them to their clients now.
+    surface.held_client_buffers.clear();
     surface.queued_at = None;
     surface.queued_cpu_duration = Duration::ZERO;
     surface.skipped_while_pending_count = 0;
@@ -3210,6 +3292,10 @@ fn render_surface(
         )
     };
     let mut newly_ready_initial_focus_window_ids = Vec::new();
+    // Taken before the render so it names exactly the buffers this frame will sample (commits
+    // cannot land in between: the loop is single-threaded). Stored on the surface once the
+    // frame is actually submitted; see `SurfaceData::held_client_buffers`.
+    let held_client_buffers = collect_client_buffers_for_hold(state, &output);
     let captured_blink_damage = {
         timescope::scope!("tty render mutable section");
         let window_source_damage_snapshot = state.window_source_damage.clone();
@@ -6627,6 +6713,11 @@ fn render_surface(
             }
         };
         fps_counter.record_present(output.name().as_str());
+        if !result.is_empty {
+            // Submitted (now or deferred): hold until `frame_finish`. An empty frame is not
+            // flipped, so nothing waits on it; the previous hold, if any, stays as it is.
+            surface.held_client_buffers = held_client_buffers;
+        }
         surface.cursor_on_plane = result.cursor_plane_assigned;
         if direct_scanout_debug_enabled() {
             note_overlay_plane_transition(
@@ -13103,6 +13194,7 @@ fn connector_connected(
         queued_cpu_duration: Duration::ZERO,
         skipped_while_pending_count: 0,
         last_decoration_refresh_at: None,
+        held_client_buffers: Vec::new(),
         frame_callback_timer_armed: false,
         frame_callback_timer_generation: 0,
         commit_timing_timer_armed: false,

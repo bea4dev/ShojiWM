@@ -883,6 +883,12 @@ impl KdeDecorationHandler for ShojiWM {
     }
 }
 
+impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ShojiWM {
+    fn drm_syncobj_state(&mut self) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
+        self.drm_syncobj_state.as_mut()
+    }
+}
+
 impl DmabufHandler for ShojiWM {
     fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
         &mut self.dmabuf_state
