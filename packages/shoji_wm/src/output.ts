@@ -36,6 +36,8 @@ function cloneOutputState(
         position: { ...snapshot.position },
         scale: snapshot.scale,
         transform: snapshot.transform,
+        subpixel: snapshot.subpixel,
+        detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
       },
     ]),
@@ -66,6 +68,8 @@ function normalizeOutputState(
         position: { ...snapshot.position },
         scale: snapshot.scale,
         transform: snapshot.transform ?? "normal",
+        subpixel: snapshot.subpixel ?? "unknown",
+        detectedSubpixel: snapshot.detectedSubpixel ?? "unknown",
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
       },
     ]),
@@ -86,7 +90,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     return { mode: "disabled" };
   }
   if (config.mode === "mirror") {
-    return { mode: "mirror", source: config.source };
+    return { mode: "mirror", source: config.source, subpixel: config.subpixel };
   }
   return {
     mode: "extend",
@@ -103,6 +107,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
           ? { ...config.position }
           : undefined,
     scale: config.scale,
+    subpixel: config.subpixel,
     transform: config.transform,
   };
 }
