@@ -16,7 +16,11 @@ use smithay::reexports::drm::control::{
     crtc,
     property,
 };
-use tracing::{debug, warn};
+use tracing::{
+    debug,
+    info,
+    warn,
+};
 
 use super::{ColorPrimaries, OutputColorMode};
 
@@ -584,9 +588,11 @@ fn enum_entry_value(info: &property::Info, entry: &str) -> Option<property::RawV
 /// touch CRTC_ID/ACTIVE/MODE_ID/FB_ID, so a DEGAMMA_LUT, CTM or GAMMA_LUT set by
 /// plymouth, fbcon or another compositor stays applied under every frame. On
 /// Intel that is worse than a no-op even when the table is an identity ramp: a
-/// 256-entry GAMMA_LUT (plymouth's, seen on the HDMI TV's CRTC) puts the pipe in
-/// 8-bit legacy gamma mode, which caps an HDR output at 8 bits before the 10-bit
-/// plane reaches the 12-bit link. Clearing the blobs (0) restores the bypass.
+/// 256-entry GAMMA_LUT (the i*257 ramp the kernel reads back from the boot
+/// palette, or one plymouth set; found on every active CRTC here) puts the pipe
+/// in 8-bit legacy gamma mode, which caps an HDR output at 8 bits before the
+/// 10-bit plane reaches the 12-bit link. Clearing the blobs (0) restores the
+/// bypass.
 ///
 /// `Broadcast RGB` and `content type` likewise go back to the kernel defaults
 /// (Automatic, No Data) instead of whatever the last master chose, e.g. a KWin
@@ -596,6 +602,17 @@ pub fn reset_inherited_color_state(
     crtc: crtc::Handle,
     conn: &connector::Info,
 ) {
+    let output = format!(
+        "{}-{}",
+        conn
+            .interface()
+                .as_str(),
+        conn
+            .interface_id()
+    );
+    // What actually changed, so the INFO line below tells "reset something",
+    // "found nothing to reset" and "never ran" apart in an ordinary session log.
+    let mut reset: Vec<&'static str> = Vec::new();
     for name in CRTC_COLOR_BLOBS {
         if let Some((info, current)) = find_object_property(device, crtc, name)
             && current != 0
@@ -605,13 +622,17 @@ pub fn reset_inherited_color_state(
                 info.handle(),
                 0,
             ) {
-                Ok(()) => debug!(
-                    ?crtc,
-                    property = name,
-                    previous_blob = current,
-                    "cleared inherited CRTC colour blob"
-                ),
+                Ok(()) => {
+                    debug!(
+                        %output,
+                        property = name,
+                        previous_blob = current,
+                        "cleared inherited CRTC colour blob"
+                    );
+                    reset.push(name);
+                }
                 Err(error) => warn!(
+                    %output,
                     ?crtc,
                     property = name,
                     ?error,
@@ -630,23 +651,38 @@ pub fn reset_inherited_color_state(
         let Some(value) = enum_entry_value(&info, default) else {
             continue;
         };
-        if current != value
-            && let Err(error) = device.set_property(
-                conn
-                    .handle(),
-                info
-                    .handle(),
-                value,
-            )
-        {
-            warn!(
-                connector = ?conn
-                    .handle(),
+        if current == value {
+            continue;
+        }
+        match device.set_property(
+            conn
+                .handle(),
+            info
+                .handle(),
+            value,
+        ) {
+            Ok(()) => reset.push(name),
+            Err(error) => warn!(
+                %output,
                 property = name,
                 ?error,
                 "failed to reset inherited connector property"
-            );
+            ),
         }
+    }
+    if reset.is_empty() {
+        info!(
+            %output,
+            ?crtc,
+            "inherited colour state: nothing to reset"
+        );
+    } else {
+        info!(
+            %output,
+            ?crtc,
+            ?reset,
+            "reset inherited colour state"
+        );
     }
 }
 
