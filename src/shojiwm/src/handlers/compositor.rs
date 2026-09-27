@@ -58,6 +58,19 @@ fn x11_browser_cpu_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+fn xwayland_cursor_scale_override(
+    is_xwayland_bridge: bool,
+    cursor_size: i32,
+    max_dim: i32,
+) -> Option<i32> {
+    if !is_xwayland_bridge || cursor_size <= 0 || max_dim / cursor_size < 2 {
+        return None;
+    }
+    // Retain the legacy Xwayland heuristic until the bridge supplies scaling.
+    // A theme's 32px fallback for 24px is not HiDPI.
+    Some((max_dim as f64 / cursor_size as f64).round() as i32)
+}
+
 /// Resolution of `wl_fixed`, the wire type every `wp_viewport.set_source` value is rounded to.
 const WL_FIXED_QUANTUM: f64 = 1.0 / 256.0;
 
@@ -426,6 +439,10 @@ impl CompositorHandler for ShojiWM {
                 // (niri does the equivalent via its own cursor-surface branch).
                 cursor_surface_committed = true;
                 let cursor_size = self.cursor_theme.size() as i32;
+                let is_xwayland_bridge = surface.client().is_some_and(|client| {
+                    client.get_data::<ClientState>()
+                        .is_some_and(|data| data.xwayland_refresh_override)
+                });
                 if surface == &root {
                     with_states(surface, |states| {
                         // Apply the role-specific buffer offset to the hotspot so the cursor
@@ -443,6 +460,12 @@ impl CompositorHandler for ShojiWM {
                             {
                                 attrs.lock().unwrap().hotspot -= buffer_delta;
                             }
+
+                        let mut viewport_cache = states.cached_state.get::<ViewportCachedState>();
+                        let viewport = viewport_cache.current();
+                        if viewport.src.is_some() || viewport.dst.is_some() {
+                            return;
+                        }
 
                         // Workaround for Xwayland (via xwayland-satellite) sending oversized
                         // cursor buffers without setting buffer_scale: it attaches a 48×48
@@ -465,14 +488,13 @@ impl CompositorHandler for ShojiWM {
                         };
                         if let Some(dims) = buffer_dims {
                             let max_dim = dims.w.max(dims.h);
-                            if cursor_size > 0 && max_dim > cursor_size {
+                            if let Some(factor) = xwayland_cursor_scale_override(
+                                is_xwayland_bridge, cursor_size, max_dim,
+                            ) {
                                 let mut attrs_cache =
                                     states.cached_state.get::<SurfaceAttributes>();
                                 let attrs = attrs_cache.current();
                                 if attrs.buffer_scale == 1 {
-                                    let factor = ((max_dim as f64 / cursor_size as f64).round()
-                                        as i32)
-                                        .max(2);
                                     attrs.buffer_scale = factor;
 
                                     // Hotspot reinterpretation: divide by factor exactly once
@@ -816,6 +838,16 @@ impl ShmHandler for ShojiWM {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_workaround_preserves_native_and_theme_fallback_sizes() {
+        assert_eq!(xwayland_cursor_scale_override(false, 24, 32), None);
+        assert_eq!(xwayland_cursor_scale_override(false, 24, 48), None);
+        assert_eq!(xwayland_cursor_scale_override(true, 24, 32), None);
+        assert_eq!(xwayland_cursor_scale_override(true, 24, 48), Some(2));
+        assert_eq!(xwayland_cursor_scale_override(true, 24, 72), Some(3));
+        assert_eq!(xwayland_cursor_scale_override(true, 0, 48), None);
+    }
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())
