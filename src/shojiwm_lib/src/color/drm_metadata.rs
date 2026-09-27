@@ -9,7 +9,13 @@
 
 use std::io;
 
-use smithay::reexports::drm::control::{Device as ControlDevice, connector, property};
+use smithay::reexports::drm::control::{
+    Device as ControlDevice,
+    ResourceHandle,
+    connector,
+    crtc,
+    property,
+};
 use tracing::{debug, warn};
 
 use super::{ColorPrimaries, OutputColorMode};
@@ -38,6 +44,10 @@ const PROP_EDID: &str = "EDID";
 const PROP_COLORSPACE: &str = "Colorspace";
 const PROP_HDR_OUTPUT_METADATA: &str = "HDR_OUTPUT_METADATA";
 const PROP_MAX_BPC: &str = "max bpc";
+const PROP_BROADCAST_RGB: &str = "Broadcast RGB";
+const PROP_CONTENT_TYPE: &str = "content type";
+/// CRTC colour-pipeline blobs ShojiWM never programs; 0 means bypass.
+const CRTC_COLOR_BLOBS: [&str; 3] = ["DEGAMMA_LUT", "CTM", "GAMMA_LUT"];
 
 /// Kernel uapi `hdr_metadata_infoframe` (drm_mode.h), CTA-861.3 static
 /// metadata type 1. Chromaticities in 0.00002 units, max mastering
@@ -71,7 +81,20 @@ fn find_connector_property(
     conn: &connector::Info,
     name: &str,
 ) -> Option<(property::Info, property::RawValue)> {
-    let props = device.get_properties(conn.handle()).ok()?;
+    find_object_property(
+        device,
+        conn
+            .handle(), 
+        name,
+    )
+}
+
+fn find_object_property(
+    device: &impl ControlDevice,
+    handle: impl ResourceHandle,
+    name: &str,
+) -> Option<(property::Info, property::RawValue)> {
+    let props = device.get_properties(handle).ok()?;
     for (handle, value) in props.iter() {
         let Ok(info) = device.get_property(*handle) else {
             continue;
@@ -537,6 +560,93 @@ pub fn reset_hdr_connector_state(
                         "failed to reset Colorspace"
                     );
                 }
+    }
+}
+
+/// The raw value of the enum entry called `entry` in an enum property.
+fn enum_entry_value(info: &property::Info, entry: &str) -> Option<property::RawValue> {
+    match info.value_type() {
+        property::ValueType::Enum(values) => values
+            .values()
+            .1
+            .iter()
+            .find(|candidate| candidate.name().to_str() == Ok(entry))
+            .map(|candidate| candidate.value()),
+        _ => None,
+    }
+}
+
+/// Reset colour state that ShojiWM does not manage, so nothing a previous DRM
+/// master left behind applies to this output. Best-effort: missing properties
+/// are skipped and failures are logged.
+///
+/// ShojiWM never programs the CRTC's colour pipeline, and smithay's commits only
+/// touch CRTC_ID/ACTIVE/MODE_ID/FB_ID, so a DEGAMMA_LUT, CTM or GAMMA_LUT set by
+/// plymouth, fbcon or another compositor stays applied under every frame. On
+/// Intel that is worse than a no-op even when the table is an identity ramp: a
+/// 256-entry GAMMA_LUT (plymouth's, seen on the HDMI TV's CRTC) puts the pipe in
+/// 8-bit legacy gamma mode, which caps an HDR output at 8 bits before the 10-bit
+/// plane reaches the 12-bit link. Clearing the blobs (0) restores the bypass.
+///
+/// `Broadcast RGB` and `content type` likewise go back to the kernel defaults
+/// (Automatic, No Data) instead of whatever the last master chose, e.g. a KWin
+/// session that used Full range or the Graphics content type.
+pub fn reset_inherited_color_state(
+    device: &impl ControlDevice,
+    crtc: crtc::Handle,
+    conn: &connector::Info,
+) {
+    for name in CRTC_COLOR_BLOBS {
+        if let Some((info, current)) = find_object_property(device, crtc, name)
+            && current != 0
+        {
+            match device.set_property(
+                crtc,
+                info.handle(),
+                0,
+            ) {
+                Ok(()) => debug!(
+                    ?crtc,
+                    property = name,
+                    previous_blob = current,
+                    "cleared inherited CRTC colour blob"
+                ),
+                Err(error) => warn!(
+                    ?crtc,
+                    property = name,
+                    ?error,
+                    "failed to clear inherited CRTC colour blob"
+                ),
+            }
+        }
+    }
+    for (name, default) in [
+        (PROP_BROADCAST_RGB, "Automatic"),
+        (PROP_CONTENT_TYPE, "No Data"),
+    ] {
+        let Some((info, current)) = find_connector_property(device, conn, name) else {
+            continue;
+        };
+        let Some(value) = enum_entry_value(&info, default) else {
+            continue;
+        };
+        if current != value
+            && let Err(error) = device.set_property(
+                conn
+                    .handle(),
+                info
+                    .handle(),
+                value,
+            )
+        {
+            warn!(
+                connector = ?conn
+                    .handle(),
+                property = name,
+                ?error,
+                "failed to reset inherited connector property"
+            );
+        }
     }
 }
 

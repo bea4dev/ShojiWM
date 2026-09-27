@@ -1188,6 +1188,22 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
             reset_surface_after_tty_resume(surface);
         }
     }
+    // While we were paused another DRM master (a session on another VT) could
+    // have programmed the colour pipeline, range or content type, and the diff
+    // based rescan below will not revisit an unchanged connector, so clear
+    // them again here exactly as on connect.
+    for backend in state.tty_backends.values() {
+        let device = backend.drm_output_manager.device();
+        for (connector, crtc) in backend.drm_scanner.crtcs() {
+            if backend.surfaces.contains_key(&crtc) {
+                crate::color::drm_metadata::reset_inherited_color_state(
+                    device,
+                    crtc,
+                    connector,
+                );
+            }
+        }
+    }
     // Coming back to this VT means someone is at the screen, and whoever powered the outputs
     // off (an idle daemon) may be gone by now: never leave the user in front of a dark panel.
     state.power_on_all_outputs();
@@ -13925,6 +13941,13 @@ fn connector_connected(
             }
             crate::color::OutputColorMode::Sdr
         };
+        // Whatever the previous DRM master left in the colour pipeline would
+        // otherwise apply under every frame (see reset_inherited_color_state).
+        crate::color::drm_metadata::reset_inherited_color_state(
+            device,
+            crtc,
+            &connector,
+        );
         let hdr_metadata_blob = match color_mode {
             crate::color::OutputColorMode::Hdr10 { .. } => {
                 match crate::color::drm_metadata::apply_hdr_connector_state(
@@ -14520,6 +14543,11 @@ pub fn refresh_tty_output_color_modes(
             }
 
             let device = backend.drm_output_manager.device();
+            crate::color::drm_metadata::reset_inherited_color_state(
+                device,
+                crtc,
+                &connector,
+            );
             if let Some(blob) = current.hdr_metadata_blob {
                 crate::color::drm_metadata::destroy_metadata_blob(
                     device,
