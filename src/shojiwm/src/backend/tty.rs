@@ -1113,6 +1113,11 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
     // them again here exactly as on connect.
     for backend in state.tty_backends.values() {
         let device = backend.drm_output_manager.device();
+        // activate() above may have failed for this device (warned there); we
+        // are not its master then, so every write would just fail again.
+        if !device.is_active() {
+            continue;
+        }
         for (connector, crtc) in backend.drm_scanner.crtcs() {
             if backend.surfaces.contains_key(&crtc) {
                 crate::color::drm_metadata::reset_inherited_color_state(
