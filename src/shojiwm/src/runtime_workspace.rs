@@ -1,8 +1,19 @@
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeWorkspaceConfigUpdate {
     #[serde(default)]
     pub groups: Vec<RuntimeWorkspaceGroupConfig>,
+    #[serde(default)]
+    pub transitions: Vec<RuntimeWorkspaceTransition>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct RuntimeWorkspaceTransition {
+    pub output: String,
+    pub id: String,
+    pub progress: f32,
+    pub direction: f32,
+    pub accent: [f32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]

@@ -72,6 +72,7 @@ import type {
   WorkspaceConfigureFactory,
   WorkspaceController,
   WorkspaceGroupConfig,
+  WorkspaceTransition,
   EnvController,
   EnvUpdateOperation,
   EnvUpdatePayload,

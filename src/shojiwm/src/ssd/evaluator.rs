@@ -4842,6 +4842,33 @@ COMPOSITOR.window.composition = () => <Box />;
     }
 
     #[test]
+    fn embedded_runtime_workspace_transition_without_layer() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = std::env::temp_dir().join(format!("shoji-workspace-wave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.tsx");
+        std::fs::write(&config, r#"
+import { Box, COMPOSITOR } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Box />;
+COMPOSITOR.workspace.transition("DP-1", {
+    id: "transition-1", progress: 0.25, direction: -1, accent: [0.8, 0.65, 0.97],
+});
+"#).unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            root.join("tools/decoration-runtime.ts"), &config,
+        ).with_working_dir(&dir);
+        let result = evaluator.evaluate_window(&make_window(false), 0).unwrap();
+        let config = result.workspace_config.expect("transition must cross the actual native bridge");
+        assert_eq!(config.transitions.len(), 1);
+        let transition = &config.transitions[0];
+        assert_eq!(transition.output, "DP-1");
+        assert_eq!(transition.id, "transition-1");
+        assert_eq!(transition.progress, 0.25);
+        assert_eq!(transition.direction, -1.0);
+        assert!(result.window_effects.is_none());
+    }
+
+    #[test]
     fn embedded_runtime_dispatches_interactions_through_native_bridge() {
         use crate::ssd::window_model::{
             GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, PointerHitTargetSnapshot,

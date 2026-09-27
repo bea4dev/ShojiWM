@@ -41,7 +41,8 @@ use smithay::{
                     Relocate, RelocateRenderElement, RescaleRenderElement, select_dmabuf_feedback,
                 },
             },
-            gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
+            gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture, GlesTexProgram,
+                Uniform, UniformName, UniformType, element::TextureShaderElement},
             utils::{CommitCounter, DamageSet, OpaqueRegions},
         },
         session::{Session, libseat::LibSeatSession},
@@ -981,6 +982,10 @@ struct DeferredSubmit {
 }
 
 struct SurfaceData {
+    // Retain draw commands, not a continuously rendered copy of the desktop.
+    workspace_scene: Vec<TtyRenderElements>,
+    workspace_wave: Option<WorkspaceWave>,
+    workspace_wave_program: Option<GlesTexProgram>,
     output: Output,
     drm_output: GbmDrmOutput,
     available_modes: Vec<smithay::reexports::drm::control::Mode>,
@@ -1228,6 +1233,8 @@ fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
 }
 
 fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
+    surface.workspace_wave = None;
+    surface.workspace_scene.clear();
     surface.deferred_submit = None;
     surface.deferred_submit_generation = surface.deferred_submit_generation.wrapping_add(1);
     surface.frame_pending = false;
@@ -2455,6 +2462,7 @@ render_elements! {
     RelocatedText=RelocateRenderElement<crate::backend::text::DecorationTextureElements>,
     TransformedText=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::text::DecorationTextureElements>>>,
     Snapshot=TextureRenderElement<GlesTexture>,
+    WorkspaceWave=TextureShaderElement,
     TransformedSnapshot=RelocateRenderElement<RescaleRenderElement<TextureRenderElement<GlesTexture>>>,
     Damage=crate::backend::damage::DamageOnlyElement,
     Blink=SolidColorRenderElement,
@@ -2499,6 +2507,121 @@ pub struct OutputCaptureMirror {
     size: Size<i32, Physical>,
     scale: Scale<f64>,
     transform: Transform,
+}
+
+struct WorkspaceWave {
+    request: crate::runtime_workspace::RuntimeWorkspaceTransition,
+    mirror: OutputCaptureMirror,
+    updated: Instant,
+}
+
+pub fn clear_workspace_transitions(state: &mut ShojiWM) {
+    for backend in state.tty_backends.values_mut() {
+        for surface in backend.surfaces.values_mut() {
+            surface.workspace_wave = None;
+            surface.workspace_scene.clear();
+        }
+    }
+}
+
+pub fn update_workspace_transitions(
+    state: &mut ShojiWM,
+    requests: &[crate::runtime_workspace::RuntimeWorkspaceTransition],
+) {
+    for request in requests {
+        if request.id.is_empty() || !request.progress.is_finite()
+            || !request.direction.is_finite() || request.accent.iter().any(|v| !v.is_finite()) {
+            continue;
+        }
+        for backend in state.tty_backends.values_mut() {
+            for surface in backend.surfaces.values_mut().filter(|s| s.output.name() == request.output) {
+                if state.session_lock_active || request.progress >= 1.0 {
+                    surface.workspace_wave = None;
+                    continue;
+                }
+                if let Some(wave) = surface.workspace_wave.as_mut().filter(|w| w.request.id == request.id) {
+                    wave.request = request.clone();
+                    wave.updated = Instant::now();
+                    continue;
+                }
+                surface.workspace_wave = None;
+                if surface.workspace_scene.is_empty() { continue; }
+                let mut mirror = None;
+                match render_output_capture_mirror(&mut backend.renderer, &mut mirror,
+                    &surface.output, &surface.workspace_scene) {
+                    Ok(Some(_)) => {
+                        surface.workspace_wave = mirror.map(|mirror| WorkspaceWave {
+                            request: request.clone(), mirror, updated: Instant::now(),
+                        });
+                        let output_name = request.output.clone();
+                        let transition_id = request.id.clone();
+                        // Retire an abandoned gesture/runtime even if no further frame is requested.
+                        let _ = state.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(30)),
+                            move |_, _, state| {
+                                let mut cleared = false;
+                                for backend in state.tty_backends.values_mut() {
+                                    for surface in backend.surfaces.values_mut() {
+                                        if surface.output.name() != output_name { continue; }
+                                        if let Some(wave) = surface.workspace_wave.as_ref().filter(|w| w.request.id == transition_id) {
+                                            if wave.updated.elapsed() < Duration::from_secs(30) {
+                                                return TimeoutAction::ToDuration(Duration::from_secs(30));
+                                            }
+                                            surface.workspace_wave = None;
+                                            surface.workspace_scene.clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                }
+                                if cleared { state.schedule_redraw(); }
+                                TimeoutAction::Drop
+                            });
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!(?error, output = %request.output, "workspace snapshot failed; showing live desktop"),
+                }
+            }
+        }
+    }
+    if !requests.is_empty() { state.schedule_redraw(); }
+}
+
+fn workspace_wave_element(
+    renderer: &mut GlesRenderer, surface: &mut SurfaceData,
+) -> Result<Option<TtyRenderElements>, GlesError> {
+    let Some(wave) = surface.workspace_wave.as_ref() else { return Ok(None); };
+    let output = &surface.output;
+    if wave.updated.elapsed() > Duration::from_secs(30)
+        || output.current_mode().is_none_or(|m| output.current_transform().transform_size(m.size) != wave.mirror.size)
+        || output.current_transform() != wave.mirror.transform
+        || Scale::from(output.current_scale().fractional_scale()) != wave.mirror.scale {
+        surface.workspace_wave = None;
+        return Ok(None);
+    }
+    if surface.workspace_wave_program.is_none() {
+        surface.workspace_wave_program = Some(renderer.compile_custom_texture_shader(
+            include_str!("workspace_wave.frag"), &[
+                UniformName::new("progress", UniformType::_1f),
+                UniformName::new("direction", UniformType::_1f),
+                UniformName::new("screen_size", UniformType::_2f),
+                UniformName::new("theme_accent", UniformType::_3f),
+            ])?);
+    }
+    let size = wave.mirror.size;
+    let logical_size = size.to_f64().to_logical(wave.mirror.scale).to_i32_round();
+    let inner = TextureRenderElement::from_static_texture(
+        Id::new(), renderer.context_id(), (0.0, 0.0), wave.mirror.texture.clone(),
+        1, Transform::Normal, None,
+        Some(Rectangle::from_size(size.to_f64().to_logical(1.0))),
+        Some(logical_size), None, Kind::Unspecified,
+    );
+    Ok(Some(TtyRenderElements::WorkspaceWave(TextureShaderElement::new(
+        inner, surface.workspace_wave_program.as_ref().unwrap().clone(), vec![
+            Uniform::new("progress", wave.request.progress.clamp(0.0, 1.0)),
+            Uniform::new("direction", wave.request.direction),
+            Uniform::new("screen_size", [logical_size.w as f32, logical_size.h as f32]),
+            Uniform::new("theme_accent", wave.request.accent.map(|v| v.clamp(0.0, 1.0))),
+        ],
+    ))))
 }
 
 /// `(textures, render element states)` from an output-capture mirror pass.
@@ -6302,6 +6425,19 @@ fn render_surface(
             );
         }
         content_for_capture.extend(content_elements);
+        if state.session_lock_active {
+            surface.workspace_wave = None;
+            surface.workspace_scene.clear();
+        } else {
+            match workspace_wave_element(&mut backend.renderer, surface) {
+                Ok(Some(wave)) => content_for_capture.insert(0, wave),
+                Ok(None) => {}
+                Err(error) => {
+                    surface.workspace_wave = None;
+                    warn!(?error, "workspace shader failed; showing live desktop");
+                }
+            }
+        }
         // The element count for diagnostics — final elements is built below
         // after capture has run against the by-reference slices.
         timing.render_element_count = cursor_pointer_elements.len() + content_for_capture.len();
@@ -6459,6 +6595,7 @@ fn render_surface(
         elements.extend(error_background_elements);
         elements.extend(fps_overlay_elements);
         elements.extend(cursor_elements);
+        let workspace_scene_start = elements.len();
         if let Some(mirrored_display_content) = mirrored_display_content {
             elements.extend(mirrored_display_content);
         } else {
@@ -6862,6 +6999,9 @@ fn render_surface(
         let effective_render_states = effective_render_states_storage
             .as_ref()
             .unwrap_or(&result.states);
+        if !state.session_lock_active {
+            surface.workspace_scene = elements.split_off(workspace_scene_start);
+        }
         // Update primary-scanout metadata unconditionally — even for no-damage frames.
         //
         // Firefox's root wl_surface commits without a buffer (pure frame-callback registration).
@@ -13184,6 +13324,9 @@ fn connector_connected(
         "tty surface async page-flip (tearing) capability"
     );
     let surface = SurfaceData {
+        workspace_scene: Vec::new(),
+        workspace_wave: None,
+        workspace_wave_program: None,
         output: output.clone(),
         drm_output,
         available_modes: connector.modes().to_vec(),

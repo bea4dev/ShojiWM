@@ -3,6 +3,7 @@ import type {
   WorkspaceConfig,
   WorkspaceConfigureFactory,
   WorkspaceController,
+  WorkspaceTransition,
 } from "./types";
 
 let desiredWorkspaceConfig: WorkspaceConfig = { groups: [] };
@@ -10,6 +11,7 @@ let pendingWorkspaceConfig = false;
 let configureFactory: WorkspaceConfigureFactory | null = null;
 let stagedConfigureFactory: WorkspaceConfigureFactory | null | undefined;
 const activateListeners = new Set<(event: WorkspaceActivateEvent) => void>();
+const pendingTransitions = new Map<string, WorkspaceTransition>();
 
 function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
   return {
@@ -83,6 +85,7 @@ export function reconfigureWorkspaces(): void {
 }
 
 export function resetWorkspaceConfiguration(): void {
+  pendingTransitions.clear();
   if (stagedConfigureFactory !== undefined) {
     stagedConfigureFactory = null;
     return;
@@ -106,11 +109,14 @@ export function commitWorkspaceConfigurationRegistration(): void {
 }
 
 export function takePendingWorkspaceConfig(): WorkspaceConfig | undefined {
-  if (!pendingWorkspaceConfig) {
+  if (!pendingWorkspaceConfig && pendingTransitions.size === 0) {
     return undefined;
   }
   pendingWorkspaceConfig = false;
-  return cloneWorkspaceConfig(desiredWorkspaceConfig);
+  const config = cloneWorkspaceConfig(desiredWorkspaceConfig);
+  config.transitions = Array.from(pendingTransitions, ([output, transition]) => ({ output, ...transition }));
+  pendingTransitions.clear();
+  return config;
 }
 
 export function emitWorkspaceActivate(event: WorkspaceActivateEvent): boolean {
@@ -123,6 +129,20 @@ export function emitWorkspaceActivate(event: WorkspaceActivateEvent): boolean {
 }
 
 export const WORKSPACE_CONTROLLER: WorkspaceController = {
+  transition(output, transition) {
+    if (typeof output !== "string" || !output || typeof transition?.id !== "string"
+      || !transition.id || !Number.isFinite(transition.progress)
+      || !Number.isFinite(transition.direction) || !Array.isArray(transition.accent) || transition.accent.length !== 3
+      || transition.accent.some(value => !Number.isFinite(value))) {
+      throw new Error("Invalid workspace transition");
+    }
+    pendingTransitions.set(output, {
+      id: transition.id,
+      progress: Math.max(0, Math.min(1, transition.progress)),
+      direction: transition.direction < 0 ? -1 : 1,
+      accent: transition.accent.map(value => Math.max(0, Math.min(1, value))) as [number, number, number],
+    });
+  },
   configure(factory) {
     configureWorkspaces(factory);
   },

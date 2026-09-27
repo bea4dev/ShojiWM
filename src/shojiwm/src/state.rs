@@ -2459,6 +2459,7 @@ impl ShojiWM {
     }
 
     pub fn reload_decoration_runtime(&mut self) {
+        crate::backend::tty::clear_workspace_transitions(self);
         if self.decoration_evaluator.as_embedded().is_none() {
             self.config_error_report = Some(crate::config_error::ConfigErrorReport::hot_reload(
                 "hot reload is only available for the TypeScript runtime",
@@ -3183,6 +3184,7 @@ impl ShojiWM {
         update: Option<RuntimeWorkspaceConfigUpdate>,
     ) {
         if let Some(update) = update {
+            crate::backend::tty::update_workspace_transitions(self, &update.transitions);
             let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
             self.ext_workspace_manager_state
                 .sync::<Self>(update, &self.display_handle, &outputs);

@@ -1221,6 +1221,14 @@ export interface WorkspaceGroupConfig {
 
 export interface WorkspaceConfig {
   groups: WorkspaceGroupConfig[];
+  transitions?: Array<WorkspaceTransition & { output: string }>;
+}
+
+export interface WorkspaceTransition {
+  id: string;
+  progress: number;
+  direction: number;
+  accent: [number, number, number];
 }
 
 export type WorkspaceConfigureFactory = () => WorkspaceConfig;
@@ -1231,6 +1239,8 @@ export interface WorkspaceActivateEvent {
 }
 
 export interface WorkspaceController {
+  /** Animate the last composed output frame without a layer-shell surface. */
+  transition(output: string, transition: WorkspaceTransition): void;
   /**
    * Registers a factory that describes the compositor workspace model exposed
    * through `ext_workspace_manager_v1`.
