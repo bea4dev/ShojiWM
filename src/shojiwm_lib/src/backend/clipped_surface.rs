@@ -579,12 +579,9 @@ impl ClippedSurfaceElement {
                     crate::color::TransferCharacteristics::ExtLinear => 2.0,
                 };
                 let luminances = description.effective_luminances();
-                // MaxCLL is the measured peak of the content; fall back to the
-                // description's declared maximum when the client didn't send it.
-                let max_nits = description
-                    .max_cll
-                    .map(|cll| cll as f32)
-                    .unwrap_or(luminances.max);
+                // MaxCLL, or the declared maximum when it is missing or 0
+                // ("unknown"); see `ImageDescription::content_peak_nits`.
+                let max_nits = description.content_peak_nits();
                 // BT.2390 operates on PQ signals, so encode the knee here
                 // rather than paying four pow() calls per fragment for values
                 // that are constant across the surface. The target peak is the
