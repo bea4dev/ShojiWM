@@ -102,6 +102,21 @@ impl ImageDescription {
         self.luminances
             .unwrap_or_else(|| self.tf.default_luminances())
     }
+
+    /// The content's peak in cd/m²: MaxCLL when the client sent a usable one,
+    /// else the description's declared maximum. The protocol takes max_cll
+    /// from CTA-861-H, where 0 means "unknown", and Mesa's Vulkan WSI sends
+    /// exactly that for an HDR10 swapchain created without VkHdrMetadataEXT.
+    /// Taken at face value, a peak at or below the black level collapses the
+    /// BT.2390 range and paints the whole surface black, so it counts as
+    /// missing.
+    pub fn content_peak_nits(&self) -> f32 {
+        let luminances = self.effective_luminances();
+        self.max_cll
+            .map(|cll| cll as f32)
+            .filter(|&nits| nits > luminances.min)
+            .unwrap_or(luminances.max)
+    }
 }
 
 /// What an output is driven as. Decided per-connector in `tty.rs` from
@@ -331,5 +346,36 @@ pub fn resolve_output_mode(
         min_display_luminance: min_override
             .or(edid.min_luminance)
             .unwrap_or(0.005),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pq_with_max_cll(max_cll: Option<u32>) -> ImageDescription {
+        ImageDescription {
+            primaries: ColorPrimaries::Bt2020,
+            tf: TransferCharacteristics::St2084Pq,
+            luminances: None,
+            max_cll,
+            max_fall: None,
+        }
+    }
+
+    /// What Mesa's WSI sends for an HDR10 swapchain with no HDR metadata.
+    #[test]
+    fn zero_max_cll_means_unknown() {
+        assert_eq!(pq_with_max_cll(Some(0)).content_peak_nits(), 10000.0);
+    }
+
+    #[test]
+    fn missing_max_cll_falls_back_to_declared_max() {
+        assert_eq!(pq_with_max_cll(None).content_peak_nits(), 10000.0);
+    }
+
+    #[test]
+    fn real_max_cll_is_the_content_peak() {
+        assert_eq!(pq_with_max_cll(Some(1000)).content_peak_nits(), 1000.0);
     }
 }
