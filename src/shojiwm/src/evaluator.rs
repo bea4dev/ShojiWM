@@ -7658,7 +7658,7 @@ COMPOSITOR.output.configure(() => ({{
         )
         .with_working_dir(&repository_root);
         let mut output = test_output_snapshot("TEST-1");
-        output.hdmi = Some(crate::ssd::HdmiLinkSnapshot {
+        output.hdmi = Some(shojiwm_lib::ssd::HdmiLinkSnapshot {
             standard: "HDMI 2.0",
             max_tmds_khz: Some(600_000),
             max_bandwidth_gbps: Some(18.0),
@@ -7667,13 +7667,15 @@ COMPOSITOR.output.configure(() => ({{
             "TEST-1".to_string(),
             output,
         )]));
-        let invocation = evaluator
+        evaluator
             .lifecycle_enable("initial", None)
             .expect("embedded runtime should enable the config");
 
-        let config = invocation
-            .display_config
-            .expect("the output factory should produce a display config")
+        let config = published(&evaluator, |message| match message {
+            HostMessage::Display(config) => Some(config),
+            _ => None,
+        })
+        .expect("the output factory should produce a display config")
             .outputs
             .remove("TEST-1")
             .flatten()
