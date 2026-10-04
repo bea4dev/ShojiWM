@@ -39,7 +39,7 @@ impl WlrLayerShellHandler for ShojiWM {
         _layer_kind: Layer,
         namespace: String,
     ) {
-        let output = wl_output
+        let Some(output) = wl_output
             .as_ref()
             .and_then(Output::from_resource)
             .or_else(|| {
@@ -54,7 +54,15 @@ impl WlrLayerShellHandler for ShojiWM {
                     })
                     .cloned()
             })
-            .unwrap_or_else(|| self.space.outputs().next().unwrap().clone());
+            .or_else(|| self.space.outputs().next().cloned())
+        else {
+            tracing::warn!(
+                namespace = %namespace,
+                "cannot map layer surface: no output is available"
+            );
+            surface.send_close();
+            return;
+        };
         let layer = LayerSurface::new(surface, namespace);
         self.pending_layer_surfaces
             .push(PendingLayerSurface { output, layer });
