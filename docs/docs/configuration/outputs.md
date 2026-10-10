@@ -172,11 +172,16 @@ the output stays SDR and the log says why. Experimental, tty only.
 
 | Option | Meaning |
 | --- | --- |
-| `hdr` | `true` to drive the output as HDR10 |
-| `hdrSdrLuminance` | Brightness of SDR white (ordinary windows): cd/m² (10–1000), or `"backlight"` to follow the brightness setting. Default: follow the backlight on laptops, 203 elsewhere |
-| `hdrSdrGamut` | Colors: `"native"` (default) as in SDR mode, or `"srgb"` for exact colors |
-| `hdrMaxLuminance` | The display's real peak in cd/m², when its EDID omits it (otherwise 1000 is assumed). Range 50–10000 |
-| `hdrMinLuminance` | The display's real black level in cd/m². Range 0–10 |
+`hdr: true` turns it on with the defaults. To change a setting, give an object
+instead, which turns HDR on as well:
+
+| Option | Meaning |
+| --- | --- |
+| `hdr.enabled` | `false` keeps the settings but drives the output as SDR. Default `true` |
+| `hdr.sdrLuminance` | Brightness of SDR white (ordinary windows): cd/m² (10–1000), or `"backlight"` to follow the brightness setting. Default: follow the backlight on laptops, 203 elsewhere |
+| `hdr.sdrGamut` | Colors: `"native"` (default) as in SDR mode, or `"srgb"` for exact colors |
+| `hdr.maxLuminance` | The display's real peak in cd/m², when its EDID omits it (otherwise 1000 is assumed). Range 50–10000 |
+| `hdr.minLuminance` | The display's real black level in cd/m². Range 0–10 |
 
 ```ts
 display['eDP-1'] = {
@@ -186,16 +191,17 @@ display['eDP-1'] = {
 };
 
 display['DP-1'] = {
-  hdr: true,
-  // An external monitor has no backlight to follow: fix SDR white instead.
-  hdrSdrLuminance: 250,
+  hdr: {
+    // An external monitor has no backlight to follow: fix SDR white instead.
+    sdrLuminance: 250,
+  },
 };
 ```
 
 How it looks:
 
 - **SDR content** (almost every window) keeps its look, with white shown at
-  `hdrSdrLuminance`.
+  `hdr.sdrLuminance`.
 - **Brightness keys keep working on laptops.** An HDR signal states absolute
   luminance, so the panel ignores its backlight while in HDR. ShojiWM applies
   the brightness setting itself instead: it moves SDR white, reaching the
@@ -205,7 +211,7 @@ How it looks:
   requested `brightness` (amdgpu's OLED panels apply a curve).
 - **SDR colors match SDR mode.** In SDR mode a wide-gamut panel shows sRGB
   values on its own, wider primaries, which makes them more saturated than
-  sRGB. HDR follows suit by default (`hdrSdrGamut: "native"`, using the
+  sRGB. HDR follows suit by default (`sdrGamut: "native"`, using the
   primaries in the panel's EDID); `"srgb"` shows exact colors instead, which on
   such a panel look duller. The choice applies to all content alike:
   color-managed clients such as Chrome hand over even their SDR interface in
@@ -218,7 +224,7 @@ How it looks:
   through Vulkan) is shown above SDR white, up to the display's peak, and
   tone-mapped where it goes beyond. Clients learn the available headroom
   (peak ÷ SDR white) from the color-management protocol, so the higher
-  `hdrSdrLuminance` is, the less room is left for highlights.
+  `hdr.sdrLuminance` is, the less room is left for highlights.
 - Screenshots and screen recordings stay SDR.
 
 Notes:
@@ -227,7 +233,7 @@ Notes:
 - On HDMI, the link has to carry 10 bits per color at the chosen mode;
   `OutputInfo.hdmi` and `availableModes[].clockKhz` let a config check that.
 - `SHOJI_HDR_OUTPUTS=eDP-1` (or `all`) turns HDR on without a config, and
-  `SHOJI_SDR_NITS` sets the default for `hdrSdrLuminance` on outputs without a
+  `SHOJI_SDR_NITS` sets the default for `hdr.sdrLuminance` on outputs without a
   backlight.
 
 ## Switching panels off (DPMS)

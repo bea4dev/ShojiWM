@@ -480,7 +480,9 @@ pub struct OutputChangeEvent {
 /// One output's entry in a display configuration.
 pub use shojiwm_lib::config::{
     RuntimeDisplayModePreference as OutputResolution, RuntimeOutputMode as OutputMode,
+    RuntimeHdrConfig as OutputHdr, RuntimeHdrOptions as OutputHdrOptions,
     RuntimeOutputPositionPreference as OutputPosition, RuntimeOutputTransform as OutputTransform,
+    RuntimeSdrGamut as SdrGamut, RuntimeSdrLuminance as SdrLuminance,
 };
 
 /// Builder helpers for [`RuntimeOutputConfig`].
@@ -498,10 +500,6 @@ impl OutputConfig {
             transform: None,
             subpixel: None,
             hdr: None,
-            hdr_max_luminance: None,
-            hdr_min_luminance: None,
-            hdr_sdr_luminance: None,
-            hdr_sdr_gamut: None,
         }
     }
 
@@ -516,10 +514,6 @@ impl OutputConfig {
             transform: None,
             subpixel: None,
             hdr: None,
-            hdr_max_luminance: None,
-            hdr_min_luminance: None,
-            hdr_sdr_luminance: None,
-            hdr_sdr_gamut: None,
         }
     }
 }

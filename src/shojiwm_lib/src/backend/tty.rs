@@ -12374,8 +12374,8 @@ fn connector_connected(
     let hdr_requested = state
         .runtime_output_configs
         .get(&output_name)
-        .and_then(|config| config.hdr)
-        .unwrap_or(false)
+        .and_then(|config| config.hdr.as_ref())
+        .is_some_and(|hdr| hdr.enabled())
         || crate::color::hdr_output_requested_via_env(&output_name);
     // Same lookup as `hdr_requested`: the config may not have arrived yet at
     // connect time, in which case this is empty and refresh_tty_output_color_modes
@@ -12993,8 +12993,12 @@ fn output_hdr_luminance_override(
     output_name: &str,
 ) -> crate::color::HdrLuminanceOverride {
     use crate::config::{RuntimeSdrLuminance, RuntimeSdrLuminanceKeyword};
-    let config = state.runtime_output_configs.get(output_name);
-    let sdr_luminance = config.and_then(|config| config.hdr_sdr_luminance);
+    let options = state
+        .runtime_output_configs
+        .get(output_name)
+        .and_then(|config| config.hdr.as_ref())
+        .and_then(|hdr| hdr.options());
+    let sdr_luminance = options.and_then(|options| options.sdr_luminance);
     let (sdr_white, follow_backlight) = match sdr_luminance {
         Some(RuntimeSdrLuminance::Nits(nits)) => (Some(nits), false),
         Some(RuntimeSdrLuminance::Keyword(RuntimeSdrLuminanceKeyword::Backlight)) | None => {
@@ -13002,15 +13006,15 @@ fn output_hdr_luminance_override(
         }
     };
     crate::color::HdrLuminanceOverride {
-        max: config.and_then(|config| config.hdr_max_luminance),
-        min: config.and_then(|config| config.hdr_min_luminance),
+        max: options.and_then(|options| options.max_luminance),
+        min: options.and_then(|options| options.min_luminance),
         sdr_white,
         backlight_fraction: follow_backlight
             .then(|| crate::backlight::for_output(output_name))
             .flatten()
             .and_then(|backlight| backlight.fraction()),
-        sdr_native_gamut: config
-            .and_then(|config| config.hdr_sdr_gamut)
+        sdr_native_gamut: options
+            .and_then(|options| options.sdr_gamut)
             .is_none_or(|gamut| gamut == crate::config::RuntimeSdrGamut::Native),
     }
 }
@@ -13109,8 +13113,8 @@ pub fn refresh_tty_output_color_modes(
                 .get(
                     &output_name
                 )
-                .and_then(|config| config.hdr)
-                .unwrap_or(false)
+                .and_then(|config| config.hdr.as_ref())
+                .is_some_and(|hdr| hdr.enabled())
                 || crate::color::hdr_output_requested_via_env(&output_name);
             let hdr_luminance_override = output_hdr_luminance_override(state, &output_name);
             let desired_mode = if hdr_render_supports_fp16(state, node) {
@@ -13128,7 +13132,7 @@ pub fn refresh_tty_output_color_modes(
                 continue;
             }
             if desired_mode.same_signal(&current.mode) {
-                // SDR white alone moved (the backlight, or `hdrSdrLuminance`):
+                // SDR white alone moved (the backlight, or `hdr.sdrLuminance`):
                 // only the encode changes; the connector keeps its state.
                 changed_outputs.push(output_name.clone());
                 state.output_color.insert(

@@ -542,7 +542,7 @@ pub fn apply_hdr_connector_state(
     //
     // `max_display_luminance` comes from the config override, then the EDID,
     // then a 1000 cd/m2 fallback; an EDID without luminance figures (common)
-    // should be met with `hdrMaxLuminance` in the config.
+    // should be met with `hdr.maxLuminance` in the config.
     let content_peak_nits = max_display_luminance.max(sdr_white_luminance);
     let content_peak = content_peak_nits.round().clamp(0.0, f32::from(u16::MAX)) as u16;
 

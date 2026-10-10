@@ -637,6 +637,7 @@ export type {
   EffectOutsets,
   LayerEffectRegion,
   OutputConfigEntry,
+  OutputHdrConfig,
   OutputConfigureContext,
   OutputConfigureFactory,
   OutputController,

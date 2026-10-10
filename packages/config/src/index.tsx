@@ -516,14 +516,14 @@ COMPOSITOR.output.configure((context) => {
     position: "auto",
     scale: 1.8,
     transform: "normal",
-    hdr: true,
+    hdr: false,
   };
   display["eDP-2"] = {
     mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.8,
-    hdr: true,
+    hdr: false,
   };
   display["HDMI-A-1"] = {
     mode: "extend",

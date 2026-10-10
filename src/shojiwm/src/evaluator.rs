@@ -7939,7 +7939,7 @@ const ipc = createIpcServer({socket_literal});
 ipc.handle("outputs", () => COMPOSITOR.output.current);
 COMPOSITOR.window.composition = () => <Box />;
 COMPOSITOR.output.configure(() => ({{
-  "TEST-1": {{ hdr: true, hdrMaxLuminance: 420, hdrMinLuminance: 0.05 }},
+  "TEST-1": {{ hdr: {{ maxLuminance: 420, minLuminance: 0.05 }} }},
 }}));
 "#
             ),
@@ -7974,8 +7974,11 @@ COMPOSITOR.output.configure(() => ({{
             .remove("TEST-1")
             .flatten()
             .expect("TEST-1 should be configured");
-        assert_eq!(config.hdr_max_luminance, Some(420.0));
-        assert_eq!(config.hdr_min_luminance, Some(0.05));
+        let hdr = config.hdr.expect("hdr should be configured");
+        assert!(hdr.enabled());
+        let options = hdr.options().expect("hdr should carry its settings");
+        assert_eq!(options.max_luminance, Some(420.0));
+        assert_eq!(options.min_luminance, Some(0.05));
 
         let mut socket =
             UnixStream::connect(&socket_path).expect("IPC server should be listening");

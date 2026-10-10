@@ -417,7 +417,7 @@ impl HdrLuminanceOverride {
             if !ok {
                 warn!(
                     output = output_name,
-                    value, "hdrMaxLuminance outside 50..=10000 cd/m2; ignoring"
+                    value, "hdr.maxLuminance outside 50..=10000 cd/m2; ignoring"
                 );
             }
             ok
@@ -430,7 +430,7 @@ impl HdrLuminanceOverride {
             if !ok {
                 warn!(
                     output = output_name,
-                    value, "hdrSdrLuminance outside 10..=1000 cd/m2; ignoring"
+                    value, "hdr.sdrLuminance outside 10..=1000 cd/m2; ignoring"
                 );
             }
             ok
@@ -443,7 +443,7 @@ impl HdrLuminanceOverride {
             if !ok {
                 warn!(
                     output = output_name,
-                    value, "hdrMinLuminance outside 0..=10 cd/m2; ignoring"
+                    value, "hdr.minLuminance outside 0..=10 cd/m2; ignoring"
                 );
             }
             ok

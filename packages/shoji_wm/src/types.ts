@@ -1303,15 +1303,58 @@ export interface OutputExtendConfigEntry {
   subpixel?: OutputSubpixel;
   /**
    * Drive this output as HDR10 (PQ/BT.2020 signaling) when its EDID
-   * advertises ST 2084 support; ignored otherwise. Experimental. SDR content
-   * keeps its look at `hdrSdrLuminance`; HDR content from color-managed
-   * clients (Chrome, mpv, games) is shown up to the display's peak.
+   * advertises ST 2084 support; ignored otherwise. Experimental. `true` uses
+   * the defaults; an object sets the HDR settings and turns HDR on (unless it
+   * says `enabled: false`). SDR content keeps its look at `sdrLuminance`; HDR
+   * content from color-managed clients (Chrome, mpv, games) is shown up to the
+   * display's peak.
    * この出力の EDID が ST 2084 対応を示す場合、HDR10(PQ/BT.2020)で
-   * 駆動します（実験的機能）。SDR の内容は `hdrSdrLuminance` の明るさで
-   * そのまま表示され、色管理に対応したクライアント（Chrome・mpv・ゲーム）の
-   * HDR の内容はディスプレイの最大輝度まで表示されます。
+   * 駆動します（実験的機能）。`true` は既定の設定で、オブジェクトを渡すと
+   * HDR の設定をしたうえで HDR を有効にします（`enabled: false` を除く）。
+   * SDR の内容は `sdrLuminance` の明るさでそのまま表示され、色管理に対応した
+   * クライアント（Chrome・mpv・ゲーム）の HDR の内容はディスプレイの最大輝度
+   * まで表示されます。
    */
-  hdr?: boolean;
+  hdr?: boolean | OutputHdrConfig;
+}
+
+/**
+ * HDR settings of an output (`hdr: { ... }`).
+ * 出力の HDR 設定（`hdr: { ... }`）。
+ */
+export interface OutputHdrConfig {
+  /**
+   * `false` keeps these settings but drives the output as SDR. Default `true`.
+   * `false` にすると設定を残したまま SDR で駆動します。既定は `true`。
+   */
+  enabled?: boolean;
+  /**
+   * What SDR white (ordinary windows) is shown at: a luminance in cd/m²
+   * (10..=1000), or `"backlight"` to follow the panel's brightness setting,
+   * which the panel itself ignores in HDR. Unset follows the backlight on
+   * panels that have one (laptops), else 203 (ITU-R BT.2408). HDR content
+   * above SDR white gets whatever is left up to the peak.
+   * SDR の白（通常のウィンドウ）を表示する明るさ。cd/m² の数値（10〜1000）か、
+   * パネルの明るさ設定に連動する `"backlight"`（HDR 中はパネル自体が明るさ
+   * 設定を無視するため）。省略時はバックライトのあるパネル（ノート PC）では
+   * 連動、それ以外は 203（ITU-R BT.2408）。SDR の白から最大輝度までが HDR の
+   * 内容に使われます。
+   */
+  sdrLuminance?: number | "backlight";
+  /**
+   * How colors are shown. `"native"` (default) stretches them over the
+   * panel's own gamut, as the panel itself does in SDR mode, so a wide-gamut
+   * panel looks the same with HDR on and off. It applies to all content alike,
+   * so color-managed clients (Chrome, HDR video) get the same vivid look as
+   * every other window. `"srgb"` shows exact colors, which look duller on such
+   * a panel.
+   * 色の出し方。`"native"`（既定）は SDR モードのパネルと同じくパネル本来の
+   * 色域に広げて表示し、広色域パネルでも HDR のオン・オフで見た目が変わり
+   * ません。すべての内容に同じく効くので、色管理に対応したクライアント
+   * （Chrome や HDR 動画）も他のウィンドウと同じ鮮やかさになります。`"srgb"` は
+   * 正確な色で、そうしたパネルではくすんで見えます。
+   */
+  sdrGamut?: "native" | "srgb";
   /**
    * Real peak luminance of this display in cd/m². Only needed when the EDID
    * advertises ST 2084 but omits its luminance fields, which is common — the
@@ -1320,39 +1363,12 @@ export interface OutputExtendConfigEntry {
    * ながら輝度情報を持たない場合にのみ必要です（その場合は 1000 と仮定され
    * ます）。50〜10000 の範囲外は無視されます。
    */
-  hdrMaxLuminance?: number;
+  maxLuminance?: number;
   /**
    * Real black level of this display in cd/m². Ignored outside 0..=10.
    * このディスプレイの実際の黒レベル（cd/m²）。0〜10 の範囲外は無視されます。
    */
-  hdrMinLuminance?: number;
-  /**
-   * What SDR white (ordinary windows) is shown at on this HDR output: a
-   * luminance in cd/m² (10..=1000), or `"backlight"` to follow the panel's
-   * brightness setting, which the panel itself ignores in HDR. Unset follows
-   * the backlight on panels that have one (laptops), else 203 (ITU-R BT.2408).
-   * HDR content above SDR white gets whatever is left up to the peak.
-   * HDR 出力で SDR の白（通常のウィンドウ）を表示する明るさ。cd/m² の数値
-   * （10〜1000）か、パネルの明るさ設定に連動する `"backlight"`（HDR 中は
-   * パネル自体が明るさ設定を無視するため）。省略時はバックライトのある
-   * パネル（ノート PC）では連動、それ以外は 203（ITU-R BT.2408）。SDR の白
-   * から最大輝度までが HDR の内容に使われます。
-   */
-  hdrSdrLuminance?: number | "backlight";
-  /**
-   * How colors are shown on this HDR output. `"native"` (default) stretches
-   * them over the panel's own gamut, as the panel itself does in SDR mode, so
-   * a wide-gamut panel looks the same with HDR on and off. It applies to all
-   * content alike, so color-managed clients (Chrome, HDR video) get the same
-   * vivid look as every other window. `"srgb"` shows exact colors, which look
-   * duller on such a panel.
-   * HDR 出力での色の出し方。`"native"`（既定）は SDR モードのパネルと同じく
-   * パネル本来の色域に広げて表示し、広色域パネルでも HDR のオン・オフで見た目が
-   * 変わりません。すべての内容に同じく効くので、色管理に対応したクライアント
-   * （Chrome や HDR 動画）も他のウィンドウと同じ鮮やかさになります。`"srgb"` は
-   * 正確な色で、そうしたパネルではくすんで見えます。
-   */
-  hdrSdrGamut?: "native" | "srgb";
+  minLuminance?: number;
 }
 
 export interface OutputDisabledConfigEntry {

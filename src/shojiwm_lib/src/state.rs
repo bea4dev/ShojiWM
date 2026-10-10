@@ -3483,7 +3483,7 @@ impl ShojiWM {
         crate::color::set_session_hdr_configured(
             self.runtime_output_configs
                 .values()
-                .any(|config| config.hdr == Some(true)),
+                .any(|config| config.hdr.as_ref().is_some_and(|hdr| hdr.enabled())),
         );
         crate::backend::tty::refresh_tty_output_color_modes(self);
         self.apply_runtime_display_configuration();

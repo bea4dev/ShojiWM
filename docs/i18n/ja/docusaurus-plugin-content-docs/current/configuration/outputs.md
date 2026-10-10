@@ -172,11 +172,16 @@ SDR のままで、理由がログに出ます。実験的機能で、tty での
 
 | オプション | 意味 |
 | --- | --- |
-| `hdr` | `true` で HDR10 で駆動する |
-| `hdrSdrLuminance` | SDR の白（通常のウィンドウ）の明るさ。cd/m²（10〜1000）か、明るさ設定に連動する `"backlight"`。既定はノート PC では連動、それ以外は 203 |
-| `hdrSdrGamut` | 色の出し方: `"native"`（既定）は SDR モードと同じ、`"srgb"` は正確な色 |
-| `hdrMaxLuminance` | EDID に無い場合の実際の最大輝度（cd/m²。無いと 1000 と仮定）。範囲 50〜10000 |
-| `hdrMinLuminance` | 実際の黒レベル（cd/m²）。範囲 0〜10 |
+`hdr: true` で既定の設定のまま有効になります。設定を変えるときは代わりに
+オブジェクトを渡します（この場合も HDR は有効になります）。
+
+| オプション | 意味 |
+| --- | --- |
+| `hdr.enabled` | `false` で設定を残したまま SDR で駆動する。既定は `true` |
+| `hdr.sdrLuminance` | SDR の白（通常のウィンドウ）の明るさ。cd/m²（10〜1000）か、明るさ設定に連動する `"backlight"`。既定はノート PC では連動、それ以外は 203 |
+| `hdr.sdrGamut` | 色の出し方: `"native"`（既定）は SDR モードと同じ、`"srgb"` は正確な色 |
+| `hdr.maxLuminance` | EDID に無い場合の実際の最大輝度（cd/m²。無いと 1000 と仮定）。範囲 50〜10000 |
+| `hdr.minLuminance` | 実際の黒レベル（cd/m²）。範囲 0〜10 |
 
 ```ts
 display['eDP-1'] = {
@@ -186,16 +191,17 @@ display['eDP-1'] = {
 };
 
 display['DP-1'] = {
-  hdr: true,
-  // 外部モニターには連動できるバックライトが無いので、SDR の白を固定する
-  hdrSdrLuminance: 250,
+  hdr: {
+    // 外部モニターには連動できるバックライトが無いので、SDR の白を固定する
+    sdrLuminance: 250,
+  },
 };
 ```
 
 見え方:
 
 - **SDR の内容**（ほぼすべてのウィンドウ）は見た目を保ったまま、白が
-  `hdrSdrLuminance` の明るさで表示されます。
+  `hdr.sdrLuminance` の明るさで表示されます。
 - **ノート PC では明るさキーがそのまま使えます。** HDR の信号は絶対的な明るさを
   指定するため、HDR 中のパネルはバックライト設定を無視します。代わりに ShojiWM が
   明るさ設定を SDR の白の明るさとして反映し、最大にするとパネルの推奨 SDR 最大輝度
@@ -204,7 +210,7 @@ display['DP-1'] = {
   `brightness` と異なることがあります（amdgpu の OLED パネルは曲線で変換します）。
 - **SDR の色も SDR モードと同じです。** SDR モードの広色域パネルは、sRGB の値を
   パネル本来の広い色域のまま表示するため、sRGB より鮮やかに見えます。HDR でも既定で
-  それに合わせます（`hdrSdrGamut: "native"`、色域はパネルの EDID の値）。`"srgb"` に
+  それに合わせます（`sdrGamut: "native"`、色域はパネルの EDID の値）。`"srgb"` に
   すると正確な色になり、そうしたパネルではくすんで見えます。この設定はすべての
   内容に同じく効きます。Chrome などの色管理対応クライアントは SDR の UI も HDR の
   形式で渡してくるため、例外扱いすると他のウィンドウよりくすんでしまうからです。
@@ -215,7 +221,7 @@ display['DP-1'] = {
 - **HDR の内容**（色管理に対応したクライアント: Chrome / Chromium、mpv、Vulkan の
   ゲーム）は SDR の白より明るく、ディスプレイの最大輝度まで表示され、それを超える
   分はトーンマップされます。クライアントは使える余裕（最大輝度 ÷ SDR の白）を色管理
-  プロトコルで知るので、`hdrSdrLuminance` を上げるほどハイライトの余裕は減ります。
+  プロトコルで知るので、`hdr.sdrLuminance` を上げるほどハイライトの余裕は減ります。
 - スクリーンショットと画面録画は SDR のままです。
 
 補足:
@@ -224,7 +230,7 @@ display['DP-1'] = {
 - HDMI では、選んだモードで 1 色 10 ビットを伝送できる帯域が必要です。
   `OutputInfo.hdmi` と `availableModes[].clockKhz` で設定から確認できます。
 - `SHOJI_HDR_OUTPUTS=eDP-1`（または `all`）で設定なしに HDR を有効にでき、
-  `SHOJI_SDR_NITS` でバックライトの無い出力の `hdrSdrLuminance` の既定値を変えられます。
+  `SHOJI_SDR_NITS` でバックライトの無い出力の `hdr.sdrLuminance` の既定値を変えられます。
 
 ## パネルの電源を切る（DPMS）
 

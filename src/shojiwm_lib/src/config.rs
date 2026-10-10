@@ -37,21 +37,58 @@ pub struct RuntimeOutputConfig {
     /// `wl_output.geometry`. Unset keeps what the kernel reported for the
     /// connector, which is `unknown` for most panels.
     pub subpixel: Option<RuntimeOutputSubpixel>,
-    pub hdr: Option<bool>,
-    /// Real peak luminance of the display in cd/m². Only needed when the
-    /// EDID advertises PQ but omits its luminance fields, which is common.
-    pub hdr_max_luminance: Option<f32>,
-    /// Real black level of the display in cd/m². Same caveat.
-    pub hdr_min_luminance: Option<f32>,
+    /// `hdr`: `true`/`false`, or the HDR settings (which turn it on).
+    pub hdr: Option<RuntimeHdrConfig>,
+}
+
+/// `hdr`: a plain switch, or the settings of an HDR output.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeHdrConfig {
+    Enabled(bool),
+    Options(RuntimeHdrOptions),
+}
+
+impl RuntimeHdrConfig {
+    /// Whether the output should be driven as HDR10. The settings form turns
+    /// it on unless it says `enabled: false`.
+    pub fn enabled(&self) -> bool {
+        match self {
+            Self::Enabled(enabled) => *enabled,
+            Self::Options(options) => options.enabled.unwrap_or(true),
+        }
+    }
+
+    /// The settings, if any were given.
+    pub fn options(&self) -> Option<&RuntimeHdrOptions> {
+        match self {
+            Self::Enabled(_) => None,
+            Self::Options(options) => Some(options),
+        }
+    }
+}
+
+/// The settings form of `hdr`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeHdrOptions {
+    /// Unset means on: giving settings turns HDR on. `false` keeps the
+    /// settings but drives the output as SDR.
+    pub enabled: Option<bool>,
     /// What SDR white is shown at on an HDR output: a fixed luminance, or
     /// following the panel's backlight. Unset follows the backlight when the
     /// output has one, else `SHOJI_SDR_NITS`, else 203 (ITU-R BT.2408).
-    pub hdr_sdr_luminance: Option<RuntimeSdrLuminance>,
+    pub sdr_luminance: Option<RuntimeSdrLuminance>,
     /// How SDR content's colors are shown on an HDR output. Unset is native.
-    pub hdr_sdr_gamut: Option<RuntimeSdrGamut>,
+    pub sdr_gamut: Option<RuntimeSdrGamut>,
+    /// Real peak luminance of the display in cd/m². Only needed when the
+    /// EDID advertises PQ but omits its luminance fields, which is common.
+    pub max_luminance: Option<f32>,
+    /// Real black level of the display in cd/m². Same caveat.
+    pub min_luminance: Option<f32>,
 }
 
-/// `hdrSdrGamut`.
+/// `hdr.sdrGamut`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeSdrGamut {
@@ -61,7 +98,7 @@ pub enum RuntimeSdrGamut {
     Srgb,
 }
 
-/// `hdrSdrLuminance`: cd/m², or `"backlight"`.
+/// `hdr.sdrLuminance`: cd/m², or `"backlight"`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RuntimeSdrLuminance {
@@ -334,42 +371,55 @@ mod tests {
         }
     }
 
-    /// The `hdr` opt-in arrives from the TypeScript display config; missing
-    /// means None so older configs keep their SDR behavior.
+    /// `hdr` is a switch or the settings object; the object turns HDR on
+    /// unless it says `enabled: false`, and missing means SDR.
     #[test]
     fn runtime_output_config_parses_hdr_flag() {
         let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
             r#"{"outputs":{
                 "HDMI-A-3":{"mode":"extend","resolution":"best","hdr":true},
+                "DP-2":{"hdr":{"sdrGamut":"srgb","maxLuminance":420,"minLuminance":0.05}},
+                "DP-3":{"hdr":{"enabled":false,"sdrLuminance":250}},
                 "eDP-1":{"mode":"extend","resolution":"best"}
             }}"#,
         )
         .expect("display config update should parse");
+        let hdr = |name: &str| update.outputs[name].as_ref().unwrap().hdr.clone();
+        assert_eq!(hdr("HDMI-A-3"), Some(RuntimeHdrConfig::Enabled(true)));
+        assert_eq!(hdr("eDP-1"), None);
+        let dp2 = hdr("DP-2").unwrap();
+        assert!(dp2.enabled());
         assert_eq!(
-            update
-                .outputs["HDMI-A-3"]
-                .as_ref()
-                .unwrap()
-                .hdr,
-            Some(true)
+            dp2.options(),
+            Some(&RuntimeHdrOptions {
+                sdr_gamut: Some(RuntimeSdrGamut::Srgb),
+                max_luminance: Some(420.0),
+                min_luminance: Some(0.05),
+                ..Default::default()
+            })
         );
-        assert_eq!(
-            update.outputs["eDP-1"].as_ref().unwrap().hdr,
-            None,
-        );
+        assert!(!hdr("DP-3").unwrap().enabled());
     }
 
-    /// `hdrSdrLuminance` takes cd/m² or the keyword that follows the backlight.
+    /// `hdr.sdrLuminance` takes cd/m² or the keyword that follows the backlight.
     #[test]
     fn runtime_output_config_parses_sdr_luminance() {
         let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
             r#"{"outputs":{
-                "eDP-1":{"hdr":true,"hdrSdrLuminance":"backlight"},
-                "DP-1":{"hdr":true,"hdrSdrLuminance":300}
+                "eDP-1":{"hdr":{"sdrLuminance":"backlight"}},
+                "DP-1":{"hdr":{"sdrLuminance":300}}
             }}"#,
         )
         .expect("display config update should parse");
-        let sdr = |name: &str| update.outputs[name].as_ref().unwrap().hdr_sdr_luminance;
+        let sdr = |name: &str| {
+            update.outputs[name]
+                .as_ref()
+                .unwrap()
+                .hdr
+                .as_ref()
+                .and_then(|hdr| hdr.options())
+                .and_then(|options| options.sdr_luminance)
+        };
         assert_eq!(
             sdr("eDP-1"),
             Some(RuntimeSdrLuminance::Keyword(RuntimeSdrLuminanceKeyword::Backlight))

@@ -115,11 +115,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     scale: config.scale,
     subpixel: config.subpixel,
     transform: config.transform,
-    hdr: config.hdr,
-    hdrMaxLuminance: config.hdrMaxLuminance,
-    hdrMinLuminance: config.hdrMinLuminance,
-    hdrSdrLuminance: config.hdrSdrLuminance,
-    hdrSdrGamut: config.hdrSdrGamut,
+    hdr: typeof config.hdr === "object" && config.hdr !== null ? { ...config.hdr } : config.hdr,
   };
 }
 
