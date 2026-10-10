@@ -10422,7 +10422,23 @@ fn upper_layer_scene_elements(
             .and_then(|effects| effects.behind.as_ref())
             .filter(|effect| effect.effect.is_backdrop());
         let effect_config = configured_background_effect;
-        if custom_background.is_none()
+        if let Some(custom_background) = custom_background
+            .filter(|slot| slot.effect.supports_layer_framebuffer_backdrop())
+        {
+            // Sampled from the frame being composited, so it shows everything
+            // drawn below the layer (other effects included), unlike a
+            // capture of `below` redrawn on its own.
+            elements.extend(custom_background_framebuffer_effect_elements_for_layer(
+                renderer,
+                output,
+                output_geo,
+                scale,
+                &layer_surface,
+                1.0,
+                layer_framebuffer_effect_states,
+                custom_background,
+            )?);
+        } else if custom_background.is_none()
             && let Some(effect_config) =
                 effect_config.filter(|config| config.effect.supports_framebuffer_backdrop())
         {
@@ -10482,6 +10498,99 @@ fn configured_background_framebuffer_effect_elements_for_layer(
             states.entry(stable_key).or_default(),
             &protocol_background_effect_rects_for_layer(output, layer_surface),
             effect_config.effect.clone(),
+            output_geo,
+            scale,
+            alpha,
+        )?
+        .map(|element| {
+            vec![TtyRenderElements::Decoration(
+                decoration::DecorationSceneElements::Backdrop(element),
+            )]
+        })
+        .unwrap_or_default(),
+    )
+}
+
+fn custom_background_framebuffer_effect_elements_for_layer(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    layer_surface: &smithay::desktop::LayerSurface,
+    alpha: f32,
+    states: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::ShaderEffectElementState,
+    >,
+    slot: &crate::ssd::WindowEffectSlot,
+) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
+    let Some(rect) = layer_surface_logical_rect(output, layer_surface)
+        .and_then(|rect| window_render::layer_effect_region_bounds(layer_surface, rect, slot.region))
+        .map(|rect| expand_logical_rect(rect, slot.outsets))
+    else {
+        return Ok(Vec::new());
+    };
+    let layer_id = crate::ssd::layer_runtime_id(layer_surface);
+    // `{id}@` first, so the live-layer sweep and layer_destroyed can drop it.
+    let stable_key = format!("{}@layer-behind-framebuffer@{}", layer_id, output.name());
+    let state = states.entry(stable_key).or_default();
+    if matches!(
+        slot.effect.invalidate_policy(),
+        crate::ssd::EffectInvalidationPolicy::Always
+    ) {
+        state.invalidate();
+    }
+    if slot.effect.uses_layer_source_input() {
+        let layer_source_geo = smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((rect.x, rect.y)),
+            (rect.width, rect.height).into(),
+        );
+        let layer_source_origin =
+            crate::backend::visual::logical_point_to_physical_point_global_edges(
+                layer_source_geo.loc,
+                output_geo.loc,
+                scale,
+            );
+        let scene = layer_surface_scene_elements_for_capture(
+            renderer,
+            output,
+            layer_source_geo,
+            layer_source_origin,
+            scale,
+            layer_surface,
+            false,
+        )?;
+        // Element ids, commit counters and geometry: what
+        // `renderToIfDirty({ dependsOn: [layerSource()] })` compares. The
+        // capture is redone only when it changes.
+        let signature = {
+            let mut hasher = SignatureHasher::default();
+            crate::backend::snapshot::render_element_scene_signature(&scene, scale)
+                .hash(&mut hasher);
+            (rect.x, rect.y, rect.width, rect.height, scale.x.to_bits()).hash(&mut hasher);
+            hasher.finish()
+        };
+        if state.cached_layer_source(signature).is_none() {
+            match capture_scene_texture_for_effect(
+                renderer,
+                "tty-layer-behind-source",
+                layer_source_geo,
+                scale,
+                &scene,
+            ) {
+                Some(texture) => state.set_layer_source(signature, texture),
+                // Nothing to mask with yet (e.g. the first frame after the
+                // layer maps): skip the effect for this frame.
+                None => return Ok(Vec::new()),
+            }
+        }
+    }
+    Ok(
+        crate::backend::shader_effect::framebuffer_backdrop_element_for_layer(
+            renderer,
+            state,
+            rect,
+            slot.effect.clone(),
             output_geo,
             scale,
             alpha,

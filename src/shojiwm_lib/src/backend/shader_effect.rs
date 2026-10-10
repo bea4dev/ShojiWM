@@ -167,6 +167,8 @@ pub struct ShaderEffectElementState {
     commit_counter: CommitCounter,
     last_spec: Option<ShaderEffectSpec>,
     backdrop_pipeline: Arc<Mutex<EffectInstancePipelineCache>>,
+    /// The last `layerSource()` capture, by its content signature.
+    layer_source: Option<(u64, GlesTexture)>,
 }
 
 impl Default for ShaderEffectElementState {
@@ -176,6 +178,7 @@ impl Default for ShaderEffectElementState {
             commit_counter: CommitCounter::default(),
             last_spec: None,
             backdrop_pipeline: Arc::new(Mutex::new(EffectInstancePipelineCache::default())),
+            layer_source: None,
         }
     }
 }
@@ -207,6 +210,8 @@ pub struct StableBackdropFramebufferElement {
     clip_rect: Option<SnappedLogicalRect>,
     clip_radius: f32,
     popup_source: Option<GlesTexture>,
+    /// `layerSource()` and its content signature, for `renderToIfDirty()`.
+    layer_source: Option<(GlesTexture, u64)>,
     pipeline: Arc<Mutex<EffectInstancePipelineCache>>,
     frame: EffectFrame,
     kind: Kind,
@@ -836,6 +841,31 @@ pub fn framebuffer_backdrop_element_for_output_rects(
     framebuffer_backdrop_element_for_output_rects_with_popup_source(
         renderer, state, rects, effect, output_geo, scale, alpha, None,
     )
+}
+
+/// A layer `behind` effect resolved from the framebuffer, with the layer's
+/// own capture (see [`ShaderEffectElementState::set_layer_source`]) as
+/// `layerSource()`.
+pub fn framebuffer_backdrop_element_for_layer(
+    renderer: &mut GlesRenderer,
+    state: &mut ShaderEffectElementState,
+    rect: LogicalRect,
+    effect: CompiledEffect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Option<StableBackdropFramebufferElement>, ShaderEffectError> {
+    let layer_source = state
+        .layer_source
+        .as_ref()
+        .map(|(signature, texture)| (texture.clone(), *signature));
+    let element = framebuffer_backdrop_element_for_output_rects_with_popup_source(
+        renderer, state, &[rect], effect, output_geo, scale, alpha, None,
+    )?;
+    Ok(element.map(|mut element| {
+        element.layer_source = layer_source;
+        element
+    }))
 }
 
 pub fn framebuffer_backdrop_element_for_output_rects_with_popup_source(
@@ -1711,6 +1741,30 @@ impl ShaderEffectElementState {
         })
     }
 
+    /// The cached `layerSource()` capture if its content is still `signature`.
+    pub fn cached_layer_source(&self, signature: u64) -> Option<GlesTexture> {
+        self.layer_source
+            .as_ref()
+            .filter(|(cached, _)| *cached == signature)
+            .map(|(_, texture)| texture.clone())
+    }
+
+    /// Records a new `layerSource()` capture. The element's damage makes the
+    /// framebuffer effect re-run its pipeline: the layer is drawn above it,
+    /// so the layer's own damage would not.
+    pub fn set_layer_source(&mut self, signature: u64, texture: GlesTexture) {
+        if self.layer_source.is_some() {
+            self.commit_counter.increment();
+        }
+        self.layer_source = Some((signature, texture));
+    }
+
+    /// Makes the next element re-run its pipeline even if nothing below it
+    /// changed.
+    pub fn invalidate(&mut self) {
+        self.commit_counter.increment();
+    }
+
     pub fn backdrop_element(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -1747,6 +1801,7 @@ impl ShaderEffectElementState {
             clip_rect: spec.clip_rect,
             clip_radius: spec.clip_radius,
             popup_source: None,
+            layer_source: None,
             pipeline: self.backdrop_pipeline.clone(),
             frame: spec.frame,
             kind: Kind::Unspecified,
@@ -2208,7 +2263,21 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pipeline = pipeline.begin_frame(renderer);
-        let result = if let Some(popup_source) = self.popup_source.clone() {
+        let result = if let Some((layer_source, signature)) = self.layer_source.clone() {
+            apply_effect_pipeline_cached_with_layer_source_and_finish_mode(
+                renderer,
+                framebuffer_texture,
+                layer_source,
+                signature,
+                (size.w, size.h),
+                sample_src,
+                Some((dst.size.w, dst.size.h)),
+                &self.shader,
+                self.frame,
+                pipeline,
+                BackdropFinishMode::DeferToDisplay,
+            )
+        } else if let Some(popup_source) = self.popup_source.clone() {
             apply_effect_pipeline_cached_with_popup_source_and_finish_mode(
                 renderer,
                 framebuffer_texture,
@@ -4523,6 +4592,46 @@ pub fn apply_effect_pipeline_cached_for_key_with_popup_source(
             BackdropFinishMode::Materialize,
         )
     })
+}
+
+fn apply_effect_pipeline_cached_with_layer_source_and_finish_mode(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    layer_source: GlesTexture,
+    layer_source_signature: u64,
+    size: (i32, i32),
+    sample_region: Option<Rectangle<f64, Buffer>>,
+    output_size: Option<(i32, i32)>,
+    effect: &CompiledEffect,
+    frame: EffectFrame,
+    cache: &mut EffectPipelineCache,
+    finish_mode: BackdropFinishMode,
+) -> Result<GlesTexture, ShaderEffectError> {
+    let content_rect = effect_content_rect(size, sample_region);
+    let mut ctx = EffectExecutionContext {
+        backdrop: texture,
+        xray_backdrop: None,
+        layer_source: Some(layer_source),
+        popup_source: None,
+        size,
+        state_base_size: size,
+        content_rect,
+        frame: ResolvedEffectFrame::new(frame, content_rect),
+        named: HashMap::new(),
+        source_signatures: EffectSourceSignatures {
+            layer: Some(layer_source_signature),
+            ..Default::default()
+        },
+    };
+    run_effect_pipeline(
+        renderer,
+        effect,
+        &mut ctx,
+        sample_region,
+        output_size,
+        Some(cache),
+        finish_mode,
+    )
 }
 
 fn apply_effect_pipeline_cached_with_popup_source_and_finish_mode(

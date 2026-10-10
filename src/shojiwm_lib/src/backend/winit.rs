@@ -3783,7 +3783,23 @@ fn upper_layer_scene_elements(
             .filter(|effect| effect.effect.is_backdrop())
             .cloned();
         let effect_config = state.configured_background_effect.clone();
-        if custom_background.is_none()
+        if let Some(custom_background) = custom_background
+            .as_ref()
+            .filter(|slot| slot.effect.supports_layer_framebuffer_backdrop())
+        {
+            // Sampled from the frame being composited, so it shows everything
+            // drawn below the layer (other effects included).
+            elements.extend(custom_background_framebuffer_effect_elements_for_layer(
+                renderer,
+                state,
+                output,
+                output_geo,
+                scale,
+                &layer_surface,
+                1.0,
+                custom_background,
+            ));
+        } else if custom_background.is_none()
             && let Some(effect_config) =
                 effect_config.filter(|config| config.effect.supports_framebuffer_backdrop())
         {
@@ -3840,6 +3856,97 @@ fn configured_background_framebuffer_effect_elements_for_layer(
         scale,
         alpha,
     )
+    .ok()
+    .flatten()
+    .map(|element| {
+        vec![WinitRenderElements::Decoration(
+            decoration::DecorationSceneElements::Backdrop(element),
+        )]
+    })
+    .unwrap_or_default()
+}
+
+fn custom_background_framebuffer_effect_elements_for_layer(
+    renderer: &mut GlesRenderer,
+    state: &mut ShojiWM,
+    output: &Output,
+    output_geo: Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    layer_surface: &smithay::desktop::LayerSurface,
+    alpha: f32,
+    slot: &crate::ssd::WindowEffectSlot,
+) -> Vec<WinitRenderElements> {
+    let Some(rect) = layer_surface_logical_rect(output, layer_surface)
+        .and_then(|rect| window_render::layer_effect_region_bounds(layer_surface, rect, slot.region))
+        .map(|rect| expand_effect_rect(rect, slot.outsets))
+    else {
+        return Vec::new();
+    };
+    let layer_id = crate::ssd::layer_runtime_id(layer_surface);
+    // `{id}@` first, so the live-layer sweep and layer_destroyed can drop it.
+    let stable_key = format!("{}@layer-behind-framebuffer@{}", layer_id, output.name());
+    let effect_state = state
+        .layer_framebuffer_effect_states
+        .entry(stable_key)
+        .or_default();
+    if matches!(
+        slot.effect.invalidate_policy(),
+        crate::ssd::EffectInvalidationPolicy::Always
+    ) {
+        effect_state.invalidate();
+    }
+    if slot.effect.uses_layer_source_input() {
+        let layer_source_geo = Rectangle::new(
+            Point::from((rect.x, rect.y)),
+            (rect.width, rect.height).into(),
+        );
+        let layer_source_origin =
+            crate::backend::visual::logical_point_to_physical_point_global_edges(
+                layer_source_geo.loc,
+                output_geo.loc,
+                scale,
+            );
+        let scene = layer_surface_scene_elements_for_capture(
+            renderer,
+            output,
+            layer_source_geo,
+            layer_source_origin,
+            scale,
+            layer_surface,
+            false,
+        );
+        // What `renderToIfDirty({ dependsOn: [layerSource()] })` compares;
+        // the capture is redone only when it changes.
+        let signature = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            crate::backend::snapshot::render_element_scene_signature(&scene, scale)
+                .hash(&mut hasher);
+            (rect.x, rect.y, rect.width, rect.height, scale.x.to_bits()).hash(&mut hasher);
+            hasher.finish()
+        };
+        if effect_state.cached_layer_source(signature).is_none() {
+            match capture_scene_texture_for_effect(
+                renderer,
+                "winit-layer-behind-source",
+                layer_source_geo,
+                scale,
+                &scene,
+            ) {
+                Some(texture) => effect_state.set_layer_source(signature, texture),
+                None => return Vec::new(),
+            }
+        }
+    }
+    crate::backend::shader_effect::framebuffer_backdrop_element_for_layer(
+        renderer,
+        effect_state,
+        rect,
+        slot.effect.clone(),
+        output_geo,
+        scale,
+        alpha,
+    )
+    .inspect_err(|error| warn!(?error, "failed to build layer behind effect"))
     .ok()
     .flatten()
     .map(|element| {

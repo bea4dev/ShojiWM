@@ -1264,6 +1264,16 @@ impl CompiledEffect {
             && !self.uses_popup_source_input()
     }
 
+    /// Layer backdrop effects may additionally sample the layer's own
+    /// capture (`layerSource()`) while resolving the backdrop from the
+    /// framebuffer.
+    pub fn supports_layer_framebuffer_backdrop(&self) -> bool {
+        self.uses_backdrop_input()
+            && !self.uses_xray_backdrop_input()
+            && !self.uses_window_source_input()
+            && !self.uses_popup_source_input()
+    }
+
     /// Popup backdrop effects may additionally sample the popup's own
     /// pre-captured texture while resolving the backdrop from the framebuffer.
     pub fn supports_popup_framebuffer_backdrop(&self) -> bool {
