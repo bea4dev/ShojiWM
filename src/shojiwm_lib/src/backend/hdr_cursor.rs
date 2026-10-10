@@ -17,6 +17,10 @@
 //!
 //! If the plane cannot take the element, the DRM pass draws it with GL on top
 //! of the encoded frame, which is still correct.
+//!
+//! SDR outputs with a monitor ICC profile go through the same encode stage
+//! (`OutputEncoding::Icc`), and their cursor is converted the same way, with
+//! the profile's LUT.
 
 use smithay::{
     backend::{
@@ -35,7 +39,10 @@ use smithay::{
     wayland::shm,
 };
 
-use crate::{backend::hdr_pipeline::EncodeParams, drawing::PointerRenderElement};
+use crate::{
+    backend::hdr_pipeline::{EncodeParams, OutputEncoding},
+    drawing::PointerRenderElement,
+};
 
 /// Converted images kept per output. Animated theme cursors cycle through one
 /// buffer per frame, so this holds a whole animation of a typical theme.
@@ -43,7 +50,7 @@ const CACHE_LIMIT: usize = 32;
 
 struct CacheEntry {
     source: (Id, CommitCounter),
-    params: EncodeParams,
+    params: OutputEncoding,
     id: Id,
     memory: MemoryBuffer,
     texture: GlesTexture,
@@ -68,7 +75,7 @@ impl HdrCursorCache {
         renderer: &mut GlesRenderer,
         cursor: &[&PointerRenderElement<GlesRenderer>],
         scale: Scale<f64>,
-        params: EncodeParams,
+        params: &OutputEncoding,
     ) -> Option<Vec<PqCursorElement>> {
         let [element] = cursor else {
             return None;
@@ -78,11 +85,11 @@ impl HdrCursorCache {
         let index = match self
             .entries
             .iter()
-            .position(|entry| entry.source == source && entry.params == params)
+            .position(|entry| entry.source == source && entry.params == *params)
         {
             Some(index) => index,
             None => {
-                let memory = encode_storage(element.underlying_storage(renderer)?, &params)?;
+                let memory = encode_storage(element.underlying_storage(renderer)?, params)?;
                 let texture = renderer
                     .import_memory(&memory, memory.format(), memory.size(), false)
                     .ok()?;
@@ -98,7 +105,7 @@ impl HdrCursorCache {
                 }
                 self.entries.push(CacheEntry {
                     source,
-                    params,
+                    params: params.clone(),
                     id: Id::new(),
                     memory,
                     texture,
@@ -205,7 +212,10 @@ fn channel_layout(format: Fourcc) -> Option<([usize; 3], Option<usize>)> {
     }
 }
 
-fn encode_storage(storage: UnderlyingStorage<'_>, params: &EncodeParams) -> Option<MemoryBuffer> {
+fn encode_storage(
+    storage: UnderlyingStorage<'_>,
+    params: &OutputEncoding,
+) -> Option<MemoryBuffer> {
     match storage {
         UnderlyingStorage::Memory(memory) => encode_pixels(
             memory,
@@ -236,8 +246,8 @@ fn encode_storage(storage: UnderlyingStorage<'_>, params: &EncodeParams) -> Opti
     }
 }
 
-/// Run premultiplied 8-bit pixels through the encode pass of
-/// `output_encode.frag` and return them premultiplied as ARGB8888, the cursor
+/// Run premultiplied 8-bit pixels through the encode pass (`output_encode.frag`
+/// or `output_icc.frag`) and return them premultiplied as ARGB8888, the cursor
 /// plane's format.
 fn encode_pixels(
     pixels: &[u8],
@@ -245,7 +255,7 @@ fn encode_pixels(
     width: i32,
     height: i32,
     stride: i32,
-    params: &EncodeParams,
+    params: &OutputEncoding,
 ) -> Option<MemoryBuffer> {
     let (rgb, alpha) = channel_layout(format)?;
     if width <= 0 || height <= 0 || stride < width * 4 {
@@ -264,7 +274,10 @@ fn encode_pixels(
                 continue;
             }
             let premultiplied = rgb.map(|index| pixel[index]);
-            let [r, g, b] = encode_pixel(premultiplied, a, params);
+            let [r, g, b] = match params {
+                OutputEncoding::Pq(params) => encode_pixel(premultiplied, a, params),
+                OutputEncoding::Icc(lut) => icc_pixel(premultiplied, a, lut),
+            };
             let dst = &mut out[(y * width as usize + x) * 4..][..4];
             dst.copy_from_slice(&[b, g, r, a]);
         }
@@ -290,6 +303,18 @@ pub(crate) fn encode_pixel(premultiplied: [u8; 3], alpha: u8, params: &EncodePar
         *out = (pq_inv_eotf(nits) * a * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     out
+}
+
+/// One premultiplied pixel through the profile's LUT, un-premultiplied for the
+/// lookup like the composite it stands in for.
+pub(crate) fn icc_pixel(
+    premultiplied: [u8; 3],
+    alpha: u8,
+    lut: &crate::color::icc::IccLut,
+) -> [u8; 3] {
+    let a = alpha as f32 / 255.0;
+    let device = lut.sample(premultiplied.map(|value| (value as f32 / 255.0 / a).min(1.0)));
+    device.map(|value| (value * a * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 /// SMPTE ST 2084 inverse EOTF, as in `output_encode.frag`.
@@ -326,7 +351,7 @@ mod tests {
     #[test]
     fn black_and_transparent_stay_zero() {
         assert_eq!(encode_pixel([0, 0, 0], 255, &params()), [0, 0, 0]);
-        let memory = encode_pixels(&[0, 0, 0, 0], Fourcc::Argb8888, 1, 1, 4, &params()).unwrap();
+        let memory = encode_pixels(&[0, 0, 0, 0], Fourcc::Argb8888, 1, 1, 4, &OutputEncoding::Pq(params())).unwrap();
         assert_eq!(&memory[..], &[0, 0, 0, 0]);
     }
 
@@ -342,7 +367,7 @@ mod tests {
         // only, so the encoded pixel is green.
         let mut params = params();
         params.compositing_to_bt2020 = [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let memory = encode_pixels(&[255, 0, 0, 255], Fourcc::Abgr8888, 1, 1, 4, &params).unwrap();
+        let memory = encode_pixels(&[255, 0, 0, 255], Fourcc::Abgr8888, 1, 1, 4, &OutputEncoding::Pq(params)).unwrap();
         assert_eq!(memory.format(), Fourcc::Argb8888);
         assert_eq!(&memory[..], &[0, 148, 0, 255]);
     }
@@ -351,7 +376,7 @@ mod tests {
     fn rows_respect_the_source_stride() {
         // Two 1-pixel rows with 4 bytes of padding each.
         let pixels = [255, 255, 255, 255, 9, 9, 9, 9, 0, 0, 0, 255, 9, 9, 9, 9];
-        let memory = encode_pixels(&pixels, Fourcc::Argb8888, 1, 2, 8, &params()).unwrap();
+        let memory = encode_pixels(&pixels, Fourcc::Argb8888, 1, 2, 8, &OutputEncoding::Pq(params())).unwrap();
         assert_eq!(&memory[..], &[148, 148, 148, 255, 0, 0, 0, 255]);
     }
 }

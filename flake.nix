@@ -74,6 +74,7 @@
               seatd
               pipewire
               libdrm
+              lcms2
               libxcb
               xcbUtilCursor
             ]
@@ -112,6 +113,7 @@
                 seatd
                 pipewire
                 libdrm
+                lcms2
                 dbus
                 libxcb
                 xcbUtilCursor

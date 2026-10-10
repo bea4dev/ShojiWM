@@ -5,6 +5,7 @@
 
 pub mod colorimetry;
 pub mod drm_metadata;
+pub mod icc;
 pub mod primaries;
 
 use drm_metadata::EdidHdrMetadata;
@@ -226,6 +227,20 @@ impl RenderColorTarget {
         encode_gamma: 0.0,
         primaries: primaries::SRGB,
     };
+
+    /// The target for an SDR output whose frames go through a monitor ICC
+    /// profile: the profile takes the composite as pure-gamma sRGB
+    /// (`icc::IccLut`), so tagged content is encoded with that gamma.
+    pub fn with_icc(self, icc: bool) -> Self {
+        if icc && self.encode_gamma == 0.0 {
+            Self {
+                encode_gamma: crate::backend::hdr_pipeline::sdr_reference_gamma(),
+                ..self
+            }
+        } else {
+            self
+        }
+    }
 }
 
 thread_local! {

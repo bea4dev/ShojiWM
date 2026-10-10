@@ -4335,15 +4335,25 @@ fn render_surface(
             .map(|color| color.mode),
         Some(crate::color::OutputColorMode::Hdr10 { .. })
     );
+    // An SDR output with a monitor ICC profile goes through the encode stage
+    // too, with the profile's LUT instead of the PQ encode.
+    let output_icc = (!output_is_hdr)
+        .then(|| state.output_icc.get(output.name().as_str()).cloned())
+        .flatten();
+    let output_encoded = output_is_hdr || output_icc.is_some();
+    let intermediate_fp16 = output_icc.is_some() && hdr_render_supports_fp16(state, node);
     // Color-managed surfaces built for this output are converted for it: past
     // SDR white up to the display's peak on HDR10, clamped to SDR otherwise.
+    // The profile's source side is a pure gamma (`color::icc`), so tagged
+    // content is encoded with that gamma rather than the piecewise sRGB curve.
     let _render_color_target = crate::color::RenderColorTargetGuard::new(
         state
             .output_color
             .get(output.name().as_str())
             .map_or(crate::color::RenderColorTarget::SDR, |color| {
                 color.mode.render_target()
-            }),
+            })
+            .with_icc(output_icc.is_some()),
     );
 
     let redraw_state = state
@@ -4702,7 +4712,7 @@ fn render_surface(
         // to collapse the frame to one scanout-capable element, and HDR outputs
         // set `FrameFlags::empty()` before `render_frame` (nothing may bypass
         // the PQ encode pass), so plane promotion cannot happen on them at all.
-        let fullscreen_window = if composition_plan.has_default_windows() && !output_is_hdr {
+        let fullscreen_window = if composition_plan.has_default_windows() && !output_encoded {
             fullscreen_scanout_window(
                 space,
                 window_decorations,
@@ -5058,29 +5068,47 @@ fn render_surface(
         // HDR10 outputs composite the element list into the fp16
         // intermediate, and the DRM pass renders a single PQ-encode element
         // instead: anything drawn outside the encode pass would end up
-        // sRGB-encoded inside a PQ signal. The one exception is the cursor,
-        // which is PQ-encoded on the CPU (`hdr_cursor`) and kept out of the
-        // composite so it can go on the cursor plane.
+        // sRGB-encoded inside a PQ signal. SDR outputs with a monitor ICC
+        // profile do the same with the profile's LUT. The one exception is the
+        // cursor, which is encoded on the CPU (`hdr_cursor`) and kept out of
+        // the composite so it can go on the cursor plane.
         let mut hdr_encode_active = false;
         let mut hdr_hardware_cursor = false;
         let mut hdr_stage1_states = None;
-        if let Some(crate::color::OutputColorMode::Hdr10 {
-            max_display_luminance,
-            sdr_white_luminance,
-            sdr_primaries,
-            ..
-        }) = state
+        let output_encoding = match state
             .output_color
             .get(output.name().as_str())
             .map(|color| color.mode)
         {
+            Some(crate::color::OutputColorMode::Hdr10 {
+                max_display_luminance,
+                sdr_white_luminance,
+                sdr_primaries,
+                ..
+            }) => Some((
+                crate::backend::hdr_pipeline::OutputEncoding::Pq(
+                    crate::backend::hdr_pipeline::EncodeParams::new(
+                        sdr_white_luminance,
+                        max_display_luminance,
+                        sdr_primaries,
+                    ),
+                ),
+                Fourcc::Abgr16161616f,
+            )),
+            _ => output_icc.map(|lut| {
+                // fp16 keeps the composite from being quantized to 8 bits
+                // before the profile reshapes it; HDR implies it is there.
+                let format = if intermediate_fp16 {
+                    Fourcc::Abgr16161616f
+                } else {
+                    Fourcc::Abgr8888
+                };
+                (crate::backend::hdr_pipeline::OutputEncoding::Icc(lut), format)
+            }),
+        };
+        if let Some((encoding, intermediate_format)) = output_encoding {
             let output_name = output
                 .name();
-            let encode_params = crate::backend::hdr_pipeline::EncodeParams::new(
-                sdr_white_luminance,
-                max_display_luminance,
-                sdr_primaries,
-            );
             // A cross-GPU output gets its frame as one texture from the render
             // GPU and cannot use planes of its own; it keeps the software cursor.
             let hdr_cursor_elements = if surface.cross_gpu.is_none() && hdr_hardware_cursor_enabled() {
@@ -5095,7 +5123,7 @@ fn render_surface(
                     .hdr_cursor_caches
                     .entry(output_name.clone())
                     .or_default()
-                    .convert(&mut *renderer, &cursor, scale, encode_params)
+                    .convert(&mut *renderer, &cursor, scale, &encoding)
             } else {
                 None
             };
@@ -5114,7 +5142,8 @@ fn render_surface(
                 &output,
                 &elements,
                 CLEAR_COLOR,
-                encode_params,
+                encoding,
+                intermediate_format,
             ) {
                 Ok(
                     Some(
@@ -5141,11 +5170,11 @@ fn render_surface(
                     err
                 ) => {
                     // Fall through with the raw element list: the frame shows
-                    // washed-out colors on the PQ signal but stays visible.
+                    // unconverted colors but stays visible.
                     warn!(
                         output = %output_name,
                         ?err,
-                        "HDR encode pipeline failed; rendering unencoded frame"
+                        "output encode pipeline failed; rendering unencoded frame"
                     );
                 }
             }
@@ -5243,7 +5272,7 @@ fn render_surface(
         }
         if hdr_encode_active {
             // Nothing may bypass the encode pass: direct scanout or plane
-            // promotion would put sRGB pixels straight into the PQ signal.
+            // promotion would put unconverted pixels straight into the signal.
             // Only the cursor plane stays, and only for a cursor encoded
             // already.
             frame_flags = if hdr_hardware_cursor {
@@ -12659,6 +12688,9 @@ fn connector_connected(
     if let Some(surface) = backend.surfaces.get_mut(&crtc) {
         surface.redraw_state = TtyRedrawState::Queued;
     }
+    // An unchanged display config is not sent again on hotplug, so this is
+    // where a profile configured for this output starts applying.
+    announce_output_icc_profiles(state);
     state.apply_runtime_display_configuration();
     state.notify_runtime_outputs_changed();
     state.schedule_redraw();
@@ -12715,6 +12747,7 @@ fn connector_disconnected(
     state.damage_blink_pending.remove(&output_name);
     state.damage_blink_capture_suppression.remove(&output_name);
     state.pending_decoration_damage.clear();
+    announce_output_icc_profiles(state);
     state.apply_runtime_display_configuration();
     state.notify_runtime_outputs_changed();
     info!(
@@ -13076,6 +13109,7 @@ pub fn refresh_tty_output_color_modes(
     state: &mut crate::state::ShojiWM
 ) {
     let mut changed_outputs = Vec::new();
+    let icc_changed = refresh_output_icc_profiles(state);
     for (&node, backend) in state.tty_backends.iter() {
         let connectors = backend
             .drm_scanner
@@ -13222,7 +13256,8 @@ pub fn refresh_tty_output_color_modes(
                 );
         }
     }
-    if !changed_outputs.is_empty() {
+    announce_output_icc_profiles(state);
+    if !changed_outputs.is_empty() || icc_changed {
         for output in state.space.outputs() {
             if changed_outputs.contains(&output.name()) {
                 state.color_management_state.output_description_changed(output);
@@ -13246,6 +13281,86 @@ pub fn refresh_tty_output_color_modes(
         }
         state.schedule_redraw();
     }
+}
+
+/// Load the monitor ICC profiles the display config names (`icc`) into
+/// `state.output_icc`. Unchanged files keep their LUT (`icc::IccCache`).
+/// Returns whether any output's profile changed.
+fn refresh_output_icc_profiles(state: &mut crate::state::ShojiWM) -> bool {
+    let mut desired = HashMap::new();
+    for (name, config) in &state.runtime_output_configs {
+        let Some(path) = config.icc.as_deref().filter(|path| !path.trim().is_empty()) else {
+            continue;
+        };
+        let path = crate::color::icc::expand_path(path.trim());
+        let lut = crate::color::icc::cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&path);
+        if let Some(lut) = lut {
+            desired.insert(name.clone(), lut);
+        }
+    }
+    let changed = desired.len() != state.output_icc.len()
+        || desired
+            .iter()
+            .any(|(name, lut)| state.output_icc.get(name).is_none_or(|current| current.id != lut.id));
+    if changed {
+        state.output_icc = desired;
+    }
+    changed
+}
+
+/// Where a configured monitor ICC profile stands, for the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IccProfileStatus {
+    Applied,
+    /// The output is driven as HDR10, where profiles are not used.
+    IgnoredHdr,
+    /// No connected output has this name (yet).
+    NotConnected,
+}
+
+/// Log each configured profile's status whenever it changes, so the log says
+/// "applied" only for an output that is actually connected and running SDR.
+fn announce_output_icc_profiles(state: &mut crate::state::ShojiWM) {
+    let connected = tty_connected_outputs(state)
+        .iter()
+        .map(|output| output.name())
+        .collect::<std::collections::HashSet<_>>();
+    let mut statuses = HashMap::new();
+    for (name, lut) in &state.output_icc {
+        let status = if !connected.contains(name) {
+            IccProfileStatus::NotConnected
+        } else if matches!(
+            state.output_color.get(name).map(|color| color.mode),
+            Some(crate::color::OutputColorMode::Hdr10 { .. })
+        ) {
+            IccProfileStatus::IgnoredHdr
+        } else {
+            IccProfileStatus::Applied
+        };
+        if state.output_icc_status.get(name) != Some(&(lut.id, status)) {
+            let path = lut.path.display();
+            match status {
+                IccProfileStatus::Applied => {
+                    info!(output = %name, %path, "monitor ICC profile applied")
+                }
+                IccProfileStatus::IgnoredHdr => info!(
+                    output = %name,
+                    %path,
+                    "monitor ICC profile not applied: the output runs HDR"
+                ),
+                IccProfileStatus::NotConnected => info!(
+                    output = %name,
+                    %path,
+                    "monitor ICC profile configured for an output that is not connected; it applies once the output connects"
+                ),
+            }
+        }
+        statuses.insert(name.clone(), (lut.id, status));
+    }
+    state.output_icc_status = statuses;
 }
 
 pub fn tty_connected_outputs(state: &crate::state::ShojiWM) -> Vec<Output> {

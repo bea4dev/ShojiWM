@@ -22,6 +22,7 @@
   seatd,
   pipewire,
   libdrm,
+  lcms2,
   dbus,
   xorg ? { },
   libxcb ? xorg.libxcb,
@@ -150,6 +151,7 @@ rustPlatform.buildRustPackage {
     seatd
     pipewire
     libdrm
+    lcms2
   ];
 
   cargoBuildFlags = [

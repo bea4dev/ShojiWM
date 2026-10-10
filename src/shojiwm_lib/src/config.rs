@@ -39,6 +39,9 @@ pub struct RuntimeOutputConfig {
     pub subpixel: Option<RuntimeOutputSubpixel>,
     /// `hdr`: `true`/`false`, or the HDR settings (which turn it on).
     pub hdr: Option<RuntimeHdrConfig>,
+    /// Path of the monitor's ICC profile (`~/` allowed). Applied while the
+    /// output runs SDR.
+    pub icc: Option<String>,
 }
 
 /// `hdr`: a plain switch, or the settings of an HDR output.
@@ -399,6 +402,20 @@ mod tests {
             })
         );
         assert!(!hdr("DP-3").unwrap().enabled());
+    }
+
+    #[test]
+    fn runtime_output_config_parses_icc_path() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{
+                "DP-1":{"icc":"~/.local/share/icc/DP-1.icc"},
+                "eDP-1":{"mode":"extend"}
+            }}"#,
+        )
+        .expect("display config update should parse");
+        let icc = |name: &str| update.outputs[name].as_ref().unwrap().icc.clone();
+        assert_eq!(icc("DP-1").as_deref(), Some("~/.local/share/icc/DP-1.icc"));
+        assert_eq!(icc("eDP-1"), None);
     }
 
     /// `hdr.sdrLuminance` takes cd/m² or the keyword that follows the backlight.

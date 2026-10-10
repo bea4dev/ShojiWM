@@ -1316,6 +1316,17 @@ export interface OutputExtendConfigEntry {
    * まで表示されます。
    */
   hdr?: boolean | OutputHdrConfig;
+  /**
+   * Path of this monitor's ICC profile (`~/` allowed), e.g. one made with
+   * DisplayCAL. Colors are converted from sRGB to what the profile describes,
+   * calibration curves (`vcgt`) included. Applied while the output runs SDR;
+   * an HDR output ignores it.
+   * このモニターの ICC プロファイルのパス（`~/` 可）。DisplayCAL などで作成した
+   * ものを指定します。色を sRGB からプロファイルが示すモニターの特性へ変換し、
+   * キャリブレーションカーブ（`vcgt`）も適用します。SDR で動作している間だけ
+   * 有効で、HDR の出力では無視されます。
+   */
+  icc?: string;
 }
 
 /**

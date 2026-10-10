@@ -116,6 +116,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     subpixel: config.subpixel,
     transform: config.transform,
     hdr: typeof config.hdr === "object" && config.hdr !== null ? { ...config.hdr } : config.hdr,
+    icc: config.icc,
   };
 }
 

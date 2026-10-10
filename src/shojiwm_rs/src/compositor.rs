@@ -500,6 +500,7 @@ impl OutputConfig {
             transform: None,
             subpixel: None,
             hdr: None,
+            icc: None,
         }
     }
 
@@ -514,6 +515,7 @@ impl OutputConfig {
             transform: None,
             subpixel: None,
             hdr: None,
+            icc: None,
         }
     }
 }

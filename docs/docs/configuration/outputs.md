@@ -170,8 +170,6 @@ Drives the output as HDR10: a PQ / BT.2020 signal with HDR metadata. It only
 takes effect when the display's EDID advertises SMPTE ST 2084 (PQ); otherwise
 the output stays SDR and the log says why. Experimental, tty only.
 
-| Option | Meaning |
-| --- | --- |
 `hdr: true` turns it on with the defaults. To change a setting, give an object
 instead, which turns HDR on as well:
 
@@ -235,6 +233,39 @@ Notes:
 - `SHOJI_HDR_OUTPUTS=eDP-1` (or `all`) turns HDR on without a config, and
   `SHOJI_SDR_NITS` sets the default for `hdr.sdrLuminance` on outputs without a
   backlight.
+
+### Color profile (`icc`)
+
+Applies the monitor's ICC profile, for example one made with DisplayCAL or
+ArgyllCMS. Colors are converted from sRGB to what the profile says the monitor
+does, so a calibrated monitor shows them accurately. Tty only.
+
+```ts
+display['DP-1'] = {
+  icc: '~/.local/share/icc/DP-1.icc',
+};
+```
+
+How it works:
+
+- Windows are taken as sRGB with a 2.2 gamma (what an uncalibrated monitor
+  shows) and converted with the relative colorimetric intent and black point
+  compensation. On a wide-gamut monitor this makes sRGB content look like sRGB
+  instead of oversaturated.
+- The profile's calibration curves (`vcgt`) are applied too. Do not load them
+  again with another tool such as `dispwin`.
+- Content from color-managed clients is converted to sRGB first and then
+  through the profile like everything else.
+
+Notes:
+
+- The profile applies while the output runs SDR; an output in HDR ignores it.
+- It is read when the config is evaluated. After replacing the file, reload the
+  config. A profile that cannot be read is logged and ignored.
+- The output goes through one extra conversion pass, as in HDR, so a fullscreen
+  window is not scanned out directly on it. The cursor stays a hardware cursor.
+- Screenshots and screen recordings are taken before the conversion, so they
+  stay plain sRGB.
 
 ## Switching panels off (DPMS)
 

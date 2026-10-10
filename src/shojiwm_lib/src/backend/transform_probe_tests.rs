@@ -479,7 +479,10 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
             &output,
             &[element],
             [0.0, 0.0, 0.0, 1.0],
-            crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, crate::color::primaries::SRGB),
+            crate::backend::hdr_pipeline::OutputEncoding::Pq(
+                crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, crate::color::primaries::SRGB),
+            ),
+            Fourcc::Abgr16161616f,
         )
         .expect("HDR pipeline should render")
         .expect("output has a mode");
@@ -559,7 +562,10 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
         &output,
         &elements,
         [0.0, 0.0, 0.0, 1.0],
-        crate::backend::hdr_pipeline::EncodeParams::new(SDR_WHITE, PEAK, crate::color::primaries::SRGB),
+        crate::backend::hdr_pipeline::OutputEncoding::Pq(
+            crate::backend::hdr_pipeline::EncodeParams::new(SDR_WHITE, PEAK, crate::color::primaries::SRGB),
+        ),
+        Fourcc::Abgr16161616f,
     )
     .expect("HDR pipeline should render")
     .expect("output has a mode");
@@ -606,6 +612,22 @@ fn encode_solid(
     color: [f32; 3],
     primaries: crate::color::primaries::PrimariesChromaticities,
 ) -> [f32; 3] {
+    encode_solid_with(
+        renderer,
+        color,
+        crate::backend::hdr_pipeline::OutputEncoding::Pq(
+            crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, primaries),
+        ),
+    )
+}
+
+/// One solid compositing-space color through the encode pass, read back
+/// (8-bit).
+fn encode_solid_with(
+    renderer: &mut GlesRenderer,
+    color: [f32; 3],
+    encoding: crate::backend::hdr_pipeline::OutputEncoding,
+) -> [f32; 3] {
     use smithay::output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel};
 
     let output = Output::new(
@@ -642,7 +664,8 @@ fn encode_solid(
         &output,
         &[element],
         [0.0, 0.0, 0.0, 1.0],
-        crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, primaries),
+        encoding,
+        Fourcc::Abgr16161616f,
     )
     .expect("HDR pipeline should render")
     .expect("output has a mode");
@@ -751,7 +774,8 @@ fn hdr_encode_damage_follows_stage1_damage() {
             &output,
             &[element],
             [0.0, 0.0, 0.0, 1.0],
-            params,
+            crate::backend::hdr_pipeline::OutputEncoding::Pq(params),
+            Fourcc::Abgr16161616f,
         )
         .expect("HDR pipeline should render")
         .expect("output has a mode")
@@ -824,4 +848,55 @@ fn hdr_cursor_cpu_encode_matches_the_encode_pass() {
             }
         }
     }
+}
+
+/// The ICC encode pass looks colors up in the packed LUT exactly as the CPU
+/// sampler (and with it the hardware cursor) does: a wrong slice layout or
+/// half-texel offset shows up as a mismatch here.
+#[test]
+fn icc_encode_pass_matches_the_cpu_lut() {
+    use lcms2::{CIExyY, CIExyYTRIPLE, Profile, Tag, TagSignature, ToneCurve};
+
+    let Some(mut renderer) = try_renderer() else {
+        eprintln!("skipping: no GPU render node available");
+        return;
+    };
+    // A wide-gamut panel with a steeper response and calibration curves:
+    // every part of the LUT does something.
+    let curve = ToneCurve::new(2.4);
+    let mut profile = Profile::new_rgb(
+        &CIExyY { x: 0.3127, y: 0.3290, Y: 1.0 },
+        &CIExyYTRIPLE {
+            Red: CIExyY { x: 0.680, y: 0.320, Y: 1.0 },
+            Green: CIExyY { x: 0.265, y: 0.690, Y: 1.0 },
+            Blue: CIExyY { x: 0.150, y: 0.060, Y: 1.0 },
+        },
+        &[&curve, &curve, &curve],
+    )
+    .unwrap();
+    let vcgt = ToneCurve::new(0.9);
+    assert!(profile.write_tag(TagSignature::VcgtTag, Tag::VcgtCurves([&vcgt, &vcgt, &vcgt])));
+    let lut = std::sync::Arc::new(
+        crate::color::icc::IccLut::from_icc(std::path::Path::new("probe.icc"), &profile.icc().unwrap())
+            .unwrap(),
+    );
+    for pixel in [[255u8, 255, 255], [0, 0, 0], [128, 128, 128], [200, 40, 90], [10, 230, 60], [3, 7, 250]] {
+        let gpu = encode_solid_with(
+            &mut renderer,
+            pixel.map(|value| value as f32 / 255.0),
+            crate::backend::hdr_pipeline::OutputEncoding::Icc(lut.clone()),
+        );
+        let cpu = crate::backend::hdr_cursor::icc_pixel(pixel, 255, &lut);
+        for channel in 0..3 {
+            assert!(
+                (gpu[channel] * 255.0 - cpu[channel] as f32).abs() <= 1.0,
+                "{pixel:?} channel {channel}: GPU {} CPU {}",
+                gpu[channel] * 255.0,
+                cpu[channel]
+            );
+        }
+    }
+    // And the LUT is not an identity, or the test proves nothing.
+    let red = crate::backend::hdr_cursor::icc_pixel([255, 0, 0], 255, &lut);
+    assert!(red[1] > 20, "{red:?}");
 }

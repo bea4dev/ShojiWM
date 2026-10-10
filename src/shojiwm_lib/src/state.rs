@@ -435,6 +435,11 @@ pub struct ShojiWM {
     /// Per-output PQ-encoded cursor images for the hardware cursor on HDR10
     /// outputs.
     pub hdr_cursor_caches: HashMap<String, crate::backend::hdr_cursor::HdrCursorCache>,
+    /// Monitor ICC profiles from the display config (`icc`), by output name.
+    /// Applied by the encode stage while the output runs SDR.
+    pub output_icc: HashMap<String, std::sync::Arc<crate::color::icc::IccLut>>,
+    /// What the log last said about each configured profile (by `IccLut::id`).
+    pub output_icc_status: HashMap<String, (u64, crate::backend::tty::IccProfileStatus)>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1786,6 +1791,8 @@ impl ShojiWM {
             output_color: Default::default(),
             hdr_pipelines: Default::default(),
             hdr_cursor_caches: Default::default(),
+            output_icc: Default::default(),
+            output_icc_status: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),

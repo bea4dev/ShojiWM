@@ -13,6 +13,10 @@
 //! ST 2084 (PQ) encode, straight into the 10-bit scanout buffer. The element
 //! carries stage 1's damage, so only what changed is re-encoded.
 //!
+//! The same two stages serve SDR outputs with a monitor ICC profile: the
+//! intermediate is then run through the profile's 3D LUT (`output_icc.frag`,
+//! `color::icc`) instead of the PQ encode. [`OutputEncoding`] picks the pass.
+//!
 //! Compositing itself still happens on sRGB-encoded values: per-element
 //! linearization needs sRGB texture views across every draw program and is
 //! deliberately out of scope here. The fp16 intermediate exists so PQ-tagged
@@ -24,9 +28,10 @@ use smithay::{
         Bind, Color32F, Offscreen,
         damage::OutputDamageTracker,
         element::{Element, Id, Kind, RenderElement, RenderElementStates},
+        ImportMem,
         gles::{
             GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-            UniformType, UniformValue,
+            UniformType, UniformValue, ffi,
         },
         utils::{CommitCounter, DamageBag, DamageSet, DamageSnapshot, OpaqueRegions},
     },
@@ -161,6 +166,15 @@ impl EncodeParams {
     }
 }
 
+/// What the final pass does with the intermediate.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutputEncoding {
+    /// HDR10: PQ/BT.2020 (`output_encode.frag`).
+    Pq(EncodeParams),
+    /// SDR through a monitor ICC profile's LUT (`output_icc.frag`).
+    Icc(std::sync::Arc<crate::color::icc::IccLut>),
+}
+
 /// Damage commits kept for the encode element. The DRM swapchain asks for
 /// damage since the commit it last showed in a buffer, at most a few frames
 /// back; anything older gets a full re-encode.
@@ -169,6 +183,39 @@ const ENCODE_DAMAGE_HISTORY: usize = 8;
 struct HdrEncodeProgram(
     GlesTexProgram
 );
+
+struct IccEncodeProgram(GlesTexProgram);
+
+/// Texture unit the ICC LUT is bound to; the intermediate is on unit 0.
+const ICC_LUT_UNIT: i32 = 1;
+
+fn ensure_icc_program(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    if renderer
+        .egl_context()
+        .user_data()
+        .get::<IccEncodeProgram>()
+        .is_none()
+    {
+        let program = renderer.compile_custom_texture_shader(
+            include_str!("output_icc.frag"),
+            &[
+                UniformName::new("lut", UniformType::_1i),
+                UniformName::new("lut_size", UniformType::_1f),
+            ],
+        )?;
+        renderer
+            .egl_context()
+            .user_data()
+            .insert_if_missing(|| IccEncodeProgram(program));
+    }
+    Ok(renderer
+        .egl_context()
+        .user_data()
+        .get::<IccEncodeProgram>()
+        .unwrap()
+        .0
+        .clone())
+}
 
 fn ensure_encode_program(
     renderer: &mut GlesRenderer
@@ -234,9 +281,12 @@ pub struct HdrPipeline {
     /// Stage-1 damage per commit, so the DRM pass re-encodes only what
     /// changed instead of the whole output.
     damage: DamageBag<i32, Physical>,
-    /// Parameters the last frame was encoded with; a change re-encodes
-    /// everything.
-    params: Option<EncodeParams>,
+    /// Format of `texture`: fp16 for HDR, whatever the GPU renders for ICC.
+    format: Fourcc,
+    /// Encoding the last frame went through; a change re-encodes everything.
+    encoding: Option<OutputEncoding>,
+    /// The ICC LUT uploaded for this renderer, by `IccLut::id`.
+    icc_lut: Option<(u64, GlesTexture)>,
     /// The texture holds last frame's composite (buffer age 1) once we've
     /// rendered at least once without errors.
     contents_valid: bool,
@@ -262,7 +312,8 @@ pub fn render_hdr_pipeline<E>(
     output: &Output,
     elements: &[E],
     clear_color: [f32; 4],
-    params: EncodeParams,
+    encoding: OutputEncoding,
+    format: Fourcc,
 ) -> Result<Option<(HdrEncodeElement, RenderElementStates)>, Box<dyn std::error::Error>>
 where
     E: RenderElement<GlesRenderer>,
@@ -291,7 +342,10 @@ where
     let recreate = pipeline
         .as_ref()
         .is_none_or(|pipeline| {
-        pipeline.size != size || pipeline.scale != scale || pipeline.transform != transform
+        pipeline.size != size
+            || pipeline.scale != scale
+            || pipeline.transform != transform
+            || pipeline.format != format
     });
     if recreate {
         let buffer_size = size
@@ -303,7 +357,7 @@ where
         let texture =
             Offscreen::<GlesTexture>::create_buffer(
                 renderer,
-                Fourcc::Abgr16161616f,
+                format,
                 buffer_size
             )?;
         *pipeline = Some(HdrPipeline {
@@ -318,7 +372,9 @@ where
             transform,
             element_id: Id::new(),
             damage: DamageBag::new(ENCODE_DAMAGE_HISTORY),
-            params: None,
+            format,
+            encoding: None,
+            icc_lut: None,
             contents_valid: false,
         });
     }
@@ -328,9 +384,29 @@ where
             "pipeline was just created"
         );
 
-    let program = ensure_encode_program(
-        renderer
-    )?;
+    let (program, lut) = match &encoding {
+        OutputEncoding::Pq(_) => (ensure_encode_program(renderer)?, None),
+        OutputEncoding::Icc(icc) => {
+            if pipeline
+                .icc_lut
+                .as_ref()
+                .is_none_or(|(id, _)| *id != icc.id)
+            {
+                let size = crate::color::icc::LUT_SIZE as i32;
+                let texture = renderer.import_memory(
+                    &icc.packed_2101010(),
+                    Fourcc::Abgr2101010,
+                    (size * size, size).into(),
+                    false,
+                )?;
+                pipeline.icc_lut = Some((icc.id, texture));
+            }
+            (
+                ensure_icc_program(renderer)?,
+                pipeline.icc_lut.as_ref().map(|(_, texture)| texture.clone()),
+            )
+        }
+    };
 
     // Stage 1: composite into the fp16 intermediate. Age 1 keeps partial
     // redraws once the texture holds the previous frame.
@@ -375,8 +451,8 @@ where
     pipeline.contents_valid = true;
     // The intermediate is upright at the origin, exactly like the encode
     // element's geometry, so its damage is the element's damage as is.
-    if pipeline.params != Some(params) {
-        pipeline.params = Some(params);
+    if pipeline.encoding.as_ref() != Some(&encoding) {
+        pipeline.encoding = Some(encoding.clone());
         pipeline.damage.add([Rectangle::from_size(size)]);
     } else if let Some(damage) = damage
         && !damage.is_empty()
@@ -406,7 +482,8 @@ where
         geometry: Rectangle::from_size(
             size
         ),
-        params,
+        encoding,
+        lut,
     }, stage1_states)))
 }
 
@@ -419,7 +496,9 @@ pub struct HdrEncodeElement {
     program: GlesTexProgram,
     src: Rectangle<f64, Buffer>,
     geometry: Rectangle<i32, Physical>,
-    params: EncodeParams,
+    encoding: OutputEncoding,
+    /// The ICC LUT texture, for `OutputEncoding::Icc`.
+    lut: Option<GlesTexture>,
 }
 
 impl Element for HdrEncodeElement {
@@ -492,6 +571,38 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
         opaque_regions: &[Rectangle<i32, Physical>],
         _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
+        let uniforms = match &self.encoding {
+            OutputEncoding::Pq(params) => vec![
+                Uniform::new("sdr_nits", params.sdr_nits),
+                Uniform::new("sdr_gamma", params.sdr_gamma),
+                Uniform::new("peak_nits", params.peak_nits),
+                Uniform::new(
+                    "compositing_to_bt2020",
+                    UniformValue::Matrix3x3 {
+                        matrices: vec![params.compositing_to_bt2020],
+                        transpose: false,
+                    },
+                ),
+            ],
+            OutputEncoding::Icc(_) => vec![
+                Uniform::new("lut", ICC_LUT_UNIT),
+                Uniform::new("lut_size", crate::color::icc::LUT_SIZE as f32),
+            ],
+        };
+        // The program only binds `tex`; the LUT goes on its own unit for the
+        // duration of the draw.
+        if let Some(lut) = &self.lut {
+            let lut_id = lut.tex_id();
+            frame.with_context(|gl| unsafe {
+                gl.ActiveTexture(ffi::TEXTURE0 + ICC_LUT_UNIT as u32);
+                gl.BindTexture(ffi::TEXTURE_2D, lut_id);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                gl.ActiveTexture(ffi::TEXTURE0);
+            })?;
+        }
         let result = frame.render_texture_from_to(
             &self.texture,
             src,
@@ -501,19 +612,15 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
             Transform::Normal,
             1.0,
             Some(&self.program),
-            &[
-                Uniform::new("sdr_nits", self.params.sdr_nits),
-                Uniform::new("sdr_gamma", self.params.sdr_gamma),
-                Uniform::new("peak_nits", self.params.peak_nits),
-                Uniform::new(
-                    "compositing_to_bt2020",
-                    UniformValue::Matrix3x3 {
-                        matrices: vec![self.params.compositing_to_bt2020],
-                        transpose: false,
-                    },
-                ),
-            ],
+            &uniforms,
         );
+        if self.lut.is_some() {
+            frame.with_context(|gl| unsafe {
+                gl.ActiveTexture(ffi::TEXTURE0 + ICC_LUT_UNIT as u32);
+                gl.BindTexture(ffi::TEXTURE_2D, 0);
+                gl.ActiveTexture(ffi::TEXTURE0);
+            })?;
+        }
         if let Err(
             error
         ) = &result {
