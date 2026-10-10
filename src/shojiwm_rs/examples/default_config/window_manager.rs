@@ -1384,16 +1384,38 @@ impl HybridWindowManager {
             }
             schedule_minimize_animation(window, minimized, self.instant_transitions);
         }
+        // A minimized window keeps the keyboard until something else is
+        // focused: the compositor only elects a successor when the owner goes
+        // away, and a minimized window is still mapped. Read after the state
+        // flip so the window no longer counts as a tile or a visible candidate.
+        let successor = if minimized && !was_minimized && window.is_focused().get_untracked() {
+            workspace.and_then(|id| {
+                self.workspace_by_id(id)
+                    .expect("live")
+                    .successor_for_minimized_window(window, |current| {
+                        self.window_stack.z_index_value(current)
+                    })
+            })
+        } else {
+            None
+        };
         if let Some(id) = workspace
             && self.workspace_by_id(id).expect("live").is_tiled
         {
-            let should_tile = self.workspace_by_id(id).expect("live").should_tile(window);
+            let ws = self.workspace_by_id(id).expect("live");
+            let should_tile = ws.should_tile(window);
+            let successor_tile = successor.filter(|successor| ws.should_tile(*successor));
             if !minimized && should_tile {
                 self.ws(id).focus_window(window);
+            } else if let Some(successor) = successor_tile {
+                self.ws(id).focus_window(successor);
             } else {
                 self.ws(id).apply_layout(LayoutOptions::default());
             }
             self.apply_workspace_stack_policy(Some(id));
+        }
+        if let Some(successor) = successor {
+            successor.focus();
         }
     }
 

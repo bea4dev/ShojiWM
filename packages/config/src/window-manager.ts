@@ -1449,14 +1449,27 @@ export class HybridWindowManager {
         this.instantTransitions,
       );
     }
+    // A minimized window keeps the keyboard until something else is focused:
+    // the compositor only elects a successor when the owner goes away, and a
+    // minimized window is still mapped. Read after the state flip so the
+    // window no longer counts as a tile or a visible candidate.
+    const successor =
+      event.minimized && !wasMinimized && event.window.isFocused()
+        ? (workspace?.successorForMinimizedWindow(event.window, (window) =>
+            this.windowStack.zIndexValue(window),
+          ) ?? null)
+        : null;
     if (workspace?.isTiled) {
       if (!event.minimized && workspace.shouldTile(event.window)) {
         workspace.focusWindow(event.window);
+      } else if (successor && workspace.shouldTile(successor)) {
+        workspace.focusWindow(successor);
       } else {
         workspace.applyLayout();
       }
       this.applyWorkspaceStackPolicy(workspace);
     }
+    successor?.focus();
   }
 
   public onWindowActivateRequest(event: WindowActivateRequestEvent) {
@@ -3715,6 +3728,49 @@ export class Workspace {
     }
     const tileable = this.tileableWindows();
     return tileable[Math.min(tileIndex, tileable.length - 1)] ?? null;
+  }
+
+  /**
+   * The window that inherits focus when the focused `window` is minimized,
+   * called once it already counts as minimized.
+   *
+   * A tile hands focus to the tile that slides into its slot, as a removed
+   * tile does. Anything else hands it to the topmost window still on screen:
+   * floating windows stack by focus order, so that is also the one used most
+   * recently. In a tiled workspace only floating windows compete on z-order —
+   * tiles scrolled out of view sit in the same stack — and the active tile
+   * is the fallback.
+   */
+  public successorForMinimizedWindow(
+    window: WaylandWindow,
+    zIndexOf: (window: WaylandWindow) => number,
+  ): WaylandWindow | null {
+    if (this.isTiled && this.shouldTile(window)) {
+      const tile = this.successorForRemovedWindow(
+        true,
+        this.tileIndexOf(window.id),
+      );
+      if (tile) {
+        return tile;
+      }
+    }
+    const topmost = this.windows
+      .filter(
+        (current) =>
+          current.id !== window.id &&
+          !current.state[WINDOW_STATE_MINIMIZED]() &&
+          (!this.isTiled || !this.shouldTile(current)),
+      )
+      .reduce<WaylandWindow | null>(
+        (top, current) =>
+          top === null || zIndexOf(current) > zIndexOf(top) ? current : top,
+        null,
+      );
+    if (topmost || !this.isTiled) {
+      return topmost;
+    }
+    const tileable = this.tileableWindows();
+    return this.activeWindow(tileable) ?? tileable.at(-1) ?? null;
   }
 
   public removeTileDragWindow(window: WaylandWindow) {

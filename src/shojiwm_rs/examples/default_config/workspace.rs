@@ -305,6 +305,43 @@ impl Workspace {
         tileable.get(tile_index.min(tileable.len() - 1)).copied()
     }
 
+    /// The window that inherits focus when the focused `window` is
+    /// minimized, called once it already counts as minimized.
+    ///
+    /// A tile hands focus to the tile that slides into its slot, as a removed
+    /// tile does. Anything else hands it to the topmost window still on
+    /// screen: floating windows stack by focus order, so that is also the one
+    /// used most recently. In a tiled workspace only floating windows compete
+    /// on z-order — tiles scrolled out of view sit in the same stack — and the
+    /// active tile is the fallback.
+    pub fn successor_for_minimized_window(
+        &self,
+        window: Window,
+        z_index_of: impl Fn(Window) -> i32,
+    ) -> Option<Window> {
+        if self.is_tiled
+            && self.should_tile(window)
+            && let Some(tile) = self.successor_for_removed_window(true, self.tile_index_of(window))
+        {
+            return Some(tile);
+        }
+        let topmost = self
+            .windows
+            .iter()
+            .copied()
+            .filter(|current| {
+                *current != window
+                    && !get(*current, &WINDOW_STATE_MINIMIZED)
+                    && (!self.is_tiled || !self.should_tile(*current))
+            })
+            .max_by_key(|current| z_index_of(*current));
+        if topmost.is_some() || !self.is_tiled {
+            return topmost;
+        }
+        let tileable = self.tileable_windows();
+        self.active_window_in(&tileable).or_else(|| tileable.last().copied())
+    }
+
     pub fn remove_tile_drag_window(&mut self, window: Window) {
         if let Some(index) = self.windows.iter().position(|current| *current == window) {
             self.windows.remove(index);

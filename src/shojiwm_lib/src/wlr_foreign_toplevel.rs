@@ -1063,11 +1063,18 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
         let Some(window) = self.wlr_foreign_toplevel_window(handle) else {
             return;
         };
+        // A taskbar minimize is the user's pick just like a taskbar activate.
+        // Minimizing the focused window hands the keyboard to a successor, and
+        // the focus-ordering rule would otherwise refuse that handoff whenever
+        // the minimized window was created later and neither has been used
+        // yet — leaving the keyboard on the window that just disappeared.
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
         self.request_window_minimize(
             &window,
             minimized,
             crate::ssd::WindowStateRequestSourceSnapshot::Api,
         );
+        self.user_input_in_flight = previous;
         self.sync_wlr_foreign_toplevel_states();
     }
 
