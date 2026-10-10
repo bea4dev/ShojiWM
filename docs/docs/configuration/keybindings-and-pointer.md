@@ -55,6 +55,29 @@ allowing `Super` to act as a modifier for other shortcuts.
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```
 
+### Quit and reload
+
+`Super+Shift+Q` (quit) and `Super+Shift+R` (reload the config) are built into
+the compositor and always work, even while the config is broken. The same two
+actions are available from the command line, so a status bar, a script or a
+binding of your own can trigger them:
+
+```sh
+shoji_wm --quit     # or -q
+shoji_wm --reload   # or -r
+```
+
+```ts
+COMPOSITOR.key.bind('reload', 'Super+Ctrl+R', () => {
+  COMPOSITOR.process.spawn({command: ['shoji_wm', '--reload']});
+});
+```
+
+The command talks to the running compositor over the socket named by
+`SHOJIWM_SOCKET`, which ShojiWM exports to everything it starts (and to the
+systemd/D-Bus activation environment). Without it, the socket is derived from
+`WAYLAND_DISPLAY`.
+
 ## Pointer
 
 `COMPOSITOR.pointer` configures mouse interactions handled by the compositor

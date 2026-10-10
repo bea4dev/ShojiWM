@@ -49,6 +49,27 @@ COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```
 
+### 終了とリロード
+
+`Super+Shift+Q`（終了）と `Super+Shift+R`（設定のリロード）はコンポジター組み込みで、
+設定が壊れていても常に使えます。同じ2つの操作はコマンドラインからも行えるので、
+ステータスバーやスクリプト、独自のキーバインドから呼び出せます。
+
+```sh
+shoji_wm --quit     # または -q
+shoji_wm --reload   # または -r
+```
+
+```ts
+COMPOSITOR.key.bind('reload', 'Super+Ctrl+R', () => {
+  COMPOSITOR.process.spawn({command: ['shoji_wm', '--reload']});
+});
+```
+
+コマンドは `SHOJIWM_SOCKET` が指すソケット経由で実行中のコンポジターに伝わります。
+ShojiWM は起動するすべてのプロセス（と systemd/D-Bus のアクティベーション環境）に
+この変数を渡します。未設定の場合は `WAYLAND_DISPLAY` からソケットを求めます。
+
 ## ポインター
 
 `COMPOSITOR.pointer` は、コンポジター自身が扱うマウス操作を設定します。（加速度・

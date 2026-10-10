@@ -35,6 +35,7 @@ pub mod activation_environment;
 pub mod backend;
 pub mod config;
 pub mod config_error;
+pub mod control_socket;
 pub mod cursor;
 pub mod frame_pacing;
 pub mod drawing;
@@ -99,6 +100,15 @@ pub fn run(launcher: impl RuntimeLauncher + 'static) -> ExitCode {
     if args.version {
         println!("shoji_wm {} ({})", env!("CARGO_PKG_VERSION"), launcher.name());
         return ExitCode::SUCCESS;
+    }
+    if let Some(command) = args.control_command {
+        return match control_socket::send(command) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
 
     match run_with_args(Box::new(launcher), args) {

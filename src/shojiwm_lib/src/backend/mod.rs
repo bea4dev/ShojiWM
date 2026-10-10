@@ -84,6 +84,7 @@ fn run_winit(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<dyn std
     winit::init_winit(&mut event_loop, &mut state)?;
 
     crate::process_env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+    let _control_socket = crate::control_socket::start(&event_loop.handle(), &state.socket_name);
     publish_activation_environment("winit-wayland-display");
 
     state.start_xwayland(&event_loop);
@@ -100,6 +101,7 @@ pub fn run_tty_udev(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display, &runtime);
     crate::process_env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+    let _control_socket = crate::control_socket::start(&event_loop.handle(), &state.socket_name);
     publish_activation_environment("tty-wayland-display");
     state.start_xwayland(&event_loop);
 

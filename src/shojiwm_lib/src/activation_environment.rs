@@ -5,6 +5,8 @@ use tracing::{debug, warn};
 const ACTIVATION_ENV_KEYS: &[&str] = &[
     "WAYLAND_DISPLAY",
     "DISPLAY",
+    // `shoji_wm --quit/--reload` from bars started by systemd or D-Bus.
+    "SHOJIWM_SOCKET",
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_DESKTOP",
     "XDG_SESSION_TYPE",
