@@ -41,6 +41,7 @@ vec4 shader_main(EffectContext effect) {
     float best = here;
     float before = here;
     float after = here;
+    bool fell = false;
     for (int i = 1; i <= STEPS; i++) {
         float value = fieldAt(p + dir * (stepPx * float(i)), size);
         if (value > best) {
@@ -50,8 +51,10 @@ vec4 shader_main(EffectContext effect) {
         } else if (after == best) {
             after = value;
         }
-        if (value < best - 0.5 * stepPx)
+        if (value < best - 0.5 * stepPx) {
+            fell = true;
             break;
+        }
         previous = value;
     }
     // Ridges are tents: the peak between three samples sits half their
@@ -59,6 +62,17 @@ vec4 shader_main(EffectContext effect) {
     float ridge = best + 0.5 * abs((best - before) - (best - after));
     if (after == best)
         ridge = best;
+    // Past a corner's bisector the distance stops rising but does not fall:
+    // it is the distance to the adjacent side, still sloping across the walk.
+    // That is no far side, so the lens keeps its full width there instead of
+    // narrowing beside every corner. Only a level crest across the walk, like
+    // the axis at a pill's end, is a ridge without a fall.
+    if (!fell) {
+        vec2 end = p + dir * (stepPx * float(STEPS));
+        vec2 slope = vec2(directionAt(end + vec2(1.5, 0.0), size) - directionAt(end - vec2(1.5, 0.0), size),
+                          directionAt(end + vec2(0.0, 1.5), size) - directionAt(end - vec2(0.0, 1.5), size)) / 3.0;
+        ridge = mix(ridge, max(ridge, rim_width_px), smoothstep(0.25, 0.75, length(slope)));
+    }
     // R: signed distance (unchanged); G: ridge distance; B: the smoothed
     // distance the bend direction is taken from.
     return vec4(here, max(ridge, 0.0), smoothed, 1.0);
