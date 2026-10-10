@@ -83,7 +83,7 @@ const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 
 // Window switcher (Super+Tab): "flip-3d" stacks the windows in 3D
 // (./flip-3d.tsx), "grid" lays them out side by side (./window-grid.tsx).
-const WINDOW_SWITCHER_STYLE: "flip-3d" | "grid" = "grid";
+const WINDOW_SWITCHER_STYLE = "flip-3d" as "flip-3d" | "grid";
 const WINDOW_SWITCHER = (
   WINDOW_SWITCHER_STYLE === "grid" ? createWindowGrid : createFlip3D
 )({

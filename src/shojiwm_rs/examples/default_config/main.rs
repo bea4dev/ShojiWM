@@ -58,7 +58,7 @@ enum WindowSwitcherStyle {
     /// Lay them out side by side (window_grid.rs).
     Grid,
 }
-const WINDOW_SWITCHER_STYLE: WindowSwitcherStyle = WindowSwitcherStyle::Grid;
+const WINDOW_SWITCHER_STYLE: WindowSwitcherStyle = WindowSwitcherStyle::Flip3D;
 
 const FULLSCREEN_Z_INDEX: i32 = 2_000_000_000;
 const FLOATING_WINDOW_Z_INDEX_BASE: i32 = 1_500_000_000;
