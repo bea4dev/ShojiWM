@@ -4,8 +4,8 @@
 //! has to happen inside the backend's render loop where the `GlesRenderer` is
 //! accessible. The handler therefore parks each request in
 //! [`ShojiWM::image_copy_capture_pending`] alongside enough context to route
-//! it to the right output (or, in Phase 5b-iii, the right toplevel). The
-//! backend drains its share of the queue once per render pass.
+//! it to the right output or toplevel. Each backend (tty and winit) drains
+//! the queue once per render pass.
 
 use std::ptr;
 use std::time::Duration;
@@ -28,7 +28,6 @@ use smithay::wayland::image_copy_capture::{
 };
 use smithay::wayland::shm;
 
-use crate::backend::tty::TtyRenderElements;
 use crate::drawing::PointerRenderElement;
 
 // Sum type used only by the toplevel-capture render path so we can hand a
@@ -43,8 +42,7 @@ render_elements! {
 }
 
 /// A pending image-copy-capture frame held in the global queue. Drained by
-/// whichever backend code path can satisfy it (outputs in 5b-ii, toplevels in
-/// 5b-iii).
+/// whichever backend code path can satisfy it.
 pub struct PendingCapture {
     pub frame: Frame,
     pub target: CaptureTarget,
@@ -60,8 +58,6 @@ pub struct PendingCapture {
 
 pub enum CaptureTarget {
     Output(WeakOutput),
-    /// Reserved for Phase 5b-iii. Held in the queue but currently failed
-    /// immediately by the render path.
     Toplevel(ForeignToplevelWeakHandle),
 }
 
@@ -96,12 +92,12 @@ pub fn fail_pending_output_capture(
 /// Consumes those entries from `pending`. Each handled frame either calls
 /// `Frame::success` (rendered + presented_time) or `Frame::fail` (validation
 /// or render failure).
-pub fn process_image_copy_capture_for_output(
+pub fn process_image_copy_capture_for_output<E: RenderElement<GlesRenderer>>(
     pending: &mut Vec<PendingCapture>,
     renderer: &mut GlesRenderer,
     output: &Output,
-    content_elements: &[TtyRenderElements],
-    cursor_elements: &[TtyRenderElements],
+    content_elements: &[E],
+    cursor_elements: &[E],
     presented: Duration,
 ) {
     let mut i = 0;
@@ -119,8 +115,8 @@ pub fn process_image_copy_capture_for_output(
             frame, draw_cursor, ..
         } = entry;
         // Compose cursor only when the session asked for it (paint_cursors).
-        // Reference slices to avoid cloning non-Clone TtyRenderElements.
-        let composed_refs: Vec<&TtyRenderElements> = if draw_cursor {
+        // Reference slices to avoid cloning non-Clone render elements.
+        let composed_refs: Vec<&E> = if draw_cursor {
             cursor_elements
                 .iter()
                 .chain(content_elements.iter())
@@ -348,10 +344,10 @@ fn render_frame_for_toplevel(
     render_to_shm(renderer, &buffer, size, scale, Transform::Normal, &elements)
 }
 
-fn render_frame_for_output(
+fn render_frame_for_output<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     output: &Output,
-    elements: &[&TtyRenderElements],
+    elements: &[&E],
     frame: &Frame,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = output.current_mode().ok_or("output has no current mode")?;

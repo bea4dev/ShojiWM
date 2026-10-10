@@ -1016,6 +1016,9 @@ pub fn init_winit(
                     let damage = Rectangle::from_size(size);
 
                     let mut should_submit_frame = false;
+                    // The frame's scene, kept for the ext-image-copy-capture frames
+                    // rendered after it is submitted.
+                    let capture_elements: Vec<WinitRenderElements>;
                     let mut timing = WinitAnimationTimingMetrics::default();
                     {
                         timescope::scope!("winit scene build");
@@ -1318,10 +1321,36 @@ pub fn init_winit(
                                 state.fps_counter.record_present(output.name().as_str());
                             }
                         }
+                        capture_elements = elements;
                     }
                     let submit_started_at = Instant::now();
                     if should_submit_frame {
                         backend.submit(Some(&[damage])).unwrap();
+                    }
+                    // ext-image-copy-capture frames. Rendered after the window frame is
+                    // submitted: drawing into a capture buffer binds another target, and
+                    // an undamaged `render_output` would not bind the window surface
+                    // again before the swap. The host draws the cursor, so there is none
+                    // to include.
+                    if !state.image_copy_capture_pending.is_empty() {
+                        timescope::scope!("winit image capture");
+                        let presented = state.start_time.elapsed();
+                        let renderer = backend.renderer();
+                        crate::backend::image_copy_capture_render::process_image_copy_capture_for_toplevels(
+                            &mut state.image_copy_capture_pending,
+                            &state.space,
+                            renderer,
+                            &[],
+                            presented,
+                        );
+                        crate::backend::image_copy_capture_render::process_image_copy_capture_for_output(
+                            &mut state.image_copy_capture_pending,
+                            renderer,
+                            &output,
+                            &capture_elements,
+                            &[],
+                            presented,
+                        );
                     }
                     let submit_elapsed_ms =
                         submit_started_at.elapsed().as_secs_f64() * 1000.0;

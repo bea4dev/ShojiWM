@@ -310,12 +310,11 @@ impl SessionLockHandler for ShojiWM {
     }
 }
 
-// ext-image-capture-source-v1 + ext-image-copy-capture-v1 (Phase 5b-i skeleton)
+// ext-image-capture-source-v1 + ext-image-copy-capture-v1
 //
-// This wires up the protocol globals and the four handler traits. Actual
-// frame rendering is deferred to Phase 5b-ii (outputs reusing the existing
-// screencopy_render machinery) and 5b-iii (per-toplevel render). For now
-// `frame()` always fails with Unknown so clients see well-defined behaviour.
+// Output and toplevel (ext-foreign-toplevel-image-capture-source-v1) sources.
+// `frame()` only queues the request; the backend renders it on its next pass
+// (see `backend::image_copy_capture_render`).
 
 impl ImageCaptureSourceHandler for ShojiWM {
     fn source_destroyed(&mut self, _source: ImageCaptureSource) {}
@@ -381,6 +380,17 @@ impl ImageCopyCaptureHandler for ShojiWM {
         // Route the frame to the next render pass for whichever output /
         // toplevel owns its source. The render code drains the queue.
         use crate::backend::image_copy_capture_render::{CaptureTarget, PendingCapture};
+
+        // The first frame of a session must not wait for the source to change,
+        // so make sure a render pass comes even when nothing is damaged. Later
+        // frames wait for the next pass, which is what the protocol asks for.
+        let first_frame = session
+            .user_data()
+            .get_or_insert(|| std::cell::Cell::new(true))
+            .replace(false);
+        if first_frame {
+            self.schedule_redraw();
+        }
 
         let draw_cursor = session.draw_cursor();
         let source = session.source();
