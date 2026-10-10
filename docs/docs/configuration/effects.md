@@ -114,6 +114,143 @@ the buffer, so the effect never lags a frame behind an animated shape. Anything
 the surface draws outside the region gets no backdrop. Only a backdrop `behind`
 accepts a region other than `'surface'`.
 
+## Blurring specific windows or layers
+
+A common setup is to blur behind only some applications — a translucent
+terminal, say — and only some bars. Both are a matter of reading the surface's
+identity inside the function that decides what it gets.
+
+### Telling surfaces apart
+
+| Surface | Identity | Where to read it |
+| --- | --- | --- |
+| Window | `window.appId()` — the Wayland `app_id`, or the X11 `WM_CLASS` class for Xwayland apps (e.g. `"kitty"`, `"org.gnome.Nautilus"`, `"steam"`) | `COMPOSITOR.window.composition` |
+| Window | `window.title()` | `COMPOSITOR.window.composition` |
+| Layer surface | `layer.namespace()` — chosen by the client (e.g. waybar's `"waybar"`; QuickShell's `WlrLayershell.namespace`) | `COMPOSITOR.effect.layer` |
+
+Both are signals, so the decision is re-made when the value changes (a browser
+that sets its `app_id` after mapping still ends up with the right effect). To
+find the value for an app you use, log it once and look in
+`~/shoji_wm/logs/latest.log`:
+
+```ts
+COMPOSITOR.effect.layer = (layer) => {
+  console.info('layer namespace:', layer.namespace());
+  return {};
+};
+```
+
+### Windows: wrap the decoration in `<ShaderEffect/>`
+
+A window's background blur is part of its decoration. Put the title bar and the
+`<ClientWindow/>` inside a [`<ShaderEffect/>`](./components.md#shadereffect)
+for the apps you want, and a plain `<Box/>` for the rest. The effect fills the
+whole decorated area and follows the rounded corners of the
+[`<WindowBorder/>`](./components.md#windowborder) around it.
+
+```tsx
+import {
+  COMPOSITOR, compileEffect, backdropSource, dualKawaseBlur,
+  ManagedWindow, WindowBorder, ShaderEffect, Box, Label, ClientWindow,
+} from 'shoji_wm';
+
+// Compile once, outside the composition function.
+const FROSTED = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 8},
+  alpha: 'preserve',
+  pipeline: [dualKawaseBlur({radius: 4, passes: 2})],
+});
+
+const BLURRED_APPS = ['kitty', 'ghostty', 'org.gnome.Nautilus'];
+
+COMPOSITOR.window.composition = (window) => {
+  const content = [
+    <Box direction="row" style={{height: 28, paddingX: 8, alignItems: 'center'}}>
+      <Label text={window.title} style={{flexGrow: 1, fontSize: 13}} />
+    </Box>,
+    <ClientWindow />,
+  ];
+  const blurred = BLURRED_APPS.includes(window.appId() ?? '');
+
+  return (
+    <ManagedWindow rect={window.position} zIndex={1}>
+      <WindowBorder style={{borderRadius: 10, border: {px: 2, color: '#4f5666'}}}>
+        {blurred ? (
+          <ShaderEffect shader={FROSTED} direction="column">{content}</ShaderEffect>
+        ) : (
+          <Box direction="column">{content}</Box>
+        )}
+      </WindowBorder>
+    </ManagedWindow>
+  );
+};
+```
+
+The default config does exactly this for kitty and ghostty (search for
+`TERMINALS` in `packages/config/src/index.tsx`), with the liquid-glass shader
+below instead of a plain blur.
+
+:::note The application has to be translucent
+The blur is drawn **behind** the client, so it only shows through where the
+client's own pixels are transparent. Turn on the app's own transparency, e.g.
+`background_opacity 0.8` in kitty or `background-opacity = 0.8` in ghostty. An
+opaque window looks unchanged; only its title bar (if it is translucent) shows
+the effect.
+:::
+
+### Stronger liquid glass
+
+The default config's liquid-glass stage bends the backdrop only slightly. Its
+uniforms control the look:
+
+| Uniform | Effect |
+| --- | --- |
+| `distortion_depth` | How far in from the edge the bend reaches, as a fraction of the window's shorter side. Larger values make a wider lens rim. |
+| `distortion_strength` | How far the backdrop is pulled at the rim. This is the main "how much glass" knob. |
+| `chromatic_shift_px` | Color fringing at the rim, in pixels. `0` turns it off. |
+| `glass_tint` | Brightness multiplier for the backdrop. Below `1` darkens it, which keeps text readable. |
+| `glass_radius_px` | Corner radius of the lens; `-1` follows the window's rounded corners. |
+
+```ts
+shaderStage(loadShader('./src/effect/liquid-glass.frag'), {
+  uniforms: {
+    glass_radius_px: -1.0,
+    distortion_depth: 0.35,    // default config: 0.2
+    distortion_strength: 0.4,  // default config: 0.15
+    chromatic_shift_px: 4.0,
+    glass_tint: 0.85,
+  },
+}),
+```
+
+### Layers: choose by namespace
+
+Bars, docks and launchers are layer surfaces, so they go through
+`COMPOSITOR.effect.layer` instead. Return `{behind: ...}` for the namespaces
+to blur and `{}` for everything else:
+
+```ts
+const PANEL_BLUR = compileLayerEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 8},
+  alpha: 'preserve',
+  pipeline: [dualKawaseBlur({radius: 4, passes: 2})],
+});
+
+const BLURRED_LAYERS = ['waybar', 'rofi'];
+
+COMPOSITOR.effect.layer = (layer) =>
+  BLURRED_LAYERS.includes(layer.namespace() ?? '') ? {behind: PANEL_BLUR} : {};
+```
+
+The default config does the opposite — it blurs every layer and lets a client
+opt out with the `no_blur` namespace — and clips the blur to the layer's own
+opaque pixels with `layerSource()` so a bar with rounded or floating parts is
+not blurred in its transparent gaps (`LAYER_BLUR_MASK` in the default config).
+
 ## Building an effect
 
 An effect is **a source input + a pipeline of stages**. Compile it with the

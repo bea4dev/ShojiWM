@@ -93,6 +93,9 @@ they keep working even if your config is broken.
 | `Super` + `Shift` + `R` | **Hot reload the config** — apply edits to `index.tsx` without restarting (see [Overview → Hot reload](./overview.md#hot-reload)) |
 | `Super` + `Shift` + `Q` | Quit the ShojiWM session |
 
+The same two actions are available as `shoji_wm --reload` and `shoji_wm --quit`
+(see [Keybindings → Quit and reload](./keybindings-and-pointer.md#quit-and-reload)).
+
 ### Debug
 
 | Shortcut | Action |
@@ -186,7 +189,9 @@ See [Input devices](./input.md) to change these.
 - **Layer surfaces** (bars, docks) and **layer popups** (menus) are blurred
   behind, unless a surface opts out with the `no_blur` namespace.
 
-See [Effects](./effects.md) for how these are built.
+See [Effects](./effects.md) for how these are built, and
+[Blurring specific windows or layers](./effects.md#blurring-specific-windows-or-layers)
+for choosing which apps and bars get them.
 
 ## Startup programs & environment
 

@@ -113,6 +113,140 @@ const BAR_BLUR = compileLayerEffect({
 領域の外に描かれたものにはバックドロップが掛かりません。`'surface'` 以外を指定
 できるのはバックドロップの `behind` だけです。
 
+## 特定のウィンドウやレイヤーだけをぼかす
+
+半透明のターミナルなど一部のアプリだけ、一部のバーだけ背後をぼかしたい、というのは
+よくある構成です。どちらも、そのサーフェスに何を割り当てるかを決める関数の中で、
+サーフェスの識別子を読むだけで実現できます。
+
+### サーフェスを見分ける
+
+| サーフェス | 識別子 | 読む場所 |
+| --- | --- | --- |
+| ウィンドウ | `window.appId()` — Wayland の `app_id`。Xwayland アプリでは X11 の `WM_CLASS` のクラス（例: `"kitty"`、`"org.gnome.Nautilus"`、`"steam"`） | `COMPOSITOR.window.composition` |
+| ウィンドウ | `window.title()` | `COMPOSITOR.window.composition` |
+| レイヤーサーフェス | `layer.namespace()` — クライアントが決める名前（例: waybar の `"waybar"`、QuickShell の `WlrLayershell.namespace`） | `COMPOSITOR.effect.layer` |
+
+どちらもシグナルなので、値が変わると判定がやり直されます（マップ後に `app_id`
+を設定するブラウザでも正しいエフェクトになります）。使っているアプリの値を調べるには、
+一度ログに出して `~/shoji_wm/logs/latest.log` を見てください。
+
+```ts
+COMPOSITOR.effect.layer = (layer) => {
+  console.info('layer namespace:', layer.namespace());
+  return {};
+};
+```
+
+### ウィンドウ: 装飾を `<ShaderEffect/>` で包む
+
+ウィンドウの背景ブラーは装飾の一部です。対象のアプリでは、タイトルバーと
+`<ClientWindow/>` を [`<ShaderEffect/>`](./components.md#shadereffect) の中に置き、
+それ以外は普通の `<Box/>` にします。エフェクトは装飾された領域全体を覆い、
+外側の [`<WindowBorder/>`](./components.md#windowborder) の角丸に沿います。
+
+```tsx
+import {
+  COMPOSITOR, compileEffect, backdropSource, dualKawaseBlur,
+  ManagedWindow, WindowBorder, ShaderEffect, Box, Label, ClientWindow,
+} from 'shoji_wm';
+
+// コンポジション関数の外で一度だけコンパイルする
+const FROSTED = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 8},
+  alpha: 'preserve',
+  pipeline: [dualKawaseBlur({radius: 4, passes: 2})],
+});
+
+const BLURRED_APPS = ['kitty', 'ghostty', 'org.gnome.Nautilus'];
+
+COMPOSITOR.window.composition = (window) => {
+  const content = [
+    <Box direction="row" style={{height: 28, paddingX: 8, alignItems: 'center'}}>
+      <Label text={window.title} style={{flexGrow: 1, fontSize: 13}} />
+    </Box>,
+    <ClientWindow />,
+  ];
+  const blurred = BLURRED_APPS.includes(window.appId() ?? '');
+
+  return (
+    <ManagedWindow rect={window.position} zIndex={1}>
+      <WindowBorder style={{borderRadius: 10, border: {px: 2, color: '#4f5666'}}}>
+        {blurred ? (
+          <ShaderEffect shader={FROSTED} direction="column">{content}</ShaderEffect>
+        ) : (
+          <Box direction="column">{content}</Box>
+        )}
+      </WindowBorder>
+    </ManagedWindow>
+  );
+};
+```
+
+デフォルト設定は kitty と ghostty に対してまさにこれを行っています
+（`packages/config/src/index.tsx` の `TERMINALS` を検索）。ただし単純なブラーではなく、
+次に説明する liquid glass シェーダーを使っています。
+
+:::note アプリ側を半透明にする必要があります
+ブラーはクライアントの**背後**に描かれるので、クライアント自身のピクセルが透明な
+部分からしか見えません。kitty なら `background_opacity 0.8`、ghostty なら
+`background-opacity = 0.8` のように、アプリ側の透過を有効にしてください。
+不透明なウィンドウは見た目が変わらず、（半透明なら）タイトルバーにだけ効果が出ます。
+:::
+
+### liquid glass を強くする
+
+デフォルト設定の liquid glass ステージは、背景をわずかにしか曲げません。見た目は
+uniform で調整できます。
+
+| uniform | 効果 |
+| --- | --- |
+| `distortion_depth` | 歪みが縁から内側へどこまで及ぶか（ウィンドウの短辺に対する割合）。大きいほどレンズの縁が太くなります。 |
+| `distortion_strength` | 縁で背景をどれだけ引き寄せるか。「どれだけガラスらしいか」の主なつまみです。 |
+| `chromatic_shift_px` | 縁の色ずれ（ピクセル）。`0` で無効。 |
+| `glass_tint` | 背景の明るさの倍率。`1` 未満で暗くなり、文字が読みやすくなります。 |
+| `glass_radius_px` | レンズの角の半径。`-1` でウィンドウの角丸に追従します。 |
+
+```ts
+shaderStage(loadShader('./src/effect/liquid-glass.frag'), {
+  uniforms: {
+    glass_radius_px: -1.0,
+    distortion_depth: 0.35,    // デフォルト設定: 0.2
+    distortion_strength: 0.4,  // デフォルト設定: 0.15
+    chromatic_shift_px: 4.0,
+    glass_tint: 0.85,
+  },
+}),
+```
+
+### レイヤー: namespace で選ぶ
+
+バー・ドック・ランチャーはレイヤーサーフェスなので、代わりに
+`COMPOSITOR.effect.layer` で扱います。ぼかしたい namespace には `{behind: ...}` を、
+それ以外には `{}` を返します。
+
+```ts
+const PANEL_BLUR = compileLayerEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: {kind: 'on-source-damage-box', damagePadding: 8},
+  alpha: 'preserve',
+  pipeline: [dualKawaseBlur({radius: 4, passes: 2})],
+});
+
+const BLURRED_LAYERS = ['waybar', 'rofi'];
+
+COMPOSITOR.effect.layer = (layer) =>
+  BLURRED_LAYERS.includes(layer.namespace() ?? '') ? {behind: PANEL_BLUR} : {};
+```
+
+デフォルト設定は逆に、すべてのレイヤーをぼかし、クライアントが `no_blur` という
+namespace で除外できるようにしています。さらに `layerSource()` でブラーをレイヤー自身の
+不透明ピクセルに切り抜いているので、角丸や浮いたパーツのあるバーでも透明な隙間は
+ぼかされません（デフォルト設定の `LAYER_BLUR_MASK`）。
+
 ## エフェクトを組み立てる
 
 エフェクトは **ソース入力＋ステージのパイプライン**です。使う場所に応じたコンパイル
