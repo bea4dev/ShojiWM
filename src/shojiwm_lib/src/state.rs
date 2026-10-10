@@ -1958,6 +1958,7 @@ impl ShojiWM {
     pub(crate) fn remove_output_global(&mut self, output: &Output) {
         self.forget_output_power(output);
         let output_name = output.name();
+        self.composition_targets.remove(&output_name);
         let Some(global) = self.runtime_output_globals.remove(&output_name) else {
             return;
         };

@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Mutex, OnceLock},
     time::Duration,
 };
@@ -34,7 +34,7 @@ use tracing::info;
 
 use crate::{backend::window::layer_surface_is_mapped, state::ShojiWM};
 
-const PRIMARY_OUTPUT_KEEP_WITHIN_PERCENT: i64 = 110;
+const PRIMARY_OUTPUT_KEEP_WITHIN_PERCENT: u128 = 110;
 
 /// Primary scanout output comparison that picks the output with greater visible area.
 ///
@@ -116,7 +116,7 @@ fn stable_primary_output_for_window(
             .map(|overlap| i64::from(overlap.size.w) * i64::from(overlap.size.h))
             .unwrap_or(0);
         if area > 0 {
-            overlaps.push(((*output).clone(), area));
+            overlaps.push(((*output).clone(), area as u128));
         }
     }
 
@@ -130,39 +130,42 @@ fn stable_primary_output_for_window(
         return candidate_outputs.first().map(|output| (*output).clone());
     }
 
-    let mut current_primary = None;
+    stable_primary_output(&overlaps, window_primary_output(window).as_ref())
+}
+
+fn window_primary_output(window: &Window) -> Option<Output> {
+    let mut current = None;
     window.with_surfaces(|surface, states| {
-        if current_primary.is_none() {
-            current_primary = surface_primary_scanout_output(surface, states);
+        if current.is_none() {
+            current = surface_primary_scanout_output(surface, states);
         }
     });
+    current
+}
 
-    let (best_output, best_area) = overlaps
+fn stable_primary_output(
+    candidates: &[(Output, u128)],
+    current: Option<&Output>,
+) -> Option<Output> {
+    let (best_output, best_area) = candidates
         .iter()
-        .max_by(|(left_output, left_area), (right_output, right_area)| {
-            left_area
-                .cmp(right_area)
-                .then_with(|| right_output.name().cmp(&left_output.name()))
-        })
-        .map(|(output, area)| (output.clone(), *area))?;
-
-    if let Some(current_primary) = current_primary {
-        let current_area = overlaps
+        .filter(|(_, area)| *area > 0)
+        .max_by(|(a, aa), (b, ba)| aa.cmp(ba).then_with(|| b.name().cmp(&a.name())))?;
+    if let Some(current) = current {
+        let current_area = candidates
             .iter()
-            .find_map(|(output, area)| (output == &current_primary).then_some(*area))
+            .find_map(|(output, area)| (output == current).then_some(*area))
             .unwrap_or(0);
-        // Keep the existing primary while it is still close to the largest logical overlap.
-        // Without this hysteresis, fractional-scale and damage rounding near an output boundary can
-        // feed back into the client's preferred scale and make the primary output flip every frame.
+        // Fractional-scale and damage rounding can feed small area changes back
+        // into the client's preferred scale. Share the native 10% hold threshold.
         if current_area > 0
             && current_area.saturating_mul(PRIMARY_OUTPUT_KEEP_WITHIN_PERCENT)
                 >= best_area.saturating_mul(100)
         {
-            return Some(current_primary);
+            return Some(current.clone());
         }
     }
-
-    Some(best_output)
+    Some(best_output.clone())
 }
 
 fn window_had_presented_surface(
@@ -268,6 +271,121 @@ pub fn restore_primary_scanout_for_offscreen_window(window: &Window, output: &Ou
     });
 }
 
+fn composition_primary_output(
+    outputs: impl Iterator<Item = Output>,
+    targets: &HashMap<String, crate::backend::composition::CompositionTargets>,
+    ids: &[Id],
+    current: Option<&Output>,
+) -> Option<Output> {
+    let mut composited = false;
+    let candidates: Vec<_> = outputs
+        .filter_map(|output| {
+            let target = targets.get(&output.name())?;
+            composited |= ids
+                .iter()
+                .any(|id| target.presented_sources().element_was_presented(id.clone()));
+            let area = ids
+                .iter()
+                .filter_map(|id| {
+                    target
+                        .effective_output_states()
+                        .element_render_state(id.clone())
+                })
+                .filter(|state| state.presentation_state != RenderElementPresentationState::Skipped)
+                .map(|state| state.visible_area as u128)
+                .max()
+                .unwrap_or(0);
+            (area > 0).then_some((output, area))
+        })
+        .collect();
+    composited
+        .then(|| stable_primary_output(&candidates, current))
+        .flatten()
+}
+
+pub struct WindowPrimaryOutputContext<'a> {
+    pub composition_targets: &'a HashMap<String, crate::backend::composition::CompositionTargets>,
+    pub snapshot_window_ids: Option<&'a HashSet<String>>,
+    pub restore_presented: bool,
+    pub restore_replacements: bool,
+}
+
+fn update_native_window_primary(
+    space: &Space<Window>,
+    window: &Window,
+    output: &Output,
+    render_element_states: &RenderElementStates,
+    window_decorations: &HashMap<Window, crate::ssd::WindowDecorationState>,
+    throttle_debug: bool,
+) {
+    let visible_outputs = window_decorations
+        .get(window)
+        .and_then(|decoration| decoration.managed_window.visible_outputs.clone());
+    let Some(selected_primary_output) =
+        stable_primary_output_for_window(space, window, visible_outputs.as_deref())
+    else {
+        return;
+    };
+
+    if &selected_primary_output != output {
+        if !window_had_presented_surface(window, render_element_states) {
+            // A preview can have made this output primary despite the native
+            // window coordinates. Clear that assignment when the preview leaves.
+            window.with_surfaces(|surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    None,
+                    render_element_states,
+                    prefer_next_primary_scanout_compare,
+                );
+            });
+            return;
+        }
+
+        // The current output may repaint before the selected primary output. If the window was
+        // actually presented on this frame, update the primary immediately so scale and frame
+        // callbacks do not bounce through the stale output until the other monitor repaints.
+        let synthetic_states = synthetic_presented_states_for_window(window);
+        window.with_surfaces(|surface, states| {
+            update_surface_primary_scanout_output(
+                surface,
+                &selected_primary_output,
+                states,
+                None,
+                &synthetic_states,
+                prefer_next_primary_scanout_compare,
+            );
+        });
+        return;
+    }
+
+    window.with_surfaces(|surface, states| {
+        if throttle_debug {
+            use smithay::backend::renderer::element::Id;
+            let element_id = Id::from_wayland_resource(surface);
+            let was_presented = render_element_states.element_was_presented(element_id);
+            let current_primary = surface_primary_scanout_output(surface, states);
+            info!(
+                surface = ?surface.id(),
+                output = %output.name(),
+                was_presented,
+                current_primary = ?current_primary.as_ref().map(|o| o.name()),
+                "update_primary_scanout_output: surface check",
+            );
+        }
+        update_surface_primary_scanout_output(
+            surface,
+            output,
+            states,
+            None,
+            render_element_states,
+            prefer_next_primary_scanout_compare,
+        );
+    });
+}
+
 pub fn update_primary_scanout_output(
     space: &Space<Window>,
     output: &Output,
@@ -275,6 +393,7 @@ pub fn update_primary_scanout_output(
     session_lock_surface: Option<&LockSurface>,
     render_element_states: &RenderElementStates,
     window_decorations: &HashMap<Window, crate::ssd::WindowDecorationState>,
+    window_context: &WindowPrimaryOutputContext<'_>,
 ) {
     // Keep smithay's primary-scanout bookkeeping in sync with the surfaces we actually rendered.
     //
@@ -282,62 +401,58 @@ pub fn update_primary_scanout_output(
     // scanout output before collecting presentation feedback, Chrome would often behave as if the
     // output cadence was only ~60 Hz even when the monitor was actually running at 66 Hz.
     let throttle_debug = frame_throttle_debug_enabled();
-    space.elements().for_each(|window| {
-        let visible_outputs = window_decorations
-            .get(window)
-            .and_then(|decoration| decoration.managed_window.visible_outputs.clone());
-        let Some(selected_primary_output) =
-            stable_primary_output_for_window(space, window, visible_outputs.as_deref())
-        else {
-            return;
-        };
-
-        if &selected_primary_output != output {
-            if !window_had_presented_surface(window, render_element_states) {
-                return;
-            }
-
-            // The current output may repaint before the selected primary output. If the window was
-            // actually presented on this frame, update the primary immediately so scale and frame
-            // callbacks do not bounce through the stale output until the other monitor repaints.
-            let synthetic_states = synthetic_presented_states_for_window(window);
-            window.with_surfaces(|surface, states| {
+    for window in space.elements() {
+        let mut ids = Vec::new();
+        window.with_surfaces(|surface, _| ids.push(Id::from_wayland_resource(surface)));
+        // Native fallbacks also assign primaries. Resolve the preview against the
+        // previous frame's primary before any such assignment can erase hysteresis.
+        if let Some(selected) = composition_primary_output(
+            space.outputs().cloned(),
+            window_context.composition_targets,
+            &ids,
+            window_primary_output(window).as_ref(),
+        ) {
+            let states = synthetic_presented_states_for_window(window);
+            window.with_surfaces(|surface, data| {
                 update_surface_primary_scanout_output(
                     surface,
-                    &selected_primary_output,
-                    states,
+                    &selected,
+                    data,
                     None,
-                    &synthetic_states,
+                    &states,
                     prefer_next_primary_scanout_compare,
                 );
             });
-            return;
+            continue;
         }
 
-        window.with_surfaces(|surface, states| {
-            if throttle_debug {
-                use smithay::backend::renderer::element::Id;
-                let element_id = Id::from_wayland_resource(surface);
-                let was_presented = render_element_states.element_was_presented(element_id);
-                let current_primary = surface_primary_scanout_output(surface, states);
-                info!(
-                    surface = ?surface.id(),
-                    output = %output.name(),
-                    was_presented,
-                    current_primary = ?current_primary.as_ref().map(|o| o.name()),
-                    "update_primary_scanout_output: surface check",
-                );
-            }
-            update_surface_primary_scanout_output(
-                surface,
-                output,
-                states,
-                None,
-                render_element_states,
-                prefer_next_primary_scanout_compare,
-            );
+        update_native_window_primary(
+            space,
+            window,
+            output,
+            render_element_states,
+            window_decorations,
+            throttle_debug,
+        );
+        let offscreen = window_decorations.get(window).is_some_and(|decoration| {
+            window_context
+                .snapshot_window_ids
+                .is_some_and(|ids| ids.contains(&decoration.snapshot.id))
+                || (window_context.restore_replacements
+                    && decoration
+                        .window_effects
+                        .as_ref()
+                        .and_then(|effects| effects.replace.as_ref())
+                        .is_some())
         });
-    });
+        if space.outputs_for_element(window).contains(output)
+            && (offscreen
+                || (window_context.restore_presented
+                    && window_had_presented_surface(window, render_element_states)))
+        {
+            restore_primary_scanout_for_offscreen_window(window, output);
+        }
+    }
 
     let map = layer_map_for_output(output);
     for layer_surface in map.layers().filter(|layer| layer_surface_is_mapped(layer)) {
@@ -389,7 +504,9 @@ pub fn take_presentation_feedback(
     let mut output_presentation_feedback = OutputPresentationFeedback::new(output);
 
     space.elements().for_each(|window| {
-        if space.outputs_for_element(window).contains(output) {
+        if space.outputs_for_element(window).contains(output)
+            || window_had_presented_surface(window, render_element_states)
+        {
             window.take_presentation_feedback(
                 &mut output_presentation_feedback,
                 surface_primary_scanout_output,
@@ -453,6 +570,15 @@ impl ShojiWM {
     }
 
     fn window_frame_processing_applies_to_output(&self, window: &Window, output: &Output) -> bool {
+        if self
+            .composition_targets
+            .get(&output.name())
+            .is_some_and(|targets| {
+                window_had_presented_surface(window, targets.presented_sources())
+            })
+        {
+            return true;
+        }
         // A custom composition drawing the window by id (into a render
         // texture, say) shows it even while the config hides it.
         if let Some(ids) = self.composition_windows.get(&output.name())
@@ -1095,5 +1221,365 @@ impl ShojiWM {
     ) {
         self.signal_post_repaint_barriers(output);
         self.send_frame_callbacks_for_output(output, time, frame_callback_sequence);
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+    use crate::backend::composition::CompositionTargets;
+
+    fn output(name: &str) -> Output {
+        Output::new(
+            name.into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
+    fn states(id: &Id, area: usize) -> RenderElementStates {
+        RenderElementStates {
+            states: HashMap::from([(
+                id.clone(),
+                RenderElementState {
+                    visible_area: area,
+                    presentation_state: RenderElementPresentationState::Rendering { reason: None },
+                    needs_capture: false,
+                },
+            )]),
+        }
+    }
+
+    fn record(target: &mut CompositionTargets, surface: &Id, area: usize, preview: bool) {
+        target.update_presentation(
+            if preview {
+                states(surface, area)
+            } else {
+                Default::default()
+            },
+            states(surface, area),
+        );
+    }
+
+    #[test]
+    fn preview_uses_its_output_without_stealing_a_larger_native_view() {
+        let (a, b) = (output("native"), output("preview"));
+        let surface = Id::new();
+        let ids = [surface.clone()];
+        let mut targets = HashMap::from([
+            (a.name(), CompositionTargets::default()),
+            (b.name(), CompositionTargets::default()),
+        ]);
+        record(targets.get_mut(&b.name()).unwrap(), &surface, 100, true);
+        assert_eq!(
+            composition_primary_output([a.clone(), b.clone()].into_iter(), &targets, &ids, None),
+            Some(b.clone())
+        );
+        record(targets.get_mut(&a.name()).unwrap(), &surface, 10000, false);
+        assert_eq!(
+            composition_primary_output(
+                [a.clone(), b.clone()].into_iter(),
+                &targets,
+                &ids,
+                Some(&b)
+            ),
+            Some(a.clone())
+        );
+        assert_eq!(
+            composition_primary_output(
+                [b.clone(), a.clone()].into_iter(),
+                &targets,
+                &ids,
+                Some(&b)
+            ),
+            Some(a.clone())
+        );
+        targets.get_mut(&a.name()).unwrap().clear_presentation();
+        assert_eq!(
+            composition_primary_output(
+                [a.clone(), b.clone()].into_iter(),
+                &targets,
+                &ids,
+                Some(&a)
+            ),
+            Some(b.clone())
+        );
+        assert_eq!(
+            composition_primary_output([a.clone()].into_iter(), &targets, &ids, Some(&b)),
+            None,
+            "removed output must not remain primary"
+        );
+        targets.get_mut(&b.name()).unwrap().clear_presentation();
+        assert_eq!(
+            composition_primary_output([a, b.clone()].into_iter(), &targets, &ids, Some(&b)),
+            None,
+            "hidden preview must release its primary override"
+        );
+    }
+
+    #[test]
+    fn primary_keeps_the_existing_native_ten_percent_threshold() {
+        let (a, b) = (output("a"), output("b"));
+        assert_eq!(
+            stable_primary_output(&[(a.clone(), 100), (b.clone(), 110)], Some(&a)),
+            Some(a.clone())
+        );
+        assert_eq!(
+            stable_primary_output(&[(a.clone(), 100), (b.clone(), 111)], Some(&a)),
+            Some(b.clone())
+        );
+        assert_eq!(
+            stable_primary_output(&[(a.clone(), 0), (b.clone(), 1)], Some(&a)),
+            Some(b.clone())
+        );
+        assert_eq!(
+            stable_primary_output(&[(b.clone(), 1)], Some(&a)),
+            Some(b.clone())
+        );
+        assert_eq!(stable_primary_output(&[], Some(&a)), None);
+        assert_eq!(
+            stable_primary_output(&[(b.clone(), 100), (a.clone(), 100)], None),
+            Some(a.clone())
+        );
+        assert_eq!(
+            stable_primary_output(&[(a.clone(), 100), (b.clone(), 100)], Some(&b)),
+            Some(b.clone())
+        );
+        assert_eq!(
+            stable_primary_output(
+                &[(a.clone(), usize::MAX as u128 - 1), (b, usize::MAX as u128)],
+                Some(&a)
+            ),
+            Some(a)
+        );
+    }
+
+    #[test]
+    fn preview_primary_survives_small_changes_in_either_output_frame_order() {
+        let (a, b) = (output("native"), output("preview"));
+        let surface = Id::new();
+        for order in [[&a, &b], [&b, &a]] {
+            let mut targets = HashMap::from([
+                (a.name(), CompositionTargets::default()),
+                (b.name(), CompositionTargets::default()),
+            ]);
+            record(targets.get_mut(&a.name()).unwrap(), &surface, 10000, false);
+            record(targets.get_mut(&b.name()).unwrap(), &surface, 10000, true);
+            // Start on the preview, so a native fallback cannot silently reset
+            // the previous choice and make this pass only for the native output.
+            let mut primary = Some(b.clone());
+            for (aa, ba) in [
+                (10001, 10000),
+                (10000, 10001),
+                (10999, 10000),
+                (10000, 10999),
+            ] {
+                for frame_output in order {
+                    let is_preview = frame_output == &b;
+                    record(
+                        targets.get_mut(&frame_output.name()).unwrap(),
+                        &surface,
+                        if is_preview { ba } else { aa },
+                        is_preview,
+                    );
+                    primary = composition_primary_output(
+                        order.into_iter().cloned(),
+                        &targets,
+                        std::slice::from_ref(&surface),
+                        primary.as_ref(),
+                    );
+                    assert_eq!(primary, Some(b.clone()));
+                }
+            }
+            // A cached/no-damage report must retain the same selection.
+            assert_eq!(
+                composition_primary_output(
+                    order.into_iter().cloned(),
+                    &targets,
+                    std::slice::from_ref(&surface),
+                    primary.as_ref()
+                ),
+                Some(b.clone())
+            );
+            record(targets.get_mut(&a.name()).unwrap(), &surface, 12100, false);
+            primary = composition_primary_output(
+                order.into_iter().cloned(),
+                &targets,
+                std::slice::from_ref(&surface),
+                primary.as_ref(),
+            );
+            assert_eq!(
+                primary,
+                Some(a.clone()),
+                "a gain greater than 10% must switch"
+            );
+            targets.get_mut(&a.name()).unwrap().clear_presentation();
+            assert_eq!(
+                composition_primary_output(
+                    order.into_iter().cloned(),
+                    &targets,
+                    std::slice::from_ref(&surface),
+                    primary.as_ref()
+                ),
+                Some(b.clone()),
+                "an invisible primary must not be held by hysteresis"
+            );
+            assert_eq!(
+                composition_primary_output(
+                    [b.clone()].into_iter(),
+                    &targets,
+                    std::slice::from_ref(&surface),
+                    primary.as_ref()
+                ),
+                Some(b.clone()),
+                "a removed primary must not be held by hysteresis"
+            );
+        }
+    }
+
+    #[test]
+    fn replacing_and_clearing_presentation_cannot_retain_old_source_eligibility() {
+        let (old, new) = (Id::new(), Id::new());
+        let mut target = CompositionTargets::default();
+        record(&mut target, &old, 100, true);
+        assert!(
+            target
+                .presented_sources()
+                .element_was_presented(old.clone())
+        );
+        record(&mut target, &new, 100, false);
+        assert!(target.presented_sources().states.is_empty());
+        assert!(!target.effective_output_states().element_was_presented(old));
+        assert!(target.effective_output_states().element_was_presented(new));
+        target.clear_presentation();
+        assert!(target.presented_sources().states.is_empty());
+        assert!(target.effective_output_states().states.is_empty());
+    }
+
+    #[test]
+    fn common_update_preserves_preview_primary_before_native_fallbacks_in_both_frame_orders() {
+        let client = crate::presentation_test_client::TestClient::new();
+        let window = client.window();
+        let surface = Id::from_wayland_resource(window.toplevel().unwrap().wl_surface());
+        let (a, b) = (output("native"), output("preview"));
+        let mut space = Space::default();
+        for (output, x) in [(&a, 0), (&b, 200)] {
+            output.change_current_state(
+                Some(smithay::output::Mode {
+                    size: (100, 100).into(),
+                    refresh: 60000,
+                }),
+                None,
+                None,
+                None,
+            );
+            space.map_output(output, (x, 0));
+        }
+        space.map_element(window.clone(), (0, 0), false);
+        space.refresh();
+        assert_eq!(space.outputs_for_element(&window), vec![a.clone()]);
+        assert_eq!(
+            stable_primary_output_for_window(&space, &window, None),
+            Some(a.clone())
+        );
+
+        for order in [[&a, &b], [&b, &a]] {
+            let mut targets = HashMap::from([
+                (a.name(), CompositionTargets::default()),
+                (b.name(), CompositionTargets::default()),
+            ]);
+            record(targets.get_mut(&a.name()).unwrap(), &surface, 10000, false);
+            record(targets.get_mut(&b.name()).unwrap(), &surface, 10000, true);
+            let initial_states = synthetic_presented_states_for_window(&window);
+            window.with_surfaces(|surface, data| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    &b,
+                    data,
+                    None,
+                    &initial_states,
+                    prefer_next_primary_scanout_compare,
+                );
+            });
+            assert_eq!(window_primary_output(&window), Some(b.clone()));
+            for (native_area, preview_area) in [
+                (10001, 10000),
+                (10000, 10001),
+                (11000, 10000),
+                (10000, 11000),
+            ] {
+                for output in order {
+                    record(
+                        targets.get_mut(&output.name()).unwrap(),
+                        &surface,
+                        if output == &a {
+                            native_area
+                        } else {
+                            preview_area
+                        },
+                        output == &b,
+                    );
+                    update_primary_scanout_output(
+                        &space,
+                        output,
+                        &smithay::input::pointer::CursorImageStatus::Hidden,
+                        None,
+                        targets[&output.name()].effective_output_states(),
+                        &HashMap::new(),
+                        &WindowPrimaryOutputContext {
+                            composition_targets: &targets,
+                            snapshot_window_ids: None,
+                            restore_presented: true,
+                            restore_replacements: true,
+                        },
+                    );
+                    assert_eq!(window_primary_output(&window), Some(b.clone()));
+                }
+            }
+            // An undamaged frame skips native restoration but still has to keep
+            // the final primary before callbacks and feedback are collected.
+            for output in order {
+                update_primary_scanout_output(
+                    &space,
+                    output,
+                    &smithay::input::pointer::CursorImageStatus::Hidden,
+                    None,
+                    targets[&output.name()].effective_output_states(),
+                    &HashMap::new(),
+                    &WindowPrimaryOutputContext {
+                        composition_targets: &targets,
+                        snapshot_window_ids: None,
+                        restore_presented: false,
+                        restore_replacements: false,
+                    },
+                );
+                assert_eq!(window_primary_output(&window), Some(b.clone()));
+            }
+            targets.get_mut(&b.name()).unwrap().clear_presentation();
+            update_primary_scanout_output(
+                &space,
+                &a,
+                &smithay::input::pointer::CursorImageStatus::Hidden,
+                None,
+                targets[&a.name()].effective_output_states(),
+                &HashMap::new(),
+                &WindowPrimaryOutputContext {
+                    composition_targets: &targets,
+                    snapshot_window_ids: None,
+                    restore_presented: true,
+                    restore_replacements: true,
+                },
+            );
+            assert_eq!(
+                window_primary_output(&window),
+                Some(a.clone()),
+                "native primary must resume when the preview disappears"
+            );
+        }
     }
 }
