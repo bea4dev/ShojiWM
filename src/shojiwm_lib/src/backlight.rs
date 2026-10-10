@@ -26,13 +26,21 @@ pub struct Backlight {
 }
 
 impl Backlight {
-    /// The current setting as a fraction of the device's maximum.
+    /// The current level as a fraction of the device's maximum.
+    ///
+    /// Reads `actual_brightness` — what the driver says the panel is at — over
+    /// the requested `brightness`. They differ where the driver maps the request
+    /// through a curve: amdgpu's nits-based eDP backlight (an OLED here) put a
+    /// request of 155610 (of 399000, in millinits) at an actual 77671, and SDR
+    /// white matched SDR mode by eye at 78 cd/m², not 156. For most drivers the
+    /// two are equal.
     pub fn fraction(&self) -> Option<f32> {
         let read = |name: &str| -> Option<f32> {
             std::fs::read_to_string(self.path.join(name)).ok()?.trim().parse().ok()
         };
         let max = read("max_brightness").filter(|max| *max > 0.0)?;
-        Some((read("brightness")? / max).clamp(0.0, 1.0))
+        let level = read("actual_brightness").or_else(|| read("brightness"))?;
+        Some((level / max).clamp(0.0, 1.0))
     }
 }
 

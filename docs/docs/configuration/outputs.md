@@ -174,6 +174,7 @@ the output stays SDR and the log says why. Experimental, tty only.
 | --- | --- |
 | `hdr` | `true` to drive the output as HDR10 |
 | `hdrSdrLuminance` | Brightness of SDR white (ordinary windows): cd/m² (10–1000), or `"backlight"` to follow the brightness setting. Default: follow the backlight on laptops, 203 elsewhere |
+| `hdrSdrGamut` | Colors: `"native"` (default) as in SDR mode, or `"srgb"` for exact colors |
 | `hdrMaxLuminance` | The display's real peak in cd/m², when its EDID omits it (otherwise 1000 is assumed). Range 50–10000 |
 | `hdrMinLuminance` | The display's real black level in cd/m². Range 0–10 |
 
@@ -199,7 +200,18 @@ How it looks:
   luminance, so the panel ignores its backlight while in HDR. ShojiWM applies
   the brightness setting itself instead: it moves SDR white, reaching the
   panel's suggested SDR maximum (from its EDID) at full brightness. The
-  backlight value is left untouched and takes over again in SDR mode.
+  backlight value is left untouched and takes over again in SDR mode. The
+  level used is the driver's `actual_brightness`, which can differ from the
+  requested `brightness` (amdgpu's OLED panels apply a curve).
+- **SDR colors match SDR mode.** In SDR mode a wide-gamut panel shows sRGB
+  values on its own, wider primaries, which makes them more saturated than
+  sRGB. HDR follows suit by default (`hdrSdrGamut: "native"`, using the
+  primaries in the panel's EDID); `"srgb"` shows exact colors instead, which on
+  such a panel look duller. The choice applies to all content alike:
+  color-managed clients such as Chrome hand over even their SDR interface in
+  the HDR format, and an exception for them would leave them duller than every
+  other window. With `"native"`, HDR video gets the same vivid look the panel
+  gives video in SDR mode.
 - Without a backlight, SDR white defaults to 203 cd/m², the broadcast
   reference, which can look dim on a bright monitor; raise it to taste.
 - **HDR content** from color-managed clients (Chrome and Chromium, mpv, games

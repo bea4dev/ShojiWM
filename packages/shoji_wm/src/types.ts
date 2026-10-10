@@ -1339,6 +1339,20 @@ export interface OutputExtendConfigEntry {
    * から最大輝度までが HDR の内容に使われます。
    */
   hdrSdrLuminance?: number | "backlight";
+  /**
+   * How colors are shown on this HDR output. `"native"` (default) stretches
+   * them over the panel's own gamut, as the panel itself does in SDR mode, so
+   * a wide-gamut panel looks the same with HDR on and off. It applies to all
+   * content alike, so color-managed clients (Chrome, HDR video) get the same
+   * vivid look as every other window. `"srgb"` shows exact colors, which look
+   * duller on such a panel.
+   * HDR 出力での色の出し方。`"native"`（既定）は SDR モードのパネルと同じく
+   * パネル本来の色域に広げて表示し、広色域パネルでも HDR のオン・オフで見た目が
+   * 変わりません。すべての内容に同じく効くので、色管理に対応したクライアント
+   * （Chrome や HDR 動画）も他のウィンドウと同じ鮮やかさになります。`"srgb"` は
+   * 正確な色で、そうしたパネルではくすんで見えます。
+   */
+  hdrSdrGamut?: "native" | "srgb";
 }
 
 export interface OutputDisabledConfigEntry {

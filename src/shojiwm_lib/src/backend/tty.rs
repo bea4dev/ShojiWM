@@ -5051,6 +5051,7 @@ fn render_surface(
         if let Some(crate::color::OutputColorMode::Hdr10 {
             max_display_luminance,
             sdr_white_luminance,
+            sdr_primaries,
             ..
         }) = state
             .output_color
@@ -5073,6 +5074,7 @@ fn render_surface(
                 CLEAR_COLOR,
                 sdr_white_luminance,
                 max_display_luminance,
+                sdr_primaries,
             ) {
                 Ok(
                     Some(
@@ -12953,6 +12955,9 @@ fn output_hdr_luminance_override(
             .then(|| crate::backlight::for_output(output_name))
             .flatten()
             .and_then(|backlight| backlight.fraction()),
+        sdr_native_gamut: config
+            .and_then(|config| config.hdr_sdr_gamut)
+            .is_none_or(|gamut| gamut == crate::config::RuntimeSdrGamut::Native),
     }
 }
 

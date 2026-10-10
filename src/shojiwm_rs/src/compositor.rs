@@ -501,6 +501,7 @@ impl OutputConfig {
             hdr_max_luminance: None,
             hdr_min_luminance: None,
             hdr_sdr_luminance: None,
+            hdr_sdr_gamut: None,
         }
     }
 
@@ -518,6 +519,7 @@ impl OutputConfig {
             hdr_max_luminance: None,
             hdr_min_luminance: None,
             hdr_sdr_luminance: None,
+            hdr_sdr_gamut: None,
         }
     }
 }

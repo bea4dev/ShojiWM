@@ -150,6 +150,9 @@ pub enum OutputColorMode {
         min_display_luminance: f32,
         /// What SDR white (compositing-space 1.0) is shown at, cd/m².
         sdr_white_luminance: f32,
+        /// The primaries the composited (sRGB-relative) picture is shown in:
+        /// sRGB, or the panel's native ones; see `RenderColorTarget::primaries`.
+        sdr_primaries: primaries::PrimariesChromaticities,
     },
 }
 
@@ -183,10 +186,12 @@ impl OutputColorMode {
             OutputColorMode::Hdr10 {
                 max_display_luminance,
                 sdr_white_luminance,
+                sdr_primaries,
                 ..
             } => RenderColorTarget {
                 headroom: (max_display_luminance / sdr_white_luminance.max(1.0)).max(1.0),
                 encode_gamma: crate::backend::hdr_pipeline::sdr_reference_gamma(),
+                primaries: sdr_primaries,
             },
         }
     }
@@ -208,12 +213,18 @@ pub struct RenderColorTarget {
     /// the pure power the HDR encode pass decodes with (`SHOJI_SDR_GAMMA`), so
     /// that tagged content comes back out at exactly its absolute luminance.
     pub encode_gamma: f32,
+    /// The primaries the compositing space's sRGB-relative values are shown
+    /// in: sRGB (exact), or the panel's native ones (stretched, as the panel
+    /// does in SDR mode). Tagged content is converted to sRGB-relative values
+    /// first, so the choice applies to all content alike.
+    pub primaries: primaries::PrimariesChromaticities,
 }
 
 impl RenderColorTarget {
     pub const SDR: Self = Self {
         headroom: 1.0,
         encode_gamma: 0.0,
+        primaries: primaries::SRGB,
     };
 }
 
@@ -296,6 +307,7 @@ impl OutputColorState {
                 max_display_luminance,
                 min_display_luminance,
                 sdr_white_luminance,
+                ..
             } => ImageDescription {
                 primaries: ColorPrimaries::Bt2020,
                 tf: TransferCharacteristics::St2084Pq,
@@ -393,6 +405,9 @@ pub struct HdrLuminanceOverride {
     /// stops doing anything — the signal states absolute luminance — so the
     /// brightness the user sets is applied to SDR white instead.
     pub backlight_fraction: Option<f32>,
+    /// Show SDR content in the panel's native gamut (when its EDID states one)
+    /// rather than as exact sRGB.
+    pub sdr_native_gamut: bool,
 }
 
 impl HdrLuminanceOverride {
@@ -505,12 +520,21 @@ pub fn resolve_output_mode(
         .or(backlight_sdr_white)
         .unwrap_or_else(crate::backend::hdr_pipeline::sdr_reference_nits)
         .min(max_display_luminance);
+    // In SDR mode the panel shows sRGB values on its own primaries, which on a
+    // wide-gamut panel is noticeably more saturated than sRGB. Exact sRGB in
+    // HDR then reads as washed out next to it, so by default SDR content keeps
+    // the look it has in SDR mode.
+    let sdr_primaries = edid
+        .native_primaries
+        .filter(|_| luminance_override.sdr_native_gamut)
+        .unwrap_or(primaries::SRGB);
     OutputColorMode::Hdr10 {
         max_display_luminance,
         min_display_luminance: min_override
             .or(edid.min_luminance)
             .unwrap_or(0.005),
         sdr_white_luminance,
+        sdr_primaries,
     }
 }
 
@@ -553,6 +577,7 @@ mod tests {
             max_frame_avg_luminance: Some(400.0),
             min_luminance: Some(0.0005),
             max_sdr_luminance: Some(400.0),
+            native_primaries: None,
         }
     }
 

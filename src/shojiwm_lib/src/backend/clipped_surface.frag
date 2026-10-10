@@ -55,8 +55,10 @@ uniform float sample_uv_compensation_enabled;
 // 0 = passthrough (untagged, or already sRGB in sRGB primaries), 1 = ST 2084 PQ,
 // 2 = extended linear (scRGB), 3 = sRGB transfer needing only a gamut change.
 uniform float src_transfer;
-// 0 = BT.709/sRGB primaries, 1 = BT.2020.
-uniform float src_primaries;
+// Linear-light conversion from the content's primaries to sRGB-relative
+// compositing values (the encode decides which primaries those are shown in;
+// see `RenderColorTarget::primaries`). Computed on the CPU, column-major.
+uniform mat3 src_to_compositing;
 // Content reference white in cd/m², from the surface's `Luminances` (or the
 // protocol's per-transfer-function defaults when unset). Doubles as the
 // compositing space's white point: 1.0 here means this many nits.
@@ -71,20 +73,12 @@ uniform float dst_pq_hi;   // what the compositing space can hold: content
                            // reference white times `dst_headroom`
 // Compositing-space ceiling for the output being rendered: 1.0 (SDR white) on
 // SDR, display peak / SDR white on HDR10, where values past 1.0 are highlights
-// and values below 0.0 are colors outside BT.709 (see `RenderColorTarget`).
+// and values below 0.0 are colors outside the compositing primaries (see
+// `RenderColorTarget`).
 uniform float dst_headroom;
 // 0.0: encode with the piecewise sRGB curve (SDR framebuffer). Otherwise the
 // pure power the HDR encode pass decodes with, applied with the sign kept.
 uniform float encode_gamma;
-
-// BT.2020 -> BT.709 linear-light gamut matrix, column-major. Inverse of the
-// BT.2087 matrix in `output_encode.frag`; both are cross-checked against the
-// CPU derivation in `color/colorimetry.rs`.
-const mat3 BT2020_TO_BT709 = mat3(
-     1.660491, -0.124550, -0.018151,
-    -0.587641,  1.132900, -0.100579,
-    -0.072850, -0.008349,  1.118730
-);
 
 // SMPTE ST 2084 (PQ) EOTF: PQ signal -> absolute cd/m². Inverse of
 // `pq_inv_eotf` in `output_encode.frag`.
@@ -183,9 +177,7 @@ vec3 to_compositing_space(vec3 c) {
     // SDR sources land entirely below the knee and pass through unchanged.
     vec3 linear = pq_eotf(bt2390_eetf(pq));
 
-    if (src_primaries > 0.5) {
-        linear = BT2020_TO_BT709 * linear;
-    }
+    linear = src_to_compositing * linear;
     // Normalize against the content's own reference white so diffuse white
     // lands on 1.0 rather than being scaled by an unrelated display value.
     vec3 relative = linear / ref_nits;

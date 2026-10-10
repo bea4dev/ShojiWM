@@ -72,13 +72,10 @@ vec3 sdr_eotf(vec3 c) {
     return sign(c) * pow(abs(c), vec3(sdr_gamma));
 }
 
-// BT.709 -> BT.2020 linear-light gamut matrix (BT.2087), column-major.
-// Cross-checked against the CPU derivation in color/colorimetry.rs tests.
-const mat3 BT709_TO_BT2020 = mat3(
-    0.627404, 0.069097, 0.016391,
-    0.329283, 0.919540, 0.088013,
-    0.043313, 0.011362, 0.895595
-);
+// Linear-light conversion from the compositing space's primaries to BT.2020,
+// column-major: the BT.2087 matrix for sRGB, or the panel's native primaries
+// when SDR content is shown in them (`RenderColorTarget::primaries`).
+uniform mat3 compositing_to_bt2020;
 
 // SMPTE ST 2084 (PQ) inverse EOTF: absolute luminance -> PQ signal.
 vec3 pq_inv_eotf(vec3 nits) {
@@ -97,8 +94,9 @@ void main() {
     // values with SDR white at 1.0, extended past [0, 1] for HDR content.
     vec4 color = texture2D(tex, v_coords);
     vec3 linear = sdr_eotf(color.rgb);
-    // Back into BT.2020, where colors outside BT.709 are positive again.
-    vec3 bt2020 = max(BT709_TO_BT2020 * linear, vec3(0.0));
+    // Into BT.2020, where colors outside the compositing primaries are
+    // positive again.
+    vec3 bt2020 = max(compositing_to_bt2020 * linear, vec3(0.0));
     vec3 pq = pq_inv_eotf(min(bt2020 * sdr_nits, vec3(peak_nits)));
     vec4 result = vec4(pq, 1.0) * alpha;
 

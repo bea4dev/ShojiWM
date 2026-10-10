@@ -24,7 +24,7 @@ use smithay::{
         element::{Element, Id, Kind, RenderElement, RenderElementStates},
         gles::{
             GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-            UniformType,
+            UniformType, UniformValue,
         },
         utils::{CommitCounter, OpaqueRegions},
     },
@@ -157,6 +157,10 @@ fn ensure_encode_program(
                     "peak_nits",
                     UniformType::_1f
                 ),
+                UniformName::new(
+                    "compositing_to_bt2020",
+                    UniformType::Matrix3x3
+                ),
             ],
         )?;
         renderer
@@ -216,6 +220,7 @@ pub fn render_hdr_pipeline<E>(
     clear_color: [f32; 4],
     sdr_white_nits: f32,
     peak_nits: f32,
+    compositing_primaries: crate::color::primaries::PrimariesChromaticities,
 ) -> Result<Option<(HdrEncodeElement, RenderElementStates)>, Box<dyn std::error::Error>>
 where
     E: RenderElement<GlesRenderer>,
@@ -355,6 +360,12 @@ where
         sdr_nits: sdr_white_nits,
         sdr_gamma: sdr_reference_gamma(),
         peak_nits,
+        compositing_to_bt2020: crate::color::colorimetry::to_gl_mat3(
+            &crate::color::colorimetry::chromaticity_conversion_matrix(
+                compositing_primaries,
+                crate::color::primaries::BT2020,
+            ),
+        ),
     }, stage1_states)))
 }
 
@@ -370,6 +381,8 @@ pub struct HdrEncodeElement {
     sdr_nits: f32,
     sdr_gamma: f32,
     peak_nits: f32,
+    /// Compositing primaries -> BT.2020, column-major.
+    compositing_to_bt2020: [f32; 9],
 }
 
 impl Element for HdrEncodeElement {
@@ -445,6 +458,13 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
                 Uniform::new("sdr_nits", self.sdr_nits),
                 Uniform::new("sdr_gamma", self.sdr_gamma),
                 Uniform::new("peak_nits", self.peak_nits),
+                Uniform::new(
+                    "compositing_to_bt2020",
+                    UniformValue::Matrix3x3 {
+                        matrices: vec![self.compositing_to_bt2020],
+                        transpose: false,
+                    },
+                ),
             ],
         );
         if let Err(

@@ -46,6 +46,8 @@ pub struct EdidHdrMetadata {
     /// a DisplayID Brightness Luminance Range block. What SDR white reaches at
     /// full brightness when it follows the backlight.
     pub max_sdr_luminance: Option<f32>,
+    /// The panel's native primaries and white point, from the base block.
+    pub native_primaries: Option<super::primaries::PrimariesChromaticities>,
 }
 
 const PROP_EDID: &str = "EDID";
@@ -272,12 +274,43 @@ pub fn parse_edid_hdr(edid: &[u8]) -> Option<EdidHdrMetadata> {
             max_frame_avg_luminance,
             min_luminance,
             max_sdr_luminance: None,
+            native_primaries: None,
         });
     });
     found.map(|metadata| EdidHdrMetadata {
         max_sdr_luminance: parse_displayid_max_sdr_luminance(edid),
+        native_primaries: parse_edid_primaries(edid),
         ..metadata
     })
+}
+
+/// The base block's color characteristics (bytes 25-34): CIE xy of red,
+/// green, blue and white as 10-bit fractions of 1024, the two low bits of each
+/// packed into bytes 25-26. `None` for a missing or degenerate set.
+pub fn parse_edid_primaries(edid: &[u8]) -> Option<super::primaries::PrimariesChromaticities> {
+    use super::primaries::{Chromaticity, PrimariesChromaticities};
+    let bytes = edid.get(25..35)?;
+    let value = |high: u8, low_bits: u8, shift: u8| {
+        f32::from((u16::from(high) << 2) | u16::from((low_bits >> shift) & 0x03)) / 1024.0
+    };
+    let point = |high_index: usize, low_byte: u8, shift: u8| Chromaticity {
+        x: value(bytes[high_index], low_byte, shift + 2),
+        y: value(bytes[high_index + 1], low_byte, shift),
+    };
+    let primaries = PrimariesChromaticities {
+        red: point(2, bytes[0], 4),
+        green: point(4, bytes[0], 0),
+        blue: point(6, bytes[1], 4),
+        white: point(8, bytes[1], 0),
+    };
+    // A triangle with real area and every point on the chromaticity plane.
+    let points = [primaries.red, primaries.green, primaries.blue, primaries.white];
+    let plausible = points
+        .iter()
+        .all(|point| point.x > 0.0 && point.y > 0.0 && point.x + point.y < 1.0);
+    let area = (primaries.green.x - primaries.red.x) * (primaries.blue.y - primaries.red.y)
+        - (primaries.blue.x - primaries.red.x) * (primaries.green.y - primaries.red.y);
+    (plausible && area.abs() > 0.01).then_some(primaries)
 }
 
 /// What the sink says its HDMI link can carry, read from the EDID's
@@ -450,6 +483,7 @@ pub fn apply_hdr_connector_state(
         max_display_luminance,
         min_display_luminance,
         sdr_white_luminance,
+        ..
     } = *mode
     else {
         return Ok(None);
@@ -862,6 +896,22 @@ mod tests {
         assert_eq!(hdr.max_frame_avg_luminance, Some(400.0));
         assert!(hdr.min_luminance.is_some_and(|min| min > 0.0 && min < 0.001));
         assert_eq!(hdr.max_sdr_luminance, Some(400.0));
+    }
+
+    /// The base block's 10-bit chromaticities, laid out as in the Samsung
+    /// ATNA40CU05's EDID (red 0.6826, 0.3164 and so on).
+    #[test]
+    fn parses_native_primaries_from_the_base_block() {
+        let mut edid = vec![0u8; 128];
+        edid[25..35].copy_from_slice(&[0xcf, 0xd1, 0xae, 0x51, 0x3e, 0xb6, 0x23, 0x0b, 0x50, 0x54]);
+        let primaries = parse_edid_primaries(&edid).expect("primaries should parse");
+        let close = |got: f32, want: f32| (got - want).abs() < 0.001;
+        assert!(close(primaries.red.x, 0.6826) && close(primaries.red.y, 0.3164));
+        assert!(close(primaries.green.x, 0.2451) && close(primaries.green.y, 0.7139));
+        assert!(close(primaries.blue.x, 0.1396) && close(primaries.blue.y, 0.0439));
+        assert!(close(primaries.white.x, 0.3125) && close(primaries.white.y, 0.3291));
+        // A zeroed block states nothing.
+        assert_eq!(parse_edid_primaries(&[0u8; 128]), None);
     }
 
     #[test]

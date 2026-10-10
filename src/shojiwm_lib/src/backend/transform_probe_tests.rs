@@ -481,6 +481,7 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
             [0.0, 0.0, 0.0, 1.0],
             203.0,
             1000.0,
+            crate::color::primaries::SRGB,
         )
         .expect("HDR pipeline should render")
         .expect("output has a mode");
@@ -562,6 +563,7 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
         [0.0, 0.0, 0.0, 1.0],
         SDR_WHITE,
         PEAK,
+        crate::color::primaries::SRGB,
     )
     .expect("HDR pipeline should render")
     .expect("output has a mode");
@@ -599,4 +601,106 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
             patches[index]
         );
     }
+}
+
+/// Encodes one solid compositing-space color through the HDR pipeline at
+/// SDR white 203 / peak 1000 and returns the PQ signal read back (8-bit).
+fn encode_solid(
+    renderer: &mut GlesRenderer,
+    color: [f32; 3],
+    primaries: crate::color::primaries::PrimariesChromaticities,
+) -> [f32; 3] {
+    use smithay::output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel};
+
+    let output = Output::new(
+        "HDR-GAMUT".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "probe".into(),
+            model: "probe".into(),
+            serial_number: "probe".into(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode { size: (10, 10).into(), refresh: 60_000 }),
+        Some(Transform::Normal),
+        Some(OutputScale::Integer(1)),
+        None,
+    );
+    let buffer = SolidColorBuffer::new(
+        Size::<i32, smithay::utils::Logical>::from((10, 10)),
+        [color[0], color[1], color[2], 1.0],
+    );
+    let element = SolidColorRenderElement::from_buffer(
+        &buffer,
+        Point::<i32, smithay::utils::Physical>::from((0, 0)),
+        1.0,
+        1.0,
+        Kind::Unspecified,
+    );
+    let mut pipeline = None;
+    let (encode, _) = crate::backend::hdr_pipeline::render_hdr_pipeline(
+        renderer,
+        &mut pipeline,
+        &output,
+        &[element],
+        [0.0, 0.0, 0.0, 1.0],
+        203.0,
+        1000.0,
+        primaries,
+    )
+    .expect("HDR pipeline should render")
+    .expect("output has a mode");
+    let size = Size::<i32, smithay::utils::Physical>::from((10, 10));
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+    let mut target: GlesRenderbuffer = renderer
+        .create_buffer(Fourcc::Abgr8888, buffer_size)
+        .expect("scanout stand-in should allocate");
+    let mut fb = renderer.bind(&mut target).expect("scanout stand-in should bind");
+    OutputDamageTracker::new(size, 1.0, Transform::Normal)
+        .render_output(renderer, &mut fb, 0, &[encode], Color32F::new(0.0, 0.0, 0.0, 1.0))
+        .expect("encode pass should render");
+    let mapping = renderer
+        .copy_framebuffer(&fb, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
+        .expect("readback should succeed");
+    let bytes = renderer.map_texture(&mapping).expect("readback should map");
+    let at = (5 * 10 + 5) * 4;
+    [0, 1, 2].map(|channel| f32::from(bytes[at + channel]) / 255.0)
+}
+
+/// SDR content shown in the panel's native gamut: pure compositing-space red
+/// reaches the PQ signal as the panel's own red, not sRGB red.
+#[test]
+fn hdr_encode_takes_compositing_primaries_into_bt2020() {
+    use crate::color::colorimetry::{chromaticity_conversion_matrix, pq_inverse_eotf};
+    use crate::color::primaries::{BT2020, Chromaticity, PrimariesChromaticities, SRGB};
+
+    let Some(mut renderer) = try_renderer() else {
+        eprintln!("skipping: no GPU render node available");
+        return;
+    };
+    let native = PrimariesChromaticities {
+        red: Chromaticity { x: 0.6826, y: 0.3164 },
+        green: Chromaticity { x: 0.2451, y: 0.7139 },
+        blue: Chromaticity { x: 0.1396, y: 0.0439 },
+        white: Chromaticity { x: 0.3125, y: 0.3291 },
+    };
+    for primaries in [SRGB, native] {
+        let matrix = chromaticity_conversion_matrix(primaries, BT2020);
+        let expected = [0, 1, 2].map(|row| pq_inverse_eotf(matrix[row][0].max(0.0) * 203.0) as f32);
+        let got = encode_solid(&mut renderer, [1.0, 0.0, 0.0], primaries);
+        for channel in 0..3 {
+            assert!(
+                (got[channel] - expected[channel]).abs() < 1.5 / 255.0,
+                "{primaries:?} channel {channel}: PQ {} expected {}",
+                got[channel],
+                expected[channel]
+            );
+        }
+    }
+    // The two must differ, or the test proves nothing.
+    let srgb = encode_solid(&mut renderer, [1.0, 0.0, 0.0], SRGB);
+    let wide = encode_solid(&mut renderer, [1.0, 0.0, 0.0], native);
+    assert!((srgb[1] - wide[1]).abs() > 5.0 / 255.0, "{srgb:?} vs {wide:?}");
 }

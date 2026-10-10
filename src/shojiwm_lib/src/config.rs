@@ -47,6 +47,18 @@ pub struct RuntimeOutputConfig {
     /// following the panel's backlight. Unset follows the backlight when the
     /// output has one, else `SHOJI_SDR_NITS`, else 203 (ITU-R BT.2408).
     pub hdr_sdr_luminance: Option<RuntimeSdrLuminance>,
+    /// How SDR content's colors are shown on an HDR output. Unset is native.
+    pub hdr_sdr_gamut: Option<RuntimeSdrGamut>,
+}
+
+/// `hdrSdrGamut`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeSdrGamut {
+    /// Stretched over the panel's own gamut, as the panel shows it in SDR mode.
+    Native,
+    /// Colorimetrically exact sRGB.
+    Srgb,
 }
 
 /// `hdrSdrLuminance`: cd/m², or `"backlight"`.

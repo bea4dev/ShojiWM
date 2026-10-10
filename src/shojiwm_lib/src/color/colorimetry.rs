@@ -130,6 +130,26 @@ pub fn gamut_conversion_matrix(
     )
 }
 
+/// Row-major linear-light conversion between arbitrary primaries. No
+/// chromatic adaptation: each side keeps its own white point, so RGB white
+/// maps to the source's white. That is what showing content "in the panel's
+/// native gamut" means — exactly what the panel does with it in SDR mode.
+pub fn chromaticity_conversion_matrix(
+    from: PrimariesChromaticities,
+    to: PrimariesChromaticities,
+) -> Mat3 {
+    mat3_mul(&invert(&rgb_to_xyz(to)), &rgb_to_xyz(from))
+}
+
+/// `m` as the column-major array GLSL `mat3` uniforms take.
+pub fn to_gl_mat3(m: &Mat3) -> [f32; 9] {
+    [
+        m[0][0] as f32, m[1][0] as f32, m[2][0] as f32,
+        m[0][1] as f32, m[1][1] as f32, m[2][1] as f32,
+        m[0][2] as f32, m[1][2] as f32, m[2][2] as f32,
+    ]
+}
+
 // SMPTE ST 2084 constants.
 const PQ_M1: f64 = 1305.0 / 8192.0;
 const PQ_M2: f64 = 2523.0 / 32.0;
