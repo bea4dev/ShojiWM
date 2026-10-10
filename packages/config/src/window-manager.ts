@@ -2349,7 +2349,11 @@ export class HybridWindowManager {
         }
         workspace.setVisible(workspace.isActive());
       }
-      toWorkspace.applyLayout();
+      // Snap, don't animate: the finger drives the slide through a static
+      // offset, and a rect animation overrides the whole rect — offset
+      // included — so the tiles would sit at their final position until it
+      // ended. (Keyboard switching animates the offset itself, which stacks.)
+      toWorkspace.applyLayout({ animate: false });
     }
 
     fromWorkspace.setWorkspaceGestureVisual(rawOffsetY, fromOpacity);

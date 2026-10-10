@@ -2157,7 +2157,14 @@ impl HybridWindowManager {
                     workspace.set_visible(active);
                 }
             }
-            self.ws(to).apply_layout(LayoutOptions::default());
+            // Snap, don't animate: the finger drives the slide through a
+            // static offset, and a rect animation overrides the whole rect —
+            // offset included — so the tiles would sit at their final position
+            // until it ended. (Keyboard switching animates the offset itself.)
+            self.ws(to).apply_layout(LayoutOptions {
+                animate: Some(false),
+                ..LayoutOptions::default()
+            });
         }
         self.ws(from).set_workspace_gesture_visual(raw_offset_y, from_opacity);
         self.ws(to).set_workspace_gesture_visual(to_offset_y, to_opacity);
