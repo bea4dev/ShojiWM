@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,6 +11,7 @@ use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
@@ -30,6 +33,15 @@ pub struct ScreencopyQueue {
     damage_tracker: OutputDamageTracker,
     pending_frames: HashSet<ZwlrScreencopyFrameV1>,
     screencopies: Vec<Screencopy>,
+    /// Vblank of the last frame served to a pipelined client, so a second
+    /// render for the same vblank doesn't hand out a duplicate frame.
+    pub last_served_target: Option<Duration>,
+    /// Set once the client has had more than one copy queued at a time;
+    /// sticky, since right after a frame is served only one may be left.
+    pipelined: bool,
+    /// Output of the last frame served; lets a render notice that a
+    /// pipelined client capturing it has no copy queued (diagnostics).
+    pub last_output: Option<Output>,
 }
 
 impl ScreencopyQueue {
@@ -38,6 +50,9 @@ impl ScreencopyQueue {
             damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
             pending_frames: HashSet::new(),
             screencopies: Vec::new(),
+            last_served_target: None,
+            pipelined: false,
+            last_output: None,
         }
     }
 
@@ -56,6 +71,15 @@ impl ScreencopyQueue {
 
     pub fn push(&mut self, screencopy: Screencopy) {
         self.screencopies.push(screencopy);
+        if self.screencopies.len() > 1 {
+            self.pipelined = true;
+        }
+    }
+
+    /// Whether the client keeps several captures in flight instead of
+    /// waiting for each `ready`.
+    pub fn is_pipelined(&self) -> bool {
+        self.pipelined
     }
 
     pub fn pop(&mut self) -> Screencopy {
@@ -626,25 +650,62 @@ impl Screencopy {
         self.submitted = true;
     }
 
+    /// Send `ready` once the render's fence has signalled and, when
+    /// `present_at` is given, not before that monotonic time. Pass the
+    /// vblank the captured frame was rendered for: frames then reach the
+    /// client at the moment their content appears on screen, at a steady
+    /// vblank cadence, instead of at render time (which wanders by up to a
+    /// couple of refresh periods with render-ahead). Consumers that sample
+    /// the latest frame on their own clock, like OBS, otherwise pick up
+    /// unevenly spaced content and animations judder in the recording.
     pub fn submit_after_sync<T>(
         self,
         y_invert: bool,
         sync_point: Option<SyncPoint>,
+        present_at: Option<Duration>,
         event_loop: &LoopHandle<'_, T>,
     ) {
-        let timestamp = monotonic_now();
-        match sync_point.and_then(|s| s.export()) {
-            None => self.submit(y_invert, timestamp),
-            Some(sync_fd) => {
-                let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
-                let mut screencopy = Some(self);
-                event_loop
-                    .insert_source(source, move |_, _, _| {
-                        screencopy.take().unwrap().submit(y_invert, timestamp);
-                        Ok(PostAction::Remove)
-                    })
-                    .unwrap();
+        let timestamp = present_at.unwrap_or_else(monotonic_now);
+        let delay = timestamp.saturating_sub(monotonic_now());
+        // Late (dropped or delayed flip): don't hold the client's capture
+        // loop back any further.
+        let wait_deadline = !delay.is_zero() && delay <= Duration::from_millis(100);
+        let sync_fd = sync_point.and_then(|s| s.export());
+        if !wait_deadline && sync_fd.is_none() {
+            self.submit(y_invert, timestamp);
+            return;
+        }
+
+        // Fence and deadline are awaited as two independent sources; whichever
+        // fires last sends `ready`.
+        let waits = usize::from(wait_deadline) + usize::from(sync_fd.is_some());
+        let pending = Rc::new(RefCell::new((Some(self), waits)));
+        let arrive = move |pending: &Rc<RefCell<(Option<Screencopy>, usize)>>| {
+            let mut pending = pending.borrow_mut();
+            pending.1 -= 1;
+            if pending.1 == 0
+                && let Some(screencopy) = pending.0.take()
+            {
+                screencopy.submit(y_invert, timestamp);
             }
+        };
+        if let Some(sync_fd) = sync_fd {
+            let pending = pending.clone();
+            let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
+            event_loop
+                .insert_source(source, move |_, _, _| {
+                    arrive(&pending);
+                    Ok(PostAction::Remove)
+                })
+                .unwrap();
+        }
+        if wait_deadline {
+            event_loop
+                .insert_source(Timer::from_duration(delay), move |_, _, _| {
+                    arrive(&pending);
+                    TimeoutAction::Drop
+                })
+                .unwrap();
         }
     }
 }

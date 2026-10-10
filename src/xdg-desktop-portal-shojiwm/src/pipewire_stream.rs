@@ -200,8 +200,9 @@ struct AppState {
     /// pw_buffer raw ptr → its negotiated stride (cached at add_buffer time).
     pw_buffer_stride: HashMap<usize, i32>,
 
-    // wlr-screencopy session state
-    pending_frame: Option<PendingFrame>,
+    // wlr-screencopy session state. Up to `FRAMES_IN_FLIGHT` captures are
+    // outstanding, oldest first.
+    pending_frames: Vec<PendingFrame>,
     adv_format: Option<wl_shm::Format>,
     adv_width: u32,
     adv_height: u32,
@@ -228,14 +229,24 @@ struct AppState {
     /// Frame interval derived from the negotiated `maxFramerate`. `None`
     /// until a format with a usable framerate is negotiated; frames are then
     /// queued no faster than this, matching KWin. Capture still runs at
-    /// vblank pace — early frames are held in `spare_buffer` and recopied
+    /// vblank pace — early frames are held in `spare_buffers` and recopied
     /// rather than queued.
     frame_interval: Option<std::time::Duration>,
-    last_queue_at: Option<std::time::Instant>,
+    /// Compositor timestamp (`ready` tv) of the last queued frame. The
+    /// throttle compares frame timestamps, not arrival times: the compositor
+    /// sends `ready` at the vblank a frame is shown on, but a late frame is
+    /// sent at once and the next one on schedule, so arrival gaps can be
+    /// short even though the frames are a full refresh apart.
+    last_queued_timestamp: Option<std::time::Duration>,
+    /// Frames held back by the throttle / dropped for lack of a PipeWire
+    /// buffer since the last stats line.
+    frames_throttled: u64,
+    frames_no_buffer: u64,
     /// A dequeued-but-unqueued pw_buffer held back by the framerate
     /// throttle. Reused for the next capture instead of dequeuing another
     /// slot, so the pool never starves while throttling.
-    spare_buffer: Option<usize>,
+    /// One entry per in-flight capture at most.
+    spare_buffers: Vec<usize>,
     /// Monotonic per-stream frame counter for `spa_meta_header.seq`.
     frame_sequence: u64,
 
@@ -245,6 +256,17 @@ struct AppState {
     dying: bool,
     stop_flag: Option<Arc<AtomicBool>>,
 }
+
+/// Captures kept outstanding at once. The compositor renders ahead of the
+/// display and holds each `ready` back to the vblank the frame is shown on;
+/// with a single capture in flight the next request would only arrive after
+/// the following frame was already rendered, halving the frame rate during
+/// animations. A capture stays queued from the render that fills it until
+/// that frame's vblank — measured at ~20 ms (2.4 refreshes) at 120 Hz with
+/// render-ahead — so covering a render every refresh needs about four; a
+/// fifth absorbs a slow render followed by back-to-back catch-up renders,
+/// which otherwise found the queue empty and dropped frames from the stream.
+const FRAMES_IN_FLIGHT: usize = 5;
 
 struct PendingFrame {
     frame: ZwlrScreencopyFrameV1,
@@ -329,7 +351,7 @@ fn run(
         stream: None,
         pw_buffer_slots: HashMap::new(),
         pw_buffer_stride: HashMap::new(),
-        pending_frame: None,
+        pending_frames: Vec::new(),
         adv_format: None,
         adv_width: 0,
         adv_height: 0,
@@ -341,8 +363,10 @@ fn run(
         is_streaming: false,
         renegotiating: false,
         frame_interval: None,
-        last_queue_at: None,
-        spare_buffer: None,
+        last_queued_timestamp: None,
+        frames_throttled: 0,
+        frames_no_buffer: 0,
+        spare_buffers: Vec::new(),
         frame_sequence: 0,
         dying: false,
         stop_flag: Some(stop.clone()),
@@ -528,7 +552,7 @@ fn run(
     // Cleanup: detach stream slots; OwnedFds drop closes them.
     let mut state = state_rc.borrow_mut();
     state.pw_buffer_slots.clear();
-    state.pending_frame = None;
+    state.pending_frames.clear();
     tracing::info!("screencast thread exiting cleanly");
     Ok(())
 }
@@ -733,11 +757,17 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppState {
                 state.adv_flags = f;
             }
             zwlr_screencopy_frame_v1::Event::Damage { .. } => {}
-            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
-                state.on_frame_ready();
+            zwlr_screencopy_frame_v1::Event::Ready {
+                tv_sec_hi,
+                tv_sec_lo,
+                tv_nsec,
+            } => {
+                let secs = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
+                let timestamp = std::time::Duration::new(secs, tv_nsec);
+                state.on_frame_ready(frame, timestamp);
             }
             zwlr_screencopy_frame_v1::Event::Failed => {
-                state.on_frame_failed();
+                state.on_frame_failed(frame);
             }
             _ => {}
         }
@@ -917,15 +947,15 @@ impl AppState {
             self.renegotiating = false;
         }
 
-        // Kick a capture whenever we (re-)enter Streaming with no frame in
-        // flight. A one-shot latch is not enough here: when the consumer
+        // Top up the in-flight captures whenever we (re-)enter Streaming. A one-shot latch is not enough here: when the consumer
         // renegotiates buffers (Chromium switches its preview consumer for the
         // WebRTC capturer, flipping DMA-BUF → SHM), the stream bounces through
-        // Paused, the buffer teardown abandons `pending_frame`, and the cycle
+        // Paused, the buffer teardown abandons `pending_frames`, and the cycle
         // has no other way to restart — the session then sits in Streaming
-        // delivering nothing, forever. `pending_frame.is_some()` covers the
-        // benign Paused→Streaming blips where a capture is still in flight.
-        if self.is_streaming && self.pending_frame.is_none() {
+        // delivering nothing, forever. `kick_capture` only tops up to
+        // `FRAMES_IN_FLIGHT`, so benign Paused→Streaming blips with captures
+        // still in flight don't pile up extra ones.
+        if self.is_streaming {
             self.kick_capture();
         }
         if matches!(
@@ -933,7 +963,7 @@ impl AppState {
             pw::stream::StreamState::Error(_) | pw::stream::StreamState::Unconnected
         ) {
             self.dying = true;
-            if let Some(pending) = self.pending_frame.take() {
+            for pending in self.pending_frames.drain(..) {
                 pending.frame.destroy();
             }
             if let Some(stop) = self.stop_flag.as_ref() {
@@ -1021,7 +1051,7 @@ impl AppState {
         // A renegotiation can replace the whole buffer pool without the stream
         // ever leaving Streaming; the teardown abandons any in-flight frame, so
         // restart the capture cycle as soon as a fresh buffer exists.
-        if self.is_streaming && self.pending_frame.is_none() {
+        if self.is_streaming {
             self.kick_capture();
         }
     }
@@ -1169,23 +1199,21 @@ impl AppState {
         }
         self.pw_buffer_stride.remove(&key);
         // A throttle-held buffer from the outgoing pool must not be reused.
-        if self.spare_buffer == Some(key) {
-            self.spare_buffer = None;
-        }
+        self.spare_buffers.retain(|spare| *spare != key);
         // If an in-flight wlr-screencopy frame was targeting this buffer,
         // abandon it. A late Ready event would otherwise call queue_raw_buffer
         // on the now-freed pointer (use-after-free → SEGV — observed when OBS
         // disconnects mid-stream).
-        if let Some(pending) = &self.pending_frame
-            && pending.pw_buffer == key
-        {
-            let pending = self.pending_frame.take().unwrap();
-            pending.frame.destroy();
-        }
+        self.pending_frames.retain(|pending| {
+            let abandoned = pending.pw_buffer == key;
+            if abandoned {
+                pending.frame.destroy();
+            }
+            !abandoned
+        });
     }
 
-    /// Issue the next capture_output request. Must be called when there is
-    /// no in-flight frame.
+    /// Issue capture_output requests until `FRAMES_IN_FLIGHT` are outstanding.
     fn kick_capture(&mut self) {
         if self.dying {
             return;
@@ -1212,11 +1240,13 @@ impl AppState {
             return;
         };
         let overlay_cursor = if self.spec.cursor_visible { 1 } else { 0 };
-        let frame = manager.capture_output(overlay_cursor, output, &self.qh, ());
-        self.pending_frame = Some(PendingFrame {
-            frame,
-            pw_buffer: 0,
-        });
+        while self.pending_frames.len() < FRAMES_IN_FLIGHT {
+            let frame = manager.capture_output(overlay_cursor, output, &self.qh, ());
+            self.pending_frames.push(PendingFrame {
+                frame,
+                pw_buffer: 0,
+            });
+        }
         // Critical: flush the request to the compositor immediately. The
         // wayland fd add_io callback only fires when we receive bytes, so
         // without an explicit flush here the request would sit in the
@@ -1228,7 +1258,15 @@ impl AppState {
         }
     }
 
-    fn on_buffer_done(&mut self, _frame: &ZwlrScreencopyFrameV1) {
+    fn take_pending(&mut self, frame: &ZwlrScreencopyFrameV1) -> Option<PendingFrame> {
+        let index = self
+            .pending_frames
+            .iter()
+            .position(|pending| pending.frame == *frame)?;
+        Some(self.pending_frames.remove(index))
+    }
+
+    fn on_buffer_done(&mut self, frame: &ZwlrScreencopyFrameV1) {
         if self.dying {
             return;
         }
@@ -1237,7 +1275,7 @@ impl AppState {
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = match self.spare_buffer.take() {
+        let pw_buf = match self.spare_buffers.pop() {
             Some(key) => key as *mut pw::sys::pw_buffer,
             None => unsafe { 
                 stream
@@ -1250,7 +1288,8 @@ impl AppState {
             // like OBS at high resolution) and back off a bit before retrying
             // so we don't busy-loop. Functionally a dropped frame.
             tracing::debug!("buffer_done: dequeue_raw_buffer returned null");
-            if let Some(p) = self.pending_frame.take() {
+            self.frames_no_buffer += 1;
+            if let Some(p) = self.take_pending(frame) {
                 p.frame.destroy();
             }
             thread::sleep(std::time::Duration::from_millis(2));
@@ -1264,7 +1303,11 @@ impl AppState {
             return;
         };
         // Tell wlr-screencopy to copy into our wl_buffer.
-        let Some(pending) = self.pending_frame.as_mut() else {
+        let Some(pending) = self
+            .pending_frames
+            .iter_mut()
+            .find(|pending| pending.frame == *frame)
+        else {
             tracing::error!("buffer_done: no pending frame");
             unsafe { stream.queue_raw_buffer(pw_buf) };
             return;
@@ -1273,11 +1316,11 @@ impl AppState {
         pending.pw_buffer = key;
     }
 
-    fn on_frame_ready(&mut self) {
+    fn on_frame_ready(&mut self, frame: &ZwlrScreencopyFrameV1, timestamp: std::time::Duration) {
         if self.dying {
             return;
         }
-        let Some(pending) = self.pending_frame.take() else {
+        let Some(pending) = self.take_pending(frame) else {
             return;
         };
         pending.frame.destroy();
@@ -1291,25 +1334,30 @@ impl AppState {
         // wake-up that restarts the pause/rebuild churn. The buffer stays dequeued
         // until the next pool rebuild, which is fine.
         // If the frame landed before the negotiated frame interval elapsed,
-        // hold the buffer in `spare_buffer` instead of queueing — the next
+        // hold the buffer in `spare_buffers` instead of queueing — the next
         // capture recopies into it, so the consumer sees at most the
         // negotiated framerate while capture stays vblank-paced.
         // Compare against 3/4 of the interval, not the full interval: when
         // the negotiated rate equals the capture rate, scheduling jitter
         // would otherwise flag ~every frame as early and halve the throughput.
+        // A consumer that takes the output's full refresh rate needs no
+        // throttle at all; applying it anyway drops real frames whenever a
+        // late frame's timestamp sits off the vblank grid.
+        let native_interval =
+            std::time::Duration::from_secs_f64(1.0 / f64::from(self.spec.framerate.max(1)));
         let throttled = match (
             self.frame_interval,
-            self.last_queue_at,
+            self.last_queued_timestamp,
         ) {
             (
                 Some(
                     interval,
                 ),
                 Some(
-                    last_queue_at,
+                    last_queued_timestamp,
                 ),
-            ) => last_queue_at
-                .elapsed() < interval
+            ) if interval > native_interval * 11 / 10 => timestamp.saturating_sub(last_queued_timestamp)
+                < interval
                 * 3 / 4,
             _ => false,
         };
@@ -1321,7 +1369,8 @@ impl AppState {
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
             if throttled {
-                self.spare_buffer = Some(
+                self.frames_throttled += 1;
+                self.spare_buffers.push(
                     pending.pw_buffer
                 );
             } else {
@@ -1347,9 +1396,7 @@ impl AppState {
                     stream.queue_raw_buffer(pw_buf);
                 }
                 self.frame_sequence += 1;
-                self.last_queue_at = Some(
-                    std::time::Instant::now()
-                );
+                self.last_queued_timestamp = Some(timestamp);
                 self.frames_completed += 1;
             }
         }
@@ -1359,9 +1406,13 @@ impl AppState {
             tracing::info!(
                 frames = self.frames_completed,
                 effective_fps,
+                throttled = self.frames_throttled,
+                no_buffer = self.frames_no_buffer,
                 "screencast: frames queued"
             );
             self.frames_completed = 0;
+            self.frames_throttled = 0;
+            self.frames_no_buffer = 0;
             self.last_log_at = std::time::Instant::now();
         }
 
@@ -1370,12 +1421,12 @@ impl AppState {
         self.kick_capture();
     }
 
-    fn on_frame_failed(&mut self) {
+    fn on_frame_failed(&mut self, frame: &ZwlrScreencopyFrameV1) {
         if self.dying {
             return;
         }
         tracing::warn!("screencast frame failed");
-        if let Some(pending) = self.pending_frame.take() {
+        if let Some(pending) = self.take_pending(frame) {
             pending.frame.destroy();
             // PW expects the dequeued buffer back, but its content is stale —
             // mark the chunk empty and corrupted so consumers skip it instead
@@ -1769,7 +1820,9 @@ fn build_buffers_param(
             Value::Choice(ChoiceValue::Int(Choice(
                 ChoiceFlags::empty(),
                 ChoiceEnum::Range {
-                    default: 8,
+                    // `FRAMES_IN_FLIGHT` captures plus the buffers the
+                    // consumer holds (latest frame + one being imported).
+                    default: FRAMES_IN_FLIGHT as i32 + 5,
                     min: 2,
                     max: 16,
                 },

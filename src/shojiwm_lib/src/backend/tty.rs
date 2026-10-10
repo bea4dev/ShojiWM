@@ -5003,6 +5003,7 @@ fn render_surface(
                 &output,
                 capture_content_for_output,
                 &cursor_elements,
+                Some(frame_target),
             );
         }
         // Phase 5b-ii: serve ext-image-copy-capture-v1 frames for this output

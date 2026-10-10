@@ -32,7 +32,8 @@ use crate::state::ShojiWM;
 /// Render queued screencopies for `output`.
 ///
 /// `content_elements` is the output's normal render minus the cursor;
-/// `cursor_elements` is the cursor stack. The cursor is composited on top of
+/// `cursor_elements` is the cursor stack. `present_at` is the vblank this
+/// frame was rendered for. The cursor is composited on top of
 /// content only when the client requested `overlay_cursor=1`. That gives us
 /// HIDDEN vs EMBEDDED cursor modes for output captures, since our compositor's
 /// normal render path always includes the cursor.
@@ -43,6 +44,7 @@ pub fn process_screencopy_queue_for_output(
     output: &Output,
     content_elements: &[TtyRenderElements],
     cursor_elements: &[TtyRenderElements],
+    present_at: Option<std::time::Duration>,
 ) {
     timescope::scope!("screencopy queue output");
     let profile = crate::env_flag!("SHOJI_SCREENCOPY_PROFILE");
@@ -53,8 +55,37 @@ pub fn process_screencopy_queue_for_output(
 
     screencopy_state.with_queues_mut(|queue| {
         loop {
+            // A client that keeps several copies queued gets one frame per
+            // render, each `ready` held back to the vblank that frame is shown
+            // on: frames arrive at a steady display cadence with the content
+            // shown at that moment. A client with a single copy in flight gets
+            // `ready` right away instead — holding it back would make its next
+            // request miss the render-ahead frame and halve its frame rate.
+            let pipelined = queue.is_pipelined();
+            if pipelined && present_at.is_some() && queue.last_served_target == present_at {
+                if ShojiWM::motion_trace_enabled() {
+                    tracing::info!(
+                        output = %output_name,
+                        present_at_ms = present_at.map(|t| t.as_secs_f64() * 1000.0),
+                        "motion trace: screencopy skipped, vblank already served"
+                    );
+                }
+                return;
+            }
+            let queue_output = queue.last_output.clone();
             let (damage_tracker, front) = queue.split();
             let Some(front) = front else {
+                if pipelined
+                    && processed == 0
+                    && queue_output.as_ref() == Some(output)
+                    && ShojiWM::motion_trace_enabled()
+                {
+                    tracing::info!(
+                        output = %output_name,
+                        present_at_ms = present_at.map(|t| t.as_secs_f64() * 1000.0),
+                        "motion trace: screencopy starved, no copy queued"
+                    );
+                }
                 return;
             };
             if front.output() != output {
@@ -104,7 +135,26 @@ pub fn process_screencopy_queue_for_output(
                         }
                         let has_sync = sync.is_some();
                         let screencopy = queue.pop();
-                        screencopy.submit_after_sync(false, sync, loop_handle);
+                        let ready_at = if pipelined { present_at } else { None };
+                        screencopy.submit_after_sync(false, sync, ready_at, loop_handle);
+                        if ShojiWM::motion_trace_enabled() {
+                            let now = std::time::Duration::from(
+                                smithay::utils::Clock::<smithay::utils::Monotonic>::new().now(),
+                            );
+                            tracing::info!(
+                                output = %output_name,
+                                present_at_ms = present_at.map(|t| t.as_secs_f64() * 1000.0),
+                                lead_ms = present_at
+                                    .map(|t| (t.as_secs_f64() - now.as_secs_f64()) * 1000.0),
+                                last_served_ms = queue
+                                    .last_served_target
+                                    .map(|t| t.as_secs_f64() * 1000.0),
+                                pipelined,
+                                "motion trace: screencopy served"
+                            );
+                        }
+                        queue.last_served_target = present_at;
+                        queue.last_output = Some(output.clone());
                         processed += 1;
                         if profile {
                             tracing::info!(
@@ -115,6 +165,9 @@ pub fn process_screencopy_queue_for_output(
                                 with_damage,
                                 "screencopy: submitted frame"
                             );
+                        }
+                        if pipelined {
+                            return;
                         }
                     }
                     None => {
