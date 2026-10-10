@@ -1,5 +1,24 @@
-use super::*;
-use smithay::backend::renderer::element::PrimaryScanoutOutput;
+//! Presentation bookkeeping for offscreen composition sources: a client drawn
+//! through a render texture, a Scene3D plane or a window snapshot stays
+//! eligible for frame callbacks only while that path is visible on the output.
+#![cfg(test)]
+
+use std::collections::{HashMap, HashSet};
+
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
+use smithay::backend::renderer::element::{
+    Id, Kind, PrimaryScanoutOutput, RenderElementPresentationState, RenderElementState,
+    RenderElementStates,
+};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::{Bind, Offscreen};
+use smithay::utils::{Rectangle, Scale, Transform};
+
+use super::composition::*;
 
 fn rendered(area: usize) -> RenderElementState {
     RenderElementState {
@@ -148,7 +167,7 @@ struct GpuScene {
     source: Id,
     source_commit: CommitCounter,
     color: [f32; 4],
-    snapshot: Option<super::super::snapshot::LiveWindowSnapshot>,
+    snapshot: Option<super::snapshot::LiveWindowSnapshot>,
     use_snapshot: bool,
 }
 
@@ -187,7 +206,7 @@ impl CompositionScene for GpuScene {
         ))];
         if self.use_snapshot {
             let mut tracker = OutputDamageTracker::new((16, 16), 1.0, Transform::Normal);
-            self.snapshot = super::super::snapshot::capture_snapshot(
+            self.snapshot = super::snapshot::capture_snapshot(
                 &mut self.renderer,
                 self.snapshot.take(),
                 &mut tracker,

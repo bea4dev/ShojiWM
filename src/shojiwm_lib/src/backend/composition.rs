@@ -649,8 +649,8 @@ pub struct BuiltScene<E> {
 
 #[derive(Default)]
 pub struct CompositionPresentation {
-    content: HashMap<Id, (usize, RenderElementStates)>,
-    snapshots: HashSet<Id>,
+    pub(super) content: HashMap<Id, (usize, RenderElementStates)>,
+    pub(super) snapshots: HashSet<Id>,
 }
 
 impl CompositionPresentation {
@@ -745,7 +745,7 @@ fn merge_presented_state(into: &mut RenderElementStates, id: Id, state: RenderEl
 /// GPU state that lives across frames for one output's plan.
 #[derive(Default)]
 pub struct CompositionTargets {
-    textures: HashMap<String, TextureTarget>,
+    pub(super) textures: HashMap<String, TextureTarget>,
     scenes: HashMap<String, super::scene3d::Scene3dTarget>,
     solids: HashMap<String, (Id, [f32; 4], Rectangle<i32, Physical>, CommitCounter)>,
     // Composition sources determine callback eligibility even outside native window geometry.
@@ -825,15 +825,9 @@ impl<'p> Builder<'p> {
     ) -> Result<BuiltScene<S::Element>, Box<dyn std::error::Error>> {
         let plan = self.plan;
         let mut built = self.build_nodes(scene, targets, ctx, &plan.nodes, "root")?;
-        targets
-            .textures
-            .retain(|key, _| self.seen_textures.contains(key));
-        targets
-            .scenes
-            .retain(|key, _| self.seen_scenes.contains(key));
-        targets
-            .solids
-            .retain(|key, _| self.seen_solids.contains(key));
+        targets.textures.retain(|key, _| self.seen_textures.contains(key));
+        targets.scenes.retain(|key, _| self.seen_scenes.contains(key));
+        targets.solids.retain(|key, _| self.seen_solids.contains(key));
         built.presentation = self.presentation;
         Ok(built)
     }
@@ -963,11 +957,7 @@ impl<'p> Builder<'p> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         match node {
-            CompositionNode::TextureView {
-                texture,
-                rect,
-                opacity,
-            } => {
+            CompositionNode::TextureView { texture, rect, opacity } => {
                 if *opacity <= 0.0 || ctx.physical_rect(rect.as_ref()).is_empty() {
                     return Ok(None);
                 }
@@ -1274,12 +1264,7 @@ impl TextureTarget {
         let rects: Vec<Rectangle<i32, Buffer>> = damage
             .unwrap_or_default()
             .into_iter()
-            .map(|rect| {
-                Rectangle::new(
-                    (rect.loc.x, rect.loc.y).into(),
-                    (rect.size.w, rect.size.h).into(),
-                )
-            })
+            .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
             .collect();
         if age == 0 {
             target.damage.lock().unwrap().add([Rectangle::from_size(target.texture.size())]);
@@ -1597,7 +1582,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "composition_presentation_tests.rs"]
-mod presentation_tests;

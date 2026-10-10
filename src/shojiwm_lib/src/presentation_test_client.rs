@@ -1,3 +1,7 @@
+//! A real xdg-toplevel client talking to an in-process smithay server over a
+//! socket pair, for presentation tests that need genuine `wl_surface` state.
+#![cfg(test)]
+
 use std::{collections::HashMap, fs::File, os::fd::AsFd, os::unix::net::UnixStream, sync::Arc};
 
 use smithay::{
@@ -23,7 +27,7 @@ use wayland_client::{
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_server::{Client, Display, backend::ClientData, protocol as server};
 
-pub(super) struct TestClient {
+pub(crate) struct TestClient {
     display: Display<Server>,
     server: Server,
     connection: Connection,
@@ -32,7 +36,7 @@ pub(super) struct TestClient {
 }
 
 impl TestClient {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         // A socket pair keeps the real protocol exchange independent of the
         // desktop's display and IPC namespace.
         let display = Display::new().unwrap();
@@ -86,7 +90,7 @@ impl TestClient {
         test
     }
 
-    pub(super) fn window(&self) -> Window {
+    pub(crate) fn window(&self) -> Window {
         self.server.window.as_ref().unwrap().clone()
     }
 

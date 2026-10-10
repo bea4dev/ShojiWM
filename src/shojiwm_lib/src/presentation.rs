@@ -1225,10 +1225,6 @@ impl ShojiWM {
 }
 
 #[cfg(test)]
-#[path = "presentation_test_client.rs"]
-mod test_client;
-
-#[cfg(test)]
 mod composition_tests {
     use super::*;
     use crate::backend::composition::CompositionTargets;
@@ -1467,7 +1463,7 @@ mod composition_tests {
 
     #[test]
     fn common_update_preserves_preview_primary_before_native_fallbacks_in_both_frame_orders() {
-        let client = test_client::TestClient::new();
+        let client = crate::presentation_test_client::TestClient::new();
         let window = client.window();
         let surface = Id::from_wayland_resource(window.toplevel().unwrap().wl_surface());
         let (a, b) = (output("native"), output("preview"));

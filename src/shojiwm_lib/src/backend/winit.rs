@@ -1130,7 +1130,11 @@ pub fn init_winit(
                                 presentation: Default::default(),
                             }
                         });
-                        for snapshot in state.live_window_snapshots.values().chain(state.complete_window_snapshots.values()) {
+                        for snapshot in state
+                            .live_window_snapshots
+                            .values()
+                            .chain(state.complete_window_snapshots.values())
+                        {
                             built.presentation.add_snapshot(snapshot);
                         }
                         let scene_elements = built.elements;
@@ -1243,13 +1247,18 @@ pub fn init_winit(
                             scene_build_started_at.elapsed().as_secs_f64() * 1000.0;
 
                         if elements.is_empty() {
-                            if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
+                            if let Some(targets) =
+                                state.composition_targets.get_mut(&output.name())
+                            {
                                 targets.clear_presentation();
                             }
                             update_primary_scanout_output(
-                                &state.space, &output, &state.cursor_status,
+                                &state.space,
+                                &output,
+                                &state.cursor_status,
                                 state.session_lock_surface_for_output(&output).as_ref(),
-                                &Default::default(), &state.window_decorations,
+                                &Default::default(),
+                                &state.window_decorations,
                                 &crate::presentation::WindowPrimaryOutputContext {
                                     composition_targets: &state.composition_targets,
                                     snapshot_window_ids: None,
@@ -1280,16 +1289,26 @@ pub fn init_winit(
                             timing.render_elapsed_ms =
                                 render_started_at.elapsed().as_secs_f64() * 1000.0;
                             if let Ok(render_output_result) = render_output_result {
-                                let composition_states = if state.session_lock_active { Default::default() } else { composition_presentation.presented_states(&render_output_result.states) };
-                                let mut effective_render_states = render_output_result.states.clone();
+                                let output_states = &render_output_result.states;
+                                let composition_states = if state.session_lock_active {
+                                    Default::default()
+                                } else {
+                                    composition_presentation.presented_states(output_states)
+                                };
+                                let mut effective_render_states = output_states.clone();
                                 if !state.session_lock_active {
                                     crate::backend::composition::merge_presented_states(
                                         &mut effective_render_states,
-                                        &composition_presentation.source_states(&render_output_result.states),
+                                        &composition_presentation.source_states(output_states),
                                     );
                                 }
-                                if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
-                                    targets.update_presentation(composition_states, effective_render_states.clone());
+                                if let Some(targets) =
+                                    state.composition_targets.get_mut(&output.name())
+                                {
+                                    targets.update_presentation(
+                                        composition_states,
+                                        effective_render_states.clone(),
+                                    );
                                 }
                                 if manual_invalidate_debug_enabled() {
                                     info!(
