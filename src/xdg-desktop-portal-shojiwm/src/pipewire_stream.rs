@@ -785,6 +785,9 @@ impl AppState {
         if modifiers.is_empty() {
             modifiers.push(DrmModifier::Linear);
         }
+        // Only single-plane layouts: AMD's DCC modifiers allocate extra
+        // metadata planes (3 on RDNA), which the slot code can't share and
+        // would otherwise demote the whole stream to SHM.
         modifiers
             .into_iter()
             .filter(|modifier| {
@@ -792,7 +795,7 @@ impl AppState {
                     || gbm
                         .format_modifier_plane_count(DrmFourcc::Xrgb8888, *modifier)
                         .unwrap_or(0)
-                        > 0
+                        == 1
             })
             .collect()
     }
@@ -897,7 +900,7 @@ impl AppState {
             if create_screencast_bo(gbm, self.spec.width, self.spec.height, *modifier)
                 .ok()
                 .flatten()
-                .is_some()
+                .is_some_and(|bo| bo.plane_count() == 1)
             {
                 return Some(*modifier);
             }
