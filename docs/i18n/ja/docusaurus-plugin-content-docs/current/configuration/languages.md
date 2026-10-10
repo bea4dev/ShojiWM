@@ -73,7 +73,9 @@ fn main() -> std::process::ExitCode {
 | `window-manager.ts` | `window_manager.rs`、`workspace.rs` |
 | `window-animation.ts` | `window_animation.rs` |
 | `effect/island-glass.ts` | `island_glass.rs` |
+| `window-switcher.tsx` | `window_switcher.rs` |
 | `flip-3d.tsx` | `flip_3d.rs` |
+| `window-grid.tsx` | `window_grid.rs` |
 
 シェーダーとアイコンは `packages/config` のものをそのまま使います。ソースの
 チェックアウトから起動してください（`nix develop` の中か、

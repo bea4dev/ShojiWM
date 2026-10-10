@@ -49,6 +49,7 @@ import {
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
+import { createWindowGrid } from "./window-grid";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -80,8 +81,12 @@ COMPOSITOR.rendering.framePacing = "throughput";
 
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 
-// Flip 3D window switcher (Super+Tab, see ./flip-3d.tsx).
-const FLIP_3D = createFlip3D({
+// Window switcher (Super+Tab): "flip-3d" stacks the windows in 3D
+// (./flip-3d.tsx), "grid" lays them out side by side (./window-grid.tsx).
+const WINDOW_SWITCHER_STYLE: "flip-3d" | "grid" = "grid";
+const WINDOW_SWITCHER = (
+  WINDOW_SWITCHER_STYLE === "grid" ? createWindowGrid : createFlip3D
+)({
   windowManager: HYBRID_WINDOW_MANAGER,
   stackOrder: (window) =>
     window.state[WINDOW_STATE_FULLSCREEN]()
@@ -89,13 +94,13 @@ const FLIP_3D = createFlip3D({
       : windowZIndex(window),
 });
 COMPOSITOR.rendering.composition = (output) =>
-  FLIP_3D.compose(output) ?? <DefaultComposition />;
+  WINDOW_SWITCHER.compose(output) ?? <DefaultComposition />;
 
 // Window backdrop effects end with this stage so they can fade back in after
 // the switcher closes.
 const backdropFade = () =>
   shaderStage(loadShader("./src/effect/backdrop-fade.frag"), {
-    uniforms: { strength: FLIP_3D.backdropStrength },
+    uniforms: { strength: WINDOW_SWITCHER.backdropStrength },
   });
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
@@ -446,8 +451,8 @@ COMPOSITOR.key.bind("toggle-tiling-mode", "Super+S", () => {
   HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("flip-3d", "Super+Tab", () => {
-  FLIP_3D.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+COMPOSITOR.key.bind("window-switcher", "Super+Tab", () => {
+  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
 });
 COMPOSITOR.key.bind("close-focused-window", "Super+Q", () => {
   HYBRID_WINDOW_MANAGER.closeFocusedWindow();
@@ -603,7 +608,7 @@ HYBRID_WINDOW_MANAGER.configureWorkspaceGestureSpeed({
 });
 
 // Blur behind the regions clients ask for (ext-background-effect). Off while
-// Flip 3D is shown, then faded back in like the window backdrops.
+// the window switcher is shown, then faded back in like the window backdrops.
 const BACKGROUND_BLUR = compileEffect({
   input: backdropSource(),
   capturePadding: 24,
@@ -612,7 +617,7 @@ const BACKGROUND_BLUR = compileEffect({
   pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
 });
 COMPOSITOR.effect.background_effect = computed(() =>
-  FLIP_3D.blurSuspended() ? null : BACKGROUND_BLUR,
+  WINDOW_SWITCHER.blurSuspended() ? null : BACKGROUND_BLUR,
 );
 
 const LAYER_BLUR_MASK = compileLayerEffect({
@@ -868,10 +873,10 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     focused ? "#d7ba7d" : "#4f5666",
   );
   // A soft drop shadow under the frame; the focused window floats a bit higher.
-  // The window in front of the Flip 3D stack glows white instead (it fits in
-  // the switcher's texture margin).
+  // The window selected in the window switcher glows white instead (it fits
+  // in the switcher's texture margin).
   const windowShadow = computed(() =>
-    FLIP_3D.selectedWindowId() === window.id
+    WINDOW_SWITCHER.selectedWindowId() === window.id
       ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
       : window.isFocused()
         ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
@@ -920,9 +925,9 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     alpha: "preserve",
     pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
   });
-  // No backdrop effects while the Flip 3D switcher shows the windows as
+  // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
-  const blurSuspended = FLIP_3D.blurSuspended();
+  const blurSuspended = WINDOW_SWITCHER.blurSuspended();
 
   const appIcon = (
     <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />

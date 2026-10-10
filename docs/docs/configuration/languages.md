@@ -72,7 +72,9 @@ example:
 | `window-manager.ts` | `window_manager.rs`, `workspace.rs` |
 | `window-animation.ts` | `window_animation.rs` |
 | `effect/island-glass.ts` | `island_glass.rs` |
+| `window-switcher.tsx` | `window_switcher.rs` |
 | `flip-3d.tsx` | `flip_3d.rs` |
+| `window-grid.tsx` | `window_grid.rs` |
 
 It reuses the shaders and icons of `packages/config`. Run it from a source
 checkout (inside `nix develop`, or with the dependencies from

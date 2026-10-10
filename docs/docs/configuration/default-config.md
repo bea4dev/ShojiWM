@@ -81,7 +81,8 @@ moment later — switch the game to windowed mode first, then press the key.
 | Click a window | Switch to that window |
 | `Escape` | Back to the desktop unchanged |
 
-See [Flip 3D](#flip-3d) below.
+See [Flip 3D](#flip-3d) below. With `WINDOW_SWITCHER_STYLE = "grid"` in
+`index.tsx`, `Super` + `Tab` opens the [window grid](#window-grid) instead.
 
 ### System (built into the compositor)
 
@@ -147,15 +148,36 @@ settles back onto the desktop.
   [input grab](./keybindings-and-pointer.md#input-grab)): clicks and keys go to
   the switcher, not to the windows behind it.
 - The front window glows white: its decoration's shadow turns white while it
-  is selected (`FLIP_3D.selectedWindowId`).
+  is selected (`WINDOW_SWITCHER.selectedWindowId`).
 - Window blur, and the blur behind regions clients request
   (`ext-background-effect-v1`), is switched off while the switcher is open
   (each window is drawn alone into a texture there, with nothing under it to
   blur) and fades back in as the stack settles.
 
-The stack's look (how many windows, spacing, tilt, timing) is set by the
-constants at the top of `flip-3d.tsx`. It is built from
+The stack's look (how many windows, spacing, tilt) is set by the constants at
+the top of `flip-3d.tsx`. It is built from
 [output composition](./output-composition.md).
+
+## Window grid
+
+An overview style alternative to Flip 3D (`packages/config/src/window-grid.tsx`):
+set `WINDOW_SWITCHER_STYLE` in `index.tsx` to `"grid"` and `Super` + `Tab` lays
+every window out side by side in a flat grid instead, most recently used first.
+The grid stays open until you pick a window, so it works with the mouse alone.
+
+| Input | Action |
+| --- | --- |
+| Hover a window | Select it |
+| Click a window | Switch to that window |
+| Click empty space, `Escape` | Back to the desktop unchanged |
+| `Tab` / `Shift` + `Tab`, `←` `→` `↑` `↓`, mouse wheel | Move the selection |
+| `Return`, `Space` | Switch to the selected window |
+| Release `Super` after pressing `Tab` or an arrow key while holding it | Switch to the selected window (like Alt+Tab) |
+
+Everything else — the morph from and back to the desktop, the white glow on the
+selected window, blur switched off while open — is shared with Flip 3D
+(`window-switcher.tsx`). The grid's padding and gaps are the constants at the
+top of `window-grid.tsx`.
 
 ## Multi-monitor
 

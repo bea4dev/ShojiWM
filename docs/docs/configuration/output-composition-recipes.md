@@ -165,6 +165,11 @@ planes. The default config ships one: `packages/config/src/flip-3d.tsx`
 - **Hand-off.** Return to `<DefaultComposition />` once every plane sits on its
   window, which with an ease-out curve happens a little before the end.
 
+None of this depends on the stack's shape. The default config keeps it in
+`window-switcher.tsx` and puts only the layout and its input in separate files:
+`flip-3d.tsx` for the stack, and `window-grid.tsx` for a flat overview grid
+([Window grid](./default-config.md#window-grid)).
+
 **Blur inside per-window textures.** A window alone in its texture has nothing below
 it, so a backdrop blur on it (a glass titlebar, say) blurs empty space while still
 costing a blur per window. Switch those effects off while the switcher is open by

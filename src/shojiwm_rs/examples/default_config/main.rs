@@ -12,7 +12,9 @@
 mod flip_3d;
 mod island_glass;
 mod window_animation;
+mod window_grid;
 mod window_manager;
+mod window_switcher;
 mod workspace;
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
@@ -35,8 +37,10 @@ use shojiwm_rs::{
 };
 
 use crate::{
-    flip_3d::Flip3D,
+    flip_3d::create_flip_3d,
     island_glass::island_glass,
+    window_grid::create_window_grid,
+    window_switcher::WindowSwitcher,
     window_manager::{
         TITLEBAR_HEIGHT, WINDOW_BORDER_PX, WINDOW_STATE_FULLSCREEN, WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
         WINDOW_STATE_MINIMIZED, WINDOW_STATE_RECT, WINDOW_STATE_TILE_DRAGGING, WINDOW_STATE_TILE_REORDERING,
@@ -45,6 +49,16 @@ use crate::{
         WindowManager, WorkspaceGestureSpeed, output_rect,
     },
 };
+
+/// The window switcher's look.
+#[allow(dead_code)]
+enum WindowSwitcherStyle {
+    /// Stack the windows in 3D (flip_3d.rs).
+    Flip3D,
+    /// Lay them out side by side (window_grid.rs).
+    Grid,
+}
+const WINDOW_SWITCHER_STYLE: WindowSwitcherStyle = WindowSwitcherStyle::Grid;
 
 const FULLSCREEN_Z_INDEX: i32 = 2_000_000_000;
 const FLOATING_WINDOW_Z_INDEX_BASE: i32 = 1_500_000_000;
@@ -102,26 +116,30 @@ fn setup() {
     COMPOSITOR.rendering.frame_pacing(FramePacing::Throughput);
 
     let wm = WindowManager::new(natural_root_rect);
-    // Flip 3D window switcher (Super+Tab, see flip_3d.rs).
-    let flip = {
-        let wm = wm.clone();
-        Flip3D::new(wm.clone(), move |window| {
+    // Window switcher (Super+Tab, see `WINDOW_SWITCHER_STYLE`).
+    let switcher = {
+        let stack_wm = wm.clone();
+        let stack_order = move |window: Window| {
             if window.state(&WINDOW_STATE_FULLSCREEN).get_untracked() {
                 FULLSCREEN_Z_INDEX
             } else {
-                untrack(|| window_z_index(&wm, window))
+                untrack(|| window_z_index(&stack_wm, window))
             }
-        })
+        };
+        match WINDOW_SWITCHER_STYLE {
+            WindowSwitcherStyle::Flip3D => create_flip_3d(wm.clone(), stack_order),
+            WindowSwitcherStyle::Grid => create_window_grid(wm.clone(), stack_order),
+        }
     };
     {
-        let flip = flip.clone();
+        let switcher = switcher.clone();
         COMPOSITOR
             .rendering
-            .composition(move |output| flip.compose(output).unwrap_or_else(OutputStack::default_stacking));
+            .composition(move |output| switcher.compose(output).unwrap_or_else(OutputStack::default_stacking));
     }
     let ipc = setup_ipc(&wm);
     setup_processes();
-    setup_key_bindings(&wm, &ipc, &flip);
+    setup_key_bindings(&wm, &ipc, &switcher);
     setup_outputs_and_input();
     wm.with(|wm| {
         wm.configure_workspace_gesture_speed(WorkspaceGestureSpeed {
@@ -136,9 +154,9 @@ fn setup() {
             workspace_scroll_snap_breakout_px: 48.0,
         })
     });
-    setup_effects(&flip);
+    setup_effects(&switcher);
     setup_events(&wm, &ipc);
-    setup_composition(&wm, &flip);
+    setup_composition(&wm, &switcher);
 }
 
 /// External IPC for the bar:
@@ -367,7 +385,7 @@ fn spawn(command: &str) {
     COMPOSITOR.process.spawn(Command::shell(command));
 }
 
-fn setup_key_bindings(wm: &WindowManager, ipc: &Ipc, flip: &Flip3D) {
+fn setup_key_bindings(wm: &WindowManager, ipc: &Ipc, switcher: &WindowSwitcher) {
     COMPOSITOR.key.bind("terminal", "Super+T", || {
         COMPOSITOR.process.spawn(Command::exec(["kitty"]));
     });
@@ -429,10 +447,10 @@ fn setup_key_bindings(wm: &WindowManager, ipc: &Ipc, flip: &Flip3D) {
     };
     bind("toggle-tiling-mode", "Super+S", true, |wm| wm.toggle_current_workspace_tiling());
     {
-        let (wm, flip) = (wm.clone(), flip.clone());
-        COMPOSITOR.key.bind("flip-3d", "Super+Tab", move || {
+        let (wm, switcher) = (wm.clone(), switcher.clone());
+        COMPOSITOR.key.bind("switcher-3d", "Super+Tab", move || {
             let monitor = wm.with(|wm| wm.current_monitor_name());
-            flip.open(&monitor);
+            switcher.open(&monitor);
         });
     }
     bind("close-focused-window", "Super+Q", false, |wm| wm.close_focused_window());
@@ -526,18 +544,18 @@ fn setup_outputs_and_input() {
 }
 
 /// Window backdrop effects end with this stage so they can fade back in
-/// after the Flip 3D switcher closes.
-fn backdrop_fade(flip: &Flip3D) -> ShaderStage {
-    shader_stage("./src/effect/backdrop-fade.frag").uniform("strength", flip.backdrop_strength())
+/// after the window switcher closes.
+fn backdrop_fade(switcher: &WindowSwitcher) -> ShaderStage {
+    shader_stage("./src/effect/backdrop-fade.frag").uniform("strength", switcher.backdrop_strength())
 }
 
-fn backdrop_blur(flip: &Flip3D) -> Effect {
+fn backdrop_blur(switcher: &WindowSwitcher) -> Effect {
     Effect::new(backdrop_source())
         .capture_padding(24)
         .invalidate(Invalidate::on_source_damage_box(8))
         .preserve_alpha()
         .stage(dual_kawase_blur(4, 2))
-        .stage(backdrop_fade(flip))
+        .stage(backdrop_fade(switcher))
 }
 
 /// Where a (non-fullscreen) window sits in the stack; higher is on top.
@@ -574,11 +592,12 @@ fn masked_blur(mask: Source, capture_padding: i32) -> Effect {
         )
 }
 
-fn setup_effects(flip: &Flip3D) {
+fn setup_effects(switcher: &WindowSwitcher) {
     // Blur behind the regions clients ask for (ext-background-effect). Off
-    // while Flip 3D is shown, then faded back in like the window backdrops.
-    let background_blur = backdrop_blur(flip);
-    let blur_suspended = flip.blur_suspended();
+    // while the window switcher is shown, then faded back in like the window
+    // backdrops.
+    let background_blur = backdrop_blur(switcher);
+    let blur_suspended = switcher.blur_suspended();
     COMPOSITOR
         .effect
         .background_with(move || (!blur_suspended.get()).then(|| background_blur.clone()));
@@ -725,9 +744,9 @@ fn setup_events(wm: &WindowManager, ipc: &Ipc) {
 }
 
 /// `COMPOSITOR.window.composition`: frame, titlebar and placement.
-fn setup_composition(wm: &WindowManager, flip: &Flip3D) {
+fn setup_composition(wm: &WindowManager, switcher: &WindowSwitcher) {
     let wm = wm.clone();
-    let flip = flip.clone();
+    let switcher = switcher.clone();
     COMPOSITOR.window.composition(move |window| {
         // Read in the body on purpose: these switch the whole structure, so a
         // change re-runs this function (like the TSX version).
@@ -785,9 +804,9 @@ fn setup_composition(wm: &WindowManager, flip: &Flip3D) {
             .is_focused()
             .map(|focused| if *focused { hex("#d7ba7d") } else { hex("#4f5666") });
         // A soft drop shadow under the frame; the focused window floats a bit
-        // higher. The window in front of the Flip 3D stack glows white instead
-        // (it fits in the switcher's texture margin).
-        let selected_window_id = flip.selected_window_id();
+        // higher. The window selected in the window switcher glows white
+        // instead (it fits in the switcher's texture margin).
+        let selected_window_id = switcher.selected_window_id();
         let window_shadow = memo(move || {
             if selected_window_id.with(|id| id.as_deref() == Some(&*window.id())) {
                 vec![BoxShadow {
@@ -826,21 +845,21 @@ fn setup_composition(wm: &WindowManager, flip: &Flip3D) {
                 .child(frame().child(ClientWindow::new()));
         }
 
-        // No backdrop effects while the Flip 3D switcher shows the windows as
+        // No backdrop effects while the window switcher shows the windows as
         // textures: there is nothing under a window there to blur. Read here
         // on purpose: it switches the structure.
-        let blur_suspended = flip.blur_suspended().get();
+        let blur_suspended = switcher.blur_suspended().get();
         managed.z_index(z_index).child(frame().child(Flex::row().child(decorated_contents(
             window,
             is_terminal,
-            (!blur_suspended).then_some(&flip),
+            (!blur_suspended).then_some(&switcher),
         ))))
     });
 }
 
 /// Titlebar and client area of a server-side decorated window. Without
-/// `blur` (Flip 3D is open) there are no backdrop effects.
-fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&Flip3D>) -> Element {
+/// `blur` (the window switcher is open) there are no backdrop effects.
+fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&WindowSwitcher>) -> Element {
     let titlebar_background = window
         .is_focused()
         .map(|focused| if *focused { hex("#1f243080") } else { hex("#2a2f3a80") });
@@ -875,7 +894,7 @@ fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&Flip3D>) 
 
     if is_terminal {
         let titlebar = Flex::row().style(titlebar_style).children(titlebar_children());
-        let Some(flip) = blur else {
+        let Some(switcher) = blur else {
             return Flex::column().child(titlebar).child(ClientWindow::new());
         };
         // Terminals are translucent: the whole window sits on liquid glass.
@@ -893,7 +912,7 @@ fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&Flip3D>) 
                     .uniform("chromatic_shift_px", 3.0)
                     .uniform("glass_tint", 0.9),
             )
-            .stage(backdrop_fade(flip));
+            .stage(backdrop_fade(switcher));
         return ShaderEffect::new(background)
             .direction(Direction::Column)
             .child(titlebar)
@@ -901,7 +920,7 @@ fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&Flip3D>) 
     }
 
     let titlebar = match blur {
-        Some(flip) => ShaderEffect::new(backdrop_blur(flip))
+        Some(switcher) => ShaderEffect::new(backdrop_blur(switcher))
             .direction(Direction::Row)
             .style(titlebar_style)
             .children(titlebar_children()),
