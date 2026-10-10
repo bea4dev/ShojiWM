@@ -4515,6 +4515,7 @@ fn render_surface(
             transform_snapshot_window_ids,
             screencopy_state,
             image_copy_capture_pending,
+            hyprland_toplevel_export_state,
             fps_counter,
             text_rasterizer,
             config_error_report,
@@ -4925,6 +4926,13 @@ fn render_surface(
             timescope::scope!("tty toplevel image capture");
             crate::backend::image_copy_capture_render::process_image_copy_capture_for_toplevels(
                 image_copy_capture_pending,
+                space,
+                &mut *renderer,
+                &cursor_pointer_elements,
+                presented,
+            );
+            crate::backend::image_copy_capture_render::process_hyprland_toplevel_exports(
+                hyprland_toplevel_export_state,
                 space,
                 &mut *renderer,
                 &cursor_pointer_elements,

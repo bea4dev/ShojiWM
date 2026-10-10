@@ -28,6 +28,8 @@ satellite = {
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
 wayland-server = { version = "0.31.13", features = ["libwayland_1_23"] }
+# Protocols no published crate covers (`protocols/*.xml`).
+wayland-scanner = "0.31.10"
 # Preserve libwayland-server diagnostics (including internal protocol and
 # client I/O errors) in ShojiWM's tracing log when using Smithay's system-lib
 # backend.

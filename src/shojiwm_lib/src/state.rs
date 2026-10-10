@@ -319,6 +319,8 @@ pub struct ShojiWM {
     /// during the next backend frame. Drained per-output / per-toplevel by
     /// the render path.
     pub image_copy_capture_pending: Vec<crate::backend::image_copy_capture_render::PendingCapture>,
+    pub hyprland_toplevel_export_state:
+        crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportState,
     pub single_pixel_buffer_state: SinglePixelBufferState,
     pub fixes_state: FixesState,
     pub seat_state: SeatState<ShojiWM>,
@@ -1563,6 +1565,10 @@ impl ShojiWM {
             smithay::wayland::image_capture_source::ToplevelCaptureSourceState::new::<Self>(&dh);
         let image_copy_capture_state =
             smithay::wayland::image_copy_capture::ImageCopyCaptureState::new::<Self>(&dh);
+        let hyprland_toplevel_export_state =
+            crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportState::new::<Self>(
+                &dh,
+            );
         let idle_notifier_state = IdleNotifierState::new(&dh, event_loop.handle());
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<Self>(&dh);
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
@@ -1721,6 +1727,7 @@ impl ShojiWM {
             session_lock_surfaces: HashMap::new(),
             image_copy_capture_sessions: std::collections::HashMap::new(),
             image_copy_capture_pending: Vec::new(),
+            hyprland_toplevel_export_state,
             single_pixel_buffer_state,
             fixes_state,
             seat_state,

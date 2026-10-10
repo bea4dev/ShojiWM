@@ -19,6 +19,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, ImportAll, ImportMem, Offscreen};
 use smithay::desktop::{Space, Window};
 use smithay::output::{Output, WeakOutput};
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
@@ -29,6 +30,10 @@ use smithay::wayland::image_copy_capture::{
 use smithay::wayland::shm;
 
 use crate::drawing::PointerRenderElement;
+use crate::protocols::hyprland_toplevel_export::{
+    HyprlandToplevelExportState, hyprland_toplevel_export_frame_v1::Flags as HyprlandExportFlags,
+};
+use crate::wlr_foreign_toplevel::WlrForeignToplevelHandle;
 
 // Sum type used only by the toplevel-capture render path so we can hand a
 // single iterator (window content + translated cursor) to `render_to_shm`.
@@ -238,7 +243,7 @@ pub fn process_image_copy_capture_for_toplevels(
 /// (mirrors the logic in `resolve_source_size` for toplevel sources). Used
 /// to detect when an in-flight session's advertised constraints have gone
 /// stale because the window was resized.
-fn compute_desired_buffer_size(
+pub(crate) fn compute_desired_buffer_size(
     space: &Space<Window>,
     window: &Window,
 ) -> Option<smithay::utils::Size<i32, smithay::utils::Buffer>> {
@@ -273,6 +278,29 @@ fn render_frame_for_toplevel(
         })
         .cloned()
         .ok_or("toplevel handle not bound to any mapped window")?;
+    let (elements, size, scale) =
+        toplevel_capture_scene(renderer, space, &window, cursor_pointer_elements)?;
+    let buffer = frame.buffer();
+    render_to_shm(renderer, &buffer, size, scale, Transform::Normal, &elements)
+}
+
+/// The scene of one window for a toplevel capture: its surface tree and
+/// popups (no server-side decorations), with the cursor on top when
+/// `cursor_pointer_elements` is not empty. Returns the elements, the buffer
+/// size they fill and the scale they are rendered at.
+pub(crate) fn toplevel_capture_scene<'a>(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    window: &Window,
+    cursor_pointer_elements: &'a [PointerRenderElement<GlesRenderer>],
+) -> Result<
+    (
+        Vec<ToplevelCaptureElement<'a, GlesRenderer>>,
+        Size<i32, Physical>,
+        Scale<f64>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let geom = window.geometry();
     if geom.size.w <= 0 || geom.size.h <= 0 {
         return Err("window has zero geometry".into());
@@ -287,7 +315,7 @@ fn render_frame_for_toplevel(
     // `resolve_source_size` in handlers/mod.rs advertises the buffer at the
     // same scale so the negotiated buffer dims and our render size match.
     let scale: Scale<f64> = space
-        .outputs_for_element(&window)
+        .outputs_for_element(window)
         .into_iter()
         .next()
         .map(|o| o.current_scale().fractional_scale().into())
@@ -304,11 +332,11 @@ fn render_frame_for_toplevel(
     // last, on top). Cursor must therefore appear *before* the window
     // content so that — after the reversal — the window is drawn first and
     // the cursor lands on top.
-    let mut elements: Vec<ToplevelCaptureElement<'_, GlesRenderer>> = Vec::new();
+    let mut elements: Vec<ToplevelCaptureElement<'a, GlesRenderer>> = Vec::new();
 
     // Cursor (front of slice = drawn on top).
     if !cursor_pointer_elements.is_empty()
-        && let Some(window_loc) = space.element_location(&window)
+        && let Some(window_loc) = space.element_location(window)
     {
         // Cursor positions are workspace-physical at the output's scale;
         // subtract the window's geometry-origin position in the same
@@ -336,12 +364,11 @@ fn render_frame_for_toplevel(
         (-(geom.loc.y as f64) * scale.y).round() as i32,
     )
         .into();
-    let window_elements: Vec<ToplevelCaptureElement<'_, GlesRenderer>> =
+    let window_elements: Vec<ToplevelCaptureElement<'a, GlesRenderer>> =
         window.render_elements(renderer, location, scale, 1.0);
     elements.extend(window_elements);
 
-    let buffer = frame.buffer();
-    render_to_shm(renderer, &buffer, size, scale, Transform::Normal, &elements)
+    Ok((elements, size, scale))
 }
 
 fn render_frame_for_output<E: RenderElement<GlesRenderer>>(
@@ -377,7 +404,7 @@ fn render_frame_for_output<E: RenderElement<GlesRenderer>>(
     )
 }
 
-fn render_to_shm(
+pub(crate) fn render_to_shm(
     renderer: &mut GlesRenderer,
     buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
     size: Size<i32, Physical>,
@@ -385,20 +412,42 @@ fn render_to_shm(
     transform: Transform,
     elements: &[impl RenderElement<GlesRenderer>],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    shm::with_buffer_contents_mut(buffer, |shm_buffer, shm_len, buffer_data| {
+    shm::with_buffer_contents_mut(buffer, |pool, pool_len, buffer_data| {
+        // `pool` is the start of the whole wl_shm_pool; the buffer begins at
+        // its offset. Rows may be padded (Quickshell aligns the stride to 256
+        // bytes), so copy row by row unless they are packed.
+        let row_len = size.w as usize * 4;
+        let stride = buffer_data.stride.max(0) as usize;
+        let offset = buffer_data.offset.max(0) as usize;
+        let height = size.h as usize;
         if !(buffer_data.format == wl_shm::Format::Xrgb8888
             && buffer_data.width == size.w
             && buffer_data.height == size.h
-            && buffer_data.stride == size.w * 4
-            && shm_len == buffer_data.stride as usize * buffer_data.height as usize)
+            && stride >= row_len
+            && height > 0
+            && offset + stride * (height - 1) + row_len <= pool_len)
         {
             return Err::<(), Box<dyn std::error::Error>>("invalid shm buffer format/size".into());
         }
         let mapping =
             render_and_download(renderer, size, scale, transform, Fourcc::Xrgb8888, elements)?;
         let bytes = renderer.map_texture(&mapping)?;
+        if bytes.len() < row_len * height {
+            return Err("downloaded frame is smaller than the buffer".into());
+        }
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buffer.cast(), shm_len);
+            let dst = pool.add(offset);
+            if stride == row_len {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), dst, row_len * height);
+            } else {
+                for row in 0..height {
+                    ptr::copy_nonoverlapping(
+                        bytes.as_ptr().add(row * row_len),
+                        dst.add(row * stride),
+                        row_len,
+                    );
+                }
+            }
         }
         Ok(())
     })??;
@@ -429,4 +478,107 @@ fn render_and_download(
     let target = renderer.bind(&mut texture)?;
     let mapping = renderer.copy_framebuffer(&target, Rectangle::from_size(buffer_size), fourcc)?;
     Ok(mapping)
+}
+
+/// Render queued `hyprland_toplevel_export` copies.
+///
+/// A copy without `ignore_damage` waits (stays queued) until its window has
+/// changed since the previous copy by the same manager; the change is sent as
+/// `damage` events. The window is drawn at the buffer's size, so a window
+/// resized since its frame was created comes out clipped or padded rather
+/// than failing the copy: Quickshell stops a preview for good on `failed`.
+pub fn process_hyprland_toplevel_exports(
+    state: &mut HyprlandToplevelExportState,
+    space: &Space<Window>,
+    renderer: &mut GlesRenderer,
+    cursor_pointer_elements: &[PointerRenderElement<GlesRenderer>],
+    presented: Duration,
+) {
+    if state.pending.is_empty() {
+        return;
+    }
+    let mut waiting = Vec::new();
+    for entry in std::mem::take(&mut state.pending) {
+        if !entry.frame.is_alive() {
+            continue;
+        }
+        let window = (!entry.handle.is_closed())
+            .then(|| {
+                space.elements().find(|window| {
+                    window
+                        .user_data()
+                        .get::<WlrForeignToplevelHandle>()
+                        .is_some_and(|handle| handle.same_as(&entry.handle))
+                })
+            })
+            .flatten();
+        let Some(window) = window else {
+            entry.frame.failed();
+            continue;
+        };
+        let cursor = if entry.overlay_cursor {
+            cursor_pointer_elements
+        } else {
+            &[]
+        };
+        let (elements, _, scale) = match toplevel_capture_scene(renderer, space, window, cursor) {
+            Ok(scene) => scene,
+            Err(err) => {
+                tracing::warn!("hyprland toplevel export render failed: {err}");
+                entry.frame.failed();
+                continue;
+            }
+        };
+        let Ok(size) = shm::with_buffer_contents(&entry.buffer, |_, _, data| {
+            Size::<i32, Physical>::from((data.width, data.height))
+        }) else {
+            entry.frame.failed();
+            continue;
+        };
+
+        let tracker = state.tracker(&entry.manager, &entry.handle, size, scale);
+        let damage = match tracker.damage_output(1, &elements) {
+            Ok((damage, _)) => damage.cloned().unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        if !entry.ignore_damage && damage.is_empty() {
+            waiting.push(entry);
+            continue;
+        }
+
+        if let Err(err) = render_to_shm(
+            renderer,
+            &entry.buffer,
+            size,
+            scale,
+            Transform::Normal,
+            &elements,
+        ) {
+            tracing::warn!("hyprland toplevel export render failed: {err}");
+            entry.frame.failed();
+            continue;
+        }
+        entry.frame.flags(HyprlandExportFlags::empty());
+        if !entry.ignore_damage {
+            for rect in damage {
+                let rect = rect.intersection(Rectangle::from_size(size)).unwrap_or_default();
+                if rect.is_empty() {
+                    continue;
+                }
+                entry.frame.damage(
+                    rect.loc.x as u32,
+                    rect.loc.y as u32,
+                    rect.size.w as u32,
+                    rect.size.h as u32,
+                );
+            }
+        }
+        let secs = presented.as_secs();
+        entry.frame.ready(
+            (secs >> 32) as u32,
+            secs as u32,
+            presented.subsec_nanos(),
+        );
+    }
+    state.pending = waiting;
 }

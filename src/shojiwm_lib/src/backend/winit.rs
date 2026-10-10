@@ -1327,11 +1327,21 @@ pub fn init_winit(
                     if should_submit_frame {
                         backend.submit(Some(&[damage])).unwrap();
                     }
-                    // ext-image-copy-capture frames. Rendered after the window frame is
-                    // submitted: drawing into a capture buffer binds another target, and
-                    // an undamaged `render_output` would not bind the window surface
-                    // again before the swap. The host draws the cursor, so there is none
-                    // to include.
+                    // Capture frames (hyprland-toplevel-export, ext-image-copy-capture).
+                    // Rendered after the window frame is submitted: drawing into a
+                    // capture buffer binds another target, and an undamaged
+                    // `render_output` would not bind the window surface again before the
+                    // swap. The host draws the cursor, so there is none to include.
+                    if !state.hyprland_toplevel_export_state.pending.is_empty() {
+                        timescope::scope!("winit hyprland toplevel export");
+                        crate::backend::image_copy_capture_render::process_hyprland_toplevel_exports(
+                            &mut state.hyprland_toplevel_export_state,
+                            &state.space,
+                            backend.renderer(),
+                            &[],
+                            state.start_time.elapsed(),
+                        );
+                    }
                     if !state.image_copy_capture_pending.is_empty() {
                         timescope::scope!("winit image capture");
                         let presented = state.start_time.elapsed();

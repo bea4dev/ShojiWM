@@ -495,6 +495,30 @@ fn resolve_source_size(
     None
 }
 
+impl crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportHandler for ShojiWM {
+    fn hyprland_toplevel_export_state(
+        &mut self,
+    ) -> &mut crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportState {
+        &mut self.hyprland_toplevel_export_state
+    }
+
+    fn hyprland_toplevel_export_size(
+        &self,
+        handle: &crate::wlr_foreign_toplevel::WlrForeignToplevelHandle,
+    ) -> Option<smithay::utils::Size<i32, smithay::utils::Buffer>> {
+        use crate::wlr_foreign_toplevel::WlrForeignToplevelManagerHandler;
+        let window = self.wlr_foreign_toplevel_window(handle)?;
+        crate::backend::image_copy_capture_render::compute_desired_buffer_size(
+            &self.space,
+            &window,
+        )
+    }
+
+    fn hyprland_toplevel_export_queued(&mut self) {
+        self.schedule_redraw();
+    }
+}
+
 impl XdgActivationHandler for ShojiWM {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.xdg_activation_state
@@ -1112,6 +1136,7 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
 }
 
 crate::delegate_screencopy!(ShojiWM);
+crate::delegate_hyprland_toplevel_export!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
 crate::delegate_output_power!(ShojiWM);
 crate::delegate_color_management!(ShojiWM);

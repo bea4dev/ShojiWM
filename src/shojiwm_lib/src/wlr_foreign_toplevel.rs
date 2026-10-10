@@ -110,11 +110,11 @@ impl WlrForeignToplevelHandle {
         self.inner.lock().unwrap().window_id.clone()
     }
 
-    fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.inner.lock().unwrap().closed
     }
 
-    fn same_as(&self, other: &Self) -> bool {
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
