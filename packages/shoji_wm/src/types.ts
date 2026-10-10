@@ -1303,10 +1303,13 @@ export interface OutputExtendConfigEntry {
   subpixel?: OutputSubpixel;
   /**
    * Drive this output as HDR10 (PQ/BT.2020 signaling) when its EDID
-   * advertises ST 2084 support; ignored otherwise. Experimental: SDR
-   * content is composited in sRGB and PQ-encoded as a final pass.
+   * advertises ST 2084 support; ignored otherwise. Experimental. SDR content
+   * keeps its look at `hdrSdrLuminance`; HDR content from color-managed
+   * clients (Chrome, mpv, games) is shown up to the display's peak.
    * この出力の EDID が ST 2084 対応を示す場合、HDR10(PQ/BT.2020)で
-   * 駆動します。実験的機能です。
+   * 駆動します（実験的機能）。SDR の内容は `hdrSdrLuminance` の明るさで
+   * そのまま表示され、色管理に対応したクライアント（Chrome・mpv・ゲーム）の
+   * HDR の内容はディスプレイの最大輝度まで表示されます。
    */
   hdr?: boolean;
   /**
@@ -1323,6 +1326,19 @@ export interface OutputExtendConfigEntry {
    * このディスプレイの実際の黒レベル（cd/m²）。0〜10 の範囲外は無視されます。
    */
   hdrMinLuminance?: number;
+  /**
+   * What SDR white (ordinary windows) is shown at on this HDR output: a
+   * luminance in cd/m² (10..=1000), or `"backlight"` to follow the panel's
+   * brightness setting, which the panel itself ignores in HDR. Unset follows
+   * the backlight on panels that have one (laptops), else 203 (ITU-R BT.2408).
+   * HDR content above SDR white gets whatever is left up to the peak.
+   * HDR 出力で SDR の白（通常のウィンドウ）を表示する明るさ。cd/m² の数値
+   * （10〜1000）か、パネルの明るさ設定に連動する `"backlight"`（HDR 中は
+   * パネル自体が明るさ設定を無視するため）。省略時はバックライトのある
+   * パネル（ノート PC）では連動、それ以外は 203（ITU-R BT.2408）。SDR の白
+   * から最大輝度までが HDR の内容に使われます。
+   */
+  hdrSdrLuminance?: number | "backlight";
 }
 
 export interface OutputDisabledConfigEntry {

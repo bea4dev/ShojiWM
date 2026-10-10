@@ -164,6 +164,60 @@ Notes:
 - Clients are told at once: every bound `wl_output` receives a fresh `geometry`
   event, so a config reload takes effect without a reconnect.
 
+### HDR (`hdr`)
+
+Drives the output as HDR10: a PQ / BT.2020 signal with HDR metadata. It only
+takes effect when the display's EDID advertises SMPTE ST 2084 (PQ); otherwise
+the output stays SDR and the log says why. Experimental, tty only.
+
+| Option | Meaning |
+| --- | --- |
+| `hdr` | `true` to drive the output as HDR10 |
+| `hdrSdrLuminance` | Brightness of SDR white (ordinary windows): cd/m² (10–1000), or `"backlight"` to follow the brightness setting. Default: follow the backlight on laptops, 203 elsewhere |
+| `hdrMaxLuminance` | The display's real peak in cd/m², when its EDID omits it (otherwise 1000 is assumed). Range 50–10000 |
+| `hdrMinLuminance` | The display's real black level in cd/m². Range 0–10 |
+
+```ts
+display['eDP-1'] = {
+  resolution: 'best',
+  position: 'auto',
+  hdr: true,
+};
+
+display['DP-1'] = {
+  hdr: true,
+  // An external monitor has no backlight to follow: fix SDR white instead.
+  hdrSdrLuminance: 250,
+};
+```
+
+How it looks:
+
+- **SDR content** (almost every window) keeps its look, with white shown at
+  `hdrSdrLuminance`.
+- **Brightness keys keep working on laptops.** An HDR signal states absolute
+  luminance, so the panel ignores its backlight while in HDR. ShojiWM applies
+  the brightness setting itself instead: it moves SDR white, reaching the
+  panel's suggested SDR maximum (from its EDID) at full brightness. The
+  backlight value is left untouched and takes over again in SDR mode.
+- Without a backlight, SDR white defaults to 203 cd/m², the broadcast
+  reference, which can look dim on a bright monitor; raise it to taste.
+- **HDR content** from color-managed clients (Chrome and Chromium, mpv, games
+  through Vulkan) is shown above SDR white, up to the display's peak, and
+  tone-mapped where it goes beyond. Clients learn the available headroom
+  (peak ÷ SDR white) from the color-management protocol, so the higher
+  `hdrSdrLuminance` is, the less room is left for highlights.
+- Screenshots and screen recordings stay SDR.
+
+Notes:
+
+- Whether the display supports HDR is in `OutputInfo.hdrSupported`.
+- On HDMI, the link has to carry 10 bits per color at the chosen mode;
+  `OutputInfo.hdmi` and `availableModes[].clockKhz` let a config check that.
+- `SHOJI_HDR_OUTPUTS=eDP-1` (or `all`) turns HDR on without a config, and
+  `SHOJI_SDR_NITS` sets the default for `hdrSdrLuminance` on outputs without a
+  backlight.
+
 ## Switching panels off (DPMS)
 
 `mode: 'disabled'` takes an output out of the desktop, so its windows move

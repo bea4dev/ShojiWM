@@ -16,6 +16,8 @@ uniform sampler2D tex;
 uniform float alpha;
 // Absolute luminance (cd/m2) that SDR full white maps to on the PQ signal.
 uniform float sdr_nits;
+// The display's peak (cd/m2): nothing is encoded above it.
+uniform float peak_nits;
 // Display gamma assumed for SDR content. See sdr_eotf below.
 uniform float sdr_gamma;
 varying vec2 v_coords;
@@ -61,8 +63,13 @@ uniform float tint;
 //
 // Overridable via SHOJI_SDR_GAMMA; 2.2 is sRGB's nominal display gamma, 2.4 is
 // the BT.1886 figure for a dim viewing environment and suits a television.
+//
+// The power is applied to the magnitude with the sign carried through: the
+// intermediate extends past [0, 1] on an HDR output (see `RenderColorTarget`),
+// with highlights above 1.0 and colors outside BT.709 below 0.0, and the same
+// signed curve is what tagged content was encoded with on the way in.
 vec3 sdr_eotf(vec3 c) {
-    return pow(max(c, vec3(0.0)), vec3(sdr_gamma));
+    return sign(c) * pow(abs(c), vec3(sdr_gamma));
 }
 
 // BT.709 -> BT.2020 linear-light gamut matrix (BT.2087), column-major.
@@ -86,11 +93,13 @@ vec3 pq_inv_eotf(vec3 nits) {
 }
 
 void main() {
-    // The intermediate holds the finished composite as SDR-encoded values.
+    // The intermediate holds the finished composite as gamma-encoded BT.709
+    // values with SDR white at 1.0, extended past [0, 1] for HDR content.
     vec4 color = texture2D(tex, v_coords);
-    vec3 linear = sdr_eotf(clamp(color.rgb, 0.0, 1.0));
-    vec3 bt2020 = BT709_TO_BT2020 * linear;
-    vec3 pq = pq_inv_eotf(bt2020 * sdr_nits);
+    vec3 linear = sdr_eotf(color.rgb);
+    // Back into BT.2020, where colors outside BT.709 are positive again.
+    vec3 bt2020 = max(BT709_TO_BT2020 * linear, vec3(0.0));
+    vec3 pq = pq_inv_eotf(min(bt2020 * sdr_nits, vec3(peak_nits)));
     vec4 result = vec4(pq, 1.0) * alpha;
 
 #if defined(DEBUG_FLAGS)

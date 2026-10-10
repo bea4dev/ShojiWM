@@ -118,6 +118,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     hdr: config.hdr,
     hdrMaxLuminance: config.hdrMaxLuminance,
     hdrMinLuminance: config.hdrMinLuminance,
+    hdrSdrLuminance: config.hdrSdrLuminance,
   };
 }
 

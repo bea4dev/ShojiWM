@@ -153,6 +153,10 @@ fn ensure_encode_program(
                     "sdr_gamma",
                     UniformType::_1f
                 ),
+                UniformName::new(
+                    "peak_nits",
+                    UniformType::_1f
+                ),
             ],
         )?;
         renderer
@@ -210,6 +214,8 @@ pub fn render_hdr_pipeline<E>(
     output: &Output,
     elements: &[E],
     clear_color: [f32; 4],
+    sdr_white_nits: f32,
+    peak_nits: f32,
 ) -> Result<Option<(HdrEncodeElement, RenderElementStates)>, Box<dyn std::error::Error>>
 where
     E: RenderElement<GlesRenderer>,
@@ -222,13 +228,18 @@ where
             None
         );
     };
-    let size = mode.size;
     let scale: Scale<f64> = output
         .current_scale()
         .fractional_scale()
         .into();
     let transform = output
         .current_transform();
+    // The intermediate is the *upright* scene, like the capture mirror: it is
+    // rendered with Transform::Normal at the transformed-orientation size, and
+    // the DRM pass applies the output transform once when it draws the encode
+    // element. Rendering it with the output transform as well turned rotated
+    // and flipped outputs twice.
+    let size = transform.transform_size(mode.size);
 
     let recreate = pipeline
         .as_ref()
@@ -251,9 +262,9 @@ where
         *pipeline = Some(HdrPipeline {
             texture,
             damage_tracker: OutputDamageTracker::new(
-                size, 
+                size,
                 scale,
-                transform
+                Transform::Normal
             ),
             size,
             scale,
@@ -341,8 +352,9 @@ where
         geometry: Rectangle::from_size(
             size
         ),
-        sdr_nits: sdr_reference_nits(),
+        sdr_nits: sdr_white_nits,
         sdr_gamma: sdr_reference_gamma(),
+        peak_nits,
     }, stage1_states)))
 }
 
@@ -357,6 +369,7 @@ pub struct HdrEncodeElement {
     geometry: Rectangle<i32, Physical>,
     sdr_nits: f32,
     sdr_gamma: f32,
+    peak_nits: f32,
 }
 
 impl Element for HdrEncodeElement {
@@ -431,6 +444,7 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
             &[
                 Uniform::new("sdr_nits", self.sdr_nits),
                 Uniform::new("sdr_gamma", self.sdr_gamma),
+                Uniform::new("peak_nits", self.peak_nits),
             ],
         );
         if let Err(

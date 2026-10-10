@@ -112,6 +112,7 @@ pub fn run_tty_udev(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<
     state.tty_session = Some(session.clone());
 
     let udev = UdevBackend::new(&seat_name)?;
+    crate::backlight::start_monitor(&event_loop.handle());
 
     let mut libinput =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());

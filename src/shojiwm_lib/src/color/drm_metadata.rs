@@ -42,6 +42,10 @@ pub struct EdidHdrMetadata {
     pub max_frame_avg_luminance: Option<f32>,
     /// Desired min luminance (cd/m²), if reported (needs max to decode).
     pub min_luminance: Option<f32>,
+    /// The panel's suggested maximum for full-screen SDR content (cd/m²), from
+    /// a DisplayID Brightness Luminance Range block. What SDR white reaches at
+    /// full brightness when it follows the backlight.
+    pub max_sdr_luminance: Option<f32>,
 }
 
 const PROP_EDID: &str = "EDID";
@@ -127,11 +131,19 @@ pub fn read_edid_hdr(
     parse_edid_hdr(&edid)
 }
 
-/// Scan EDID extension blocks for a CTA-861 block containing the HDR
-/// static metadata data block (extended tag 0x06).
-pub fn parse_edid_hdr(edid: &[u8]) -> Option<EdidHdrMetadata> {
+/// Call `visit(tag, payload)` for every CTA-861 data block in the EDID, where
+/// `payload` is the block's bytes after its header byte.
+///
+/// CTA data blocks live in two places. The familiar one is a CTA-861 extension
+/// block (tag 0x02). The other is a DisplayID extension block (tag 0x70), whose
+/// "CTA-861 DisplayID Data Block" (tag 0x81) carries a CTA data block
+/// collection of its own. Laptop eDP panels commonly use only the latter: the
+/// Samsung ATNA40CU05 OLED, for one, declares its HDR static metadata (ST 2084,
+/// 616 cd/m2) there and has no CTA extension at all, so reading CTA extensions
+/// alone took an HDR panel for SDR.
+fn for_each_cta_data_block(edid: &[u8], mut visit: impl FnMut(u8, &[u8])) {
     if edid.len() < 128 {
-        return None;
+        return;
     }
     let extension_count = edid[126] as usize;
     for block_index in 1..=extension_count {
@@ -139,62 +151,133 @@ pub fn parse_edid_hdr(edid: &[u8]) -> Option<EdidHdrMetadata> {
         let Some(block) = edid.get(start..start + 128) else {
             break;
         };
-        // CTA-861 extension block tag.
-        if block[0] != 0x02 {
-            continue;
-        }
-        // Byte 2: offset of the detailed timing descriptors; the data
-        // block collection sits between byte 4 and that offset.
-        let dtd_offset = (block[2] as usize).min(128);
-        if dtd_offset < 4 {
-            continue;
-        }
-        let mut index = 4;
-        while index < dtd_offset {
-            let header = block[index];
-            let tag = header >> 5;
-            let length = (header & 0x1f) as usize;
-            if index + 1 + length > dtd_offset {
-                break;
+        match block[0] {
+            // CTA-861 extension. Byte 2 is the offset of the detailed timing
+            // descriptors; the data block collection sits between byte 4 and it.
+            0x02 => {
+                let dtd_offset = (block[2] as usize).min(128);
+                if dtd_offset >= 4 {
+                    visit_cta_data_block_collection(&block[4..dtd_offset], &mut visit);
+                }
             }
-            // Extended tag block (7) with extended tag 0x06 = HDR static
-            // metadata. Payload: [eotf bitfield, descriptor bitfield,
-            // optional max/max-frame-avg/min luminance codes].
-            if tag == 0x07 && length >= 2 && block[index + 1] == 0x06 {
-                let payload = &block[index + 2..index + 1 + length];
-                let eotfs = payload[0];
-                let max_code = payload.get(2)
-                    .copied()
-                    .filter(|&code| code != 0);
-                let max_frame_avg_code = payload
-                    .get(3)
-                    .copied()
-                    .filter(|&code| code != 0);
-                let min_code = payload
-                    .get(4)
-                    .copied();
-                let max_luminance = max_code.map(cta_luminance);
-                let max_frame_avg_luminance = max_frame_avg_code.map(cta_luminance);
-                // Min luminance decoding needs the max value as reference.
-                let min_luminance = match (max_luminance, min_code) {
-                    (Some(max), Some(code)) => {
-                        let fraction = code as f32 / 255.0;
-                        Some(max * fraction * fraction / 100.0)
-                    }
-                    _ => None,
-                };
-                return Some(EdidHdrMetadata {
-                    supports_pq: eotfs & (1 << 2) != 0,
-                    supports_hlg: eotfs & (1 << 3) != 0,
-                    max_luminance,
-                    max_frame_avg_luminance,
-                    min_luminance,
-                });
-            }
-            index += 1 + length;
+            // DisplayID extension: [0x70, version, section bytes, product type,
+            // extension count], then data blocks of [tag, revision, payload
+            // length, payload], then the section checksum.
+            0x70 => visit_displayid_data_blocks(block, |tag, payload| {
+                // CTA-861 DisplayID Data Block (DisplayID 1.3 and 2.0).
+                if tag == 0x81 {
+                    visit_cta_data_block_collection(payload, &mut visit);
+                }
+            }),
+            _ => {}
         }
     }
-    None
+}
+
+/// Call `visit(tag, payload)` for each data block of a DisplayID extension
+/// block (tag 0x70).
+fn visit_displayid_data_blocks(block: &[u8], mut visit: impl FnMut(u8, &[u8])) {
+    let section_end = (5 + block[2] as usize).min(127);
+    let mut index = 5;
+    while index + 3 <= section_end {
+        let tag = block[index];
+        let length = block[index + 2] as usize;
+        let payload_end = index + 3 + length;
+        if payload_end > section_end {
+            break;
+        }
+        visit(tag, &block[index + 3..payload_end]);
+        index = payload_end;
+    }
+}
+
+/// The DisplayID 2.0 Brightness Luminance Range block (tag 0x2E): three IEEE
+/// half floats, the minimum, the suggested maximum and the boost maximum for
+/// full-screen SDR content. Returns the suggested maximum.
+fn parse_displayid_max_sdr_luminance(edid: &[u8]) -> Option<f32> {
+    let extension_count = edid.get(126).copied()? as usize;
+    let mut found = None;
+    for block_index in 1..=extension_count {
+        let start = block_index * 128;
+        let Some(block) = edid.get(start..start + 128) else {
+            break;
+        };
+        if block[0] == 0x70 {
+            visit_displayid_data_blocks(block, |tag, payload| {
+                if tag == 0x2e && payload.len() >= 4 && found.is_none() {
+                    found = Some(half_to_f32(u16::from_le_bytes([payload[2], payload[3]])));
+                }
+            });
+        }
+    }
+    found.filter(|nits| nits.is_finite() && *nits > 0.0)
+}
+
+fn half_to_f32(bits: u16) -> f32 {
+    let mantissa = f32::from(bits & 0x3ff);
+    let magnitude = match (bits >> 10) & 0x1f {
+        0 => mantissa * 2f32.powi(-24),
+        0x1f => f32::INFINITY,
+        exponent => (1.0 + mantissa / 1024.0) * 2f32.powi(i32::from(exponent) - 15),
+    };
+    if bits & 0x8000 != 0 { -magnitude } else { magnitude }
+}
+
+/// Call `visit(tag, payload)` for each data block of a CTA data block
+/// collection: one header byte (tag in bits 7-5, length in bits 4-0), then
+/// `length` payload bytes.
+fn visit_cta_data_block_collection(bytes: &[u8], visit: &mut impl FnMut(u8, &[u8])) {
+    let mut index = 0;
+    while index < bytes.len() {
+        let header = bytes[index];
+        let length = (header & 0x1f) as usize;
+        let Some(payload) = bytes.get(index + 1..index + 1 + length) else {
+            break;
+        };
+        visit(header >> 5, payload);
+        index += 1 + length;
+    }
+}
+
+/// Find the CTA-861 HDR static metadata data block (extended tag 0x06), in a
+/// CTA-861 extension or in a DisplayID one (see [`for_each_cta_data_block`]).
+pub fn parse_edid_hdr(edid: &[u8]) -> Option<EdidHdrMetadata> {
+    let mut found = None;
+    for_each_cta_data_block(edid, |tag, payload| {
+        // Extended tag block (7) with extended tag 0x06 = HDR static
+        // metadata. Payload after the extended tag: [eotf bitfield,
+        // descriptor bitfield, optional max/max-frame-avg/min luminance codes].
+        if found.is_some() || tag != 0x07 || payload.len() < 2 || payload[0] != 0x06 {
+            return;
+        }
+        let payload = &payload[1..];
+        let eotfs = payload[0];
+        let max_code = payload.get(2).copied().filter(|&code| code != 0);
+        let max_frame_avg_code = payload.get(3).copied().filter(|&code| code != 0);
+        let min_code = payload.get(4).copied();
+        let max_luminance = max_code.map(cta_luminance);
+        let max_frame_avg_luminance = max_frame_avg_code.map(cta_luminance);
+        // Min luminance decoding needs the max value as reference.
+        let min_luminance = match (max_luminance, min_code) {
+            (Some(max), Some(code)) => {
+                let fraction = code as f32 / 255.0;
+                Some(max * fraction * fraction / 100.0)
+            }
+            _ => None,
+        };
+        found = Some(EdidHdrMetadata {
+            supports_pq: eotfs & (1 << 2) != 0,
+            supports_hlg: eotfs & (1 << 3) != 0,
+            max_luminance,
+            max_frame_avg_luminance,
+            min_luminance,
+            max_sdr_luminance: None,
+        });
+    });
+    found.map(|metadata| EdidHdrMetadata {
+        max_sdr_luminance: parse_displayid_max_sdr_luminance(edid),
+        ..metadata
+    })
 }
 
 /// What the sink says its HDMI link can carry, read from the EDID's
@@ -290,75 +373,50 @@ impl HdmiLinkCapability {
 ///   * `C4-5D-D8` — the HDMI Forum VSDB (HDMI 2.1), carrying Max_FRL_Rate.
 /// A 2.1 sink normally publishes both, so both are collected.
 pub fn parse_edid_hdmi_link(edid: &[u8]) -> Option<HdmiLinkCapability> {
-    if edid.len() < 128 {
-        return None;
-    }
     let mut caps = HdmiLinkCapability::default();
     let mut found = false;
-    let extension_count = edid[126] as usize;
-    for block_index in 1..=extension_count {
-        let start = block_index * 128;
-        let Some(block) = edid.get(start..start + 128) else {
-            break;
-        };
-        if block[0] != 0x02 {
-            continue;
+    for_each_cta_data_block(edid, |tag, payload| {
+        // Vendor-Specific Data Block.
+        if tag != 0x03 || payload.len() < 3 {
+            return;
         }
-        let dtd_offset = (block[2] as usize).min(128);
-        if dtd_offset < 4 {
-            continue;
-        }
-        let mut index = 4;
-        while index < dtd_offset {
-            let header = block[index];
-            let tag = header >> 5;
-            let length = (header & 0x1f) as usize;
-            if index + 1 + length > dtd_offset {
-                break;
-            }
-            // Vendor-Specific Data Block.
-            if tag == 0x03 && length >= 3 {
-                let payload = &block[index + 1..index + 1 + length];
-                match payload[0..3] {
-                    // HDMI 1.4b VSDB. Byte 6 of the payload (after the 3-byte
-                    // OUI, 2-byte source physical address and the flags byte)
-                    // is Max_TMDS_Clock in 5 MHz units; 0 means "not stated".
-                    [0x03, 0x0C, 0x00] => {
-                        if let Some(&code) = payload.get(6)
-                            && code != 0
-                        {
-                            caps.max_tmds_khz = Some(u32::from(code) * 5_000);
-                            found = true;
-                        }
-                    }
-                    // HDMI Forum VSDB. Byte 4 restates the TMDS ceiling, and
-                    // Max_FRL_Rate sits in the high nibble of byte 7.
-                    //
-                    // The OUI is C4-5D-D8 written big-endian, but EDID stores
-                    // it least-significant byte first, so the bytes on the wire
-                    // are D8 5D C4. Getting this backwards makes the block
-                    // invisible and the sink looks like plain HDMI 1.4 — which
-                    // is exactly what happened here first time: a 600 MHz sink
-                    // reported as 300 MHz because only the 1.4b block matched.
-                    [0xD8, 0x5D, 0xC4] => {
-                        if let Some(&code) = payload.get(4)
-                            && code != 0
-                        {
-                            caps.max_tmds_khz = caps
-                                .max_tmds_khz
-                                .max(Some(u32::from(code) * 5_000));
-                        }
-                        if let Some(&byte) = payload.get(7) {
-                            caps.max_frl_rate = Some(byte >> 4);
-                        }
-                        found = true;
-                    }
-                    _ => {}
+        match payload[0..3] {
+            // HDMI 1.4b VSDB. Byte 6 of the payload (after the 3-byte
+            // OUI, 2-byte source physical address and the flags byte)
+            // is Max_TMDS_Clock in 5 MHz units; 0 means "not stated".
+            [0x03, 0x0C, 0x00] => {
+                if let Some(&code) = payload.get(6)
+                    && code != 0
+                {
+                    caps.max_tmds_khz = Some(u32::from(code) * 5_000);
+                    found = true;
                 }
             }
-            index += 1 + length;
+            // HDMI Forum VSDB. Byte 4 restates the TMDS ceiling, and
+            // Max_FRL_Rate sits in the high nibble of byte 7.
+            //
+            // The OUI is C4-5D-D8 written big-endian, but EDID stores
+            // it least-significant byte first, so the bytes on the wire
+            // are D8 5D C4. Getting this backwards makes the block
+            // invisible and the sink looks like plain HDMI 1.4 — which
+            // is exactly what happened here first time: a 600 MHz sink
+            // reported as 300 MHz because only the 1.4b block matched.
+            [0xD8, 0x5D, 0xC4] => {
+                if let Some(&code) = payload.get(4)
+                    && code != 0
+                {
+                    caps.max_tmds_khz = caps
+                        .max_tmds_khz
+                        .max(Some(u32::from(code) * 5_000));
+                }
+                if let Some(&byte) = payload.get(7) {
+                    caps.max_frl_rate = Some(byte >> 4);
+                }
+                found = true;
+            }
+            _ => {}
         }
-    }
+    });
     found.then_some(caps)
 }
 
@@ -391,6 +449,7 @@ pub fn apply_hdr_connector_state(
     let OutputColorMode::Hdr10 {
         max_display_luminance,
         min_display_luminance,
+        sdr_white_luminance,
     } = *mode
     else {
         return Ok(None);
@@ -432,27 +491,25 @@ pub fn apply_hdr_connector_state(
     )
         .ok_or_else(|| io::Error::other("connector has no HDR_OUTPUT_METADATA property"))?;
 
-    // What we actually put on the wire, as opposed to what the sink can do.
+    // What we actually put on the wire, as opposed to what the sink can do —
+    // although since the encode carries HDR content up to the display's peak,
+    // the two now coincide.
     //
-    // The HDR pipeline composites an ordinary sRGB desktop and encodes it to PQ,
-    // mapping sRGB full white to exactly `sdr_reference_nits()`. Nothing in the
-    // signal can exceed that: it is a hard ceiling of the encode, not an estimate.
-    // So the compositor *is* the mastering display here, and its peak is known.
+    // The encode pass maps SDR white to `sdr_white_luminance` and HDR content
+    // above it, clamping at `max_display_luminance`: that is a hard ceiling of
+    // the signal, so the compositor is the mastering display and its peak is
+    // the display's. Reporting it lets the sink skip tone mapping it does not
+    // need.
     //
-    // Previously this reported the SINK's luminance as the mastering peak, and
-    // fell back to a hardcoded 1000.0 whenever the EDID omitted the figure — which
-    // many displays do, including a Philips 8505 (measured ~400 cd/m2, and its EDID
-    // supplies no luminance fields at all). MaxCLL/MaxFALL went out as 0, which
-    // CTA-861 defines as "unknown". The sink was therefore told to prepare for
-    // 1000 cd/m2 of range, given no content light level to correct that with, and
-    // then sent a signal peaking at 203 — so it tone-mapped for headroom that never
-    // arrives and squeezed the range actually in use, worst of all at the dark end.
+    // MaxCLL and MaxFALL go out as the same ceiling rather than 0. CTA-861 reads
+    // 0 as "unknown", and a sink told nothing (with the old 1000 cd/m2 fallback
+    // as mastering peak) tone-mapped for range the signal never used — measured
+    // on a Philips 8505, worst at the dark end. A ceiling is a true upper bound.
     //
-    // Note this is deliberately NOT the sink's capability: `max_display_luminance`
-    // still describes the display and still feeds `ImageDescription.luminances`,
-    // which is the right value to advertise to clients. These are two different
-    // quantities and conflating them is what produced the bug.
-    let content_peak_nits = crate::backend::hdr_pipeline::sdr_reference_nits();
+    // `max_display_luminance` comes from the config override, then the EDID,
+    // then a 1000 cd/m2 fallback; an EDID without luminance figures (common)
+    // should be met with `hdrMaxLuminance` in the config.
+    let content_peak_nits = max_display_luminance.max(sdr_white_luminance);
     let content_peak = content_peak_nits.round().clamp(0.0, f32::from(u16::MAX)) as u16;
 
     let chroma = ColorPrimaries::Bt2020.chromaticities();
@@ -481,9 +538,8 @@ pub fn apply_hdr_connector_state(
             ],
             max_display_mastering_luminance: content_peak,
             min_display_mastering_luminance: (min_display_luminance * 10000.0).round() as u16,
-            // Both are exact rather than estimated. MaxCLL is the brightest pixel
-            // the encode can emit; MaxFALL is the brightest frame average, which a
-            // fullscreen white window reaches, so the two coincide at the ceiling.
+            // Upper bounds, not estimates: no pixel and no frame average can
+            // exceed what the encode clamps to.
             max_cll: content_peak,
             max_fall: content_peak,
         },
@@ -776,6 +832,36 @@ mod tests {
                 4.0
             )
         );
+    }
+
+    /// Laid out like a Samsung ATNA40CU05 OLED (eDP): no CTA-861 extension,
+    /// the HDR static metadata only inside a DisplayID 2.0 extension's
+    /// "CTA-861 DisplayID Data Block".
+    #[test]
+    fn parses_hdr_static_metadata_inside_displayid() {
+        let mut edid = vec![0u8; 256];
+        edid[126] = 1;
+        let mut ext = vec![0x70, 0x20, 0, 0x02, 0x00];
+        // An unrelated data block first: product identification, 3 bytes.
+        ext.extend_from_slice(&[0x20, 0x00, 0x03, 0x4c, 0x83, 0x00]);
+        // CTA-861 DisplayID Data Block: colorimetry (BT2020RGB), then HDR
+        // static metadata with SDR + ST 2084, type 1, codes 116/96/2.
+        let cta = [0xe3, 0x05, 0x80, 0x00, 0xe6, 0x06, 0x05, 0x01, 0x74, 0x60, 0x02];
+        ext.extend_from_slice(&[0x81, 0x00, cta.len() as u8]);
+        ext.extend_from_slice(&cta);
+        // Brightness Luminance Range: 0.0005 / 400 / 616 cd/m² as half floats.
+        ext.extend_from_slice(&[0x2e, 0x00, 0x06, 0x18, 0x10, 0x40, 0x5e, 0xd0, 0x60]);
+        ext[2] = (ext.len() - 5) as u8;
+        edid[128..128 + ext.len()].copy_from_slice(&ext);
+
+        let hdr = parse_edid_hdr(&edid).expect("HDR block inside DisplayID should parse");
+        assert!(hdr.supports_pq);
+        assert!(!hdr.supports_hlg);
+        let max = hdr.max_luminance.expect("max luminance");
+        assert!((max - 616.88).abs() < 0.01, "max {max}");
+        assert_eq!(hdr.max_frame_avg_luminance, Some(400.0));
+        assert!(hdr.min_luminance.is_some_and(|min| min > 0.0 && min < 0.001));
+        assert_eq!(hdr.max_sdr_luminance, Some(400.0));
     }
 
     #[test]

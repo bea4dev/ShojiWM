@@ -17,7 +17,6 @@ use std::sync::{
     Mutex,
     atomic::{
         AtomicBool,
-        AtomicU32,
         Ordering
     },
 };
@@ -90,6 +89,7 @@ const VERSION: u32 = 1;
 
 /// Compositor-side lookups the protocol cannot answer from surface state.
 pub trait ColorManagementHandler {
+    fn color_management_state(&mut self) -> &mut ColorManagementState;
     /// The image description of the signal this output is driven with.
     fn output_image_description(&mut self, output: &WlOutput) -> ImageDescription;
     /// The description the compositor prefers for this surface's content.
@@ -112,7 +112,7 @@ pub trait ColorManagementHandler {
 
 /// Aggregate dispatch bound so each impl below doesn't repeat nine clauses.
 pub trait ColorManagementDispatch:
-    Dispatch<WpColorManagerV1, ()>
+    Dispatch<WpColorManagerV1, ColorManagerData>
     + Dispatch<WpColorManagementOutputV1, ColorOutputData>
     + Dispatch<WpColorManagementSurfaceV1, ColorSurfaceObjData>
     + Dispatch<WpColorManagementSurfaceFeedbackV1, FeedbackData>
@@ -126,7 +126,7 @@ pub trait ColorManagementDispatch:
 }
 
 impl<T> ColorManagementDispatch for T where
-    T: Dispatch<WpColorManagerV1, ()>
+    T: Dispatch<WpColorManagerV1, ColorManagerData>
         + Dispatch<WpColorManagementOutputV1, ColorOutputData>
         + Dispatch<WpColorManagementSurfaceV1, ColorSurfaceObjData>
         + Dispatch<WpColorManagementSurfaceFeedbackV1, FeedbackData>
@@ -209,7 +209,14 @@ pub fn surface_image_description(surface: &WlSurface) -> Option<ImageDescription
 
 /// Manager state for the `wp_color_manager_v1` global.
 #[derive(Debug)]
-pub struct ColorManagementState;
+pub struct ColorManagementState {
+    /// Live `wp_color_management_output_v1` objects, told when their output's
+    /// image description changes.
+    outputs: Vec<WpColorManagementOutputV1>,
+    /// Live surface feedback objects, with the identity of the preferred
+    /// description the client was last told about.
+    feedbacks: Vec<(WpColorManagementSurfaceFeedbackV1, u32)>,
+}
 
 impl ColorManagementState {
     /// Create and advertise the `wp_color_manager_v1` global.
@@ -218,19 +225,35 @@ impl ColorManagementState {
         D: GlobalDispatch<WpColorManagerV1, ()> + ColorManagementDispatch,
     {
         display.create_global::<D, WpColorManagerV1, _>(VERSION, ());
-        Self
+        Self {
+            outputs: Vec::new(),
+            feedbacks: Vec::new(),
+        }
+    }
+
+    /// Send `image_description_changed` for `output`, whose signal (and so
+    /// the description `get_image_description` returns) just changed, e.g.
+    /// on an SDR <-> HDR10 switch.
+    pub fn output_description_changed(&self, output: &smithay::output::Output) {
+        for object in &self.outputs {
+            if let Some(data) = object.data::<ColorOutputData>()
+                && output.owns(&data.output)
+            {
+                object.image_description_changed();
+            }
+        }
     }
 }
 
 /// Sent once on bind: parametric-only, perceptual intent, sRGB always;
 /// HDR entries only while the experiment gate is on so clients never
 /// submit PQ content the render pipeline can't handle yet.
-fn send_supported(manager: &WpColorManagerV1) {
+fn send_supported(manager: &WpColorManagerV1, hdr: bool) {
     manager.supported_intent(RenderIntent::Perceptual);
     manager.supported_feature(Feature::Parametric);
     manager.supported_primaries_named(Primaries::Srgb);
     manager.supported_tf_named(TransferFunction::Srgb);
-    if hdr_experiment_enabled() {
+    if hdr {
         manager.supported_feature(Feature::SetLuminances);
         manager.supported_primaries_named(Primaries::Bt2020);
         manager.supported_tf_named(TransferFunction::St2084Pq);
@@ -243,15 +266,17 @@ fn send_supported(manager: &WpColorManagerV1) {
     manager.done();
 }
 
-/// Monotonic identity for `wp_image_description_v1.ready`. Unique per
-/// object is conformant (equal ids must mean identical descriptions;
-/// distinct ids carry no meaning).
-fn next_identity() -> u32 {
-    static NEXT_IDENTITY: AtomicU32 = AtomicU32::new(1);
-    NEXT_IDENTITY.fetch_add(
-        1,
-        Ordering::Relaxed
-    )
+/// Identity for `wp_image_description_v1.ready` and `preferred_changed`,
+/// derived from the description's content so that the same description always
+/// gets the same identity: `preferred_changed` names the identity the client
+/// will get from `get_preferred`, and a client may skip refetching one it has.
+fn identity_of(description: &ImageDescription) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // `ImageDescription` holds floats, so hash its exact debug rendering.
+    format!("{description:?}").hash(&mut hasher);
+    // 0 is valid on the wire but reads as "unset"; keep clear of it.
+    (hasher.finish() as u32).max(1)
 }
 
 /// Object data for `wp_color_management_output_v1`.
@@ -284,10 +309,26 @@ pub struct ImageDescriptionData {
     allow_information: bool,
 }
 
+/// Object data for `wp_color_manager_v1`.
+#[derive(Debug)]
+pub struct ColorManagerData {
+    /// Whether this manager advertised the HDR entries at bind.
+    ///
+    /// The gate follows the display config and can close while clients run.
+    /// What a client may use is what it was told it may use, though: checking
+    /// the live gate instead posted a protocol error — and so disconnected the
+    /// client — for a PQ description it had every right to create, as soon as
+    /// HDR was switched off underneath it.
+    hdr: bool,
+}
+
 /// Accumulator for `wp_image_description_creator_params_v1`.
 #[derive(Debug, Default)]
 pub struct ParametricCreatorData {
     params: Mutex<CreatorParams>,
+    /// The HDR entries of the manager that created this creator; see
+    /// [`ColorManagerData::hdr`].
+    hdr: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -316,7 +357,7 @@ where
             allow_information,
         },
     );
-    object.ready(next_identity());
+    object.ready(identity_of(&description));
     object
 }
 
@@ -373,6 +414,15 @@ pub fn send_information(
         luminances.max.round() as u32,
         luminances.reference.round() as u32,
     );
+    // The target volume is what the display shows. Clients take their HDR
+    // headroom from it (Chromium: target max / reference) and treat an output
+    // without one as SDR.
+    if let Some(target) = description.target_luminance {
+        info.target_luminance(
+            (target.min * 10000.0).round() as u32,
+            target.max.round() as u32,
+        );
+    }
     // `done` is a destructor event: the info object dies here.
     info.done();
 }
@@ -389,26 +439,28 @@ where
         _data: &(),
         data_init: &mut DataInit<'_, D>,
     ) {
+        let hdr = hdr_experiment_enabled();
         let manager = data_init.init(
             manager,
-            ()
+            ColorManagerData { hdr },
         );
         send_supported(
-            &manager
+            &manager,
+            hdr,
         );
     }
 }
 
-impl<D> Dispatch<WpColorManagerV1, (), D> for ColorManagementState
+impl<D> Dispatch<WpColorManagerV1, ColorManagerData, D> for ColorManagementState
 where
     D: ColorManagementDispatch,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         manager: &WpColorManagerV1,
         request: wp_color_manager_v1::Request,
-        _data: &(),
+        data: &ColorManagerData,
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -417,12 +469,13 @@ where
                 id,
                 output
             } => {
-                data_init.init(
+                let object = data_init.init(
                     id,
                     ColorOutputData {
                         output
                     }
                 );
+                state.color_management_state().outputs.push(object);
             }
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
                 // Always init to consume the id, even on the error path.
@@ -454,12 +507,21 @@ where
                 id,
                 surface
             } => {
-                data_init.init(
+                let preferred = surface
+                    .is_alive()
+                    .then(|| identity_of(&state.surface_preferred_description(&surface)));
+                let object = data_init.init(
                     id,
                     FeedbackData {
                         surface
                     }
                 );
+                if let Some(identity) = preferred {
+                    state
+                        .color_management_state()
+                        .feedbacks
+                        .push((object, identity));
+                }
             }
             wp_color_manager_v1::Request::CreateIccCreator { obj } => {
                 data_init.init(
@@ -474,14 +536,17 @@ where
             wp_color_manager_v1::Request::CreateParametricCreator { obj } => {
                 data_init.init(
                     obj,
-                    ParametricCreatorData::default()
+                    ParametricCreatorData {
+                        hdr: data.hdr,
+                        ..ParametricCreatorData::default()
+                    },
                 );
             }
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
                 // Advertised alongside the other HDR entries, so refuse it on
-                // the same terms: without the gate there is no extended-linear
-                // path through the render pipeline to honour it with.
-                if !hdr_experiment_enabled() {
+                // the same terms: a manager that did not advertise it has no
+                // extended-linear path to honour it with.
+                if !data.hdr {
                     data_init.init(
                         image_description,
                         ImageDescriptionData {
@@ -517,6 +582,7 @@ where
                         }),
                         max_cll: None,
                         max_fall: None,
+                        target_luminance: None,
                     },
                     // The protocol disallows `get_information` on the result.
                     false,
@@ -556,6 +622,18 @@ where
             wp_color_management_output_v1::Request::Destroy => {}
             _ => {}
         }
+    }
+
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        object: &WpColorManagementOutputV1,
+        _data: &ColorOutputData,
+    ) {
+        state
+            .color_management_state()
+            .outputs
+            .retain(|candidate| candidate != object);
     }
 }
 
@@ -695,6 +773,50 @@ where
             _ => {}
         }
     }
+
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        object: &WpColorManagementSurfaceFeedbackV1,
+        _data: &FeedbackData,
+    ) {
+        state
+            .color_management_state()
+            .feedbacks
+            .retain(|(candidate, _)| candidate != object);
+    }
+}
+
+/// Send `preferred_changed` to every surface feedback whose preferred
+/// description changed since the client was last told: the surface moved
+/// between an SDR and an HDR output, or an output switched modes. Cheap enough
+/// to run after every frame — one lookup per feedback object, of which there
+/// are a handful.
+pub fn refresh_preferred_descriptions<D: ColorManagementHandler>(state: &mut D) {
+    if state.color_management_state().feedbacks.is_empty() {
+        return;
+    }
+    let feedbacks = std::mem::take(&mut state.color_management_state().feedbacks);
+    let mut refreshed = Vec::with_capacity(feedbacks.len());
+    for (object, last_identity) in feedbacks {
+        let Some(data) = object.data::<FeedbackData>() else {
+            continue;
+        };
+        if !data.surface.is_alive() {
+            refreshed.push((object, last_identity));
+            continue;
+        }
+        let identity = identity_of(&state.surface_preferred_description(&data.surface));
+        if identity != last_identity {
+            object.preferred_changed(identity);
+        }
+        refreshed.push((object, identity));
+    }
+    // Requests dispatched meanwhile cannot have added any: this runs outside
+    // dispatch. Keep any that did anyway.
+    let added = std::mem::take(&mut state.color_management_state().feedbacks);
+    refreshed.extend(added);
+    state.color_management_state().feedbacks = refreshed;
 }
 
 impl<D> Dispatch<WpImageDescriptionCreatorIccV1, (), D> for ColorManagementState
@@ -741,10 +863,10 @@ where
                 };
                 let mapped = match named {
                     TransferFunction::Srgb => Some(TransferCharacteristics::Srgb),
-                    TransferFunction::St2084Pq if hdr_experiment_enabled() => {
+                    TransferFunction::St2084Pq if data.hdr => {
                         Some(TransferCharacteristics::St2084Pq)
                     }
-                    TransferFunction::ExtLinear if hdr_experiment_enabled() => {
+                    TransferFunction::ExtLinear if data.hdr => {
                         Some(TransferCharacteristics::ExtLinear)
                     }
                     _ => None,
@@ -774,7 +896,7 @@ where
                 };
                 let mapped = match named {
                     Primaries::Srgb => Some(ColorPrimaries::Srgb),
-                    Primaries::Bt2020 if hdr_experiment_enabled() => Some(ColorPrimaries::Bt2020),
+                    Primaries::Bt2020 if data.hdr => Some(ColorPrimaries::Bt2020),
                     _ => None,
                 };
                 let Some(mapped) = mapped else {
@@ -799,7 +921,7 @@ where
                 max_lum,
                 reference_lum,
             } => {
-                if !hdr_experiment_enabled() {
+                if !data.hdr {
                     creator.post_error(
                         Error::UnsupportedFeature,
                         "set_luminances is not supported",
@@ -890,6 +1012,7 @@ where
                                 luminances: params.luminances,
                                 max_cll: params.max_cll,
                                 max_fall: params.max_fall,
+                                target_luminance: None,
                             },
                             true,
                         );
@@ -982,7 +1105,7 @@ macro_rules! delegate_color_management {
         ] => $crate::protocols::color_management::ColorManagementState);
 
         smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1: ()
+            smithay::reexports::wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1: $crate::protocols::color_management::ColorManagerData
         ] => $crate::protocols::color_management::ColorManagementState);
 
         smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [

@@ -87,6 +87,23 @@ pub struct ImageDescription {
     pub max_cll: Option<u32>,
     /// Maximum frame-average light level (cd/m²), if the client provided one.
     pub max_fall: Option<u32>,
+    /// The target color volume's luminance range (cd/m²): what the display
+    /// can actually show. Only output descriptions carry one. Clients derive
+    /// their HDR headroom from it — Chromium takes `max / reference`, and
+    /// without it treats the output as SDR.
+    pub target_luminance: Option<TargetLuminance>,
+}
+
+/// Minimum and maximum luminance of a target color volume, in cd/m².
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq
+)]
+pub struct TargetLuminance {
+    pub min: f32,
+    pub max: f32,
 }
 
 impl ImageDescription {
@@ -96,6 +113,7 @@ impl ImageDescription {
         luminances: None,
         max_cll: None,
         max_fall: None,
+        target_luminance: None,
     };
 
     pub fn effective_luminances(&self) -> Luminances {
@@ -130,7 +148,104 @@ pub enum OutputColorMode {
     Hdr10 {
         max_display_luminance: f32,
         min_display_luminance: f32,
+        /// What SDR white (compositing-space 1.0) is shown at, cd/m².
+        sdr_white_luminance: f32,
     },
+}
+
+impl OutputColorMode {
+    /// Whether the two modes put the same signal on the wire, i.e. differ in
+    /// SDR white at most. That is a change of the encode alone; the connector
+    /// state (Colorspace, HDR metadata) stays as it is.
+    pub fn same_signal(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (OutputColorMode::Sdr, OutputColorMode::Sdr) => true,
+            (
+                OutputColorMode::Hdr10 {
+                    max_display_luminance: max_a,
+                    min_display_luminance: min_a,
+                    ..
+                },
+                OutputColorMode::Hdr10 {
+                    max_display_luminance: max_b,
+                    min_display_luminance: min_b,
+                    ..
+                },
+            ) => max_a == max_b && min_a == min_b,
+            _ => false,
+        }
+    }
+
+    /// The compositing-space target for rendering to an output in this mode.
+    pub fn render_target(&self) -> RenderColorTarget {
+        match *self {
+            OutputColorMode::Sdr => RenderColorTarget::SDR,
+            OutputColorMode::Hdr10 {
+                max_display_luminance,
+                sdr_white_luminance,
+                ..
+            } => RenderColorTarget {
+                headroom: (max_display_luminance / sdr_white_luminance.max(1.0)).max(1.0),
+                encode_gamma: crate::backend::hdr_pipeline::sdr_reference_gamma(),
+            },
+        }
+    }
+}
+
+/// How color-managed content is brought into the compositing space for the
+/// output being rendered.
+///
+/// Compositing happens on display-referred, gamma-encoded BT.709 values with
+/// SDR white at 1.0. On an SDR output that range is all there is. On an HDR10
+/// output the space extends past it: values above 1.0 are highlights up to the
+/// display's peak (`headroom` = peak / SDR white), and values below 0.0 are
+/// colors outside BT.709, which the encode pass carries back into BT.2020.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderColorTarget {
+    /// Compositing-space ceiling: 1.0 on SDR, display peak / SDR white on HDR.
+    pub headroom: f32,
+    /// 0.0: encode with the piecewise sRGB curve (SDR framebuffers). Otherwise
+    /// the pure power the HDR encode pass decodes with (`SHOJI_SDR_GAMMA`), so
+    /// that tagged content comes back out at exactly its absolute luminance.
+    pub encode_gamma: f32,
+}
+
+impl RenderColorTarget {
+    pub const SDR: Self = Self {
+        headroom: 1.0,
+        encode_gamma: 0.0,
+    };
+}
+
+thread_local! {
+    static RENDER_COLOR_TARGET: std::cell::Cell<RenderColorTarget> =
+        const { std::cell::Cell::new(RenderColorTarget::SDR) };
+}
+
+/// The target set by the innermost live [`RenderColorTargetGuard`], or SDR.
+/// Elements read it when they are built, which happens while one output is
+/// being rendered.
+pub fn render_color_target() -> RenderColorTarget {
+    RENDER_COLOR_TARGET.with(|target| target.get())
+}
+
+/// Sets the render color target until dropped, then restores the previous one.
+pub struct RenderColorTargetGuard {
+    previous: RenderColorTarget,
+}
+
+impl RenderColorTargetGuard {
+    pub fn new(target: RenderColorTarget) -> Self {
+        Self {
+            previous: RENDER_COLOR_TARGET.with(|current| current.replace(target)),
+        }
+    }
+}
+
+impl Drop for RenderColorTargetGuard {
+    fn drop(&mut self) {
+        RENDER_COLOR_TARGET.with(|current| current.set(self.previous));
+    }
 }
 
 /// The space all compositing (blur, liquid-glass, blending) happens in.
@@ -180,23 +295,30 @@ impl OutputColorState {
             OutputColorMode::Hdr10 {
                 max_display_luminance,
                 min_display_luminance,
+                sdr_white_luminance,
             } => ImageDescription {
                 primaries: ColorPrimaries::Bt2020,
                 tf: TransferCharacteristics::St2084Pq,
+                // PQ is absolute: its range is fixed at min + 10000 cd/m².
+                // The reference is where SDR white lands on this output.
                 luminances: Some(Luminances {
                     min: min_display_luminance,
-                    max: max_display_luminance,
-                    reference: 203.0,
+                    max: 10000.0,
+                    reference: sdr_white_luminance,
                 }),
                 max_cll: None,
                 max_fall: None,
+                // What the display shows; peak / reference is the headroom.
+                target_luminance: Some(TargetLuminance {
+                    min: min_display_luminance,
+                    max: max_display_luminance,
+                }),
             },
         };
-        // Blending still happens on sRGB-encoded values; the HDR path
-        // (backend/hdr_pipeline.rs) composites into an fp16 intermediate
-        // and PQ-encodes as a final pass, so HDR outputs display correctly.
-        // BlendSpace::LinearBt2020 activates once per-element
-        // linearization lands.
+        // Blending happens on gamma-encoded values; the HDR path
+        // (backend/hdr_pipeline.rs) composites into an fp16 intermediate that
+        // extends past SDR white (see `RenderColorTarget`) and PQ-encodes as a
+        // final pass. BlendSpace::LinearBt2020 would be linear-light blending.
         Self {
             mode,
             blend_space: BlendSpace::Srgb,
@@ -264,6 +386,13 @@ pub struct HdrLuminanceOverride {
     pub max: Option<f32>,
     /// Black level in cd/m². Ignored outside 0..=10.
     pub min: Option<f32>,
+    /// What SDR white is shown at, cd/m². Ignored outside 10..=1000.
+    pub sdr_white: Option<f32>,
+    /// The panel backlight's setting, 0..=1, when SDR white follows it (no
+    /// `sdr_white`, and the output has a backlight). In HDR10 the backlight
+    /// stops doing anything — the signal states absolute luminance — so the
+    /// brightness the user sets is applied to SDR white instead.
+    pub backlight_fraction: Option<f32>,
 }
 
 impl HdrLuminanceOverride {
@@ -274,6 +403,19 @@ impl HdrLuminanceOverride {
                 warn!(
                     output = output_name,
                     value, "hdrMaxLuminance outside 50..=10000 cd/m2; ignoring"
+                );
+            }
+            ok
+        })
+    }
+
+    fn sanitized_sdr_white(self, output_name: &str) -> Option<f32> {
+        self.sdr_white.filter(|value| {
+            let ok = (10.0..=1000.0).contains(value);
+            if !ok {
+                warn!(
+                    output = output_name,
+                    value, "hdrSdrLuminance outside 10..=1000 cd/m2; ignoring"
                 );
             }
             ok
@@ -293,6 +435,9 @@ impl HdrLuminanceOverride {
         })
     }
 }
+
+/// The dimmest SDR white the backlight can set, cd/m².
+const MIN_BACKLIGHT_SDR_WHITE: f32 = 2.0;
 
 /// Decide how to drive a connector: HDR10 only when the user opted the
 /// output in (runtime display config `hdr: true` or the env override,
@@ -339,13 +484,33 @@ pub fn resolve_output_mode(
             "applying configured display luminance override"
         );
     }
+    let max_display_luminance = max_override
+        .or(edid.max_luminance)
+        .unwrap_or(1000.0);
+    // Following the backlight, full brightness reaches the panel's suggested
+    // SDR maximum (what the backlight itself tops out at in SDR mode). A floor
+    // keeps a zeroed backlight from blacking the desktop out.
+    let backlight_sdr_white = luminance_override.backlight_fraction.map(|fraction| {
+        let full = edid
+            .max_sdr_luminance
+            .or(edid.max_frame_avg_luminance)
+            .unwrap_or(max_display_luminance)
+            .min(max_display_luminance);
+        (fraction.clamp(0.0, 1.0) * full).max(MIN_BACKLIGHT_SDR_WHITE)
+    });
+    // SDR white cannot sit above the peak: there would be no headroom left,
+    // and the encode would clip SDR content.
+    let sdr_white_luminance = luminance_override
+        .sanitized_sdr_white(output_name)
+        .or(backlight_sdr_white)
+        .unwrap_or_else(crate::backend::hdr_pipeline::sdr_reference_nits)
+        .min(max_display_luminance);
     OutputColorMode::Hdr10 {
-        max_display_luminance: max_override
-            .or(edid.max_luminance)
-            .unwrap_or(1000.0),
+        max_display_luminance,
         min_display_luminance: min_override
             .or(edid.min_luminance)
             .unwrap_or(0.005),
+        sdr_white_luminance,
     }
 }
 
@@ -360,6 +525,7 @@ mod tests {
             luminances: None,
             max_cll,
             max_fall: None,
+            target_luminance: None,
         }
     }
 
@@ -377,5 +543,45 @@ mod tests {
     #[test]
     fn real_max_cll_is_the_content_peak() {
         assert_eq!(pq_with_max_cll(Some(1000)).content_peak_nits(), 1000.0);
+    }
+
+    fn oled_edid() -> EdidHdrMetadata {
+        EdidHdrMetadata {
+            supports_pq: true,
+            supports_hlg: false,
+            max_luminance: Some(616.0),
+            max_frame_avg_luminance: Some(400.0),
+            min_luminance: Some(0.0005),
+            max_sdr_luminance: Some(400.0),
+        }
+    }
+
+    fn sdr_white(luminance_override: HdrLuminanceOverride) -> f32 {
+        match resolve_output_mode("eDP-1", true, Some(&oled_edid()), luminance_override) {
+            OutputColorMode::Hdr10 { sdr_white_luminance, .. } => sdr_white_luminance,
+            OutputColorMode::Sdr => panic!("should drive HDR10"),
+        }
+    }
+
+    /// In HDR10 the backlight does nothing, so its setting moves SDR white,
+    /// reaching the panel's suggested SDR maximum at full brightness.
+    #[test]
+    fn sdr_white_follows_the_backlight() {
+        let backlight = |fraction| HdrLuminanceOverride {
+            backlight_fraction: Some(fraction),
+            ..HdrLuminanceOverride::default()
+        };
+        assert_eq!(sdr_white(backlight(1.0)), 400.0);
+        assert!((sdr_white(backlight(0.39)) - 156.0).abs() < 0.01);
+        // A zeroed backlight dims the desktop without blacking it out.
+        assert_eq!(sdr_white(backlight(0.0)), MIN_BACKLIGHT_SDR_WHITE);
+        // A configured luminance wins over the backlight.
+        assert_eq!(
+            sdr_white(HdrLuminanceOverride {
+                sdr_white: Some(300.0),
+                ..backlight(0.5)
+            }),
+            300.0
+        );
     }
 }

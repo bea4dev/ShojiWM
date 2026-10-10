@@ -3730,6 +3730,18 @@ impl ShojiWM {
         self.config_runtime.sync_input_state(input_state);
     }
 
+    /// A panel backlight changed. HDR10 outputs whose SDR white follows the
+    /// backlight re-resolve it (see `crate::backlight`); nothing else cares.
+    pub fn backlight_changed(&mut self) {
+        let any_hdr = self
+            .output_color
+            .values()
+            .any(|color| matches!(color.mode, crate::color::OutputColorMode::Hdr10 { .. }));
+        if any_hdr {
+            crate::backend::tty::refresh_tty_output_color_modes(self);
+        }
+    }
+
     pub fn notify_runtime_outputs_changed(&mut self) {
         self.sync_runtime_display_state();
         self.runtime_scheduler_enabled = true;

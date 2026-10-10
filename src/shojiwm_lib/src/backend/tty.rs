@@ -1490,6 +1490,18 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
                     crtc,
                     connector,
                 );
+                // The HDR signaling (Colorspace, HDR_OUTPUT_METADATA, max bpc)
+                // is ours, but that master could have changed it too: a
+                // session in SDR clears it, and the PQ-encoded frames would
+                // then reach a sink that reads them as SDR, washed out.
+                let output_name = format!(
+                    "{}-{}",
+                    connector.interface().as_str(),
+                    connector.interface_id(),
+                );
+                if let Some(color) = state.output_color.get_mut(&output_name) {
+                    reapply_hdr_connector_state(device, connector, &output_name, color);
+                }
             }
         }
     }
@@ -2778,7 +2790,10 @@ fn render_queued_surface_after_frame_finish(
     node: DrmNode,
     crtc: crtc::Handle,
 ) {
-    match render_surface(state, loop_handle, node, crtc) {
+    let outcome = render_surface(state, loop_handle, node, crtc);
+    // The frame updated which output each surface is primarily shown on.
+    crate::protocols::color_management::refresh_preferred_descriptions(state);
+    match outcome {
         Ok(RenderSurfaceOutcome::Processed) => {
             let output_name = state
                 .tty_backends
@@ -3339,6 +3354,8 @@ pub fn render_if_needed(
 
         for crtc in crtcs {
             let outcome = render_surface(state, loop_handle, node, crtc)?;
+            // The frame updated which output each surface is primarily shown on.
+            crate::protocols::color_management::refresh_preferred_descriptions(state);
             // Latency diagnostic (`SHOJI_LATENCY_TRACE`): a commit took the pending
             // input onto the screen, so stop tracking it here — the next input
             // starts its own measurement. Matched by event time so a render
@@ -4305,6 +4322,16 @@ fn render_surface(
             .map(|color| color.mode),
         Some(crate::color::OutputColorMode::Hdr10 { .. })
     );
+    // Color-managed surfaces built for this output are converted for it: past
+    // SDR white up to the display's peak on HDR10, clamped to SDR otherwise.
+    let _render_color_target = crate::color::RenderColorTargetGuard::new(
+        state
+            .output_color
+            .get(output.name().as_str())
+            .map_or(crate::color::RenderColorTarget::SDR, |color| {
+                color.mode.render_target()
+            }),
+    );
 
     let redraw_state = state
         .tty_backends
@@ -5021,19 +5048,15 @@ fn render_surface(
         // the DRM pass renders a single PQ-encode element instead.
         let mut hdr_encode_active = false;
         let mut hdr_stage1_states = None;
-        if matches!(
-            state
-                .output_color
-                .get(
-                output
-                .name()
-                .as_str()
-            )
-                .map(
-                |color| color.mode
-            ),
-            Some(crate::color::OutputColorMode::Hdr10 { .. })
-        ) {
+        if let Some(crate::color::OutputColorMode::Hdr10 {
+            max_display_luminance,
+            sdr_white_luminance,
+            ..
+        }) = state
+            .output_color
+            .get(output.name().as_str())
+            .map(|color| color.mode)
+        {
             let output_name = output
                 .name();
             let mut pipeline = state.hdr_pipelines
@@ -5048,6 +5071,8 @@ fn render_surface(
                 &output,
                 &elements,
                 CLEAR_COLOR,
+                sdr_white_luminance,
+                max_display_luminance,
             ) {
                 Ok(
                     Some(
@@ -6224,6 +6249,45 @@ fn transform_clipped_elements(
         .collect()
 }
 
+/// `WindowClipElement`s as scene elements, in order. `Clipped` and
+/// `ColorConverted` both draw through the clipped-surface shader.
+fn window_clip_elements_to_tty(
+    elements: Vec<window_render::WindowClipElement>,
+    visual: WindowVisualState,
+) -> Vec<TtyRenderElements> {
+    elements
+        .into_iter()
+        .flat_map(|element| match element {
+            window_render::WindowClipElement::Clipped(element)
+            | window_render::WindowClipElement::ColorConverted(element) => {
+                transform_clipped_elements(vec![element], visual)
+            }
+            window_render::WindowClipElement::Raw(element) => transform_window_elements(
+                vec![element],
+                visual,
+                TtyRenderElements::Window,
+                TtyRenderElements::TransformedWindow,
+            ),
+        })
+        .collect()
+}
+
+/// Unclipped surface elements of `window` as scene elements, color converting
+/// the tagged ones (see `window_render::color_converted_surface_elements`).
+fn unclipped_window_surface_elements(
+    window: &smithay::desktop::Window,
+    renderer: &mut GlesRenderer,
+    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    output_scale: Scale<f64>,
+    visual: WindowVisualState,
+) -> Vec<TtyRenderElements> {
+    let elements =
+        window_render::color_converted_surface_elements(window, renderer, elements, output_scale)
+            .inspect_err(|error| warn!(?error, "failed to color convert window surface elements"))
+            .unwrap_or_default();
+    window_clip_elements_to_tty(elements, visual)
+}
+
 fn window_surface_source_elements_for_window(
     window: &smithay::desktop::Window,
     renderer: &mut GlesRenderer,
@@ -6259,20 +6323,7 @@ fn window_surface_source_elements_for_window(
         .unwrap_or_default();
 
         if include_subsurfaces {
-            return clipped
-                .into_iter()
-                .flat_map(|element| match element {
-                    window_render::WindowClipElement::Clipped(element) => {
-                        transform_clipped_elements(vec![element], visual)
-                    }
-                    window_render::WindowClipElement::Raw(element) => transform_window_elements(
-                        vec![element],
-                        visual,
-                        TtyRenderElements::Window,
-                        TtyRenderElements::TransformedWindow,
-                    ),
-                })
-                .collect();
+            return window_clip_elements_to_tty(clipped, visual);
         }
 
         let mut root_raw_element = None;
@@ -6284,7 +6335,8 @@ fn window_surface_source_elements_for_window(
                 window_render::WindowClipElement::Raw(element) if root_raw_element.is_none() => {
                     root_raw_element = Some(element);
                 }
-                window_render::WindowClipElement::Raw(_) => {}
+                window_render::WindowClipElement::Raw(_)
+                | window_render::WindowClipElement::ColorConverted(_) => {}
             }
         }
         if let Some(element) = root_raw_element {
@@ -6297,18 +6349,14 @@ fn window_surface_source_elements_for_window(
         }
     }
 
-    transform_window_elements(
-        if include_subsurfaces {
-            window_render::surface_elements(window, renderer, physical_location, output_scale, alpha)
-        } else {
-            window_render::root_surface_elements(
-                window, renderer, physical_location, output_scale, alpha,
-            )
-        },
-        visual,
-        TtyRenderElements::Window,
-        TtyRenderElements::TransformedWindow,
-    )
+    let elements = if include_subsurfaces {
+        window_render::surface_elements(window, renderer, physical_location, output_scale, alpha)
+    } else {
+        window_render::root_surface_elements(
+            window, renderer, physical_location, output_scale, alpha,
+        )
+    };
+    unclipped_window_surface_elements(window, renderer, elements, output_scale, visual)
 }
 
 /// A window's subsurfaces, split around the root surface; each group is front-to-back like
@@ -6477,39 +6525,35 @@ fn non_root_surface_elements_for_window(
         .unwrap_or_default();
 
         let mut saw_root = false;
-        let mut raw_elements = Vec::new();
+        let mut non_root_elements = Vec::new();
         for element in clipped {
             match element {
                 window_render::WindowClipElement::Clipped(_) => {
                     saw_root = true;
                 }
-                window_render::WindowClipElement::Raw(element) => raw_elements.push(element),
+                other => non_root_elements.push(other),
             }
         }
-        if !saw_root && !raw_elements.is_empty() {
-            raw_elements.remove(0);
+        // No clipped root means the root came back raw: it is the first raw one.
+        if !saw_root
+            && let Some(root) = non_root_elements
+                .iter()
+                .position(|element| matches!(element, window_render::WindowClipElement::Raw(_)))
+        {
+            non_root_elements.remove(root);
         }
 
-        return transform_window_elements(
-            raw_elements,
-            visual,
-            TtyRenderElements::Window,
-            TtyRenderElements::TransformedWindow,
-        );
+        return window_clip_elements_to_tty(non_root_elements, visual);
     }
 
-    transform_window_elements(
-        window_render::non_root_surface_elements(
-            window,
-            renderer,
-            physical_location,
-            output_scale,
-            alpha,
-        ),
-        visual,
-        TtyRenderElements::Window,
-        TtyRenderElements::TransformedWindow,
-    )
+    let elements = window_render::non_root_surface_elements(
+        window,
+        renderer,
+        physical_location,
+        output_scale,
+        alpha,
+    );
+    unclipped_window_surface_elements(window, renderer, elements, output_scale, visual)
 }
 
 fn transform_text_elements(
@@ -11426,7 +11470,8 @@ fn window_scene_elements_for_capture(
             let mut raw_elements = Vec::new();
             for element in clipped {
                 match element {
-                    window_render::WindowClipElement::Clipped(element) => {
+                    window_render::WindowClipElement::Clipped(element)
+                    | window_render::WindowClipElement::ColorConverted(element) => {
                         clipped_elements.push(element);
                     }
                     window_render::WindowClipElement::Raw(element) => {
@@ -12280,14 +12325,7 @@ fn connector_connected(
     // Same lookup as `hdr_requested`: the config may not have arrived yet at
     // connect time, in which case this is empty and refresh_tty_output_color_modes
     // re-resolves with the real values once the display config lands.
-    let hdr_luminance_override = state
-        .runtime_output_configs
-        .get(&output_name)
-        .map(|config| crate::color::HdrLuminanceOverride {
-            max: config.hdr_max_luminance,
-            min: config.hdr_min_luminance,
-        })
-        .unwrap_or_default();
+    let hdr_luminance_override = output_hdr_luminance_override(state, &output_name);
     let color_state = {
         let backend = state.tty_backends
             .get(&node)
@@ -12892,6 +12930,64 @@ pub fn tty_output_available_modes(
     None
 }
 
+/// The display config's HDR luminance settings for `output_name`, with SDR
+/// white following the panel backlight unless the config fixes it.
+fn output_hdr_luminance_override(
+    state: &crate::state::ShojiWM,
+    output_name: &str,
+) -> crate::color::HdrLuminanceOverride {
+    use crate::config::{RuntimeSdrLuminance, RuntimeSdrLuminanceKeyword};
+    let config = state.runtime_output_configs.get(output_name);
+    let sdr_luminance = config.and_then(|config| config.hdr_sdr_luminance);
+    let (sdr_white, follow_backlight) = match sdr_luminance {
+        Some(RuntimeSdrLuminance::Nits(nits)) => (Some(nits), false),
+        Some(RuntimeSdrLuminance::Keyword(RuntimeSdrLuminanceKeyword::Backlight)) | None => {
+            (None, true)
+        }
+    };
+    crate::color::HdrLuminanceOverride {
+        max: config.and_then(|config| config.hdr_max_luminance),
+        min: config.and_then(|config| config.hdr_min_luminance),
+        sdr_white,
+        backlight_fraction: follow_backlight
+            .then(|| crate::backlight::for_output(output_name))
+            .flatten()
+            .and_then(|backlight| backlight.fraction()),
+    }
+}
+
+/// Put the connector's HDR signaling back to what `color` says it is. A fresh
+/// metadata blob replaces the old one, which is destroyed.
+fn reapply_hdr_connector_state(
+    device: &DrmDevice,
+    connector: &connector::Info,
+    output_name: &str,
+    color: &mut crate::color::OutputColorState,
+) {
+    match color.mode {
+        crate::color::OutputColorMode::Hdr10 { .. } => {
+            if let Some(blob) = color.hdr_metadata_blob.take() {
+                crate::color::drm_metadata::destroy_metadata_blob(device, blob);
+            }
+            match crate::color::drm_metadata::apply_hdr_connector_state(
+                device,
+                connector,
+                &color.mode,
+            ) {
+                Ok(blob) => color.hdr_metadata_blob = blob,
+                Err(error) => warn!(
+                    output = %output_name,
+                    ?error,
+                    "failed to reapply HDR connector state"
+                ),
+            }
+        }
+        crate::color::OutputColorMode::Sdr => {
+            crate::color::drm_metadata::reset_hdr_connector_state(device, connector);
+        }
+    }
+}
+
 /// Whether the GPU that renders the frames of `node`'s outputs can render into
 /// fp16 targets. That is the render GPU for a cross-GPU output (see
 /// `CrossGpuTarget`), since the HDR intermediate is composited where the scene is.
@@ -12916,7 +13012,7 @@ fn hdr_render_supports_fp16(state: &crate::state::ShojiWM, node: DrmNode) -> boo
 pub fn refresh_tty_output_color_modes(
     state: &mut crate::state::ShojiWM
 ) {
-    let mut changed = false;
+    let mut changed_outputs = Vec::new();
     for (&node, backend) in state.tty_backends.iter() {
         let connectors = backend
             .drm_scanner
@@ -12957,14 +13053,7 @@ pub fn refresh_tty_output_color_modes(
                 .and_then(|config| config.hdr)
                 .unwrap_or(false)
                 || crate::color::hdr_output_requested_via_env(&output_name);
-            let hdr_luminance_override = state
-                .runtime_output_configs
-                .get(&output_name)
-                .map(|config| crate::color::HdrLuminanceOverride {
-                    max: config.hdr_max_luminance,
-                    min: config.hdr_min_luminance,
-                })
-                .unwrap_or_default();
+            let hdr_luminance_override = output_hdr_luminance_override(state, &output_name);
             let desired_mode = if hdr_render_supports_fp16(state, node) {
                 crate::color::resolve_output_mode(
                     &output_name,
@@ -12977,6 +13066,21 @@ pub fn refresh_tty_output_color_modes(
                 crate::color::OutputColorMode::Sdr
             };
             if desired_mode == current.mode {
+                continue;
+            }
+            if desired_mode.same_signal(&current.mode) {
+                // SDR white alone moved (the backlight, or `hdrSdrLuminance`):
+                // only the encode changes; the connector keeps its state.
+                changed_outputs.push(output_name.clone());
+                state.output_color.insert(
+                    output_name,
+                    crate::color::OutputColorState::new(
+                        desired_mode,
+                        current.edid_hdr,
+                        current.hdmi_link,
+                        current.hdr_metadata_blob,
+                    ),
+                );
                 continue;
             }
 
@@ -13042,6 +13146,7 @@ pub fn refresh_tty_output_color_modes(
                 ?mode,
                 "output color mode changed by runtime display config"
             );
+            changed_outputs.push(output_name.clone());
             state.output_color
                 .insert(
                     output_name,
@@ -13052,10 +13157,14 @@ pub fn refresh_tty_output_color_modes(
                         hdr_metadata_blob
                     ),
                 );
-            changed = true;
         }
     }
-    if changed {
+    if !changed_outputs.is_empty() {
+        for output in state.space.outputs() {
+            if changed_outputs.contains(&output.name()) {
+                state.color_management_state.output_description_changed(output);
+            }
+        }
         // Force a full repaint on every output so the first frame after the
         // switch is (de)PQ-encoded; the render path picks the pipeline from
         // `output_color` per frame.
@@ -14821,6 +14930,13 @@ fn tty_window_stack_elements(
                                 root_raw_element = Some(element);
                             }
                             window_render::WindowClipElement::Raw(_) => {}
+                            // A subsurface; only scenes that take every client
+                            // surface include it, as with the clipped ones.
+                            window_render::WindowClipElement::ColorConverted(element) => {
+                                if clip_all_client_surfaces {
+                                    snapshot_scene.push(TtyRenderElements::Clipped(element));
+                                }
+                            }
                         }
                     }
                     if snapshot_scene.is_empty()
@@ -15003,7 +15119,8 @@ fn tty_window_stack_elements(
                 let bypass_clip = crate::env_flag!("SHOJI_GAP_BYPASS_CLIP");
                 if crate::env_flag!("SHOJI_GAP_DEBUG") {
                     let first_geometry = clipped.first().map(|element| match element {
-                        window_render::WindowClipElement::Clipped(element) => {
+                        window_render::WindowClipElement::Clipped(element)
+                        | window_render::WindowClipElement::ColorConverted(element) => {
                             smithay::backend::renderer::element::Element::geometry(
                                 element, scale,
                             )
@@ -15435,7 +15552,8 @@ fn tty_window_stack_elements(
                     clipped
                         .into_iter()
                         .flat_map(|element| match element {
-                            window_render::WindowClipElement::Clipped(element) => {
+                            window_render::WindowClipElement::Clipped(element)
+                            | window_render::WindowClipElement::ColorConverted(element) => {
                                 transform_clipped_elements(vec![element], visual_state)
                             }
                             window_render::WindowClipElement::Raw(element) => {
@@ -15497,8 +15615,34 @@ fn tty_window_stack_elements(
                     .is_some_and(|policy| {
                         policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
                     });
-                let transformed =
-                    transform_policy_window_elements(surfaces, ignore_opaque, visual_state);
+                // Tagged non-sRGB surfaces need the color conversion even
+                // without a clip; everything else stays a policy window element.
+                let surfaces = window_render::color_converted_surface_elements(
+                    window,
+                    &mut *renderer,
+                    surfaces,
+                    scale,
+                )
+                .inspect_err(|error| {
+                    warn!(?error, "failed to color convert window surface elements");
+                })
+                .unwrap_or_default();
+                let transformed: Vec<TtyRenderElements> = surfaces
+                    .into_iter()
+                    .flat_map(|element| match element {
+                        window_render::WindowClipElement::Clipped(element)
+                        | window_render::WindowClipElement::ColorConverted(element) => {
+                            transform_clipped_elements(vec![element], visual_state)
+                        }
+                        window_render::WindowClipElement::Raw(element) => {
+                            transform_policy_window_elements(
+                                vec![element],
+                                ignore_opaque,
+                                visual_state,
+                            )
+                        }
+                    })
+                    .collect();
                 if crate::env_flag!("SHOJI_GAP_READBACK_DEBUG")
                     && let Some(first_geometry) = transformed.first().map(|element| {
                         smithay::backend::renderer::element::Element::geometry(element, scale)

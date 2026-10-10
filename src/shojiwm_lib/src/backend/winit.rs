@@ -4546,7 +4546,8 @@ fn window_scene_elements_for_capture(
             let mut raw_elements = Vec::new();
             for element in clipped {
                 match element {
-                    window_render::WindowClipElement::Clipped(element) => {
+                    window_render::WindowClipElement::Clipped(element)
+                    | window_render::WindowClipElement::ColorConverted(element) => {
                         clipped_elements.push(element);
                     }
                     window_render::WindowClipElement::Raw(element) => {
@@ -5546,7 +5547,8 @@ fn winit_window_stack_elements(
                     let first_geometry = clipped
                         .first()
                         .map(|element| match element {
-                            window_render::WindowClipElement::Clipped(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
+                            window_render::WindowClipElement::Clipped(element)
+                            | window_render::WindowClipElement::ColorConverted(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
                             window_render::WindowClipElement::Raw(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
                         });
                     let window_geometry = window.geometry();
@@ -5657,7 +5659,8 @@ fn winit_window_stack_elements(
                     clipped
                         .into_iter()
                         .flat_map(|element| match element {
-                            window_render::WindowClipElement::Clipped(element) => {
+                            window_render::WindowClipElement::Clipped(element)
+                            | window_render::WindowClipElement::ColorConverted(element) => {
                                 transform_clipped_elements(vec![element], composition_visual)
                             }
                             window_render::WindowClipElement::Raw(element) => {
@@ -5714,11 +5717,33 @@ fn winit_window_stack_elements(
                             policy.opaque_region
                                 == crate::ssd::OpaqueRegionPolicy::Ignore
                         });
-                    transform_policy_window_elements(
+                    // Tagged non-sRGB surfaces need the color conversion even
+                    // without a clip.
+                    window_render::color_converted_surface_elements(
+                        window,
+                        renderer,
                         surfaces,
-                        ignore_opaque,
-                        composition_visual,
+                        scale,
                     )
+                    .inspect_err(|error| {
+                        warn!(?error, "failed to color convert window surface elements");
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|element| match element {
+                        window_render::WindowClipElement::Clipped(element)
+                        | window_render::WindowClipElement::ColorConverted(element) => {
+                            transform_clipped_elements(vec![element], composition_visual)
+                        }
+                        window_render::WindowClipElement::Raw(element) => {
+                            transform_policy_window_elements(
+                                vec![element],
+                                ignore_opaque,
+                                composition_visual,
+                            )
+                        }
+                    })
+                    .collect()
                 }
             };
             if !use_full_window_snapshot {

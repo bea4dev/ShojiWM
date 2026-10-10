@@ -43,6 +43,24 @@ pub struct RuntimeOutputConfig {
     pub hdr_max_luminance: Option<f32>,
     /// Real black level of the display in cd/m². Same caveat.
     pub hdr_min_luminance: Option<f32>,
+    /// What SDR white is shown at on an HDR output: a fixed luminance, or
+    /// following the panel's backlight. Unset follows the backlight when the
+    /// output has one, else `SHOJI_SDR_NITS`, else 203 (ITU-R BT.2408).
+    pub hdr_sdr_luminance: Option<RuntimeSdrLuminance>,
+}
+
+/// `hdrSdrLuminance`: cd/m², or `"backlight"`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeSdrLuminance {
+    Nits(f32),
+    Keyword(RuntimeSdrLuminanceKeyword),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeSdrLuminanceKeyword {
+    Backlight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -327,5 +345,23 @@ mod tests {
             update.outputs["eDP-1"].as_ref().unwrap().hdr,
             None,
         );
+    }
+
+    /// `hdrSdrLuminance` takes cd/m² or the keyword that follows the backlight.
+    #[test]
+    fn runtime_output_config_parses_sdr_luminance() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{
+                "eDP-1":{"hdr":true,"hdrSdrLuminance":"backlight"},
+                "DP-1":{"hdr":true,"hdrSdrLuminance":300}
+            }}"#,
+        )
+        .expect("display config update should parse");
+        let sdr = |name: &str| update.outputs[name].as_ref().unwrap().hdr_sdr_luminance;
+        assert_eq!(
+            sdr("eDP-1"),
+            Some(RuntimeSdrLuminance::Keyword(RuntimeSdrLuminanceKeyword::Backlight))
+        );
+        assert_eq!(sdr("DP-1"), Some(RuntimeSdrLuminance::Nits(300.0)));
     }
 }

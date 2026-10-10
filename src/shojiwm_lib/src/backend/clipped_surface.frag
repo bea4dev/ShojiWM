@@ -67,7 +67,15 @@ uniform float src_ref_nits;
 // per fragment for values that are constant across the whole surface.
 uniform float src_pq_lo;   // content black
 uniform float src_pq_hi;   // content peak
-uniform float dst_pq_hi;   // what compositing-space 1.0 can represent
+uniform float dst_pq_hi;   // what the compositing space can hold: content
+                           // reference white times `dst_headroom`
+// Compositing-space ceiling for the output being rendered: 1.0 (SDR white) on
+// SDR, display peak / SDR white on HDR10, where values past 1.0 are highlights
+// and values below 0.0 are colors outside BT.709 (see `RenderColorTarget`).
+uniform float dst_headroom;
+// 0.0: encode with the piecewise sRGB curve (SDR framebuffer). Otherwise the
+// pure power the HDR encode pass decodes with, applied with the sign kept.
+uniform float encode_gamma;
 
 // BT.2020 -> BT.709 linear-light gamut matrix, column-major. Inverse of the
 // BT.2087 matrix in `output_encode.frag`; both are cross-checked against the
@@ -180,7 +188,14 @@ vec3 to_compositing_space(vec3 c) {
     }
     // Normalize against the content's own reference white so diffuse white
     // lands on 1.0 rather than being scaled by an unrelated display value.
-    return srgb_inv_eotf(clamp(linear / ref_nits, 0.0, 1.0));
+    vec3 relative = linear / ref_nits;
+    if (encode_gamma > 0.0) {
+        // HDR10 target: keep highlights up to the display's peak and colors
+        // outside BT.709 (negative after the matrix) for the encode pass.
+        relative = clamp(relative, vec3(-dst_headroom), vec3(dst_headroom));
+        return sign(relative) * pow(abs(relative), vec3(1.0 / encode_gamma));
+    }
+    return srgb_inv_eotf(clamp(relative, 0.0, 1.0));
 }
 
 float rounded_alpha(vec2 coords, vec2 size) {

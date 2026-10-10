@@ -149,17 +149,81 @@ pub struct ClippedSurfaceElement {
     /// Per-surface color management, resolved once at element construction.
     /// `src_transfer == 0.0` is the untagged fast path and makes the shader
     /// skip the conversion entirely, so nothing changes for sRGB clients.
-    src_transfer: f32,
-    src_primaries: f32,
-    src_ref_nits: f32,
-    /// Tone-mapping knee, already PQ-encoded on the CPU.
-    src_pq_lo: f32,
-    src_pq_hi: f32,
-    dst_pq_hi: f32,
+    /// See [`COLOR_UNIFORM_NAMES`] for the layout.
+    color: [f32; COLOR_UNIFORM_NAMES.len()],
 }
 
 #[derive(Debug)]
 struct ClippedSurfaceProgram(GlesTexProgram);
+
+/// The shader's color-management uniforms, in the order `color_uniforms`
+/// returns them.
+const COLOR_UNIFORM_NAMES: [&str; 8] = [
+    "src_transfer",
+    "src_primaries",
+    "src_ref_nits",
+    "src_pq_lo",
+    "src_pq_hi",
+    "dst_pq_hi",
+    "dst_headroom",
+    "encode_gamma",
+];
+
+/// The shader's color-management uniforms for a surface's image description,
+/// converted for the output being rendered (`crate::color::render_color_target`);
+/// see [`COLOR_UNIFORM_NAMES`]. `src_transfer == 0.0` is the passthrough
+/// (untagged, or sRGB in sRGB primaries).
+fn color_uniforms(
+    image_description: Option<crate::color::ImageDescription>,
+) -> [f32; COLOR_UNIFORM_NAMES.len()] {
+    let target = crate::color::render_color_target();
+    match image_description {
+        Some(description) => {
+            let primaries = match description.primaries {
+                crate::color::ColorPrimaries::Srgb => 0.0,
+                crate::color::ColorPrimaries::Bt2020 => 1.0,
+            };
+            let transfer = match description.tf {
+                // sRGB in sRGB primaries already *is* the compositing
+                // space. In a wider gamut it still needs the matrix, so it
+                // takes the decode-only branch instead of the fast path.
+                crate::color::TransferCharacteristics::Srgb if primaries == 0.0 => 0.0,
+                crate::color::TransferCharacteristics::Srgb => 3.0,
+                crate::color::TransferCharacteristics::St2084Pq => 1.0,
+                crate::color::TransferCharacteristics::ExtLinear => 2.0,
+            };
+            let luminances = description.effective_luminances();
+            // MaxCLL, or the declared maximum when it is missing or 0
+            // ("unknown"); see `ImageDescription::content_peak_nits`.
+            let max_nits = description.content_peak_nits();
+            // BT.2390 operates on PQ signals, so encode the knee here
+            // rather than paying four pow() calls per fragment for values
+            // that are constant across the surface.
+            let to_pq = |nits: f32| {
+                crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32
+            };
+            [
+                transfer,
+                primaries,
+                luminances.reference,
+                to_pq(luminances.min),
+                to_pq(max_nits),
+                // The content's reference white lands on compositing-space 1.0,
+                // so the target peak is that white times the output's headroom.
+                to_pq(luminances.reference * target.headroom),
+                target.headroom,
+                target.encode_gamma,
+            ]
+        }
+        None => [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, target.headroom, target.encode_gamma],
+    }
+}
+
+/// Whether content with this description needs converting into the
+/// compositing space, i.e. is anything but untagged or plain sRGB.
+pub fn needs_color_conversion(image_description: Option<crate::color::ImageDescription>) -> bool {
+    color_uniforms(image_description)[0] != 0.0
+}
 
 fn clipped_uniforms_debug_enabled() -> bool {
     std::env::var_os("SHOJI_CLIPPED_UNIFORMS_DEBUG")
@@ -208,17 +272,7 @@ impl ClippedSurfaceElement {
         mask_rect
     }
 
-    pub fn new(
-        renderer: &mut GlesRenderer,
-        inner: WaylandSurfaceRenderElement<GlesRenderer>,
-        output_scale: Scale<f64>,
-        clip_scale: Scale<f64>,
-        output_origin: Point<i32, Logical>,
-        clip: ContentClip,
-        forced_geometry: Option<Rectangle<i32, Physical>>,
-        debug_label: Option<String>,
-        image_description: Option<crate::color::ImageDescription>,
-    ) -> Result<Self, GlesError> {
+    fn program(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
         if renderer
             .egl_context()
             .user_data()
@@ -308,6 +362,14 @@ impl ClippedSurfaceElement {
                         "dst_pq_hi",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
+                    UniformName::new(
+                        "dst_headroom",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
+                        "encode_gamma",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
                 ],
             )?);
             renderer
@@ -316,11 +378,27 @@ impl ClippedSurfaceElement {
                 .insert_if_missing(|| compiled);
         }
 
-        let program = renderer
+        Ok(renderer
             .egl_context()
             .user_data()
             .get::<ClippedSurfaceProgram>()
-            .expect("clipped surface shader should be cached");
+            .expect("clipped surface shader should be cached")
+            .0
+            .clone())
+    }
+
+    pub fn new(
+        renderer: &mut GlesRenderer,
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        output_scale: Scale<f64>,
+        clip_scale: Scale<f64>,
+        output_origin: Point<i32, Logical>,
+        clip: ContentClip,
+        forced_geometry: Option<Rectangle<i32, Physical>>,
+        debug_label: Option<String>,
+        image_description: Option<crate::color::ImageDescription>,
+    ) -> Result<Self, GlesError> {
+        let program = Self::program(renderer)?;
 
         let element_geometry = inner.geometry(output_scale);
         // ContentClip callers pass forced_geometry when the compositor has an explicit
@@ -556,56 +634,12 @@ impl ClippedSurfaceElement {
         // here, rather than per-fragment. `src_transfer == 0.0` is the untagged
         // path and makes the shader skip the conversion, so sRGB clients are
         // byte-identical to before.
-        let (
-            src_transfer, 
-            src_primaries,
-            src_ref_nits, 
-            src_pq_lo,
-            src_pq_hi, 
-            dst_pq_hi,
-        ) = match image_description {
-            Some(description) => {
-                let primaries = match description.primaries {
-                    crate::color::ColorPrimaries::Srgb => 0.0,
-                    crate::color::ColorPrimaries::Bt2020 => 1.0,
-                };
-                let transfer = match description.tf {
-                    // sRGB in sRGB primaries already *is* the compositing
-                    // space. In a wider gamut it still needs the matrix, so it
-                    // takes the decode-only branch instead of the fast path.
-                    crate::color::TransferCharacteristics::Srgb if primaries == 0.0 => 0.0,
-                    crate::color::TransferCharacteristics::Srgb => 3.0,
-                    crate::color::TransferCharacteristics::St2084Pq => 1.0,
-                    crate::color::TransferCharacteristics::ExtLinear => 2.0,
-                };
-                let luminances = description.effective_luminances();
-                // MaxCLL, or the declared maximum when it is missing or 0
-                // ("unknown"); see `ImageDescription::content_peak_nits`.
-                let max_nits = description.content_peak_nits();
-                // BT.2390 operates on PQ signals, so encode the knee here
-                // rather than paying four pow() calls per fragment for values
-                // that are constant across the surface. The target peak is the
-                // content's own reference white, which is what compositing-space
-                // 1.0 represents.
-                let to_pq = |nits: f32| {
-                    crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32
-                };
-                (
-                    transfer,
-                    primaries,
-                    luminances.reference,
-                    to_pq(luminances.min),
-                    to_pq(max_nits),
-                    to_pq(luminances.reference),
-                )
-            }
-            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        };
+        let color = color_uniforms(image_description);
 
         Ok(Self {
             inner,
             geometry: render_geometry,
-            program: program.0.clone(),
+            program,
             debug_label,
             slot_rect: snapped_slot_rect,
             mask_rect: snapped_mask_rect,
@@ -627,12 +661,49 @@ impl ClippedSurfaceElement {
             } else {
                 0.0
             },
-            src_transfer,
-            src_primaries,
-            src_ref_nits,
-            src_pq_lo,
-            src_pq_hi,
-            dst_pq_hi,
+            color,
+        })
+    }
+
+    /// The color-management conversion alone, for a tagged surface that is not
+    /// clipped: an untransformed root surface with no ancestor clip, or a
+    /// subsurface. Nothing is cropped — the slot and mask cover the whole
+    /// element with square corners — so it draws like the raw surface element
+    /// apart from the conversion.
+    pub fn color_only(
+        renderer: &mut GlesRenderer,
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        output_scale: Scale<f64>,
+        image_description: crate::color::ImageDescription,
+    ) -> Result<Self, GlesError> {
+        let program = Self::program(renderer)?;
+        let geometry = inner.geometry(output_scale);
+        let output_scale = output_scale.x.abs().max(0.0001) as f32;
+        let whole_element = SnappedLogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: geometry.size.w as f32 / output_scale,
+            height: geometry.size.h as f32 / output_scale,
+        };
+        let color = color_uniforms(Some(image_description));
+        Ok(Self {
+            inner: ClippedSurfaceInner::Mapped(inner),
+            geometry,
+            program,
+            debug_label: None,
+            slot_rect: whole_element,
+            mask_rect: whole_element,
+            corner_radius: [0.0; 4],
+            rect_bounds_enabled: 0.0,
+            output_scale,
+            clip_scale: output_scale,
+            sample_uv_tl: [0.0; 2],
+            sample_uv_br: [1.0; 2],
+            adjusted_sample_uv_br: [1.0; 2],
+            sample_buffer_size: [1.0; 2],
+            sample_uv_snap_axes: [0.0; 2],
+            sample_uv_compensation_enabled: 0.0,
+            color,
         })
     }
 
@@ -781,13 +852,15 @@ impl ClippedSurfaceElement {
                 "sample_uv_compensation_enabled",
                 self.sample_uv_compensation_enabled,
             ),
-            Uniform::new("src_transfer", self.src_transfer),
-            Uniform::new("src_primaries", self.src_primaries),
-            Uniform::new("src_ref_nits", self.src_ref_nits),
-            Uniform::new("src_pq_lo", self.src_pq_lo),
-            Uniform::new("src_pq_hi", self.src_pq_hi),
-            Uniform::new("dst_pq_hi", self.dst_pq_hi),
         ]
+        .into_iter()
+        .chain(
+            COLOR_UNIFORM_NAMES
+                .iter()
+                .zip(self.color)
+                .map(|(name, value)| Uniform::new(*name, value)),
+        )
+        .collect()
     }
 }
 

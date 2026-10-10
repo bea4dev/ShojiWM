@@ -1045,6 +1045,12 @@ impl crate::protocols::screencopy::ScreencopyHandler for ShojiWM {
 }
 
 impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
+    fn color_management_state(
+        &mut self,
+    ) -> &mut crate::protocols::color_management::ColorManagementState {
+        &mut self.color_management_state
+    }
+
     fn output_image_description(
         &mut self,
         wl_output: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
@@ -1060,12 +1066,20 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
 
     fn surface_preferred_description(
         &mut self,
-        _surface: &WlSurface,
+        surface: &WlSurface,
     ) -> crate::color::ImageDescription {
-        // The compositor composites in sRGB, so sRGB content is what we
-        // prefer from every client regardless of the output's signal mode.
-        // Revisit when the fp16 linear blend space (phase 3) lands.
-        crate::color::ImageDescription::SRGB
+        // What the surface is mostly shown on: the HDR10 signal of an HDR
+        // output, whose target volume tells the client how far past SDR white
+        // it may go, and sRGB everywhere else. A surface not shown yet has no
+        // primary output and gets sRGB; `refresh_preferred_descriptions` tells
+        // the client once that changes.
+        let output = smithay::wayland::compositor::with_states(surface, |states| {
+            smithay::desktop::utils::surface_primary_scanout_output(surface, states)
+        });
+        output
+            .and_then(|output| self.output_color.get(output.name().as_str()))
+            .filter(|color| matches!(color.mode, crate::color::OutputColorMode::Hdr10 { .. }))
+            .map_or(crate::color::ImageDescription::SRGB, |color| color.description)
     }
 
     fn defer_image_description_info(
