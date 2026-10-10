@@ -37,6 +37,16 @@ impl WlrLayerShellHandler for ShojiWM {
         &mut self.layer_shell_state
     }
 
+    fn new_popup(
+        &mut self,
+        _parent: WlrLayerSurface,
+        popup: smithay::wayland::shell::xdg::PopupSurface,
+    ) {
+        // `xdg_surface.get_popup` arrived with a null parent, so the xdg-shell
+        // `new_popup` could not place it; the panel is only known now.
+        self.unconstrain_popup(&popup);
+    }
+
     fn new_layer_surface(
         &mut self,
         surface: WlrLayerSurface,
