@@ -1705,7 +1705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2890,7 +2890,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3278,7 +3278,7 @@ checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=000dd9834a4964d2363bb197adbcf55092909030#000dd9834a4964d2363bb197adbcf55092909030"
+source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=d995e79977d63e30e556302a347c6df8b7fd0961#d995e79977d63e30e556302a347c6df8b7fd0961"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4832,7 +4832,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6075,7 +6075,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7369,7 +7369,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8180,7 +8180,7 @@ dependencies = [
 [[package]]
 name = "wl_drm"
 version = "0.1.0"
-source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=000dd9834a4964d2363bb197adbcf55092909030#000dd9834a4964d2363bb197adbcf55092909030"
+source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=d995e79977d63e30e556302a347c6df8b7fd0961#d995e79977d63e30e556302a347c6df8b7fd0961"
 dependencies = [
  "wayland-client",
  "wayland-scanner",
@@ -8347,7 +8347,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 [[package]]
 name = "xwayland-satellite"
 version = "0.8.2"
-source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=000dd9834a4964d2363bb197adbcf55092909030#000dd9834a4964d2363bb197adbcf55092909030"
+source = "git+https://github.com/bea4dev/xwayland-satellite.git?rev=d995e79977d63e30e556302a347c6df8b7fd0961#d995e79977d63e30e556302a347c6df8b7fd0961"
 dependencies = [
  "ab_glyph",
  "anyhow",
