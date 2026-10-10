@@ -146,6 +146,7 @@ pub(crate) struct Registry {
 thread_local! {
     pub(crate) static REGISTRY: RefCell<Registry> = RefCell::new(Registry::default());
     static HOST: RefCell<Option<RuntimeHost>> = const { RefCell::new(None) };
+    static WAYLAND_DISPLAY: RefCell<Option<String>> = const { RefCell::new(None) };
     static ACTIONS: RefCell<Vec<RuntimeWindowAction>> = const { RefCell::new(Vec::new()) };
     static DIRTY_WINDOWS: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
     static LAYER_EFFECTS_DIRTY: Cell<bool> = const { Cell::new(false) };
@@ -184,6 +185,17 @@ pub(crate) fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
 
 pub(crate) fn set_host(host: RuntimeHost) {
     HOST.with(|slot| *slot.borrow_mut() = Some(host));
+}
+
+pub(crate) fn set_wayland_display(display: Option<String>) {
+    WAYLAND_DISPLAY.with(|slot| *slot.borrow_mut() = display);
+}
+
+/// The compositor's own Wayland socket name, from [`LaunchContext::wayland_display`].
+///
+/// [`LaunchContext::wayland_display`]: shojiwm_lib::runtime_api::LaunchContext::wayland_display
+pub(crate) fn wayland_display() -> Option<String> {
+    WAYLAND_DISPLAY.with(|slot| slot.borrow().clone())
 }
 
 pub(crate) fn host() -> Option<RuntimeHost> {
@@ -437,6 +449,7 @@ pub(crate) fn publish_pending() {
 pub(crate) fn reset() {
     REGISTRY.with(|registry| *registry.borrow_mut() = Registry::default());
     HOST.with(|host| *host.borrow_mut() = None);
+    WAYLAND_DISPLAY.with(|display| *display.borrow_mut() = None);
     ACTIONS.with(|actions| actions.borrow_mut().clear());
     DIRTY_WINDOWS.with(|dirty| dirty.borrow_mut().clear());
     // Cleared rather than replaced, so generations keep counting and stale

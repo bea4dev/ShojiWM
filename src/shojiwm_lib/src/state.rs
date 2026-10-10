@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     os::unix::net::UnixStream,
     process::Child,
@@ -1607,7 +1607,7 @@ impl ShojiWM {
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
         let loop_handle = event_loop.handle();
-        let mut config_runtime = Self::launch_config_runtime(event_loop, runtime);
+        let mut config_runtime = Self::launch_config_runtime(event_loop, runtime, &socket_name);
         let config_error_report = match config_runtime.preload() {
             Ok(()) => None,
             Err(error) => {
@@ -2898,6 +2898,7 @@ impl ShojiWM {
     fn launch_config_runtime(
         event_loop: &mut EventLoop<'static, Self>,
         runtime: &RuntimeBoot,
+        socket_name: &OsStr,
     ) -> RuntimeHandle {
         let host = RuntimeHost::detached();
         let (ping, ping_source) =
@@ -2915,7 +2916,7 @@ impl ShojiWM {
                 }
             })
             .expect("Failed to init runtime host source.");
-        runtime.launch(host)
+        runtime.launch_with_display(host, Some(socket_name))
     }
 
     /// Apply everything the config runtime sent through its host, oldest

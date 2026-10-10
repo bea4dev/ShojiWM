@@ -115,6 +115,7 @@ impl ReactiveRuntime {
         LAYER_OBSERVERS.with(|observers| observers.borrow_mut().clear());
         animation::reset_clock();
         runtime::set_host(context.host.clone());
+        runtime::set_wayland_display(context.wayland_display.clone());
         let root = asset_root
             .or_else(|| context.runtime_dir.clone())
             .or_else(|| {

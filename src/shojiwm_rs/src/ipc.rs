@@ -70,9 +70,16 @@ impl Client {
 }
 
 /// The socket path `shoji_wm/ipc` uses: `$XDG_RUNTIME_DIR/shojiwm-$WAYLAND_DISPLAY.sock`.
+///
+/// Inside the compositor the display is its own socket name, not
+/// `WAYLAND_DISPLAY`: the config runs before the compositor points that
+/// variable at itself, and nested in another compositor it would name the
+/// parent, whose IPC socket this would then replace.
 pub fn default_socket_path() -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
+    let display = crate::runtime::wayland_display()
+        .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
+        .unwrap_or_else(|| "wayland-0".into());
     PathBuf::from(runtime_dir).join(format!("shojiwm-{display}.sock"))
 }
 

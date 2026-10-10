@@ -381,3 +381,24 @@ fn popup_triggers_follow_compositor_events() {
         .unwrap();
     assert_eq!(open_after(&mut runtime, 1700), Some(false));
 }
+
+#[test]
+fn ipc_socket_follows_the_compositor_display_not_the_environment() {
+    thread_local! {
+        static PATH: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    // Nested, WAYLAND_DISPLAY still names the parent compositor while the
+    // config loads; the IPC socket must use the compositor's own name.
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new(|| {
+            PATH.with(|path| *path.borrow_mut() = Some(shojiwm_rs::ipc::default_socket_path()));
+        })),
+        &args,
+    )
+    .launch_with_display(host, Some(std::ffi::OsStr::new("wayland-nested-test")));
+    runtime.preload().unwrap();
+    let path = PATH.with(|path| path.borrow().clone()).unwrap();
+    assert_eq!(path.file_name().unwrap(), "shojiwm-wayland-nested-test.sock");
+}
