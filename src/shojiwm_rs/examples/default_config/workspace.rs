@@ -219,7 +219,10 @@ impl Workspace {
                 ..LayoutOptions::default()
             });
         } else if self.is_tiled {
-            let initial_rect = self.centered_floating_rect(window);
+            let initial_rect = self.cascade_floating_rect(
+                self.centered_floating_rect(window),
+                &self.visible_floating_rects(window),
+            );
             let content_rect = restored_floating
                 .unwrap_or_else(|| self.viewport_rect_to_floating_content_rect(initial_rect));
             set(window, &WINDOW_STATE_FLOATING_RECT, Some(content_rect));
@@ -229,7 +232,11 @@ impl Workspace {
                 self.floating_content_rect_to_viewport_rect(content_rect),
             );
         } else {
-            set(window, &WINDOW_STATE_RECT, self.centered_floating_rect(window));
+            let rect = self.cascade_floating_rect(
+                self.centered_floating_rect(window),
+                &self.visible_floating_rects(window),
+            );
+            set(window, &WINDOW_STATE_RECT, rect);
         }
         restored.is_some()
     }
@@ -601,6 +608,7 @@ impl Workspace {
             return;
         }
 
+        let mut restored_floating_rects = Vec::new();
         for window in self.windows.clone() {
             // A window still maximized across the switch keeps its maximized
             // rect; restoring FLOATING_RECT here would configure the client
@@ -618,11 +626,17 @@ impl Workspace {
                 continue;
             }
             if let Some(rect) = get(window, &WINDOW_STATE_FLOATING_RECT) {
+                // Tiles all remember the centered rect they were opened with,
+                // so without the cascade they would land exactly on top of
+                // each other.
                 let viewport_rect = if self.should_tile(window) {
-                    rect
+                    self.cascade_floating_rect(rect, &restored_floating_rects)
                 } else {
                     self.floating_content_rect_to_viewport_rect(rect)
                 };
+                if !get(window, &WINDOW_STATE_MINIMIZED) {
+                    restored_floating_rects.push(viewport_rect);
+                }
                 play_rect_animation(
                     window,
                     &WINDOW_STATE_RECT,
@@ -1449,6 +1463,61 @@ impl Workspace {
                 set(window, &WINDOW_STATE_RECT, rect);
             }
         }
+    }
+
+    /// Step `rect` down and to the right until its top-left corner no longer
+    /// sits on one of `occupied`'s, so windows opened at the same default
+    /// place stay distinguishable. A step past the bottom or right of the
+    /// usable area starts a new cascade from the area's top-left, one step
+    /// further right each time.
+    fn cascade_floating_rect(&self, rect: Rect, occupied: &[Rect]) -> Rect {
+        const STEP: f64 = 32.0;
+        let (mut x, mut y) = (rect.x, rect.y);
+        let is_taken = |x: f64, y: f64| {
+            occupied
+                .iter()
+                .any(|other| (other.x - x).abs() < STEP / 2.0 && (other.y - y).abs() < STEP / 2.0)
+        };
+        if !is_taken(x, y) {
+            return rect;
+        }
+        let area = output_rect(&self.monitor)
+            .map(|output| COMPOSITOR.layer.usable_area(&self.monitor).unwrap_or(output));
+        let mut restarts = 0.0;
+        for _ in 0..64 {
+            if !is_taken(x, y) {
+                break;
+            }
+            x += STEP;
+            y += STEP;
+            if let Some(area) = area
+                && (x + rect.width > area.x + area.width || y + rect.height > area.y + area.height)
+            {
+                restarts += 1.0;
+                x = area.x + restarts * STEP;
+                y = area.y;
+                if x + rect.width > area.x + area.width {
+                    // Too wide to cascade any further: give up rather than loop.
+                    return rect;
+                }
+            }
+        }
+        Rect { x, y, ..rect }
+    }
+
+    /// Viewport rects of this workspace's visible floating windows.
+    fn visible_floating_rects(&self, except: Window) -> Vec<Rect> {
+        self.windows
+            .iter()
+            .copied()
+            .filter(|current| {
+                *current != except
+                    && !get(*current, &WINDOW_STATE_MINIMIZED)
+                    && !get(*current, &WINDOW_STATE_MAXIMIZED)
+                    && (!self.is_tiled || !self.should_tile(*current))
+            })
+            .map(|current| get(current, &WINDOW_STATE_RECT))
+            .collect()
     }
 
     fn centered_floating_rect(&self, window: Window) -> Rect {

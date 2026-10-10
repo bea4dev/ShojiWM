@@ -140,6 +140,8 @@ const RESTORE_ACTIVATE_GRACE_MS = 100;
 export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
+/** Offset between floating windows that would otherwise open on the same spot. */
+const FLOATING_CASCADE_STEP = 32;
 const WINDOW_MINIMIZE_RECT_EASING = cubicBezier(0.3, -0.3, 0, 1);
 const WINDOW_UNMINIMIZE_RECT_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_MINIMIZE_OPACITY_EASING = cubicBezier(0.3, -0.3, 0, 1);
@@ -3632,7 +3634,10 @@ export class Workspace {
         preserveMissingActive: restored !== undefined,
       });
     } else if (this.isTiled) {
-      const initialRect = this.centeredFloatingRect(window);
+      const initialRect = this.cascadeFloatingRect(
+        this.centeredFloatingRect(window),
+        this.visibleFloatingRects(window),
+      );
       const contentRect =
         restored?.floatingRect ??
         this.viewportRectToFloatingContentRect(initialRect);
@@ -3641,7 +3646,12 @@ export class Workspace {
         this.floatingContentRectToViewportRect(contentRect),
       );
     } else {
-      window.state[WINDOW_STATE_RECT].set(this.centeredFloatingRect(window));
+      window.state[WINDOW_STATE_RECT].set(
+        this.cascadeFloatingRect(
+          this.centeredFloatingRect(window),
+          this.visibleFloatingRects(window),
+        ),
+      );
     }
     hotReloadDebug("workspace-add-window", {
       monitor: this.monitor,
@@ -4093,6 +4103,7 @@ export class Workspace {
       return;
     }
 
+    const restoredFloatingRects: ManagedWindowRect[] = [];
     for (const window of this.windows) {
       // A window that is still maximized across the mode switch keeps its
       // maximized rect. Restoring FLOATING_RECT here would configure the
@@ -4115,9 +4126,14 @@ export class Workspace {
       }
       const rect = window.state[WINDOW_STATE_FLOATING_RECT]();
       if (rect) {
+        // Tiles all remember the centered rect they were opened with, so
+        // without the cascade they would land exactly on top of each other.
         const viewportRect = this.shouldTile(window)
-          ? rect
+          ? this.cascadeFloatingRect(rect, restoredFloatingRects)
           : this.floatingContentRectToViewportRect(rect);
+        if (!window.state[WINDOW_STATE_MINIMIZED]()) {
+          restoredFloatingRects.push(viewportRect);
+        }
         playRectAnimation(
           window,
           WINDOW_STATE_RECT,
@@ -5174,20 +5190,97 @@ export class Workspace {
     }
   }
 
-  private centeredFloatingRect(window: WaylandWindow): ManagedWindowRect {
-    const sizeRect = this.naturalRootRect(window);
+  /** The monitor's usable area in logical coordinates, if it is known. */
+  private floatingPlacementArea():
+    | { x: number; y: number; width: number; height: number }
+    | undefined {
     const monitor = COMPOSITOR.output.current[this.monitor];
     if (!monitor?.resolution) {
+      return undefined;
+    }
+    const usableRect = COMPOSITOR.layer.usableArea(this.monitor);
+    return {
+      x: usableRect?.x ?? monitor.position.x,
+      y: usableRect?.y ?? monitor.position.y,
+      width: usableRect?.width ?? monitor.resolution.width / monitor.scale,
+      height: usableRect?.height ?? monitor.resolution.height / monitor.scale,
+    };
+  }
+
+  /**
+   * Step `rect` down and to the right until its top-left corner no longer
+   * sits on one of `occupied`'s, so windows opened at the same default place
+   * stay distinguishable instead of hiding each other exactly. A step that
+   * would push the window past the bottom or right of the usable area starts
+   * a new cascade from the area's top-left, one step further right each time.
+   */
+  private cascadeFloatingRect(
+    rect: ManagedWindowRect,
+    occupied: readonly ManagedWindowRect[],
+  ): ManagedWindowRect {
+    const corners = occupied.map((other) => ({
+      x: read(other.x),
+      y: read(other.y),
+    }));
+    const width = read(rect.width);
+    const height = read(rect.height);
+    let x = read(rect.x);
+    let y = read(rect.y);
+    const isTaken = () =>
+      corners.some(
+        (corner) =>
+          Math.abs(corner.x - x) < FLOATING_CASCADE_STEP / 2 &&
+          Math.abs(corner.y - y) < FLOATING_CASCADE_STEP / 2,
+      );
+    if (!isTaken()) {
+      return rect;
+    }
+    const area = this.floatingPlacementArea();
+    let restarts = 0;
+    for (let step = 0; step < 64 && isTaken(); step++) {
+      x += FLOATING_CASCADE_STEP;
+      y += FLOATING_CASCADE_STEP;
+      if (
+        area &&
+        (x + width > area.x + area.width || y + height > area.y + area.height)
+      ) {
+        restarts += 1;
+        x = area.x + restarts * FLOATING_CASCADE_STEP;
+        y = area.y;
+        if (x + width > area.x + area.width) {
+          // Too wide to cascade any further: give up rather than loop.
+          return rect;
+        }
+      }
+    }
+    return { x, y, width, height };
+  }
+
+  /** Viewport rects of this workspace's visible floating windows. */
+  private visibleFloatingRects(except: WaylandWindow): ManagedWindowRect[] {
+    return this.windows
+      .filter(
+        (current) =>
+          current.id !== except.id &&
+          !current.state[WINDOW_STATE_MINIMIZED]() &&
+          !current.state[WINDOW_STATE_MAXIMIZED]() &&
+          (!this.isTiled || !this.shouldTile(current)),
+      )
+      .map((current) => current.state[WINDOW_STATE_RECT]());
+  }
+
+  private centeredFloatingRect(window: WaylandWindow): ManagedWindowRect {
+    const sizeRect = this.naturalRootRect(window);
+    const area = this.floatingPlacementArea();
+    if (!area) {
       return sizeRect;
     }
-
-    const usableRect = COMPOSITOR.layer.usableArea(this.monitor);
-    const logicalWidth =
-      usableRect?.width ?? monitor.resolution.width / monitor.scale;
-    const logicalHeight =
-      usableRect?.height ?? monitor.resolution.height / monitor.scale;
-    const logicalX = usableRect?.x ?? monitor.position.x;
-    const logicalY = usableRect?.y ?? monitor.position.y;
+    const {
+      x: logicalX,
+      y: logicalY,
+      width: logicalWidth,
+      height: logicalHeight,
+    } = area;
 
     let width = read(sizeRect.width);
     let height = read(sizeRect.height);
