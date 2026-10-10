@@ -1,15 +1,17 @@
 //! Two-stage HDR10 output pipeline.
 //!
-//! Stage 1 composites the output's full element list (windows, decorations,
-//! effects, cursor, overlays) into a persistent fp16 offscreen texture with
-//! its own damage tracker — the same pattern `render_output_capture_mirror`
-//! uses for screencopy, so damage semantics are identical.
+//! Stage 1 composites the output's element list (windows, decorations,
+//! effects, overlays; the cursor too unless it goes on the cursor plane, see
+//! `hdr_cursor`) into a persistent fp16 offscreen texture with its own damage
+//! tracker — the same pattern `render_output_capture_mirror` uses for
+//! screencopy, so damage semantics are identical.
 //!
 //! Stage 2 hands the DRM pass a single [`HdrEncodeElement`] that draws the
 //! intermediate through `output_encode.frag`: SDR EOTF decode (pure gamma,
 //! not the piecewise sRGB curve — see the shader) →
 //! BT.709→BT.2020 gamut matrix → scale to `sdr_nits` absolute luminance →
-//! ST 2084 (PQ) encode, straight into the 10-bit scanout buffer.
+//! ST 2084 (PQ) encode, straight into the 10-bit scanout buffer. The element
+//! carries stage 1's damage, so only what changed is re-encoded.
 //!
 //! Compositing itself still happens on sRGB-encoded values: per-element
 //! linearization needs sRGB texture views across every draw program and is
@@ -26,7 +28,7 @@ use smithay::{
             GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
             UniformType, UniformValue,
         },
-        utils::{CommitCounter, OpaqueRegions},
+        utils::{CommitCounter, DamageBag, DamageSet, DamageSnapshot, OpaqueRegions},
     },
     output::Output,
     utils::{Buffer, Physical, Rectangle, Scale, Size, Transform, user_data::UserDataMap},
@@ -127,6 +129,43 @@ pub(crate) fn sdr_reference_gamma() -> f32 {
     })
 }
 
+/// Everything the PQ encode depends on besides the intermediate's pixels.
+/// Shared by the encode pass and the hardware cursor (`hdr_cursor`), which
+/// has to reproduce the pass on the CPU.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EncodeParams {
+    pub sdr_nits: f32,
+    pub sdr_gamma: f32,
+    pub peak_nits: f32,
+    /// Compositing primaries -> BT.2020, column-major.
+    pub compositing_to_bt2020: [f32; 9],
+}
+
+impl EncodeParams {
+    pub fn new(
+        sdr_white_nits: f32,
+        peak_nits: f32,
+        compositing_primaries: crate::color::primaries::PrimariesChromaticities,
+    ) -> Self {
+        Self {
+            sdr_nits: sdr_white_nits,
+            sdr_gamma: sdr_reference_gamma(),
+            peak_nits,
+            compositing_to_bt2020: crate::color::colorimetry::to_gl_mat3(
+                &crate::color::colorimetry::chromaticity_conversion_matrix(
+                    compositing_primaries,
+                    crate::color::primaries::BT2020,
+                ),
+            ),
+        }
+    }
+}
+
+/// Damage commits kept for the encode element. The DRM swapchain asks for
+/// damage since the commit it last showed in a buffer, at most a few frames
+/// back; anything older gets a full re-encode.
+const ENCODE_DAMAGE_HISTORY: usize = 8;
+
 struct HdrEncodeProgram(
     GlesTexProgram
 );
@@ -192,7 +231,12 @@ pub struct HdrPipeline {
     /// Stable element id so the DRM damage tracker sees one persistent
     /// element instead of a brand-new fullscreen quad every frame.
     element_id: Id,
-    commit_counter: CommitCounter,
+    /// Stage-1 damage per commit, so the DRM pass re-encodes only what
+    /// changed instead of the whole output.
+    damage: DamageBag<i32, Physical>,
+    /// Parameters the last frame was encoded with; a change re-encodes
+    /// everything.
+    params: Option<EncodeParams>,
     /// The texture holds last frame's composite (buffer age 1) once we've
     /// rendered at least once without errors.
     contents_valid: bool,
@@ -218,9 +262,7 @@ pub fn render_hdr_pipeline<E>(
     output: &Output,
     elements: &[E],
     clear_color: [f32; 4],
-    sdr_white_nits: f32,
-    peak_nits: f32,
-    compositing_primaries: crate::color::primaries::PrimariesChromaticities,
+    params: EncodeParams,
 ) -> Result<Option<(HdrEncodeElement, RenderElementStates)>, Box<dyn std::error::Error>>
 where
     E: RenderElement<GlesRenderer>,
@@ -275,7 +317,8 @@ where
             scale,
             transform,
             element_id: Id::new(),
-            commit_counter: CommitCounter::default(),
+            damage: DamageBag::new(ENCODE_DAMAGE_HISTORY),
+            params: None,
             contents_valid: false,
         });
     }
@@ -310,12 +353,12 @@ where
                 ), 
             )
     };
-    let (damaged, stage1_states) = match render_result {
+    let (damage, stage1_states) = match render_result {
         Ok(
             result
         ) => (
             result.damage
-                .is_some(),
+                .cloned(),
             result.states,
         ),
         Err(
@@ -330,9 +373,15 @@ where
         }
     };
     pipeline.contents_valid = true;
-    if damaged {
-        pipeline.commit_counter
-            .increment();
+    // The intermediate is upright at the origin, exactly like the encode
+    // element's geometry, so its damage is the element's damage as is.
+    if pipeline.params != Some(params) {
+        pipeline.params = Some(params);
+        pipeline.damage.add([Rectangle::from_size(size)]);
+    } else if let Some(damage) = damage
+        && !damage.is_empty()
+    {
+        pipeline.damage.add(damage);
     }
 
     let buffer_size = size
@@ -344,7 +393,7 @@ where
     Ok(Some((HdrEncodeElement {
         id: pipeline.element_id
             .clone(),
-        commit: pipeline.commit_counter,
+        damage: pipeline.damage.snapshot(),
         texture: pipeline.texture
             .clone(),
         program,
@@ -357,15 +406,7 @@ where
         geometry: Rectangle::from_size(
             size
         ),
-        sdr_nits: sdr_white_nits,
-        sdr_gamma: sdr_reference_gamma(),
-        peak_nits,
-        compositing_to_bt2020: crate::color::colorimetry::to_gl_mat3(
-            &crate::color::colorimetry::chromaticity_conversion_matrix(
-                compositing_primaries,
-                crate::color::primaries::BT2020,
-            ),
-        ),
+        params,
     }, stage1_states)))
 }
 
@@ -373,16 +414,12 @@ where
 /// shader. Reports itself opaque so the DRM compositor skips the clear.
 pub struct HdrEncodeElement {
     id: Id,
-    commit: CommitCounter,
+    damage: DamageSnapshot<i32, Physical>,
     texture: GlesTexture,
     program: GlesTexProgram,
     src: Rectangle<f64, Buffer>,
     geometry: Rectangle<i32, Physical>,
-    sdr_nits: f32,
-    sdr_gamma: f32,
-    peak_nits: f32,
-    /// Compositing primaries -> BT.2020, column-major.
-    compositing_to_bt2020: [f32; 9],
+    params: EncodeParams,
 }
 
 impl Element for HdrEncodeElement {
@@ -395,7 +432,17 @@ impl Element for HdrEncodeElement {
     fn current_commit(
         &self
     ) -> CommitCounter {
-        self.commit
+        self.damage.current_commit()
+    }
+
+    fn damage_since(
+        &self,
+        _scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.damage
+            .damage_since(commit)
+            .unwrap_or_else(|| DamageSet::from_slice(&[Rectangle::from_size(self.geometry.size)]))
     }
 
     fn src(
@@ -455,13 +502,13 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
             1.0,
             Some(&self.program),
             &[
-                Uniform::new("sdr_nits", self.sdr_nits),
-                Uniform::new("sdr_gamma", self.sdr_gamma),
-                Uniform::new("peak_nits", self.peak_nits),
+                Uniform::new("sdr_nits", self.params.sdr_nits),
+                Uniform::new("sdr_gamma", self.params.sdr_gamma),
+                Uniform::new("peak_nits", self.params.peak_nits),
                 Uniform::new(
                     "compositing_to_bt2020",
                     UniformValue::Matrix3x3 {
-                        matrices: vec![self.compositing_to_bt2020],
+                        matrices: vec![self.params.compositing_to_bt2020],
                         transpose: false,
                     },
                 ),

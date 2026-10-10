@@ -479,9 +479,7 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
             &output,
             &[element],
             [0.0, 0.0, 0.0, 1.0],
-            203.0,
-            1000.0,
-            crate::color::primaries::SRGB,
+            crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, crate::color::primaries::SRGB),
         )
         .expect("HDR pipeline should render")
         .expect("output has a mode");
@@ -561,9 +559,7 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
         &output,
         &elements,
         [0.0, 0.0, 0.0, 1.0],
-        SDR_WHITE,
-        PEAK,
-        crate::color::primaries::SRGB,
+        crate::backend::hdr_pipeline::EncodeParams::new(SDR_WHITE, PEAK, crate::color::primaries::SRGB),
     )
     .expect("HDR pipeline should render")
     .expect("output has a mode");
@@ -646,9 +642,7 @@ fn encode_solid(
         &output,
         &[element],
         [0.0, 0.0, 0.0, 1.0],
-        203.0,
-        1000.0,
-        primaries,
+        crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, primaries),
     )
     .expect("HDR pipeline should render")
     .expect("output has a mode");
@@ -703,4 +697,131 @@ fn hdr_encode_takes_compositing_primaries_into_bt2020() {
     let srgb = encode_solid(&mut renderer, [1.0, 0.0, 0.0], SRGB);
     let wide = encode_solid(&mut renderer, [1.0, 0.0, 0.0], native);
     assert!((srgb[1] - wide[1]).abs() > 5.0 / 255.0, "{srgb:?} vs {wide:?}");
+}
+
+/// The encode element reports only what stage 1 redrew, so the DRM pass
+/// re-encodes a moved window's old and new rectangles instead of the whole
+/// output, and a change of encode parameters re-encodes everything.
+#[test]
+fn hdr_encode_damage_follows_stage1_damage() {
+    use crate::backend::hdr_pipeline::{EncodeParams, render_hdr_pipeline};
+    use smithay::backend::renderer::element::Element;
+    use smithay::utils::Scale;
+    use smithay::output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel};
+
+    let Some(mut renderer) = try_renderer() else {
+        eprintln!("skipping: no GPU render node available");
+        return;
+    };
+    let output = Output::new(
+        "HDR-DAMAGE".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "probe".into(),
+            model: "probe".into(),
+            serial_number: "probe".into(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode { size: (100, 100).into(), refresh: 60_000 }),
+        Some(Transform::Normal),
+        Some(OutputScale::Integer(1)),
+        None,
+    );
+    let buffer = SolidColorBuffer::new(
+        Size::<i32, smithay::utils::Logical>::from((10, 10)),
+        [1.0, 0.5, 0.25, 1.0],
+    );
+    let at = |x: i32, y: i32| {
+        SolidColorRenderElement::from_buffer(
+            &buffer,
+            Point::<i32, smithay::utils::Physical>::from((x, y)),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        )
+    };
+    let params = EncodeParams::new(203.0, 1000.0, crate::color::primaries::SRGB);
+    let mut pipeline = None;
+    let mut render = |element, params| {
+        render_hdr_pipeline(
+            &mut renderer,
+            &mut pipeline,
+            &output,
+            &[element],
+            [0.0, 0.0, 0.0, 1.0],
+            params,
+        )
+        .expect("HDR pipeline should render")
+        .expect("output has a mode")
+        .0
+    };
+    let scale = Scale::from(1.0);
+    let damage_of = |encode: &crate::backend::hdr_pipeline::HdrEncodeElement, since| {
+        encode.damage_since(scale, Some(since)).into_iter().collect::<Vec<_>>()
+    };
+    let full = Rectangle::<i32, smithay::utils::Physical>::from_size((100, 100).into());
+
+    let first = render(at(10, 10), params);
+    let first_commit = first.current_commit();
+
+    let unchanged = render(at(10, 10), params);
+    assert_eq!(unchanged.current_commit(), first_commit);
+    assert!(damage_of(&unchanged, first_commit).is_empty());
+
+    let moved = render(at(50, 60), params);
+    let damage = damage_of(&moved, first_commit);
+    assert!(!damage.is_empty());
+    assert!(!damage.contains(&full), "{damage:?}");
+    for rect in [Rectangle::new((10, 10).into(), (10, 10).into()), Rectangle::new((50, 60).into(), (10, 10).into())] {
+        assert!(
+            damage.iter().any(|damaged| damaged.contains_rect(rect)),
+            "{rect:?} missing from {damage:?}"
+        );
+    }
+    let covered: i32 = damage.iter().map(|rect| rect.size.w * rect.size.h).sum();
+    assert!(covered < 100 * 100 / 4, "{damage:?}");
+
+    let brighter = render(at(50, 60), EncodeParams::new(300.0, 1000.0, crate::color::primaries::SRGB));
+    assert_eq!(damage_of(&brighter, moved.current_commit()), vec![full]);
+
+    // A commit the history no longer holds is a full re-encode too.
+    assert_eq!(
+        brighter.damage_since(scale, None).into_iter().collect::<Vec<_>>(),
+        vec![full]
+    );
+}
+
+/// The hardware cursor on HDR outputs is encoded on the CPU; it has to come
+/// out as the encode pass would have drawn the same pixel.
+#[test]
+fn hdr_cursor_cpu_encode_matches_the_encode_pass() {
+    use crate::color::primaries::{Chromaticity, PrimariesChromaticities, SRGB};
+
+    let Some(mut renderer) = try_renderer() else {
+        eprintln!("skipping: no GPU render node available");
+        return;
+    };
+    let native = PrimariesChromaticities {
+        red: Chromaticity { x: 0.6826, y: 0.3164 },
+        green: Chromaticity { x: 0.2451, y: 0.7139 },
+        blue: Chromaticity { x: 0.1396, y: 0.0439 },
+        white: Chromaticity { x: 0.3125, y: 0.3291 },
+    };
+    for primaries in [SRGB, native] {
+        let params = crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, primaries);
+        for pixel in [[255u8, 255, 255], [128, 128, 128], [200, 40, 90], [10, 230, 60]] {
+            let gpu = encode_solid(&mut renderer, pixel.map(|value| value as f32 / 255.0), primaries);
+            let cpu = crate::backend::hdr_cursor::encode_pixel(pixel, 255, &params);
+            for channel in 0..3 {
+                assert!(
+                    (gpu[channel] * 255.0 - cpu[channel] as f32).abs() <= 1.0,
+                    "{primaries:?} {pixel:?} channel {channel}: GPU {} CPU {}",
+                    gpu[channel] * 255.0,
+                    cpu[channel]
+                );
+            }
+        }
+    }
 }

@@ -432,6 +432,9 @@ pub struct ShojiWM {
     pub output_color: HashMap<String, crate::color::OutputColorState>,
     /// Per-output fp16 composite + PQ encode state for HDR10 outputs.
     pub hdr_pipelines: HashMap<String, crate::backend::hdr_pipeline::HdrPipeline>,
+    /// Per-output PQ-encoded cursor images for the hardware cursor on HDR10
+    /// outputs.
+    pub hdr_cursor_caches: HashMap<String, crate::backend::hdr_cursor::HdrCursorCache>,
     pub managed_window_animations: HashMap<String, BTreeMap<String, ActiveManagedWindowAnimation>>,
     pub managed_window_animation_sequence: u64,
     pub runtime_output_configs: std::collections::BTreeMap<String, RuntimeOutputConfig>,
@@ -1782,6 +1785,7 @@ impl ShojiWM {
             runtime_output_globals: Default::default(),
             output_color: Default::default(),
             hdr_pipelines: Default::default(),
+            hdr_cursor_caches: Default::default(),
             managed_window_animations: Default::default(),
             managed_window_animation_sequence: 0,
             runtime_output_configs: Default::default(),
@@ -3616,6 +3620,7 @@ impl ShojiWM {
             );
             self.output_capture_mirrors.remove(&name);
             self.hdr_pipelines.remove(&name);
+            self.hdr_cursor_caches.remove(&name);
             self.runtime_animation_outputs.remove(&name);
             self.layer_effect_evaluation_cache.remove(&name);
             self.popup_effect_evaluation_cache.remove(&name);

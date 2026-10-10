@@ -2843,6 +2843,15 @@ fn render_queued_surface_after_frame_finish(
 
 /// Kill switch for the cursor-plane fast path: `SHOJI_CURSOR_FAST_PATH=0`
 /// falls back to full renders for every pointer motion.
+/// Hardware cursor on HDR10 outputs (`hdr_cursor`); `SHOJI_HDR_SOFTWARE_CURSOR=1`
+/// composites the cursor into the encode pass instead.
+fn hdr_hardware_cursor_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("SHOJI_HDR_SOFTWARE_CURSOR").is_ok_and(|value| value == "1")
+    })
+}
+
 pub fn cursor_fast_path_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -3512,6 +3521,7 @@ render_elements! {
     TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>>,
     Cursor=PointerRenderElement<GlesRenderer>,
     HdrEncode=crate::backend::hdr_pipeline::HdrEncodeElement,
+    HdrCursor=crate::backend::hdr_cursor::PqCursorElement,
 }
 
 fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
@@ -3537,6 +3547,7 @@ fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
         TtyRenderElements::TransformedBackdrop(_) => "TransformedBackdrop",
         TtyRenderElements::Cursor(_) => "Cursor",
         TtyRenderElements::HdrEncode(_) => "HdrEncode",
+        TtyRenderElements::HdrCursor(_) => "HdrCursor",
         _ => "Generic",
     }
 }
@@ -3670,7 +3681,9 @@ impl<'a> ProfiledTtyRenderElement<'a> {
             TtyRenderElements::Backdrop(_)
             | TtyRenderElements::RelocatedBackdrop(_)
             | TtyRenderElements::TransformedBackdrop(_) => "tty-element-backdrop-draw",
-            TtyRenderElements::Cursor(_) => "tty-element-cursor-draw",
+            TtyRenderElements::Cursor(_) | TtyRenderElements::HdrCursor(_) => {
+                "tty-element-cursor-draw"
+            }
             _ => "tty-element-generic-draw",
         };
         Self { inner, draw_label }
@@ -5042,11 +5055,14 @@ fn render_surface(
             elements.extend(content_for_capture);
         }
 
-        // HDR10 outputs composite the full element list (cursor and overlays
-        // included — anything drawn outside the encode pass would end up
-        // sRGB-encoded inside a PQ signal) into the fp16 intermediate, and
-        // the DRM pass renders a single PQ-encode element instead.
+        // HDR10 outputs composite the element list into the fp16
+        // intermediate, and the DRM pass renders a single PQ-encode element
+        // instead: anything drawn outside the encode pass would end up
+        // sRGB-encoded inside a PQ signal. The one exception is the cursor,
+        // which is PQ-encoded on the CPU (`hdr_cursor`) and kept out of the
+        // composite so it can go on the cursor plane.
         let mut hdr_encode_active = false;
+        let mut hdr_hardware_cursor = false;
         let mut hdr_stage1_states = None;
         if let Some(crate::color::OutputColorMode::Hdr10 {
             max_display_luminance,
@@ -5060,6 +5076,32 @@ fn render_surface(
         {
             let output_name = output
                 .name();
+            let encode_params = crate::backend::hdr_pipeline::EncodeParams::new(
+                sdr_white_luminance,
+                max_display_luminance,
+                sdr_primaries,
+            );
+            // A cross-GPU output gets its frame as one texture from the render
+            // GPU and cannot use planes of its own; it keeps the software cursor.
+            let hdr_cursor_elements = if surface.cross_gpu.is_none() && hdr_hardware_cursor_enabled() {
+                let cursor = elements
+                    .iter()
+                    .filter_map(|element| match element {
+                        TtyRenderElements::Cursor(cursor) => Some(cursor),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                state
+                    .hdr_cursor_caches
+                    .entry(output_name.clone())
+                    .or_default()
+                    .convert(&mut *renderer, &cursor, scale, encode_params)
+            } else {
+                None
+            };
+            if hdr_cursor_elements.is_some() {
+                elements.retain(|element| !matches!(element, TtyRenderElements::Cursor(_)));
+            }
             let mut pipeline = state.hdr_pipelines
                 .remove(
                     &output_name
@@ -5072,16 +5114,20 @@ fn render_surface(
                 &output,
                 &elements,
                 CLEAR_COLOR,
-                sdr_white_luminance,
-                max_display_luminance,
-                sdr_primaries,
+                encode_params,
             ) {
                 Ok(
                     Some(
                         (encode_element, stage1_states)
                     )
                 ) => {
-                    elements = vec![TtyRenderElements::HdrEncode(encode_element)];
+                    elements = hdr_cursor_elements
+                        .into_iter()
+                        .flatten()
+                        .map(TtyRenderElements::HdrCursor)
+                        .collect();
+                    hdr_hardware_cursor = !elements.is_empty();
+                    elements.push(TtyRenderElements::HdrEncode(encode_element));
                     hdr_encode_active = true;
                     // Stage 1 saw the real element list; the DRM pass will not.
                     // Keep its states so the client surfaces below still count
@@ -5118,6 +5164,7 @@ fn render_surface(
                     output.name()
                         .as_str()
                 );
+            state.hdr_cursor_caches.remove(output.name().as_str());
         }
 
         let fullscreen_scanout_candidate = if fullscreen_overlay_visible {
@@ -5197,7 +5244,13 @@ fn render_surface(
         if hdr_encode_active {
             // Nothing may bypass the encode pass: direct scanout or plane
             // promotion would put sRGB pixels straight into the PQ signal.
-            frame_flags = FrameFlags::empty();
+            // Only the cursor plane stays, and only for a cursor encoded
+            // already.
+            frame_flags = if hdr_hardware_cursor {
+                frame_flags.intersection(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT)
+            } else {
+                FrameFlags::empty()
+            };
         }
         // Keep every real damage frame asynchronous for the whole tearing period. In
         // particular, a visible software-cursor update must not fall back to a synced flip:
@@ -12656,6 +12709,7 @@ fn connector_disconnected(
     // and position immediately. The TS runtime suppresses unchanged configuration payloads, so
     // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
     state.hdr_pipelines.remove(&output_name);
+    state.hdr_cursor_caches.remove(&output_name);
     state.runtime_animation_outputs.remove(&output_name);
     state.damage_blink_visible.remove(&output_name);
     state.damage_blink_pending.remove(&output_name);
