@@ -748,11 +748,41 @@ pub struct CompositionTargets {
     textures: HashMap<String, TextureTarget>,
     scenes: HashMap<String, super::scene3d::Scene3dTarget>,
     solids: HashMap<String, (Id, [f32; 4], Rectangle<i32, Physical>, CommitCounter)>,
-    pub presented: RenderElementStates,
-    pub output_states: RenderElementStates,
+    // Composition sources determine callback eligibility even outside native window geometry.
+    // Direct native snapshots do not opt a window into composition output selection.
+    presented_sources: RenderElementStates,
+    // Output selection must also account for larger native views and their snapshots.
+    effective_output_states: RenderElementStates,
 }
 
 impl CompositionTargets {
+    pub fn presented_sources(&self) -> &RenderElementStates {
+        &self.presented_sources
+    }
+
+    pub fn effective_output_states(&self) -> &RenderElementStates {
+        &self.effective_output_states
+    }
+
+    /// Both reports describe the same output frame; replacing only one can retain
+    /// callback eligibility from a frame different from the one used for selection.
+    pub fn update_presentation(
+        &mut self,
+        presented_sources: RenderElementStates,
+        effective_output_states: RenderElementStates,
+    ) {
+        debug_assert!(presented_sources.states.keys().all(|id| {
+            !presented_sources.element_was_presented(id.clone())
+                || effective_output_states.element_was_presented(id.clone())
+        }));
+        self.presented_sources = presented_sources;
+        self.effective_output_states = effective_output_states;
+    }
+
+    pub fn clear_presentation(&mut self) {
+        self.update_presentation(Default::default(), Default::default());
+    }
+
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty() && self.scenes.is_empty() && self.solids.is_empty()
     }

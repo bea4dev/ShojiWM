@@ -5145,6 +5145,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "wayland-backend",
+ "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-scanner",

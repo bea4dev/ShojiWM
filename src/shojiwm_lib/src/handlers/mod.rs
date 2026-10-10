@@ -240,8 +240,7 @@ impl SessionLockHandler for ShojiWM {
         self.output_overlays.clear();
         self.session_lock_active = true;
         for targets in self.composition_targets.values_mut() {
-            targets.presented.states.clear();
-            targets.output_states.states.clear();
+            targets.clear_presentation();
         }
         self.layer_shell_on_demand_focus = None;
         // Park the focus owner rather than dropping it: `unlock` restores it.

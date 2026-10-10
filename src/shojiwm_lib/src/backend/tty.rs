@@ -1762,8 +1762,7 @@ pub fn sync_output_power(state: &mut ShojiWM) {
             surface.power_generation = surface.power_generation.wrapping_add(1);
             if off {
                 if let Some(targets) = state.composition_targets.get_mut(&name) {
-                    targets.presented.states.clear();
-                    targets.output_states.states.clear();
+                    targets.clear_presentation();
                 }
                 power_off_surface(surface, session_active);
                 powered_off.push((*node, *crtc, surface.power_generation));
@@ -5697,11 +5696,13 @@ fn render_surface(
             );
         }
         if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
-            targets.presented = composition_states;
-            targets.output_states = effective_render_states_storage
-                .as_ref()
-                .unwrap_or(&result.states)
-                .clone();
+            targets.update_presentation(
+                composition_states,
+                effective_render_states_storage
+                    .as_ref()
+                    .unwrap_or(&result.states)
+                    .clone(),
+            );
         }
         let effective_render_states = effective_render_states_storage
             .as_ref()
@@ -5722,10 +5723,13 @@ fn render_surface(
             session_lock_surface_for_output.as_ref(),
             effective_render_states,
             window_decorations,
-        );
-        crate::presentation::restore_composition_primary_outputs(
-            &state.space,
-            &state.composition_targets,
+            &crate::presentation::WindowPrimaryOutputContext {
+                composition_targets: &state.composition_targets,
+                snapshot_window_ids: (!result.is_empty && !state.session_lock_active)
+                    .then_some(&state.transform_snapshot_window_ids),
+                restore_presented: !result.is_empty && !state.session_lock_active,
+                restore_replacements: !result.is_empty && !state.session_lock_active,
+            },
         );
         for window in state.space.elements_for_output(&output) {
             window.send_dmabuf_feedback(
@@ -5774,11 +5778,6 @@ fn render_surface(
             );
         }
         if !result.is_empty {
-            restore_presented_window_surface_primary_outputs(
-                &state.space,
-                &output,
-                effective_render_states,
-            );
             if frame_liveness_debug_enabled() {
                 tracing::info!(
                     output = %output.name(),
@@ -5796,122 +5795,6 @@ fn render_surface(
                 );
             }
             trace!(output = %output.name(), "queueing tty frame");
-            // Windows rendered via full-window snapshot have their wl_surfaces composited
-            // into an offscreen texture rather than the DRM framebuffer. Those surfaces are
-            // therefore absent from result.states, so update_primary_scanout_output above
-            // clears their SurfacePrimaryScanoutOutput to None. That in turn makes
-            // send_frame_callbacks_for_output skip them entirely, causing the client (e.g.
-            // Chrome at visual scale=0.9) to fall back to a ~0.6 fps background rate.
-            //
-            // Fix: for every window currently rendered via snapshot, mark all its wl_surfaces
-            // as presented on this output so their primary-scanout assignment is restored
-            // before frame callbacks are sent. This covers stationary snapshot windows too: a
-            // window kept scaled (a zoomed-out workspace) is visible and must keep updating.
-            if !state.transform_snapshot_window_ids.is_empty() {
-                if crate::env_flag!("SHOJI_FRAME_THROTTLE_DEBUG") {
-                    tracing::info!(
-                        output = %output.name(),
-                        snapshot_ids_count = state.transform_snapshot_window_ids.len(),
-                        "snapshot fix: transform_snapshot_window_ids non-empty",
-                    );
-                }
-
-                let snapshot_windows: Vec<_> = state
-                    .space
-                    .elements_for_output(&output)
-                    .filter(|w| {
-                        state
-                            .window_decorations
-                            .get(*w)
-                            .map(|d| state.transform_snapshot_window_ids.contains(&d.snapshot.id))
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-                    .collect();
-
-                if crate::env_flag!("SHOJI_FRAME_THROTTLE_DEBUG") {
-                    for window in &snapshot_windows {
-                        let app_id = window
-                            .toplevel()
-                            .and_then(|t| {
-                                smithay::wayland::compositor::with_states(
-                                    t.wl_surface(),
-                                    |states| {
-                                        states
-                                            .data_map
-                                            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                                            .map(|d| d.lock().ok()?.app_id.clone())
-                                    },
-                                )
-                            })
-                            .flatten();
-                        tracing::info!(
-                            output = %output.name(),
-                            app_id = ?app_id,
-                            "snapshot fix: window in snapshot_windows — synthetic primary will be SET",
-                        );
-                    }
-                }
-
-                for window in snapshot_windows {
-                    crate::presentation::restore_primary_scanout_for_offscreen_window(
-                        &window, &output,
-                    );
-                }
-            }
-            let replace_effect_windows: Vec<_> = state
-                .space
-                .elements_for_output(&output)
-                .filter(|window| {
-                    state
-                        .window_decorations
-                        .get(*window)
-                        .and_then(|decoration| decoration.window_effects.as_ref())
-                        .and_then(|effects| effects.replace.as_ref())
-                        .is_some()
-                })
-                .cloned()
-                .collect();
-            if !replace_effect_windows.is_empty() {
-                use smithay::backend::renderer::element::{
-                    Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
-                };
-                use smithay::desktop::utils::update_surface_primary_scanout_output;
-
-                for window in replace_effect_windows {
-                    // Replacement effects render the client into an offscreen texture and then
-                    // present that texture instead of the original surface element. Without this
-                    // synthetic state, primary-scanout bookkeeping is cleared and visible clients
-                    // only receive throttled frame callbacks, making text input appear late.
-                    let mut synthetic_states = RenderElementStates::default();
-                    window.with_surfaces(|surface, _| {
-                        synthetic_states.states.insert(
-                            Id::from_wayland_resource(surface),
-                            RenderElementState {
-                                visible_area: usize::MAX,
-                                presentation_state: RenderElementPresentationState::Rendering {
-                                    reason: None,
-                                },
-                                needs_capture: false,
-                            },
-                        );
-                    });
-                    window.with_surfaces(|surface, states| {
-                        update_surface_primary_scanout_output(
-                            surface,
-                            &output,
-                            states,
-                            None,
-                            &synthetic_states,
-                            crate::presentation::area_primary_scanout_compare,
-                        );
-                    });
-                }
-            }
-            crate::presentation::restore_composition_primary_outputs(
-                &state.space,
-                &state.composition_targets,
-            );
             let output_presentation_feedback = take_presentation_feedback(
                 &output,
                 &state.space,
@@ -7719,51 +7602,6 @@ fn layer_effect_element_state(
         state.commit_counter.increment();
     }
     (state.id.clone(), state.commit_counter)
-}
-
-fn restore_presented_window_surface_primary_outputs(
-    space: &smithay::desktop::Space<smithay::desktop::Window>,
-    output: &Output,
-    render_element_states: &smithay::backend::renderer::element::RenderElementStates,
-) {
-    use smithay::backend::renderer::element::{
-        Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
-    };
-    use smithay::desktop::utils::update_surface_primary_scanout_output;
-
-    for window in space.elements_for_output(output) {
-        let mut window_had_presented_surface = false;
-        window.with_surfaces(|surface, _| {
-            if render_element_states.element_was_presented(Id::from_wayland_resource(surface)) {
-                window_had_presented_surface = true;
-            }
-        });
-        if !window_had_presented_surface {
-            continue;
-        }
-
-        let mut synthetic_states = RenderElementStates::default();
-        window.with_surfaces(|surface, _| {
-            synthetic_states.states.insert(
-                Id::from_wayland_resource(surface),
-                RenderElementState {
-                    visible_area: usize::MAX,
-                    presentation_state: RenderElementPresentationState::Rendering { reason: None },
-                    needs_capture: false,
-                },
-            );
-        });
-        window.with_surfaces(|surface, states| {
-            update_surface_primary_scanout_output(
-                surface,
-                output,
-                states,
-                None,
-                &synthetic_states,
-                crate::presentation::area_primary_scanout_compare,
-            );
-        });
-    }
 }
 
 fn window_effect_elements(

@@ -1244,13 +1244,19 @@ pub fn init_winit(
 
                         if elements.is_empty() {
                             if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
-                                targets.presented.states.clear();
-                                targets.output_states.states.clear();
+                                targets.clear_presentation();
                             }
-                            update_primary_scanout_output(&state.space, &output, &state.cursor_status,
+                            update_primary_scanout_output(
+                                &state.space, &output, &state.cursor_status,
                                 state.session_lock_surface_for_output(&output).as_ref(),
-                                &Default::default(), &state.window_decorations);
-                            crate::presentation::restore_composition_primary_outputs(&state.space, &state.composition_targets);
+                                &Default::default(), &state.window_decorations,
+                                &crate::presentation::WindowPrimaryOutputContext {
+                                    composition_targets: &state.composition_targets,
+                                    snapshot_window_ids: None,
+                                    restore_presented: false,
+                                    restore_replacements: false,
+                                },
+                            );
                         }
                         if !elements.is_empty() {
                             let frame_target = state.clock.now()
@@ -1283,8 +1289,7 @@ pub fn init_winit(
                                     );
                                 }
                                 if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
-                                    targets.presented = composition_states;
-                                    targets.output_states = effective_render_states.clone();
+                                    targets.update_presentation(composition_states, effective_render_states.clone());
                                 }
                                 if manual_invalidate_debug_enabled() {
                                     info!(
@@ -1301,23 +1306,14 @@ pub fn init_winit(
                                     state.session_lock_surface_for_output(&output).as_ref(),
                                     &effective_render_states,
                                     &state.window_decorations,
+                                    &crate::presentation::WindowPrimaryOutputContext {
+                                        composition_targets: &state.composition_targets,
+                                        snapshot_window_ids: (!state.session_lock_active)
+                                            .then_some(&state.transform_snapshot_window_ids),
+                                        restore_presented: false,
+                                        restore_replacements: false,
+                                    },
                                 );
-                                // Windows drawn through a full-window snapshot have no surface
-                                // element in the render states; keep them on this output so their
-                                // frame callbacks are not throttled (see the tty backend).
-                                for window in state.space.elements_for_output(&output) {
-                                    if state.window_decorations.get(window).is_some_and(|decoration| {
-                                        state
-                                            .transform_snapshot_window_ids
-                                            .contains(&decoration.snapshot.id)
-                                    }) {
-                                        crate::presentation::restore_primary_scanout_for_offscreen_window(
-                                            window, &output,
-                                        );
-                                    }
-                                }
-
-                                crate::presentation::restore_composition_primary_outputs(&state.space, &state.composition_targets);
                                 let frame_time = Duration::from(state.clock.now())
                                     + output
                                         .current_mode()
