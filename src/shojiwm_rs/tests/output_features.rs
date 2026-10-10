@@ -72,6 +72,7 @@ fn output(name: &str) -> WaylandOutputSnapshot {
             width: 1920,
             height: 1080,
             refresh_rate: 60.0,
+            clock_khz: None,
         }),
         position: OutputPositionSnapshot { x: 0, y: 0 },
         scale: 1.0,
@@ -79,6 +80,8 @@ fn output(name: &str) -> WaylandOutputSnapshot {
         available_modes: Vec::new(),
         subpixel: Default::default(),
         detected_subpixel: Default::default(),
+        hdr_supported: false,
+        hdmi: None,
     }
 }
 

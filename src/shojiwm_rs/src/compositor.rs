@@ -497,6 +497,9 @@ impl OutputConfig {
             scale: Some(scale),
             transform: None,
             subpixel: None,
+            hdr: None,
+            hdr_max_luminance: None,
+            hdr_min_luminance: None,
         }
     }
 
@@ -510,6 +513,9 @@ impl OutputConfig {
             scale: None,
             transform: None,
             subpixel: None,
+            hdr: None,
+            hdr_max_luminance: None,
+            hdr_min_luminance: None,
         }
     }
 }

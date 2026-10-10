@@ -1078,6 +1078,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 refresh_rate: 60.0,
+                clock_khz: None,
             }),
             position: OutputPositionSnapshot { x, y: 0 },
             scale: 1.0,
@@ -1085,6 +1086,8 @@ mod tests {
             available_modes: Vec::new(),
             subpixel: Default::default(),
             detected_subpixel: Default::default(),
+            hdr_supported: false,
+            hdmi: None,
         }
     }
 
