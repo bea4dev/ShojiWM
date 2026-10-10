@@ -53,7 +53,7 @@ use smithay::{
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
-            LoopHandle,
+            LoopHandle, RegistrationToken,
             timer::{TimeoutAction, Timer},
         },
         drm::control::{ModeTypeFlags, connector, crtc},
@@ -258,7 +258,7 @@ fn vblank_grid(
                 .then_with(|| right_total.total_cmp(&left_total))
         })
         .unwrap_or(observed);
-    let vblank = observed - Duration::from_secs_f64(lateness(observed, phase));
+    let vblank = observed.saturating_sub(Duration::from_secs_f64(lateness(observed, phase)));
     let mut next = vblank + period;
     while next <= observed {
         next += period;
@@ -1176,6 +1176,271 @@ struct SurfaceData {
     /// Bumped on every power change; retires the powered-off frame callback timer.
     power_generation: u64,
     dmabuf_feedback: SurfaceDmabufFeedback,
+    /// Set when this output hangs off another GPU than the one clients render with; see
+    /// `CrossGpuTarget`.
+    cross_gpu: Option<CrossGpuTarget>,
+}
+
+/// Frames for an output driven by a secondary GPU (on a hybrid laptop, a monitor on the dGPU's
+/// port while clients render on the iGPU).
+///
+/// That GPU cannot sample the client buffers: they are laid out (modifiers) for the GPU that
+/// rendered them, and the NVIDIA driver rejects them outright, which left every window black.
+/// So the frame is rendered on the render GPU like any other output's, into a LINEAR buffer,
+/// and the secondary GPU only draws that one buffer into its own framebuffer. LINEAR is the
+/// layout every GPU can import (NVIDIA as an external-only texture). It is also why all of the
+/// effect and snapshot machinery keeps running on a single renderer.
+struct CrossGpuTarget {
+    swapchain: smithay::backend::allocator::Swapchain<GbmAllocator<DrmDeviceFd>>,
+    size: Size<i32, Buffer>,
+    damage_tracker: OutputDamageTracker,
+    /// The buffer on screen (or about to be). Holding the slot keeps the swapchain from
+    /// handing it out for rendering while the secondary GPU may still read it.
+    current: Option<smithay::backend::allocator::Slot<smithay::backend::allocator::gbm::GbmBuffer>>,
+    id: Id,
+    /// Bumped whenever `current` changes, which is all the damage the output's GPU needs.
+    commit: CommitCounter,
+}
+
+impl CrossGpuTarget {
+    fn new(gbm: &Device<DrmDeviceFd>, output: &Output) -> Self {
+        let size = output
+            .current_mode()
+            .map(|mode| Size::<i32, Buffer>::from((mode.size.w, mode.size.h)))
+            .unwrap_or_else(|| Size::from((1, 1)));
+        Self {
+            swapchain: smithay::backend::allocator::Swapchain::new(
+                GbmAllocator::new(gbm.clone(), BufferObjectFlags::RENDERING),
+                size.w as u32,
+                size.h as u32,
+                Fourcc::Argb8888,
+                vec![smithay::backend::allocator::Modifier::Linear],
+            ),
+            size,
+            damage_tracker: OutputDamageTracker::from_output(output),
+            current: None,
+            id: Id::new(),
+            commit: CommitCounter::default(),
+        }
+    }
+
+    /// The swapchain contents predate whatever invalidated them (a mode change, power-off).
+    fn reset(&mut self, output: &Output) {
+        self.current = None;
+        self.swapchain.reset_buffers();
+        self.damage_tracker = OutputDamageTracker::from_output(output);
+        if let Some(mode) = output.current_mode()
+            && (mode.size.w, mode.size.h) != (self.size.w, self.size.h)
+        {
+            self.size = Size::from((mode.size.w, mode.size.h));
+            self.swapchain.resize(self.size.w as u32, self.size.h as u32);
+        }
+    }
+}
+
+fn cross_gpu_slot_dmabuf(
+    slot: &smithay::backend::allocator::Slot<smithay::backend::allocator::gbm::GbmBuffer>,
+) -> Result<smithay::backend::allocator::dmabuf::Dmabuf, Box<dyn std::error::Error>> {
+    use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
+    if let Some(dmabuf) = slot.userdata().get::<Dmabuf>() {
+        return Ok(dmabuf.clone());
+    }
+    // Exported once per buffer: the importing renderers cache by dmabuf identity.
+    let dmabuf = slot.export()?;
+    slot.userdata().insert_if_missing(|| dmabuf.clone());
+    Ok(dmabuf)
+}
+
+/// The finished frame of a `CrossGpuTarget` on the output's GPU: the whole buffer, pixel for
+/// pixel, over the whole output.
+///
+/// A plain `TextureRenderElement` sizes itself in logical units and the compositor scales it
+/// by the output scale, so the frame (already rendered at that scale) came out magnified by
+/// it, its top-left corner filling the screen. The output scale has no say here: the
+/// geometry is fixed to the output's physical size, and drawing and the sampled region are
+/// the texture element's.
+struct CrossGpuFrameElement {
+    texture: TextureRenderElement<GlesTexture>,
+    commit: CommitCounter,
+    size: Size<i32, Physical>,
+}
+
+impl Element for CrossGpuFrameElement {
+    fn id(&self) -> &Id {
+        self.texture.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.commit
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        Element::src(&self.texture)
+    }
+
+    fn transform(&self) -> Transform {
+        Element::transform(&self.texture)
+    }
+
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        Rectangle::from_size(self.size)
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        OpaqueRegions::from_slice(&[Rectangle::from_size(self.size)])
+    }
+}
+
+impl RenderElement<GlesRenderer> for CrossGpuFrameElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), GlesError> {
+        RenderElement::<GlesRenderer>::draw(
+            &self.texture,
+            frame,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            cache,
+        )
+    }
+}
+
+/// The render GPU's half of `render_cross_gpu_frame`: the frame in a LINEAR buffer, and that
+/// buffer as an element for the output's GPU.
+fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
+    target: &mut CrossGpuTarget,
+    renderer: &mut GlesRenderer,
+    scanout_renderer: &mut GlesRenderer,
+    output: &Output,
+    elements: &[E],
+    clear_color: Color32F,
+) -> Result<(CrossGpuFrameElement, RenderElementStates), Box<dyn std::error::Error>> {
+    if output
+        .current_mode()
+        .is_some_and(|mode| (mode.size.w, mode.size.h) != (target.size.w, target.size.h))
+    {
+        target.reset(output);
+    }
+    let slot = target
+        .swapchain
+        .acquire()?
+        .ok_or("no free buffer to render the cross-gpu frame into")?;
+    let mut dmabuf = cross_gpu_slot_dmabuf(&slot)?;
+    let (changed, sync, states) = {
+        let mut framebuffer = renderer.bind(&mut dmabuf)?;
+        let rendered = target.damage_tracker.render_output(
+            renderer,
+            &mut framebuffer,
+            slot.age() as usize,
+            elements,
+            clear_color,
+        )?;
+        let changed = rendered.damage.is_some_and(|damage| !damage.is_empty());
+        (changed, rendered.sync, rendered.states)
+    };
+    if changed || target.current.is_none() {
+        // The secondary GPU takes no part in the render GPU's implicit sync: wait here.
+        let _ = sync.wait();
+        target.swapchain.submitted(&slot);
+        target.commit.increment();
+        target.current = Some(slot);
+    }
+    let current = target.current.as_ref().expect("cross-gpu buffer was just set");
+    let texture = scanout_renderer.import_dmabuf(&cross_gpu_slot_dmabuf(current)?, None)?;
+    let transform = output.current_transform();
+    let element = CrossGpuFrameElement {
+        texture: TextureRenderElement::from_static_texture(
+            target.id.clone(),
+            scanout_renderer.context_id(),
+            (0.0, 0.0),
+            texture,
+            1,
+            transform,
+            None,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        ),
+        commit: target.commit,
+        size: transform
+            .transform_size(target.size)
+            .to_logical(1, Transform::Normal)
+            .to_physical(1),
+    };
+    Ok((element, states))
+}
+
+/// Render `elements` for a `CrossGpuTarget` output: on `renderer` (the render GPU) into the
+/// target's LINEAR buffer, then on `scanout_renderer` (the output's GPU) from that buffer
+/// into the output's framebuffer.
+#[allow(clippy::too_many_arguments)]
+fn render_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
+    target: &mut CrossGpuTarget,
+    renderer: &mut GlesRenderer,
+    scanout_renderer: &mut GlesRenderer,
+    drm_output: &mut GbmDrmOutput,
+    output: &Output,
+    elements: &[E],
+    clear_color: Color32F,
+    frame_flags: FrameFlags,
+) -> Result<TtyRenderFrameResult, Box<dyn std::error::Error>> {
+    let prepared = prepare_cross_gpu_frame(
+        target,
+        renderer,
+        scanout_renderer,
+        output,
+        elements,
+        clear_color,
+    );
+    let (element, states) = match prepared {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            // A frame lost, not the session: nothing went to the kernel yet.
+            warn!(output = %output.name(), ?err, "failed to render the cross-gpu frame");
+            return Ok(TtyRenderFrameResult {
+                is_empty: true,
+                primary_scanout: false,
+                primary_plane_kind: "cross-gpu",
+                overlay_plane_count: 0,
+                overlay_details: Vec::new(),
+                cursor_plane_assigned: false,
+                states: RenderElementStates {
+                    states: Default::default(),
+                },
+            });
+        }
+    };
+    // The cursor is in the frame already; nothing of a client can go on a plane of this GPU.
+    let frame_flags = frame_flags
+        .difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT)
+        .difference(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
+    let elements = [element];
+    let result = drm_output.render_frame(scanout_renderer, &elements, clear_color, frame_flags)?;
+    if result.needs_sync()
+        && let PrimaryPlaneElement::Swapchain(ref element) = result.primary_element
+    {
+        let _ = element.sync.wait();
+    }
+    Ok(TtyRenderFrameResult {
+        is_empty: result.is_empty,
+        primary_scanout: false,
+        primary_plane_kind: "cross-gpu",
+        overlay_plane_count: 0,
+        overlay_details: Vec::new(),
+        cursor_plane_assigned: false,
+        // The client elements' states (for presentation feedback and dmabuf feedback) come
+        // from the render GPU's pass; this GPU only saw the one texture.
+        states,
+    })
 }
 
 struct SurfaceDmabufFeedback {
@@ -1261,6 +1526,25 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
         pending.next_attempt_at = now;
     }
     retry_pending_connectors(state);
+    // GPUs that failed to open before get another chance.
+    let closed: Vec<DrmNode> = state
+        .tty_device_paths
+        .keys()
+        .filter(|node| !state.tty_backends.contains_key(node))
+        .copied()
+        .collect();
+    for node in closed {
+        open_tty_device(state, node);
+    }
+    // Outputs that are still off (disabled, or switched off while the session was paused,
+    // when there was no DRM access to do it): whoever had the VT may have lit their CRTC.
+    for backend in state.tty_backends.values_mut() {
+        for surface in backend.surfaces.values_mut() {
+            if surface.powered_off && !surface.frame_pending {
+                clear_powered_off_surface(surface);
+            }
+        }
+    }
 
     state.request_full_damage();
     state.request_tty_maintenance("tty-session-resume");
@@ -1418,16 +1702,26 @@ fn reset_surface_after_tty_resume(surface: &mut SurfaceData) {
 /// power-on; the same throttle invisible surfaces get keeps them alive at almost no cost.
 const POWERED_OFF_FRAME_CALLBACK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Bring every surface in line with `state.powered_off_outputs` (see `crate::output_power`).
+/// Bring every surface in line with `state.powered_off_outputs` (see `crate::output_power`)
+/// and with the display configuration: an output it disables, or leaves out of the layout,
+/// is switched off as well. Merely not rendering it would leave the CRTC scanning out the last
+/// frame, so a disabled panel would keep showing it, lit.
 /// Switching off disables the CRTC (DPMS off) and stops rendering; switching on renders a
 /// full frame, which re-enables the CRTC.
 pub fn sync_output_power(state: &mut ShojiWM) {
     let session_active = state.tty_session_active;
+    let laid_out: std::collections::HashSet<String> = state
+        .space
+        .outputs()
+        .filter(|output| state.runtime_output_render_enabled(&output.name()))
+        .map(Output::name)
+        .collect();
     let mut powered_off = Vec::new();
     let mut powered_on = Vec::new();
     for (node, backend) in state.tty_backends.iter_mut() {
         for (crtc, surface) in backend.surfaces.iter_mut() {
-            let off = state.powered_off_outputs.contains_key(&surface.output.name());
+            let name = surface.output.name();
+            let off = state.powered_off_outputs.contains_key(&name) || !laid_out.contains(&name);
             if off == surface.powered_off {
                 continue;
             }
@@ -1490,6 +1784,9 @@ fn power_on_surface(surface: &mut SurfaceData) {
     surface.power_cleared = false;
     // The swapchain contents predate the dark period; render the first frame from scratch.
     surface.drm_output.reset_buffers();
+    if let Some(target) = surface.cross_gpu.as_mut() {
+        target.reset(&surface.output);
+    }
     surface.redraw_state = if surface.frame_pending {
         TtyRedrawState::WaitingForVBlank { redraw_needed: true }
     } else {
@@ -1604,7 +1901,12 @@ pub struct BackendData {
         DrmDeviceFd,
     >,
     pub renderer: GlesRenderer,
+    /// For `CrossGpuTarget` buffers when this is the render GPU.
+    gbm: Device<DrmDeviceFd>,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
+    /// The device's vblank event source. It holds a clone of the device fd, so closing the
+    /// device has to remove it.
+    drm_events: RegistrationToken,
     /// Per-CRTC (window start, count) of recent surface rebuilds after failed
     /// atomic commit tests. Bounds the recovery path: a configuration the
     /// kernel keeps rejecting must not turn into an endless reset loop.
@@ -1706,6 +2008,7 @@ pub fn device_added(
                 &default_feedback,
             );
         state.dmabuf_global = Some(global);
+        state.tty_render_node = Some(node);
         info!(?node, "initialized linux-dmabuf global");
     }
     // Explicit sync (`linux-drm-syncobj-v1`), on the same (primary) node as the dmabuf global.
@@ -1776,46 +2079,87 @@ pub fn device_added(
         drm,
         allocator,
         exporter,
-        Some(gbm),
+        Some(gbm.clone()),
         [Format::Argb8888],
         render_formats,
     );
 
-    let backend = BackendData {
-        drm_scanner: DrmScanner::new(),
-        drm_output_manager,
-        renderer,
-        surfaces: HashMap::new(),
-        surface_reset_attempts: HashMap::new(),
-    };
-    state.tty_backends.insert(node, backend);
-    info!(?node, "drm backend stored in state");
-
-    let backend = state.tty_backends.get_mut(&node).unwrap();
-
     let drm_loop_handle = loop_handle.clone();
-    loop_handle.insert_source(drm_events, move |event, metadata, state| {
+    let drm_events = loop_handle.insert_source(drm_events, move |event, metadata, state| {
         if let DrmEvent::VBlank(crtc) = event {
             trace!(?node, ?crtc, "received drm vblank");
             frame_finish(state, &drm_loop_handle, node, crtc, metadata);
         }
     })?;
 
-    for scan in backend
+    let backend = BackendData {
+        drm_scanner: DrmScanner::new(),
+        drm_output_manager,
+        renderer,
+        gbm,
+        surfaces: HashMap::new(),
+        surface_reset_attempts: HashMap::new(),
+        drm_events,
+    };
+    state.tty_backends.insert(node, backend);
+    info!(?node, "drm backend stored in state");
+
+    let backend = state.tty_backends.get_mut(&node).unwrap();
+    let scan_result = backend
         .drm_scanner
-        .scan_connectors(backend.drm_output_manager.device())?
-    {
+        .scan_connectors(backend.drm_output_manager.device());
+    let scan_result = match scan_result {
+        Ok(scan_result) => scan_result,
+        Err(err) => {
+            device_removed(state, node);
+            return Err(err.into());
+        }
+    };
+    for scan in scan_result {
         debug!(?node, ?scan, "connector scan event");
         if let DrmScanEvent::Connected {
             connector,
             crtc: Some(crtc),
         } = scan
         {
-            connector_connected(state, node, crtc, connector)?;
+            // Not `?`: the scanner has recorded the connector as connected and will not offer
+            // it again (see `PendingConnectorRetry`), and one failing connector must not cost
+            // the others on this device.
+            if let Err(err) = connector_connected(state, node, crtc, connector.clone()) {
+                warn!(?node, ?crtc, ?err, "connector failed to initialize; queueing retry");
+                queue_connector_retry(state, node, crtc, connector);
+            }
         }
     }
 
     Ok(())
+}
+
+/// Open the GPU `node`, known from startup or a udev add event, if it is not open yet: it
+/// failed to open before. Every GPU is opened up front and stays open, as in KWin. An open GPU
+/// still powers down when idle (NVIDIA's runtime D3 included, with our EGL context on it), and
+/// its connectors are force-probed on every change event. A GPU closed again after its monitor
+/// was unplugged did not see the monitor come back: no event reached us that `sysfs` (which
+/// reports the last probed status, not a fresh one) would confirm.
+pub fn open_tty_device(state: &mut ShojiWM, node: DrmNode) {
+    if state.tty_backends.contains_key(&node) || !state.tty_session_active {
+        return;
+    }
+    let Some(path) = state.tty_device_paths.get(&node).cloned() else {
+        return;
+    };
+    let Some(mut session) = state.tty_session.clone() else {
+        return;
+    };
+    info!(?node, ?path, "opening drm device that is not open yet");
+    let loop_handle = state.loop_handle.clone();
+    if let Err(err) = device_added(state, &loop_handle, &mut session, node, &path) {
+        warn!(?node, ?path, ?err, "failed to open drm device");
+        if state.tty_backends.contains_key(&node) {
+            device_removed(state, node);
+        }
+    }
+    state.notify_runtime_outputs_changed();
 }
 
 /// Kernel drivers of GPUs whose userspace (Mesa) takes part in implicit dma-buf sync: a reader
@@ -2121,11 +2465,14 @@ fn frame_finish(
         .as_ref()
         .map(|metadata| metadata.sequence)
         .unwrap_or(0);
+    // A zero timestamp is no timestamp: amdgpu reports one for the flip that follows a
+    // modeset (after another output was unplugged, say). Taken at face value it is a vblank
+    // at boot time, and the grid below underflowed on it.
     let presentation_clock = metadata
         .as_ref()
         .and_then(|metadata| match metadata.time {
-            DrmEventTime::Monotonic(tp) => Some(tp),
-            DrmEventTime::Realtime(_) => None,
+            DrmEventTime::Monotonic(tp) if !tp.is_zero() => Some(tp),
+            _ => None,
         })
         .unwrap_or_else(|| Duration::from(state.clock.now()));
     // The next frame's presentation time, on the output's vblank grid. It is what frame
@@ -4069,11 +4416,38 @@ fn render_surface(
             fps_counter,
             text_rasterizer,
             config_error_report,
+            tty_render_node,
             ..
         } = state;
 
-        let backend = tty_backends.get_mut(&node).unwrap();
-        let surface = backend.surfaces.get_mut(&crtc).unwrap();
+        // The scene is built and rendered by the GPU clients render with; for an output of
+        // another GPU that one only puts the result on screen (see `CrossGpuTarget`).
+        let cross_gpu_render_node = tty_render_node.filter(|render_node| {
+            *render_node != node
+                && tty_backends.contains_key(render_node)
+                && tty_backends
+                    .get(&node)
+                    .and_then(|backend| backend.surfaces.get(&crtc))
+                    .is_some_and(|surface| surface.cross_gpu.is_some())
+        });
+        let (backend, render_backend) = match cross_gpu_render_node {
+            Some(render_node) => {
+                let [backend, render_backend] =
+                    tty_backends.get_disjoint_mut([&node, &render_node]);
+                (backend.unwrap(), render_backend)
+            }
+            None => (tty_backends.get_mut(&node).unwrap(), None),
+        };
+        let BackendData {
+            renderer: output_renderer,
+            surfaces,
+            ..
+        } = backend;
+        let (renderer, mut cross_gpu_scanout_renderer) = match render_backend {
+            Some(render_backend) => (&mut render_backend.renderer, Some(output_renderer)),
+            None => (output_renderer, None),
+        };
+        let surface = surfaces.get_mut(&crtc).unwrap();
         let render_started_at = Instant::now();
         // Rendering ahead: the flip of the previous frame is still in flight and this frame
         // is for the vblank after it (see `render_ahead_allowed`). Its prediction for the
@@ -4124,7 +4498,7 @@ fn render_surface(
             .collect::<Vec<_>>();
         timing.closing_snapshot_count = closing_snapshots.len();
         let (_, _lower_layer_elements) =
-            window_render::layer_elements_for_output(&mut backend.renderer, &output, scale, 1.0);
+            window_render::layer_elements_for_output(&mut *renderer, &output, scale, 1.0);
 
         {
             timescope::scope!("tty cursor elements");
@@ -4195,7 +4569,7 @@ fn render_surface(
 
                 cursor_pointer_elements.extend(
                     pointer_element.render_elements::<PointerRenderElement<GlesRenderer>>(
-                        &mut backend.renderer,
+                        &mut *renderer,
                         cursor_location,
                         scale,
                         1.0,
@@ -4247,7 +4621,7 @@ fn render_surface(
             .remove(output.name().as_str())
             .unwrap_or_default();
         let mut scene = TtyScene {
-            renderer: &mut backend.renderer,
+            renderer: &mut *renderer,
             output: &output,
             space,
             window_decorations,
@@ -4387,7 +4761,7 @@ fn render_surface(
         if let Some(lock_surface) = session_lock_surface_for_output.as_ref() {
             content_for_capture.extend(
                 crate::backend::window::lock_surface_elements(
-                    &mut backend.renderer,
+                    &mut *renderer,
                     lock_surface,
                     scale,
                     1.0,
@@ -4399,7 +4773,7 @@ fn render_surface(
         overlay_below_layers += content_for_capture.len();
         content_for_capture.extend(content_elements);
         if !state.session_lock_active {
-            state.output_overlays.render(&mut backend.renderer, &output,
+            state.output_overlays.render(&mut *renderer, &output,
                 (output_geo.size.w, output_geo.size.h), scale, &mut content_for_capture,
                 overlay_below_layers, TtyRenderElements::Snapshot);
         }
@@ -4427,7 +4801,7 @@ fn render_surface(
             crate::backend::image_copy_capture_render::process_image_copy_capture_for_toplevels(
                 image_copy_capture_pending,
                 space,
-                &mut backend.renderer,
+                &mut *renderer,
                 &cursor_pointer_elements,
                 presented,
             );
@@ -4454,7 +4828,7 @@ fn render_surface(
             let output_name = output.name();
             let mut mirror = state.output_capture_mirrors.remove(&output_name);
             match render_output_capture_mirror(
-                &mut backend.renderer,
+                &mut *renderer,
                 &mut mirror,
                 &output,
                 &content_for_capture,
@@ -4492,7 +4866,7 @@ fn render_surface(
             crate::backend::screencopy_render::process_screencopy_queue_for_output(
                 screencopy_state,
                 loop_handle,
-                &mut backend.renderer,
+                &mut *renderer,
                 &output,
                 capture_content_for_output,
                 &cursor_elements,
@@ -4504,7 +4878,7 @@ fn render_surface(
             timescope::scope!("tty output image capture");
             crate::backend::image_copy_capture_render::process_image_copy_capture_for_output(
                 image_copy_capture_pending,
-                &mut backend.renderer,
+                &mut *renderer,
                 &output,
                 capture_content_for_output,
                 &cursor_elements,
@@ -4517,7 +4891,7 @@ fn render_surface(
         // top-most position (smithay treats index 0 as front-most).
         let error_text_elements: Vec<TtyRenderElements> =
             crate::config_error::text_elements_for_output(
-                &mut backend.renderer,
+                &mut *renderer,
                 text_rasterizer,
                 config_error_report.as_ref(),
                 output_geo,
@@ -4538,7 +4912,7 @@ fn render_surface(
             .collect();
         let fps_overlay_elements: Vec<TtyRenderElements> = fps_counter
             .render_elements(
-                &mut backend.renderer,
+                &mut *renderer,
                 output.name().as_str(),
                 output_geo,
                 scale,
@@ -4645,10 +5019,25 @@ fn render_surface(
         // alternating async game frames with vblank-bound cursor frames produces visibly uneven
         // cursor motion even when both the game and the output are otherwise running fast.
         let mut fullscreen_root_buffer_details = None;
-        let render_frame_result = {
+        let render_frame_result: Result<TtyRenderFrameResult, Box<dyn std::error::Error>> =
+            if let Some(scanout_renderer) = cross_gpu_scanout_renderer.as_deref_mut()
+                && let Some(target) = surface.cross_gpu.as_mut()
+        {
+            timescope::scope!("tty render_frame cross-gpu");
+            render_cross_gpu_frame(
+                target,
+                renderer,
+                scanout_renderer,
+                &mut surface.drm_output,
+                &output,
+                &elements,
+                frame_clear_color.into(),
+                frame_flags,
+            )
+        } else {
             timescope::scope!("tty render_frame");
             crate::backend::shader_effect::with_gpu_timing_renderer_span(
-                &mut backend.renderer,
+                &mut *renderer,
                 "tty-render-frame",
                 (output_geo.size.w, output_geo.size.h),
                 |renderer| {
@@ -4787,6 +5176,7 @@ fn render_surface(
                     }
                 },
             )
+            .map_err(Into::into)
         };
         let result = match render_frame_result {
             Ok(
@@ -4795,9 +5185,9 @@ fn render_surface(
             Err(
                 err,
             ) => {
-                if error_chain_has_drm_test_failed(&err)
-                    || error_chain_has_rejected_commit(&err)
-                    || error_chain_has_busy_commit(&err)
+                if error_chain_has_drm_test_failed(err.as_ref())
+                    || error_chain_has_rejected_commit(err.as_ref())
+                    || error_chain_has_busy_commit(err.as_ref())
                 {
                     warn!(
                         output = %output.name(),
@@ -4808,10 +5198,7 @@ fn render_surface(
                         RenderSurfaceOutcome::CommitFailed,
                     );
                 }
-                return Err(
-                    err
-                        .into(),
-                );
+                return Err(err);
             }
         };
         fps_counter.record_present(output.name().as_str());
@@ -10892,16 +11279,18 @@ pub(crate) fn capture_live_snapshot_for_close(
     };
     let output_name = output.name();
     let scale = Scale::from(output.current_scale().fractional_scale());
+    // Every output's scene is rendered on the GPU clients render with (outputs of other GPUs
+    // through `CrossGpuTarget`), so its snapshots are taken there too.
     let backend_node = state
-        .tty_backends
-        .iter()
-        .find_map(|(node, backend)| {
+        .tty_render_node
+        .filter(|node| state.tty_backends.contains_key(node))
+        .or_else(|| state.tty_backends.iter().find_map(|(node, backend)| {
             backend
                 .surfaces
                 .values()
                 .any(|surface| surface.output.name() == output_name)
                 .then_some(*node)
-        })
+        }))
         .or_else(|| state.tty_backends.keys().next().copied());
     let Some(backend_node) = backend_node else {
         return Ok(false);
@@ -11602,6 +11991,22 @@ fn connector_connected(
         "connected tty output"
     );
 
+    // An output of a GPU other than the one clients render with is rendered on the latter and
+    // copied over (see `CrossGpuTarget`). Its clients are then best served buffers for the
+    // render GPU, not for this one.
+    let cross_gpu_render = state
+        .tty_render_node
+        .filter(|render_node| *render_node != node)
+        .and_then(|render_node| {
+            state.tty_backends.get(&render_node).map(|render_backend| {
+                (
+                    render_node,
+                    render_backend.gbm.clone(),
+                    render_backend.renderer.dmabuf_formats(),
+                )
+            })
+        });
+
     // Scoped so the `backend` borrow ends before the failure path touches
     // `state` again. Everything published above this point is undone on error
     // rather than propagated as-is -- see `unwind_half_connected_output`.
@@ -11629,11 +12034,23 @@ fn connector_connected(
         match initialize {
             Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
             Ok(drm_output) => {
-                match surface_dmabuf_feedback(
-                    &drm_output,
-                    backend.renderer.dmabuf_formats(),
-                    node,
-                ) {
+                let feedback = match &cross_gpu_render {
+                    Some((render_node, _, render_formats)) => {
+                        DmabufFeedbackBuilder::new(render_node.dev_id(), render_formats.clone())
+                            .build()
+                            .map(|render| SurfaceDmabufFeedback {
+                                scanout: render.clone(),
+                                render,
+                            })
+                            .map_err(Into::into)
+                    }
+                    None => surface_dmabuf_feedback(
+                        &drm_output,
+                        backend.renderer.dmabuf_formats(),
+                        node,
+                    ),
+                };
+                match feedback {
                     Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
                     Ok(feedback) => Ok((drm_output, feedback)),
                 }
@@ -11708,6 +12125,15 @@ fn connector_connected(
         power_cleared: false,
         power_generation: 0,
         dmabuf_feedback,
+        cross_gpu: cross_gpu_render.map(|(render_node, gbm, _)| {
+            info!(
+                ?node,
+                ?render_node,
+                output = %output.name(),
+                "output is on another gpu than clients render with; rendering it there and copying"
+            );
+            CrossGpuTarget::new(&gbm, &output)
+        }),
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");
@@ -11965,7 +12391,12 @@ pub fn device_removed(state: &mut ShojiWM, node: DrmNode) {
         connector_disconnected(state, node, crtc, connector);
     }
 
-    state.tty_backends.remove(&node);
+    state
+        .pending_connector_retries
+        .retain(|pending| pending.node != node);
+    if let Some(backend) = state.tty_backends.remove(&node) {
+        state.loop_handle.remove(backend.drm_events);
+    }
     state.notify_runtime_outputs_changed();
     info!(?node, "removed tty drm device");
 }

@@ -912,10 +912,16 @@ impl DmabufHandler for ShojiWM {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
+        // Every output is rendered on the GPU clients render with (`tty_render_node`), so that
+        // is the one that has to take the buffer; another GPU importing it is no use.
+        let render_node = self
+            .tty_render_node
+            .filter(|node| self.tty_backends.contains_key(node));
         let imported = self
             .tty_backends
-            .values_mut()
-            .any(|backend| backend.renderer.import_dmabuf(&dmabuf, None).is_ok());
+            .iter_mut()
+            .filter(|(node, _)| render_node.is_none_or(|render_node| **node == render_node))
+            .any(|(_, backend)| backend.renderer.import_dmabuf(&dmabuf, None).is_ok());
 
         if imported || self.tty_backends.is_empty() {
             let _ = notifier.successful::<ShojiWM>();

@@ -330,6 +330,11 @@ pub struct ShojiWM {
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub tty_session: Option<LibSeatSession>,
+    /// GPUs the TTY backend drives. All of them are opened at startup and stay open; one that
+    /// failed to open is retried on its next udev change event, see `tty::open_tty_device`.
+    pub tty_device_paths: HashMap<DrmNode, std::path::PathBuf>,
+    /// The GPU clients render with (the one the linux-dmabuf global advertises). Never closed.
+    pub tty_render_node: Option<DrmNode>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
     pub window_decoration_negotiations: crate::window_decoration::WindowDecorationNegotiationMap,
     pub window_primary_output_names: HashMap<Window, String>,
@@ -1711,6 +1716,8 @@ impl ShojiWM {
 
             tty_backends: HashMap::new(),
             tty_session: None,
+            tty_device_paths: HashMap::new(),
+            tty_render_node: None,
             window_decorations: HashMap::new(),
             window_decoration_negotiations: HashMap::new(),
             window_primary_output_names: HashMap::new(),
@@ -3656,6 +3663,8 @@ impl ShojiWM {
             }
         }
         self.configure_session_lock_surfaces();
+        // Outputs this configuration disabled go dark (and enabled ones come back).
+        crate::backend::tty::sync_output_power(self);
         self.schedule_redraw();
     }
 
