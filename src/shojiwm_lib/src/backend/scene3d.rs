@@ -429,6 +429,71 @@ pub fn multiply(a: &Mat4, b: &Mat4) -> Mat4 {
     out
 }
 
+/// Conservative visible area: texture alpha and inter-plane depth occlusion
+/// would require GPU readback. Clip in homogeneous space so planes crossing
+/// the near plane do not disappear or acquire an unbounded area.
+pub(super) fn projected_area(
+    spec: &Scene3dSpec,
+    object: &Object3d,
+    size: Size<i32, Physical>,
+) -> usize {
+    let Object3d::Plane {
+        width,
+        height,
+        model,
+        opacity,
+        double_sided,
+        ..
+    } = object;
+    if *opacity < 1.0 / 255.0 || *width == 0.0 || *height == 0.0 {
+        return 0;
+    }
+    let mvp = multiply(&multiply(&spec.projection, &spec.view), model);
+    let mut polygon: Vec<[f64; 4]> = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]
+        .into_iter()
+        .map(|(x, y)| {
+            std::array::from_fn(|row| {
+                mvp[row] as f64 * x * *width as f64
+                    + mvp[4 + row] as f64 * y * *height as f64
+                    + mvp[12 + row] as f64
+            })
+        })
+        .collect();
+    for axis in 0..3 {
+        for sign in [-1.0, 1.0] {
+            let mut clipped = Vec::new();
+            for i in 0..polygon.len() {
+                let a = polygon[i];
+                let b = polygon[(i + 1) % polygon.len()];
+                let da = a[3] + sign * a[axis];
+                let db = b[3] + sign * b[axis];
+                if da >= 0.0 {
+                    clipped.push(a);
+                }
+                if (da >= 0.0) != (db >= 0.0) {
+                    let t = da / (da - db);
+                    clipped.push(std::array::from_fn(|j| a[j] + t * (b[j] - a[j])));
+                }
+            }
+            polygon = clipped;
+        }
+    }
+    if polygon.len() < 3 || polygon.iter().any(|p| p[3] <= 0.0) {
+        return 0;
+    }
+    let twice_area: f64 = (0..polygon.len())
+        .map(|i| {
+            let a = polygon[i];
+            let b = polygon[(i + 1) % polygon.len()];
+            (a[0] * b[1] - b[0] * a[1]) / (a[3] * b[3])
+        })
+        .sum();
+    if !double_sided && twice_area <= 0.0 {
+        return 0;
+    }
+    (twice_area.abs() / 8.0 * size.w as f64 * size.h as f64).ceil() as usize
+}
+
 unsafe fn draw_scene(
     gl: &ffi::Gles2,
     program: &Scene3dProgram,
@@ -632,6 +697,52 @@ mod tests {
         let mut m = IDENTITY;
         m[14] = z;
         m
+    }
+
+    #[test]
+    fn plane_visibility_respects_clipping_facing_and_opacity() {
+        let mut spec = Scene3dSpec {
+            rect: None,
+            projection: IDENTITY,
+            view: IDENTITY,
+            clear_color: [0.0; 4],
+            antialias: false,
+            objects: vec![],
+        };
+        let size = (100, 100).into();
+        assert_eq!(projected_area(&spec, &plane(0, IDENTITY), size), 10000);
+        assert_eq!(projected_area(&spec, &plane(0, translate_z(2.0)), size), 0);
+        assert_eq!(projected_area(&spec, &plane(0, translate_z(-2.0)), size), 0);
+        let mut moved = IDENTITY;
+        moved[12] = 3.0;
+        assert_eq!(projected_area(&spec, &plane(0, moved), size), 0);
+        moved[12] = 1.0;
+        assert_eq!(projected_area(&spec, &plane(0, moved), size), 5000);
+        let mut object = plane(0, IDENTITY);
+        let Object3d::Plane { opacity, .. } = &mut object;
+        *opacity = 0.0;
+        assert_eq!(projected_area(&spec, &object, size), 0);
+        let Object3d::Plane {
+            opacity,
+            double_sided,
+            model,
+            ..
+        } = &mut object;
+        *opacity = 1.0;
+        *double_sided = false;
+        model[0] = -1.0;
+        assert_eq!(projected_area(&spec, &object, size), 0);
+        let Object3d::Plane { double_sided, .. } = &mut object;
+        *double_sided = true;
+        assert_eq!(projected_area(&spec, &object, size), 10000);
+        let Object3d::Plane { width, .. } = &mut object;
+        *width = -2.0;
+        assert_eq!(projected_area(&spec, &object, size), 10000);
+        let mut tilted = IDENTITY;
+        tilted[2] = 2.0;
+        assert_eq!(projected_area(&spec, &plane(0, tilted), size), 5000);
+        spec.projection[15] = -1.0;
+        assert_eq!(projected_area(&spec, &plane(0, IDENTITY), size), 0);
     }
 
     #[test]

@@ -5,8 +5,8 @@ use smithay::{
             Bind, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::Element,
-            element::RenderElement,
             element::texture::TextureRenderElement,
+            element::{RenderElement, RenderElementStates},
             gles::{GlesError, GlesRenderer, GlesTexture},
             utils::DamageBag,
         },
@@ -30,6 +30,7 @@ pub struct LiveWindowSnapshot {
     pub z_index: usize,
     pub has_client_content: bool,
     pub scene_signature: u64,
+    pub render_states: RenderElementStates,
     pub damage: Arc<Mutex<DamageBag<i32, Buffer>>>,
 }
 
@@ -112,6 +113,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 z_index,
                 has_client_content,
                 scene_signature,
+                render_states: RenderElementStates::default(),
                 damage,
             }
         } else {
@@ -126,6 +128,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 z_index,
                 has_client_content,
                 scene_signature,
+                render_states: RenderElementStates::default(),
                 damage, // preserve existing DamageBag so commit counter advances past stored value
             }
         }
@@ -141,6 +144,7 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             z_index,
             has_client_content,
             scene_signature: 0,
+            render_states: RenderElementStates::default(),
             damage: Arc::new(Mutex::new(DamageBag::new(4))),
         }
     };
@@ -175,6 +179,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             [0.0, 0.0, 0.0, 0.0],
         )
         .map_err(|_| GlesError::FramebufferBindingError)?;
+
+    snapshot.render_states = render_output_result.states;
 
     // Eagerly collect the damage rects so the borrow of `tracker` ends here, before
     // framebuffer is dropped.
@@ -239,6 +245,7 @@ pub fn duplicate_snapshot(
         z_index: source.z_index,
         has_client_content: source.has_client_content,
         scene_signature: source.scene_signature,
+        render_states: source.render_states.clone(),
         damage: Arc::new(Mutex::new(DamageBag::new(4))),
     };
 

@@ -1761,6 +1761,10 @@ pub fn sync_output_power(state: &mut ShojiWM) {
             surface.powered_off = off;
             surface.power_generation = surface.power_generation.wrapping_add(1);
             if off {
+                if let Some(targets) = state.composition_targets.get_mut(&name) {
+                    targets.presented.states.clear();
+                    targets.output_states.states.clear();
+                }
                 power_off_surface(surface, session_active);
                 powered_off.push((*node, *crtc, surface.power_generation));
             } else {
@@ -4809,7 +4813,13 @@ fn render_surface(
         } else {
             state.composition_windows.insert(output.name(), composition_windows);
         }
-        let built = built?;
+        let mut built = built?;
+        for snapshot in live_window_snapshots
+            .values()
+            .chain(complete_window_snapshots.values())
+        {
+            built.presentation.add_snapshot(snapshot);
+        }
         let frame_had_transform_snapshot_damage = stats.frame_had_transform_snapshot_damage;
         let frame_transform_snapshot_window_count = stats.frame_transform_snapshot_window_count;
         let frame_snapshot_damage_window_count = stats.frame_snapshot_damage_window_count;
@@ -4823,6 +4833,7 @@ fn render_surface(
         timing.max_window_elapsed_ms = stats.max_window_elapsed_ms;
         timing.max_window_id = stats.max_window_id;
         let scene_elements = built.elements;
+        let composition_presentation = built.presentation;
         let mut overlay_below_layers = built.below_layers;
         let fullscreen_overlay_visible = fullscreen_window.is_some()
             && (built.covers_fullscreen || crate::backend::overlay::has_output(&output.name()));
@@ -5634,7 +5645,7 @@ fn render_surface(
         //
         // `result.states` is extended last so the real DRM pass still wins on
         // any id collision, exactly as it did when only the mirror merged here.
-        let effective_render_states_storage = {
+        let mut effective_render_states_storage = {
             let mut merged = mirrored_render_states;
             if let Some(hdr_states) = hdr_stage1_states {
                 merged = Some(match merged {
@@ -5661,6 +5672,37 @@ fn render_surface(
                 states
             })
         };
+        let composition_states = if state.session_lock_active {
+            Default::default()
+        } else {
+            composition_presentation.presented_states(
+                effective_render_states_storage
+                    .as_ref()
+                    .unwrap_or(&result.states),
+            )
+        };
+        let source_states = if state.session_lock_active {
+            Default::default()
+        } else {
+            composition_presentation.source_states(
+                effective_render_states_storage
+                    .as_ref()
+                    .unwrap_or(&result.states),
+            )
+        };
+        if !source_states.states.is_empty() {
+            crate::backend::composition::merge_presented_states(
+                effective_render_states_storage.get_or_insert_with(|| result.states.clone()),
+                &source_states,
+            );
+        }
+        if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
+            targets.presented = composition_states;
+            targets.output_states = effective_render_states_storage
+                .as_ref()
+                .unwrap_or(&result.states)
+                .clone();
+        }
         let effective_render_states = effective_render_states_storage
             .as_ref()
             .unwrap_or(&result.states);
@@ -5680,6 +5722,10 @@ fn render_surface(
             session_lock_surface_for_output.as_ref(),
             effective_render_states,
             window_decorations,
+        );
+        crate::presentation::restore_composition_primary_outputs(
+            &state.space,
+            &state.composition_targets,
         );
         for window in state.space.elements_for_output(&output) {
             window.send_dmabuf_feedback(
@@ -5862,6 +5908,10 @@ fn render_surface(
                     });
                 }
             }
+            crate::presentation::restore_composition_primary_outputs(
+                &state.space,
+                &state.composition_targets,
+            );
             let output_presentation_feedback = take_presentation_feedback(
                 &output,
                 &state.space,

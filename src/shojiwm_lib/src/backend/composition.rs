@@ -24,7 +24,8 @@ use smithay::{
             Bind, ContextId, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::{
-                Id, Kind, RenderElement, solid::SolidColorRenderElement,
+                Element, Id, Kind, RenderElement, RenderElementPresentationState,
+                RenderElementState, RenderElementStates, solid::SolidColorRenderElement,
                 texture::TextureRenderElement,
             },
             gles::{GlesError, GlesRenderer, GlesTexture},
@@ -643,6 +644,102 @@ pub struct BuiltScene<E> {
     pub below_layers: usize,
     /// Something is drawn in front of the fullscreen window.
     pub covers_fullscreen: bool,
+    pub presentation: CompositionPresentation,
+}
+
+#[derive(Default)]
+pub struct CompositionPresentation {
+    content: HashMap<Id, (usize, RenderElementStates)>,
+    snapshots: HashSet<Id>,
+}
+
+impl CompositionPresentation {
+    /// Only a presented path to the output makes an offscreen source visible.
+    /// Merely building a texture also happens for occluded and transparent nodes.
+    /// Areas are conservative after partial clipping: scalar render states cannot
+    /// locate the remaining pixels inside a sampled texture.
+    pub fn presented_states(&self, output: &RenderElementStates) -> RenderElementStates {
+        self.expand(output, false)
+    }
+
+    pub fn source_states(&self, output: &RenderElementStates) -> RenderElementStates {
+        self.expand(output, true)
+    }
+
+    pub fn add_snapshot(&mut self, snapshot: &super::snapshot::LiveWindowSnapshot) {
+        let size = snapshot.texture.size();
+        self.snapshots.insert(snapshot.id.clone());
+        self.content.insert(
+            snapshot.id.clone(),
+            (
+                size.w as usize * size.h as usize,
+                snapshot.render_states.clone(),
+            ),
+        );
+    }
+
+    fn expand(&self, output: &RenderElementStates, include_snapshots: bool) -> RenderElementStates {
+        let mut result = RenderElementStates::default();
+        for (id, state) in &output.states {
+            if include_snapshots || !self.snapshots.contains(id) {
+                self.collect(id, state, &mut result);
+            }
+        }
+        result
+    }
+
+    fn collect(&self, id: &Id, parent: &RenderElementState, result: &mut RenderElementStates) {
+        if parent.presentation_state == RenderElementPresentationState::Skipped
+            || parent.visible_area == 0
+        {
+            return;
+        }
+        let Some((area, content)) = self.content.get(id) else {
+            return;
+        };
+        for (child, state) in &content.states {
+            if state.presentation_state == RenderElementPresentationState::Skipped
+                || state.visible_area == 0
+            {
+                continue;
+            }
+            let visible_area = ((parent.visible_area as u128 * state.visible_area as u128)
+                / (*area).max(1) as u128)
+                .clamp(1, parent.visible_area as u128) as usize;
+            let state = RenderElementState {
+                visible_area,
+                presentation_state: RenderElementPresentationState::Rendering { reason: None },
+                needs_capture: false,
+            };
+            if result
+                .element_render_state(child.clone())
+                .is_some_and(|previous| previous.visible_area >= visible_area)
+            {
+                continue;
+            }
+            merge_presented_state(result, child.clone(), state);
+            self.collect(child, &state, result);
+        }
+    }
+}
+
+pub fn merge_presented_states(into: &mut RenderElementStates, from: &RenderElementStates) {
+    for (id, state) in &from.states {
+        merge_presented_state(into, id.clone(), *state);
+    }
+}
+
+fn merge_presented_state(into: &mut RenderElementStates, id: Id, state: RenderElementState) {
+    into.states
+        .entry(id)
+        .and_modify(|current| {
+            if current.presentation_state == RenderElementPresentationState::Skipped {
+                *current = state;
+            } else if state.presentation_state != RenderElementPresentationState::Skipped {
+                current.visible_area = current.visible_area.max(state.visible_area);
+            }
+        })
+        .or_insert(state);
 }
 
 /// GPU state that lives across frames for one output's plan.
@@ -651,6 +748,8 @@ pub struct CompositionTargets {
     textures: HashMap<String, TextureTarget>,
     scenes: HashMap<String, super::scene3d::Scene3dTarget>,
     solids: HashMap<String, (Id, [f32; 4], Rectangle<i32, Physical>, CommitCounter)>,
+    pub presented: RenderElementStates,
+    pub output_states: RenderElementStates,
 }
 
 impl CompositionTargets {
@@ -669,6 +768,7 @@ pub struct Builder<'p> {
     seen_textures: HashSet<String>,
     seen_scenes: HashSet<String>,
     seen_solids: HashSet<String>,
+    presentation: CompositionPresentation,
 }
 
 impl<'p> Builder<'p> {
@@ -681,6 +781,7 @@ impl<'p> Builder<'p> {
             seen_textures: HashSet::new(),
             seen_scenes: HashSet::new(),
             seen_solids: HashSet::new(),
+            presentation: CompositionPresentation::default(),
         }
     }
 
@@ -693,10 +794,17 @@ impl<'p> Builder<'p> {
         ctx: &SceneContext,
     ) -> Result<BuiltScene<S::Element>, Box<dyn std::error::Error>> {
         let plan = self.plan;
-        let built = self.build_nodes(scene, targets, ctx, &plan.nodes, "root")?;
-        targets.textures.retain(|key, _| self.seen_textures.contains(key));
-        targets.scenes.retain(|key, _| self.seen_scenes.contains(key));
-        targets.solids.retain(|key, _| self.seen_solids.contains(key));
+        let mut built = self.build_nodes(scene, targets, ctx, &plan.nodes, "root")?;
+        targets
+            .textures
+            .retain(|key, _| self.seen_textures.contains(key));
+        targets
+            .scenes
+            .retain(|key, _| self.seen_scenes.contains(key));
+        targets
+            .solids
+            .retain(|key, _| self.seen_solids.contains(key));
+        built.presentation = self.presentation;
         Ok(built)
     }
 
@@ -807,6 +915,7 @@ impl<'p> Builder<'p> {
             below_layers: below_layers.unwrap_or(0),
             elements,
             covers_fullscreen,
+            presentation: CompositionPresentation::default(),
         })
     }
 
@@ -824,7 +933,14 @@ impl<'p> Builder<'p> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         match node {
-            CompositionNode::TextureView { texture, rect, opacity } => {
+            CompositionNode::TextureView {
+                texture,
+                rect,
+                opacity,
+            } => {
+                if *opacity <= 0.0 || ctx.physical_rect(rect.as_ref()).is_empty() {
+                    return Ok(None);
+                }
                 self.render_texture(scene, targets, ctx, *texture)?;
                 let plan = self.plan;
                 let spec = &plan.textures[*texture];
@@ -915,6 +1031,30 @@ impl<'p> Builder<'p> {
                 ) else {
                     return Ok(None);
                 };
+                let mut states = RenderElementStates::default();
+                for object in &spec.objects {
+                    let Object3d::Plane { texture, .. } = object;
+                    let area = super::scene3d::projected_area(spec, object, geometry.size);
+                    if area > 0
+                        && let Some(input) = targets.textures.get(&plan.textures[*texture].key)
+                    {
+                        merge_presented_state(
+                            &mut states,
+                            input.id.clone(),
+                            RenderElementState {
+                                visible_area: area,
+                                presentation_state: RenderElementPresentationState::Rendering {
+                                    reason: None,
+                                },
+                                needs_capture: false,
+                            },
+                        );
+                    }
+                }
+                self.presentation.content.insert(
+                    element.id().clone(),
+                    (geometry.size.w as usize * geometry.size.h as usize, states),
+                );
                 (&key, target.signature(), rect_key(geometry)).hash(&mut hasher);
                 let composited = Composited {
                     texture: Some(texture),
@@ -991,6 +1131,13 @@ impl<'p> Builder<'p> {
         scene.leave_scope(&child.scope);
         self.building.remove(&index);
         let target = result?;
+        self.presentation.content.insert(
+            target.id.clone(),
+            (
+                physical.w as usize * physical.h as usize,
+                target.states.clone(),
+            ),
+        );
         self.rendered.insert(index, target.generation);
         self.seen_textures.insert(spec.key.clone());
         targets.textures.insert(spec.key.clone(), target);
@@ -1043,6 +1190,7 @@ pub struct TextureTarget {
     damage: Arc<Mutex<DamageBag<i32, Buffer>>>,
     /// Bumped whenever the pixels change.
     pub generation: u64,
+    states: RenderElementStates,
 }
 
 impl TextureTarget {
@@ -1079,23 +1227,29 @@ impl TextureTarget {
                     id: Id::new(),
                     damage: Arc::new(Mutex::new(DamageBag::new(4))),
                     generation: 0,
+                    states: RenderElementStates::default(),
                 },
                 0,
             ),
         };
         let damage = {
             let mut framebuffer = renderer.bind(&mut target.texture)?;
-            target
+            let result = target
                 .tracker
                 .render_output(renderer, &mut framebuffer, age, elements, clear_color)
-                .map_err(|_| GlesError::FramebufferBindingError)?
-                .damage
-                .cloned()
+                .map_err(|_| GlesError::FramebufferBindingError)?;
+            target.states = result.states;
+            result.damage.cloned()
         };
         let rects: Vec<Rectangle<i32, Buffer>> = damage
             .unwrap_or_default()
             .into_iter()
-            .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
+            .map(|rect| {
+                Rectangle::new(
+                    (rect.loc.x, rect.loc.y).into(),
+                    (rect.size.w, rect.size.h).into(),
+                )
+            })
             .collect();
         if age == 0 {
             target.damage.lock().unwrap().add([Rectangle::from_size(target.texture.size())]);
@@ -1413,3 +1567,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "composition_presentation_tests.rs"]
+mod presentation_tests;
