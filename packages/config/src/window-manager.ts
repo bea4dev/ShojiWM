@@ -37,6 +37,9 @@ export type SnapZone =
   | "bottom-left"
   | "bottom-right";
 
+/** A half of the screen a key puts a floating window in (KDE's quick tile). */
+export type WindowHalf = "left" | "right" | "top" | "bottom";
+
 export const WINDOW_STATE_RECT = createWindowState<ManagedWindowRect>("rect", {
   default: (window) => window.rect,
 });
@@ -473,6 +476,8 @@ export class HybridWindowManager {
     zone: SnapZone;
     rect: ManagedWindowRect;
   } | null = null;
+  // The half a key last put each floating window in. A drag clears it.
+  private readonly keyHalfByWindowId = new Map<string, WindowHalf>();
 
   public constructor(
     naturalRootRect: (rect: WaylandWindow) => ManagedWindowRect,
@@ -975,6 +980,7 @@ export class HybridWindowManager {
 
   public onClose(window: WaylandWindow) {
     this.presentedWindowIds.delete(window.id);
+    this.keyHalfByWindowId.delete(window.id);
     this.lastRestoreAtMs.delete(window.id);
     this.restoredDuringInitialConfigure.delete(window.id);
     this.deferredInitialLayoutWindowIds.delete(window.id);
@@ -1647,6 +1653,85 @@ export class HybridWindowManager {
     this.runOnTiledWorkspace((workspace) =>
       workspace.focusInColumn(direction),
     );
+  }
+
+  /** Move the focused tile up (-1) or down (1) inside its column. */
+  public moveFocusedInColumn(direction: -1 | 1) {
+    this.runOnTiledWorkspace((workspace) =>
+      workspace.moveFocusedInColumn(direction),
+    );
+  }
+
+  /** The current workspace tiles its windows (else they float). */
+  public isCurrentWorkspaceTiled(): boolean {
+    return this.getCurrentWorkspace()?.isTiled ?? false;
+  }
+
+  /**
+   * Put the focused floating window in a half of the screen, like KDE's
+   * Meta+arrow quick tile. "bottom-then-top" puts it in the bottom half, or
+   * in the top half when a key already put it in the bottom half.
+   */
+  public placeFocusedWindowInHalf(half: WindowHalf | "bottom-then-top") {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const workspace = this.getCurrentWorkspace();
+      const window = workspace?.focusedWindow();
+      if (!workspace || workspace.isTiled || !window || !read(window.isResizable)) {
+        return;
+      }
+      const target: WindowHalf =
+        half === "bottom-then-top"
+          ? this.keyHalfByWindowId.get(window.id) === "bottom" &&
+            !window.state[WINDOW_STATE_MAXIMIZED]()
+            ? "top"
+            : "bottom"
+          : half;
+      const rect = this.halfRect(workspace.monitor, target);
+      if (!rect) {
+        return;
+      }
+      // Unmaximize first (this syncs the title bar icon). Clear the restore
+      // rect, so unmaximize() does not animate back to it over the half.
+      if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+        window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+        window.state[WINDOW_STATE_MAXIMIZED].set(false);
+        window.unmaximize();
+      }
+      playRectAnimation(
+        window,
+        WINDOW_STATE_RECT,
+        rect,
+        WINDOW_MANAGEMENT_EASING,
+        WINDOW_MANAGEMENT_ANIMATION_DURATION,
+      );
+      // Left and right join the drag snap layout (a shared, resizable split).
+      if (target === "left" || target === "right") {
+        this.setWindowSnapState(workspace, window, workspace.monitor, target);
+      } else {
+        this.clearWindowSnapState(window);
+      }
+      this.keyHalfByWindowId.set(window.id, target);
+      workspace.syncFloatingWindowRect(window, rect);
+      this.applyWorkspaceStackPolicy(workspace);
+    });
+  }
+
+  /** The rect of a half of the monitor, with the same gaps as a drag snap. */
+  private halfRect(monitor: string, half: WindowHalf): ManagedWindowRect | null {
+    if (half === "left" || half === "right") {
+      return this.snapZoneRect(monitor, half);
+    }
+    const base = this.monitorSnapBaseRect(monitor);
+    if (!base) {
+      return null;
+    }
+    const halfHeight = (read(base.height) - SNAP_GAP_PX) / 2;
+    return {
+      x: read(base.x),
+      y: half === "top" ? read(base.y) : read(base.y) + halfHeight + SNAP_GAP_PX,
+      width: read(base.width),
+      height: halfHeight,
+    };
   }
 
   private runOnTiledWorkspace(action: (workspace: Workspace) => boolean) {
@@ -3392,6 +3477,7 @@ export class HybridWindowManager {
   }
 
   private clearWindowSnapState(window: WaylandWindow): void {
+    this.keyHalfByWindowId.delete(window.id);
     window.state[WINDOW_STATE_SNAP_ZONE].set(null);
     window.state[WINDOW_STATE_SNAP_MONITOR].set(null);
   }
@@ -3997,6 +4083,23 @@ export class Workspace {
       return false;
     }
     return this.commitColumnChange(focused, null);
+  }
+
+  /** Move the focused tile up (-1) or down (1) inside its column. */
+  public moveFocusedInColumn(direction: -1 | 1): boolean {
+    const focused = this.focusedTile();
+    if (!focused) {
+      return false;
+    }
+    const allColumns = this.allTileColumns();
+    const column = allColumns[this.columnIndexOf(allColumns, focused.id)];
+    const row = column?.findIndex((window) => window.id === focused.id) ?? -1;
+    const other = row + direction;
+    if (row < 0 || other < 0 || other >= column.length) {
+      return false;
+    }
+    [column[row], column[other]] = [column[other], column[row]];
+    return this.commitColumnChange(focused, allColumns);
   }
 
   /** Move focus up (-1) or down (1) inside the focused column. */

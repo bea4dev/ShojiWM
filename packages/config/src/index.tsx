@@ -58,6 +58,7 @@ import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
 import { broadcastSwitcherLabel } from "./switcher-label";
 import { createWindowGrid, createWindowView } from "./window-grid";
+import { bindKeymap, createKeymap, keymapRows, runChord, writeKeymapFile } from "./keymap";
 import type { TitlebarButton } from "./window-switcher";
 import {
   jellyDragEffect,
@@ -724,6 +725,17 @@ COMPOSITOR.process.service("switcher-label", {
   ],
   restart: "on-exit",
 });
+// Draws the keyboard cheat sheet on Super+/ (see the helper's header).
+COMPOSITOR.process.service("key-sheet", {
+  command: [
+    "sh",
+    "-c",
+    'exec python3 "$HOME/.config/shojiwm/src/helpers/key-sheet.py" "$1"',
+    "key-sheet",
+    defaultSocketPath(),
+  ],
+  restart: "on-exit",
+});
 // cliphist clipboard history watchers. Text and image need separate watchers;
 // run as services so they are restarted if they ever exit.
 COMPOSITOR.process.service("cliphist-text", {
@@ -750,42 +762,6 @@ if (INSIDE_KDE) {
   });
 }
 
-COMPOSITOR.key.bind("terminal", "Super+T", () => {
-  COMPOSITOR.process.spawn({ command: ["konsole"] });
-});
-
-// if kwallet6 is used as the password store, be sure to add the --password-store=kwallet6 flag
-COMPOSITOR.key.bind("chrome", "Super+B", () => {
-  COMPOSITOR.process.spawn({
-    command:
-      "google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland",
-  });
-});
-
-COMPOSITOR.key.bind("discord", "Super+D", () => {
-  COMPOSITOR.process.spawn({
-    command:
-      "discord --enable-features=UseOzonePlatform --ozone-platform=wayland --enable-wayland-ime --disable-gpu",
-  });
-});
-
-COMPOSITOR.key.bind("dolphin", "Super+E", () => {
-  COMPOSITOR.process.spawn({ command: "dolphin" });
-});
-
-COMPOSITOR.key.bind("play", "XF86AudioPlay", () => {
-  COMPOSITOR.process.spawn({ command: "playerctl play-pause" });
-});
-COMPOSITOR.key.bind("pause", "XF86AudioPause", () => {
-  COMPOSITOR.process.spawn({ command: "playerctl play-pause" });
-});
-COMPOSITOR.key.bind("next", "XF86AudioNext", () => {
-  COMPOSITOR.process.spawn({ command: "playerctl next" });
-});
-COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
-  COMPOSITOR.process.spawn({ command: "playerctl previous" });
-});
-
 // Your KDE start menu (Kickoff), like the Windows key on KDE.
 // plasmashell's `activateLauncherMenu` does nothing outside KWin, so this
 // fires Kickoff's own shortcut ("activate widget <id>") in kglobalaccel. If
@@ -804,55 +780,9 @@ function toggleLauncher() {
     ],
   });
 }
-COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
-// Super tap: fires on a quick release (within 300 ms) with no other key/button pressed in between.
-COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
-  on: "release",
-  within: 300,
-});
-// The KDE clipboard history (Klipper), as on KDE.
-COMPOSITOR.key.bind("clipboard", "Super+V", () => {
-  COMPOSITOR.process.spawn({
-    command: "qdbus6 org.kde.klipper /klipper showKlipperPopupMenu",
-  });
-});
-// KDE System Settings: Wi-Fi, Bluetooth, sound, look and feel.
-COMPOSITOR.key.bind("settings", "Super+I", () => {
-  COMPOSITOR.process.spawn({ command: "systemsettings" });
-});
-// Alt+Tab opens the window switcher (Coverflow). Super+Tab opens the grid.
-COMPOSITOR.key.bind("alt-tab-switcher", "Alt+Tab", () => {
-  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
-});
-
 // Lock the screen with hyprlock (config in ~/.config/hypr/hyprlock.conf).
 // `pidof` stops a second lock screen from starting on top of the first.
 const LOCK_COMMAND = "pidof hyprlock || hyprlock";
-COMPOSITOR.key.bind("lock", "Super+L", () => {
-  COMPOSITOR.process.spawn({ command: LOCK_COMMAND });
-});
-
-// Screenshots with Spectacle, on KDE's default keys. In KDE, KWin catches
-// these keys; here ShojiWM does. Spectacle captures through
-// ./helpers/screenshot-dbus.py.
-const SCREENSHOT_KEYS: [string, string, string][] = [
-  ["screenshot", "Print", "spectacle"],
-  ["screenshot-window", "Super+Print", "spectacle -a"],
-  ["screenshot-full", "Shift+Print", "spectacle -f"],
-  ["screenshot-region", "Super+Shift+Print", "spectacle -r"],
-  ["screenshot-region-s", "Super+Shift+S", "spectacle -r"],
-];
-for (const [name, key, command] of SCREENSHOT_KEYS) {
-  COMPOSITOR.key.bind(name, key, () => {
-    COMPOSITOR.process.spawn({ command });
-  });
-}
-
-// Log out, like Ctrl+Alt+Delete in KDE. Plasma's own "Log Out" button needs
-// KDE's session manager, which does not run under ShojiWM.
-COMPOSITOR.key.bind("logout", "Ctrl+Alt+Delete", () => {
-  COMPOSITOR.process.spawn({ command: "shoji_wm --quit" });
-});
 
 // Auto-lock: lock after 10 minutes away, and before the PC goes to sleep.
 // `loginctl lock-session` (and the KDE "Lock" button) also land here.
@@ -873,210 +803,28 @@ if (!INSIDE_KDE) {
   });
 }
 
-COMPOSITOR.key.bind("screenshot", "Super+P", () => {
-  COMPOSITOR.process.spawn({
-    command: "hyprshot -m region --raw | swappy -f -",
-  });
+// Every key binding is in one table (./keymap.ts). The cheat sheet
+// (Super+/, ./helpers/key-sheet.py) and `shoji-keys` read the same table.
+const KEYMAP = createKeymap({
+  windowManager: HYBRID_WINDOW_MANAGER,
+  switcher: WINDOW_SWITCHER,
+  grid: WINDOW_GRID,
+  windowView: WINDOW_VIEW,
+  switcherOpen: () => SWITCHERS.blurSuspended.peek(),
+  broadcastWorkspaces: () => scheduleWorkspaceBroadcast(),
+  toggleLauncher,
+  toggleKeySheet: () => WORKSPACE_IPC.broadcast("keys.sheet", { toggle: true }),
+  lockCommand: LOCK_COMMAND,
+  insideKde: INSIDE_KDE,
 });
-COMPOSITOR.key.bind("screenshot-freeze", "Super+Ctrl+P", () => {
-  COMPOSITOR.process.spawn({
-    command: "hyprshot -m region --freeze --raw | swappy -f -",
-  });
-});
-COMPOSITOR.key.bind("toggle-tiling-mode", "Super+S", () => {
-  HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("window-grid", "Super+Tab", () => {
-  WINDOW_GRID.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
-});
-COMPOSITOR.key.bind("close-focused-window", "Super+Q", () => {
-  HYBRID_WINDOW_MANAGER.closeFocusedWindow();
-});
-COMPOSITOR.key.bind("toggle-focused-window-maximize", "Super+M", () => {
-  HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
-});
-COMPOSITOR.key.bind("toggle-focused-window-fullscreen", "Super+F", () => {
-  HYBRID_WINDOW_MANAGER.toggleFocusedWindowFullscreen();
-});
-COMPOSITOR.key.bind("tile-focus-left-quick", "Super+Left", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(-1);
-});
-COMPOSITOR.key.bind("tile-focus-right-quick", "Super+Right", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(1);
-});
-COMPOSITOR.key.bind("tile-focus-left", "Super+Ctrl+Left", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(-1);
-});
-COMPOSITOR.key.bind("tile-focus-right", "Super+Ctrl+Right", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(1);
-});
-COMPOSITOR.key.bind("tile-move-left", "Super+Shift+Left", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedTile(-1);
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("tile-move-right", "Super+Shift+Right", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
-  scheduleWorkspaceBroadcast();
-});
-// Columns: stack the focused tile under the column on its left, pop it back
-// out, and move focus up and down inside a column.
-COMPOSITOR.key.bind("tile-stack-left", "Super+Comma", () => {
-  HYBRID_WINDOW_MANAGER.stackFocusedIntoLeftColumn();
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("tile-unstack", "Super+Period", () => {
-  HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
-  scheduleWorkspaceBroadcast();
-});
-// Move focus up and down inside a stacked column.
-COMPOSITOR.key.bind("tile-focus-up", "Super+Alt+Up", () => {
-  HYBRID_WINDOW_MANAGER.focusInColumn(-1);
-});
-COMPOSITOR.key.bind("tile-focus-down", "Super+Alt+Down", () => {
-  HYBRID_WINDOW_MANAGER.focusInColumn(1);
-});
-// Super+Down: the side-by-side Window View of the app you used last (every
-// window of that app), the same view as a click on its taskbar group.
-COMPOSITOR.key.bind("window-view-current-app", "Super+Down", () => {
-  if (SWITCHERS.blurSuspended.peek()) {
-    return; // A switcher is already open.
-  }
-  const recent = HYBRID_WINDOW_MANAGER.listWindowsByRecentUse();
-  const appId = recent[0]?.appId.peek();
-  if (!appId) {
-    return;
-  }
-  const windows = recent.filter((window) => window.appId.peek() === appId);
-  WINDOW_VIEW.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), windows);
-});
-COMPOSITOR.key.bind("window-move-workspace-prev", "Super+Shift+Up", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedWindowToWorkspace(-1);
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("window-move-workspace-next", "Super+Shift+Down", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedWindowToWorkspace(1);
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("workspace-prev", "Super+Ctrl+Up", () => {
-  HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
-  scheduleWorkspaceBroadcast();
-});
-COMPOSITOR.key.bind("workspace-next", "Super+Ctrl+Down", () => {
-  HYBRID_WINDOW_MANAGER.switchWorkspace(1);
-  scheduleWorkspaceBroadcast();
-});
-// Jump straight to workspace N: Ctrl+FN and Super+FN (your KDE keys), and
-// Super+N. Super+Shift+N sends the focused window to workspace N.
-for (let n = 1; n <= 9; n++) {
-  const goTo = () => {
-    HYBRID_WINDOW_MANAGER.activate(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), n);
-    scheduleWorkspaceBroadcast();
-  };
-  COMPOSITOR.key.bind(`workspace-${n}-ctrl-f`, `Ctrl+F${n}`, goTo);
-  COMPOSITOR.key.bind(`workspace-${n}-super-f`, `Super+F${n}`, goTo);
-  COMPOSITOR.key.bind(`workspace-${n}`, `Super+${n}`, goTo);
-  COMPOSITOR.key.bind(`window-to-workspace-${n}`, `Super+Shift+${n}`, () => {
-    const focused = HYBRID_WINDOW_MANAGER.listWindows().find((window) =>
-      window.isFocused.peek(),
-    );
-    if (focused) {
-      HYBRID_WINDOW_MANAGER.moveWindowToWorkspace(
-        focused,
-        HYBRID_WINDOW_MANAGER.getCurrentMonitorName(),
-        n,
-      );
-      scheduleWorkspaceBroadcast();
-    }
-  });
-}
-
-// Alt copies of the main shortcuts for the preview inside KDE.
-// KDE takes every Super shortcut before the preview window sees it.
-// They exist only inside KDE, so a real session keeps Alt for the apps.
-function bindPreviewKey(name: string, shortcut: string, handler: () => void) {
-  if (INSIDE_KDE) {
-    COMPOSITOR.key.bind(name, shortcut, handler);
-  }
-}
-bindPreviewKey("preview-terminal", "Alt+T", () => {
-  COMPOSITOR.process.spawn({ command: ["konsole"] });
-});
-bindPreviewKey("preview-toggle-tiling", "Alt+S", () => {
-  HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
-  scheduleWorkspaceBroadcast();
-});
-bindPreviewKey("preview-window-switcher", "Alt+W", () => {
-  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
-});
-bindPreviewKey("preview-close", "Alt+Q", () => {
-  HYBRID_WINDOW_MANAGER.closeFocusedWindow();
-});
-bindPreviewKey("preview-maximize", "Alt+M", () => {
-  HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
-});
-bindPreviewKey("preview-focus-left", "Alt+Left", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(-1);
-});
-bindPreviewKey("preview-focus-right", "Alt+Right", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(1);
-});
-bindPreviewKey("preview-move-left", "Alt+Shift+Left", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedTile(-1);
-  scheduleWorkspaceBroadcast();
-});
-bindPreviewKey("preview-move-right", "Alt+Shift+Right", () => {
-  HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
-  scheduleWorkspaceBroadcast();
-});
-bindPreviewKey("preview-stack-left", "Alt+Comma", () => {
-  HYBRID_WINDOW_MANAGER.stackFocusedIntoLeftColumn();
-  scheduleWorkspaceBroadcast();
-});
-bindPreviewKey("preview-unstack", "Alt+Period", () => {
-  HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
-  scheduleWorkspaceBroadcast();
-});
-// Alt+Up and Alt+Down switch workspaces, so column focus takes Shift.
-bindPreviewKey("preview-focus-up", "Alt+Shift+Up", () => {
-  HYBRID_WINDOW_MANAGER.focusInColumn(-1);
-});
-bindPreviewKey("preview-focus-down", "Alt+Shift+Down", () => {
-  HYBRID_WINDOW_MANAGER.focusInColumn(1);
-});
-// Mouse wheel moves along the row of tiles. Super for the real session,
-// Alt for the preview inside KDE.
-COMPOSITOR.key.bind("tile-scroll-left", "Super+WheelScrollUp", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(-1);
-});
-COMPOSITOR.key.bind("tile-scroll-right", "Super+WheelScrollDown", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(1);
-});
-bindPreviewKey("preview-scroll-left", "Alt+WheelScrollUp", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(-1);
-});
-bindPreviewKey("preview-scroll-right", "Alt+WheelScrollDown", () => {
-  HYBRID_WINDOW_MANAGER.focusTile(1);
-});
-bindPreviewKey("preview-workspace-prev", "Alt+Up", () => {
-  HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
-  scheduleWorkspaceBroadcast();
-});
-bindPreviewKey("preview-workspace-next", "Alt+Down", () => {
-  HYBRID_WINDOW_MANAGER.switchWorkspace(1);
-  scheduleWorkspaceBroadcast();
-});
-
-let fpsCounter = false;
-COMPOSITOR.key.bind("fps", "Super+Shift+F", () => {
-  fpsCounter = !fpsCounter;
-  COMPOSITOR.debug.fpsCounter = fpsCounter;
-});
-
-let profileEnabled = false;
-COMPOSITOR.key.bind("profile", "Super+Shift+T", () => {
-  profileEnabled = !profileEnabled;
-  COMPOSITOR.debug.enableProfile(profileEnabled);
+bindKeymap(KEYMAP);
+const KEYMAP_ROWS = keymapRows(KEYMAP);
+writeKeymapFile(KEYMAP_ROWS);
+WORKSPACE_IPC.handle("keys.list", () => ({ rows: KEYMAP_ROWS }));
+// Debug (tests over IPC): run a chord's action, as if the key went down.
+WORKSPACE_IPC.handle("debug.key", (params) => {
+  const { keys } = (params ?? {}) as { keys?: string };
+  return typeof keys === "string" && runChord(KEYMAP, keys);
 });
 
 COMPOSITOR.output.configure((context) => {
