@@ -294,6 +294,7 @@ fn empty_snapshot() -> WaylandWindowSnapshot {
     WaylandWindowSnapshot {
         output_name: None,
         plasma: None,
+        minimized_geometry: None,
         id: String::new(),
         title: String::new(),
         app_id: None,

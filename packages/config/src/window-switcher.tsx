@@ -124,6 +124,16 @@ export interface SwitcherLayout<State> {
   readonly name: string;
   /** How far the desktop dims behind the windows. */
   readonly dimAlpha: number;
+  /** The dimming colour, RGB 0..1 (default black). */
+  readonly dimColor?: readonly [number, number, number];
+  /** Opening and closing time in ms (default `TRANSITION_MS`). */
+  readonly transitionMs?: number;
+  /** Opening and closing easing (default the window manager's). */
+  readonly easing?: (progress: number) => number;
+  /** Open with no window selected; the pointer or a key selects one. */
+  readonly startsWithoutSelection?: boolean;
+  /** Hide the top and overlay layers (bars, panels) while open. */
+  readonly hidesTopLayers?: boolean;
   /** Fresh per-session state. */
   begin(windows: readonly WaylandWindow[], output: string): State;
   /** The window selected on opening. */
@@ -150,8 +160,13 @@ export interface SwitcherLayout<State> {
 
 /** A window switcher, whatever its layout. */
 export interface WindowSwitcher {
-  /** Open the switcher on `output` (no-op while open). */
-  open(output: string): void;
+  /**
+   * Open the switcher on `output` (no-op while open), with `windows` in that
+   * order, or every window by recent use.
+   */
+  open(output: string, windows?: readonly WaylandWindow[]): void;
+  /** Close it, back to the desktop unchanged (no-op while closed). */
+  cancel(): void;
   /** The switcher's composition for `output` while open, else `null`. */
   compose(output: OutputInfo): CompositionRenderable | null;
   /** True while window backdrop effects should be off. */
@@ -166,6 +181,8 @@ export interface WindowSwitcherOptions {
   windowManager: HybridWindowManager;
   /** A window's place in the real stack, higher on top (its decoration's zIndex). */
   stackOrder: (window: WaylandWindow) => number;
+  /** Drawn over the background layers, under the dimming (e.g. a desktop window). */
+  backdrop?: (output: OutputInfo) => CompositionRenderable | null;
 }
 
 type Phase = "entering" | "shown" | "leaving";
@@ -187,6 +204,8 @@ interface Session<State> {
   phaseStartMs: number | null;
   /** The selected window's index, unbounded (taken modulo the window count). */
   selected: number;
+  /** False until something selects a window (`startsWithoutSelection`). */
+  hasSelection: boolean;
   lastTickMs: number | null;
   grab: InputGrab | null;
   poll: PollHandle | null;
@@ -199,6 +218,9 @@ export function createWindowSwitcher<State>(
   options: WindowSwitcherOptions,
 ): WindowSwitcher {
   const wm = options.windowManager;
+  const easing = layout.easing ?? WINDOW_MANAGEMENT_EASING;
+  const transitionMs = layout.transitionMs ?? TRANSITION_MS;
+  const dimColor = layout.dimColor ?? [0, 0, 0];
   const [current, setCurrent] = signal<Session<State> | null>(null);
   // Bumped whenever the session's animated state changes, so the composition
   // re-evaluates once per frame while something moves.
@@ -226,7 +248,7 @@ export function createWindowSwitcher<State>(
 
   /** Every window's pose for this frame. */
   function poses(session: Session<State>, viewport: Viewport) {
-    const eased = WINDOW_MANAGEMENT_EASING(session.progress);
+    const eased = easing(session.progress);
     return session.windows.map((window, index) => {
       const rect = rectOf(window);
       const shown = layout.pose(session.state, index, rect, viewport, session.selected);
@@ -247,7 +269,7 @@ export function createWindowSwitcher<State>(
   }
 
   function dimAlpha(session: Session<State>): number {
-    const eased = WINDOW_MANAGEMENT_EASING(session.progress);
+    const eased = easing(session.progress);
     switch (session.phase) {
       case "entering":
         return layout.dimAlpha * eased;
@@ -284,7 +306,7 @@ export function createWindowSwitcher<State>(
 
     if (session.phase !== "shown") {
       session.phaseStartMs ??= nowMs;
-      session.progress = Math.min(1, (nowMs - session.phaseStartMs) / TRANSITION_MS);
+      session.progress = Math.min(1, (nowMs - session.phaseStartMs) / transitionMs);
     }
     const moving = layout.tick?.(session.state, session.selected, dt) ?? false;
 
@@ -330,12 +352,15 @@ export function createWindowSwitcher<State>(
     });
   }
 
-  function open(outputName: string) {
+  function open(outputName: string, only?: readonly WaylandWindow[]) {
     if (current.peek()) {
       return;
     }
     const viewport = viewportOf(outputName);
-    const windows = wm.listWindowsByRecentUse();
+    const alive = new Set(wm.listWindows().map((window) => window.id));
+    const windows = only
+      ? only.filter((window) => alive.has(window.id))
+      : wm.listWindowsByRecentUse();
     if (!viewport || windows.length === 0) {
       return;
     }
@@ -360,6 +385,7 @@ export function createWindowSwitcher<State>(
       progress: 0,
       phaseStartMs: null,
       selected: layout.initialSelection(windows.length),
+      hasSelection: !layout.startsWithoutSelection,
       lastTickMs: null,
       grab: null,
       poll: null,
@@ -442,15 +468,23 @@ export function createWindowSwitcher<State>(
   }
 
   function select(session: Session<State>, index: number) {
-    if (current.peek() !== session || session.phase === "leaving" || index === session.selected) {
+    if (
+      current.peek() !== session ||
+      session.phase === "leaving" ||
+      (session.hasSelection && index === session.selected)
+    ) {
       return;
     }
     session.selected = index;
+    session.hasSelection = true;
     setSelectedWindowId(selectedWindow(session)?.id ?? null);
     ensureTicking(session);
   }
 
   function selectedWindow(session: Session<State>): WaylandWindow | undefined {
+    if (!session.hasSelection) {
+      return undefined;
+    }
     return session.windows[mod(session.selected, session.windows.length)];
   }
 
@@ -591,7 +625,8 @@ export function createWindowSwitcher<State>(
     return (
       <>
         <Layers layers={["background", "bottom"]} />
-        <Solid color={[0, 0, 0, dimAlpha(session)]} />
+        {options.backdrop?.(output) ?? null}
+        <Solid color={[...dimColor, dimAlpha(session)]} />
         <Scene3D camera={switcherCamera(width, height)}>
           {planes.map(({ window, rect, pose, planeWidth, planeHeight, transform }) => (
             <Plane
@@ -603,7 +638,7 @@ export function createWindowSwitcher<State>(
             />
           ))}
         </Scene3D>
-        <Layers layers={["top", "overlay"]} />
+        {layout.hidesTopLayers ? null : <Layers layers={["top", "overlay"]} />}
         <LayerPopups />
       </>
     );
@@ -611,6 +646,12 @@ export function createWindowSwitcher<State>(
 
   return {
     open,
+    cancel: () => {
+      const session = current.peek();
+      if (session) {
+        close(session, null);
+      }
+    },
     compose,
     blurSuspended,
     backdropStrength,

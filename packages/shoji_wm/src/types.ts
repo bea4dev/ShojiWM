@@ -20,6 +20,8 @@ export interface WaylandWindowSnapshot {
   readonly outputName?: string;
   /** What plasmashell asked for this window; absent without a plasma surface. */
   readonly plasma?: PlasmaSurfaceState;
+  /** The window's taskbar entry (global logical px), from KDE's `set_minimized_geometry`. */
+  readonly minimizedGeometry?: WindowPosition;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. */
@@ -244,6 +246,12 @@ export interface WaylandWindow {
    * `org_kde_plasma_surface`); `undefined` for every other window.
    */
   readonly plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
+  /**
+   * Where the taskbar shows this window (global logical px), from KDE's
+   * `org_kde_plasma_window.set_minimized_geometry`; `undefined` when no
+   * taskbar set one. The minimize animation flies the window there.
+   */
+  readonly minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -3260,6 +3268,7 @@ export interface ReactiveWaylandWindowSignals {
   isTransient: import("./signals").ReadonlySignal<boolean>;
   parentId: import("./signals").ReadonlySignal<string | undefined>;
   plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
+  minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   output: import("./signals").ReadonlySignal<string | undefined>;

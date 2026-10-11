@@ -26,6 +26,7 @@ import {
 } from "shoji_wm";
 import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
 import { playRectAnimation, stopRectAnimation } from "./window-animation";
+import { magicLampStart, magicLampStop } from "./magic-lamp";
 
 export type SnapZone =
   | "maximize"
@@ -142,10 +143,6 @@ const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
-const WINDOW_MINIMIZE_RECT_EASING = cubicBezier(0.3, -0.3, 0, 1);
-const WINDOW_UNMINIMIZE_RECT_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
-const WINDOW_MINIMIZE_OPACITY_EASING = cubicBezier(0.3, -0.3, 0, 1);
-const WINDOW_UNMINIMIZE_OPACITY_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 export const TILE_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -6116,9 +6113,10 @@ function scheduleMinimizeAnimation(
   minimized: boolean,
   instant = false,
 ): void {
+  const rest = { x: 0, y: 0, width: 0, height: 0 };
   if (instant) {
     // Replace whatever the channel holds with its end pose.
-    const rest = minimized ? { x: 0, y: 120, width: 0, height: 0 } : { x: 0, y: 0, width: 0, height: 0 };
+    magicLampStop(window);
     const opacity = minimized ? 0 : 1;
     window.scheduleAnimation({
       channel: MINIMIZE_ANIMATION_CHANNEL,
@@ -6127,30 +6125,15 @@ function scheduleMinimizeAnimation(
     });
     return;
   }
+  // The Magic Lamp effect draws the window flowing into (or out of) its
+  // taskbar entry. This channel holds the window still and opaque meanwhile;
+  // a running animation also keeps a minimized (idle) window drawn until
+  // the lamp is done.
+  const duration = magicLampStart(window, minimized);
   window.scheduleAnimation({
     channel: MINIMIZE_ANIMATION_CHANNEL,
-    rect: {
-      from: minimized
-        ? { x: 0, y: 0, width: 0, height: 0 }
-        : { x: 0, y: 200, width: 0, height: 0 },
-      to: minimized
-        ? { x: 0, y: 120, width: 0, height: 0 }
-        : { x: 0, y: 0, width: 0, height: 0 },
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: minimized
-        ? WINDOW_MINIMIZE_RECT_EASING
-        : WINDOW_UNMINIMIZE_RECT_EASING,
-      mode: "add",
-    },
-    opacity: {
-      from: minimized ? 1 : 0,
-      to: minimized ? 0 : 1,
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: minimized
-        ? WINDOW_MINIMIZE_OPACITY_EASING
-        : WINDOW_UNMINIMIZE_OPACITY_EASING,
-      mode: "override",
-    },
+    rect: { from: rest, to: rest, duration, mode: "add" },
+    opacity: { from: 1, to: 1, duration, mode: "override" },
   });
 }
 

@@ -4283,6 +4283,7 @@ mod tests {
         WaylandWindowSnapshot {
             output_name: None,
             plasma: None,
+            minimized_geometry: None,
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),

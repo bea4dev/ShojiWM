@@ -1115,6 +1115,7 @@ mod tests {
         WaylandWindowSnapshot {
             output_name: None,
             plasma: None,
+            minimized_geometry: None,
             id: id.into(),
             title: format!("window {id}"),
             app_id: Some("org.example.App".into()),

@@ -3082,6 +3082,7 @@ impl ShojiWM {
         let snapshot = WaylandWindowSnapshot {
             output_name: None,
             plasma: None,
+            minimized_geometry: None,
             id: "__warmup__".into(),
             title: "warmup".into(),
             app_id: Some("shoji_wm.warmup".into()),

@@ -56,6 +56,28 @@ export function createWindowGrid(options: WindowSwitcherOptions): WindowSwitcher
   return createWindowSwitcher(WINDOW_GRID_LAYOUT, options);
 }
 
+/**
+ * KDE's Window View (KWin's windowview effect): the same grid for a chosen
+ * set of windows, opened with `open(output, windows)`. The taskbar opens it
+ * for a group of windows ("show windows side by side").
+ *
+ * Like KWin: the desktop dims to the Breeze Dark window colour at 75%, the
+ * view opens and closes with OutCubic easing, nothing is selected until the
+ * pointer or a key picks a window, and a click on empty space or `Escape`
+ * closes it.
+ */
+export function createWindowView(options: WindowSwitcherOptions): WindowSwitcher {
+  return createWindowSwitcher(WINDOW_VIEW_LAYOUT, options);
+}
+
+/** kdeglobals [Colors:Window] BackgroundNormal of Breeze Dark (32, 35, 38). */
+const BREEZE_DARK_WINDOW: readonly [number, number, number] = [32 / 255, 35 / 255, 38 / 255];
+/**
+ * KWin's `animationTime(300ms)`: 300 ms times kdeglobals
+ * AnimationDurationFactor=0.25 on this machine.
+ */
+const WINDOW_VIEW_MS = 300 * 0.25;
+
 const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   name: "window-grid",
   dimAlpha: DIM_ALPHA,
@@ -127,6 +149,22 @@ const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   },
 
   onClickOutside: (_state, controls) => controls.cancel(),
+};
+
+const WINDOW_VIEW_LAYOUT: SwitcherLayout<GridState> = {
+  ...WINDOW_GRID_LAYOUT,
+  name: "window-view",
+  dimAlpha: 0.75,
+  dimColor: BREEZE_DARK_WINDOW,
+  transitionMs: WINDOW_VIEW_MS,
+  // Qt's Easing.OutCubic.
+  easing: (progress) => 1 - (1 - progress) ** 3,
+  startsWithoutSelection: true,
+  // KWin fades the panels out under the view.
+  hidesTopLayers: true,
+  initialSelection: () => 0,
+  // Opened by a click, not by a held key.
+  onSuperReleased: () => {},
 };
 
 /** The window in the row above (`-1`) or below (`1`) nearest the selection. */

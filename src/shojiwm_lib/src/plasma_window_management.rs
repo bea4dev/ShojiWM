@@ -27,10 +27,10 @@
 use std::sync::{Arc, Mutex};
 
 use smithay::{
-    desktop::Window,
+    desktop::{Window, WindowSurfaceType, layer_map_for_output},
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-        Weak as WaylandWeak, backend::ClientId,
+        Weak as WaylandWeak, backend::ClientId, protocol::wl_surface::WlSurface,
     },
 };
 use wayland_protocols_plasma::plasma_window_management::server::{
@@ -39,7 +39,7 @@ use wayland_protocols_plasma::plasma_window_management::server::{
     org_kde_plasma_window_management::{self, OrgKdePlasmaWindowManagement},
 };
 
-use crate::state::ShojiWM;
+use crate::{ssd::WindowPositionSnapshot, state::ShojiWM};
 
 /// KWin's version. libtaskmanager in Plasma 6 asks for 17+ (it uses
 /// `get_stacking_order`); 18 only adds the `client_geometry` event.
@@ -93,6 +93,10 @@ struct PlasmaWindowInner {
     info: PlasmaWindowInfo,
     closed: bool,
     resources: Vec<WaylandWeak<OrgKdePlasmaWindow>>,
+    /// The window's taskbar entry (`set_minimized_geometry`), relative to the
+    /// panel surface that holds it. One per panel; the last one set wins.
+    /// The minimize animation flies the window there.
+    minimized_geometries: Vec<(WaylandWeak<WlSurface>, Rect)>,
 }
 
 impl PlasmaWindowHandle {
@@ -104,6 +108,7 @@ impl PlasmaWindowHandle {
                 info: PlasmaWindowInfo::default(),
                 closed: false,
                 resources: Vec::new(),
+                minimized_geometries: Vec::new(),
             })),
         }
     }
@@ -187,6 +192,30 @@ impl PlasmaWindowHandle {
         for resource in resources {
             resource.unmapped();
         }
+    }
+
+    /// Remember (`Some`) or forget (`None`) the taskbar entry on `panel`.
+    /// Returns true when it changed.
+    fn set_minimized_geometry(&self, panel: &WlSurface, rect: Option<Rect>) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.minimized_geometries.clone();
+        inner
+            .minimized_geometries
+            .retain(|(surface, _)| surface.upgrade().is_ok_and(|surface| surface != *panel));
+        if let Some(rect) = rect {
+            inner.minimized_geometries.push((panel.downgrade(), rect));
+        }
+        inner.minimized_geometries != before
+    }
+
+    /// The last taskbar entry whose panel still exists.
+    fn minimized_geometry(&self) -> Option<(WlSurface, Rect)> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .minimized_geometries
+            .iter()
+            .rev()
+            .find_map(|(surface, rect)| surface.upgrade().ok().map(|surface| (surface, *rect)))
     }
 
     fn remove_resource(&self, resource: &OrgKdePlasmaWindow) {
@@ -440,6 +469,55 @@ impl ShojiWM {
         }
     }
 
+    /// Where the window's taskbar entry is, in global logical coordinates:
+    /// the `set_minimized_geometry` rect moved by its panel's position.
+    /// `None` when no taskbar set one, or its panel is gone.
+    pub fn plasma_minimized_geometry(&self, window: &Window) -> Option<WindowPositionSnapshot> {
+        let handle = window.user_data().get::<PlasmaWindowHandle>()?;
+        let (panel, (x, y, width, height)) = handle.minimized_geometry()?;
+        let (origin_x, origin_y) = self.surface_origin(&panel)?;
+        Some(WindowPositionSnapshot {
+            x: (origin_x + x) as f64,
+            y: (origin_y + y) as f64,
+            width: width as f64,
+            height: height as f64,
+        })
+    }
+
+    /// The global logical position of a panel surface's top-left corner.
+    /// plasmashell's panels are toplevel windows; a layer-shell panel works too.
+    fn surface_origin(&self, surface: &WlSurface) -> Option<(i32, i32)> {
+        if let Some(window) = self
+            .space
+            .elements()
+            .find(|window| Self::window_matches_root_surface(window, surface))
+        {
+            // The element location is the surface's corner (the window
+            // snapshot adds the geometry offset to it for `position`).
+            let loc = self.space.element_location(window)?;
+            return Some((loc.x, loc.y));
+        }
+        for output in self.space.outputs() {
+            let map = layer_map_for_output(output);
+            let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) else {
+                continue;
+            };
+            let geometry = map.layer_geometry(layer)?;
+            let output_loc = self.space.output_geometry(output)?.loc;
+            return Some((output_loc.x + geometry.loc.x, output_loc.y + geometry.loc.y));
+        }
+        None
+    }
+
+    /// A taskbar entry moved: send the window's snapshot to the runtime again.
+    fn plasma_minimized_geometry_changed(&mut self, window: &Window) {
+        let window_id = self.snapshot_window(window).id;
+        self.runtime_dirty_window_ids.insert(window_id.clone());
+        self.runtime_managed_only_window_ids.remove(&window_id);
+        self.runtime_node_only_window_ids.remove(&window_id);
+        self.runtime_poll_dirty = true;
+    }
+
     /// The process id of the window's client, or 0 when unknown.
     fn window_pid(&self, window: &Window) -> u32 {
         if let Some(x11) = window.x11_surface() {
@@ -619,8 +697,19 @@ impl Dispatch<OrgKdePlasmaWindow, PlasmaWindowHandle> for ShojiWM {
             // No icon bytes: dropping the fd closes it, so the client reads
             // an empty icon and falls back to the app's .desktop icon.
             Request::GetIcon { fd } => drop(fd),
+            // The taskbar entry, for the Magic Lamp minimize animation.
+            Request::SetMinimizedGeometry { panel, x, y, width, height } => {
+                let rect = (x as i32, y as i32, width as i32, height as i32);
+                if handle.set_minimized_geometry(&panel, Some(rect)) {
+                    state.plasma_minimized_geometry_changed(&window);
+                }
+            }
+            Request::UnsetMinimizedGeometry { panel } => {
+                if handle.set_minimized_geometry(&panel, None) {
+                    state.plasma_minimized_geometry_changed(&window);
+                }
+            }
             // Not supported: virtual desktops, activities, highlight,
-            // minimized geometries (for the minimize animation),
             // interactive move/resize, send to output.
             _ => {}
         }

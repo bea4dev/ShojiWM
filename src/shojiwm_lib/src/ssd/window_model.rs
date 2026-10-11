@@ -47,6 +47,11 @@ pub struct WaylandWindowSnapshot {
     /// (role, position); `None` for a window without a plasma surface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plasma: Option<crate::protocols::plasma_shell::PlasmaSurfaceSnapshot>,
+    /// The window's taskbar entry in global logical coordinates, from KDE's
+    /// `org_kde_plasma_window.set_minimized_geometry`; `None` when no taskbar
+    /// set one. The Magic Lamp minimize animation flies the window there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimized_geometry: Option<WindowPositionSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -919,6 +924,7 @@ impl ShojiWM {
             }),
             interaction: DecorationInteractionSnapshot::default(),
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
+            minimized_geometry: self.plasma_minimized_geometry(window),
         }
     }
 
@@ -944,6 +950,7 @@ impl ShojiWM {
                 icon: None,
                 interaction: DecorationInteractionSnapshot::default(),
                 plasma: None,
+                minimized_geometry: None,
             };
         };
 
@@ -1020,6 +1027,7 @@ impl ShojiWM {
             }),
             interaction: DecorationInteractionSnapshot::default(),
             plasma: None,
+            minimized_geometry: self.plasma_minimized_geometry(window),
         }
     }
 

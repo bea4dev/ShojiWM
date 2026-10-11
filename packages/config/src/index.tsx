@@ -29,9 +29,10 @@ import {
   Popup,
   type ReadonlySignal,
   DefaultComposition,
+  Windows,
 } from "shoji_wm";
 import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
-import { createIpcServer } from "shoji_wm/ipc";
+import { createIpcServer, defaultSocketPath } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
   TITLEBAR_HEIGHT,
@@ -51,12 +52,17 @@ import {
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
-import { createWindowGrid } from "./window-grid";
+import { createWindowGrid, createWindowView } from "./window-grid";
 import {
   jellyDragEffect,
   jellyDragForget,
   jellyDragOnWindowMove,
 } from "./jelly-drag";
+import {
+  configureMagicLamp,
+  magicLampEffect,
+  magicLampForget,
+} from "./magic-lamp";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -109,6 +115,16 @@ function isPlasmaShellWindow(window: WaylandWindow): boolean {
   return isPlasmaShellSurface(window.plasma.peek());
 }
 
+/** plasmashell's open windows, by id (filled by the open and close events). */
+const PLASMA_SHELL_WINDOWS = new Map<string, WaylandWindow>();
+
+/** plasmashell's open windows with this role (e.g. the panels, the desktop). */
+function plasmaShellWindows(role: PlasmaSurfaceRole): WaylandWindow[] {
+  return [...PLASMA_SHELL_WINDOWS.values()].filter(
+    (window) => window.plasma.peek()?.role === role,
+  );
+}
+
 /** Shell windows that need the keyboard as soon as they open. */
 function plasmaShellWindowTakesFocus(window: WaylandWindow): boolean {
   const plasma = window.plasma.peek();
@@ -138,14 +154,40 @@ const WINDOW_SWITCHER = (
       ? FULLSCREEN_Z_INDEX
       : windowZIndex(window),
 });
+// KDE's Window View: the taskbar's "show windows side by side" for a group
+// of windows (see the `windowView.activate` IPC command).
+const WINDOW_VIEW = createWindowView({
+  windowManager: HYBRID_WINDOW_MANAGER,
+  stackOrder: (window) =>
+    window.state[WINDOW_STATE_FULLSCREEN]()
+      ? FULLSCREEN_Z_INDEX
+      : windowZIndex(window),
+  // The KDE wallpaper is a plasmashell window, not a layer. The panels hide,
+  // as in KWin.
+  backdrop: () => <Windows windows={plasmaShellWindows("desktop")} />,
+});
 COMPOSITOR.rendering.composition = (output) =>
-  WINDOW_SWITCHER.compose(output) ?? <DefaultComposition />;
+  WINDOW_SWITCHER.compose(output) ??
+  WINDOW_VIEW.compose(output) ?? <DefaultComposition />;
+
+/** What both switchers share with the rest of the config. */
+const SWITCHERS = {
+  blurSuspended: computed(
+    () => WINDOW_SWITCHER.blurSuspended() || WINDOW_VIEW.blurSuspended(),
+  ),
+  backdropStrength: computed(() =>
+    Math.min(WINDOW_SWITCHER.backdropStrength(), WINDOW_VIEW.backdropStrength()),
+  ),
+  selectedWindowId: computed(
+    () => WINDOW_SWITCHER.selectedWindowId() ?? WINDOW_VIEW.selectedWindowId(),
+  ),
+};
 
 // Window backdrop effects end with this stage so they can fade back in after
 // the switcher closes.
 const backdropFade = () =>
   shaderStage(loadShader("./src/effect/backdrop-fade.frag"), {
-    uniforms: { strength: WINDOW_SWITCHER.backdropStrength },
+    uniforms: { strength: SWITCHERS.backdropStrength },
   });
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
@@ -200,6 +242,9 @@ COMPOSITOR.onEnable((event) => {
 //   workspaces.toggleTiling  { monitor?: string }                  (command)
 //   workspaces.changed       -> WorkspacesView                     (broadcast)
 //   windows.activate         { windowId: string }                  (command)
+//   windows.minimize         { windowId: string }                  (command)
+//   windowView.activate      { windowIds: string[] }               (command)
+//   windowView.deactivate                                          (command)
 //   dock.proximity           { monitor: string, inside: bool }    (broadcast)
 // ---------------------------------------------------------------------------
 const WORKSPACE_IPC = createIpcServer();
@@ -294,6 +339,30 @@ WORKSPACE_IPC.handle("windows.activate", (params) => {
     scheduleWorkspaceBroadcast();
   }
 });
+
+WORKSPACE_IPC.handle("windows.minimize", (params) => {
+  const windowId = (params as { windowId?: string } | undefined)?.windowId;
+  if (typeof windowId === "string") {
+    HYBRID_WINDOW_MANAGER.findWindowById(windowId)?.minimize();
+  }
+});
+
+// KDE's Window View for a taskbar group ("show windows side by side"):
+// plasmashell calls org.kde.KWin.Effect.WindowView1.activate with the
+// windows' ids, and ./helpers/window-view-dbus.py hands them on to here.
+WORKSPACE_IPC.handle("windowView.activate", (params) => {
+  const ids = (params as { windowIds?: unknown } | undefined)?.windowIds;
+  if (!Array.isArray(ids) || SWITCHERS.blurSuspended.peek()) {
+    // Bad call, or a switcher is already open.
+    return;
+  }
+  const windows = ids
+    .map((id) => HYBRID_WINDOW_MANAGER.findWindowById(String(id)))
+    .filter((window) => window !== undefined);
+  WINDOW_VIEW.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), windows);
+});
+
+WORKSPACE_IPC.handle("windowView.deactivate", () => WINDOW_VIEW.cancel());
 
 // ---------------------------------------------------------------------------
 // Dock proximity: watch the pointer and broadcast enter/leave for the bottom
@@ -424,6 +493,18 @@ if (!INSIDE_KDE) {
     // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
     // XDG_MENU_PREFIX: Kickoff reads its app list from plasma-applications.menu.
     env: { XDG_CURRENT_DESKTOP: "KDE", XDG_MENU_PREFIX: "plasma-" },
+    restart: "on-exit",
+  });
+  // Owns KWin's Window View D-Bus name, so the taskbar shows a group's
+  // windows side by side instead of a text list (see the helper's header).
+  COMPOSITOR.process.service("window-view-dbus", {
+    command: [
+      "sh",
+      "-c",
+      'exec python3 "$HOME/.config/shojiwm/src/helpers/window-view-dbus.py" "$1"',
+      "window-view-dbus",
+      defaultSocketPath(),
+    ],
     restart: "on-exit",
   });
   // The KDE window that asks for your password when an app needs admin rights.
@@ -833,7 +914,7 @@ const BACKGROUND_BLUR = compileEffect({
   pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
 });
 COMPOSITOR.effect.background_effect = computed(() =>
-  WINDOW_SWITCHER.blurSuspended() ? null : BACKGROUND_BLUR,
+  SWITCHERS.blurSuspended() ? null : BACKGROUND_BLUR,
 );
 
 const LAYER_BLUR_MASK = compileLayerEffect({
@@ -862,9 +943,39 @@ const LAYER_BLUR_MASK = compileLayerEffect({
 // Set to false to turn it off. It shows only in a real session, not in the
 // preview inside KDE.
 const JELLY_DRAG = true;
-if (JELLY_DRAG) {
-  COMPOSITOR.effect.window = jellyDragEffect;
-}
+// Magic Lamp (KDE's minimize effect, ./magic-lamp.ts): a minimizing window
+// pours into its taskbar entry. It wins over the jelly drag while it runs.
+configureMagicLamp({
+  // KWin's "docks": plasma panels (windows or layer-shell surfaces) and any
+  // other bar.
+  panels: () => [
+    ...plasmaShellWindows("panel").map((window) => ({
+      x: window.rect.x,
+      y: window.rect.y,
+      width: window.rect.width,
+      height: window.rect.height,
+    })),
+    ...Object.values(COMPOSITOR.layer.current)
+      .filter((layer) => layer.layer !== "background")
+      .flatMap((layer) => {
+        const output = COMPOSITOR.output.get(layer.outputName);
+        if (!output) {
+          return [];
+        }
+        // Layer positions are output-local.
+        return [
+          {
+            x: output.position.x + layer.position.x,
+            y: output.position.y + layer.position.y,
+            width: layer.position.width,
+            height: layer.position.height,
+          },
+        ];
+      }),
+  ],
+});
+COMPOSITOR.effect.window = (window) =>
+  magicLampEffect(window) ?? (JELLY_DRAG ? jellyDragEffect(window) : null);
 
 COMPOSITOR.effect.layer = (layer) => {
   const namespace = layer.namespace();
@@ -953,6 +1064,7 @@ COMPOSITOR.rendering.surfacePolicy = (surface) => {
 // below (see `isPlasmaShellWindow`).
 COMPOSITOR.event.onOpen((window) => {
   if (isPlasmaShellWindow(window)) {
+    PLASMA_SHELL_WINDOWS.set(window.id, window);
     if (plasmaShellWindowTakesFocus(window)) {
       window.focus();
     }
@@ -985,6 +1097,7 @@ COMPOSITOR.event.onStartClose((window) => {
 });
 
 COMPOSITOR.event.onClose((window) => {
+  PLASMA_SHELL_WINDOWS.delete(window.id);
   if (isPlasmaShellWindow(window)) {
     // A focused popup can close before it reports the focus loss.
     if (window.isFocused.peek()) {
@@ -994,6 +1107,7 @@ COMPOSITOR.event.onClose((window) => {
   }
   HYBRID_WINDOW_MANAGER.onClose(window);
   jellyDragForget(window);
+  magicLampForget(window);
   scheduleWorkspaceBroadcast();
 });
 
@@ -1216,7 +1330,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // The window selected in the window switcher glows white instead (it fits
   // in the switcher's texture margin).
   const windowShadow = computed(() =>
-    WINDOW_SWITCHER.selectedWindowId() === window.id
+    SWITCHERS.selectedWindowId() === window.id
       ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
       : window.isFocused()
         ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
@@ -1280,7 +1394,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   });
   // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
-  const blurSuspended = WINDOW_SWITCHER.blurSuspended();
+  const blurSuspended = SWITCHERS.blurSuspended();
 
   const appIcon = (
     <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
