@@ -8,137 +8,229 @@ import {
   type WaylandWindow,
   type WindowMoveEvent,
 } from "shoji_wm";
-import type { WindowEffectAssignment, WindowEffectHandle } from "shoji_wm/types";
+import type {
+  ShaderUniformMap,
+  WindowEffectAssignment,
+  WindowEffectHandle,
+} from "shoji_wm/types";
 
-// Jelly drag: a light copy of KDE's Wobbly Windows.
+// Wobbly windows, the KDE way.
 //
-// While you drag a window, its far side trails behind the pointer, and it
-// wobbles back into shape when you stop. A spring gives the lag of the far
-// side; the jelly-drag shader shifts the pixels by it. The effect exists only
-// while a window moves or settles, so a still desktop pays nothing for it.
+// A 4x4 grid of points sits on the window, joined to its neighbours by
+// springs. While you drag, the point under your grab is pinned to the
+// pointer and the rest lag behind and pull on each other, so the window bends
+// like a rubber sheet. When you let go, every point springs back to its rest
+// place and the window wobbles to a stop. The jelly-drag shader bends the
+// window's pixels with the grid. Nothing runs while no window moves.
 
-/** The farthest the far side may trail, in logical px. Also the effect margin. */
-const MAX_LAG_PX = 40;
-/** Spring pull, 1/s². Higher snaps back faster. */
-const STIFFNESS = 260;
-/** Spring friction, 1/s. Lower wobbles longer. */
-const DAMPING = 12;
-/** Physics step, in seconds. Small steps keep the spring stable. */
-const MAX_STEP_S = 1 / 240;
+const GRID = 4;
+/** The farthest a grid point may bend, in logical px. Also the effect margin. */
+const MAX_BEND_PX = 120;
+/** Pull between neighbouring points, 1/s². Higher is stiffer. */
+const SPRING = 450;
+/** Pull of every point back to its rest place, 1/s². Keeps the shape. */
+const SETTLE = 140;
+/**
+ * Share of the window's motion that becomes bend (KDE's "move factor").
+ * Low: the window moves as one piece and only wobbles. High: it trails like jelly.
+ */
+const MOVE_FACTOR = 0.15;
+/** Friction, 1/s. Lower wobbles longer. */
+const FRICTION = 6.5;
+/** Physics step, in seconds. Small steps keep the springs stable. */
+const STEP_S = 1 / 480;
+/** Window opacity while dragged, like KDE's Translucency effect (80%). */
+const DRAG_OPACITY = 0.8;
+/** How long the fade to and from DRAG_OPACITY takes, in seconds (KDE: 250 ms). */
+const FADE_S = 0.25;
 
-interface Jelly {
+type NumberSignal = ReturnType<typeof signal<number>>;
+
+/** The left, right, upper and lower neighbours of every grid point. */
+const NEIGHBOURS: number[][] = Array.from({ length: GRID * GRID }, (_, i) => {
+  const col = i % GRID;
+  const row = (i - col) / GRID;
+  const list: number[] = [];
+  if (col > 0) list.push(i - 1);
+  if (col < GRID - 1) list.push(i + 1);
+  if (row > 0) list.push(i - GRID);
+  if (row < GRID - 1) list.push(i + GRID);
+  return list;
+});
+
+interface Wobble {
   active: ReturnType<typeof signal<boolean>>;
-  lagX: ReturnType<typeof signal<number>>;
-  lagY: ReturnType<typeof signal<number>>;
-  grabX: ReturnType<typeof signal<number>>;
-  grabY: ReturnType<typeof signal<number>>;
+  /** 16 bends (x and y), as signals for the shader. */
+  bendSignals: NumberSignal[];
+  opacity: NumberSignal;
   effect: WindowEffectHandle;
   dragging: boolean;
-  // Where the window is (target) and where its far side is (far), logical px.
+  /** The grid point pinned to the pointer while dragging. */
+  pinned: number;
+  // Per point, relative to its rest place (logical px): bend and speed.
+  bendX: Float64Array;
+  bendY: Float64Array;
+  speedX: Float64Array;
+  speedY: Float64Array;
+  // Window position last frame, to turn window motion into bend.
+  lastX: number;
+  lastY: number;
   targetX: number;
   targetY: number;
-  farX: number;
-  farY: number;
-  velocityX: number;
-  velocityY: number;
+  // Rest spacing between grid points, logical px.
+  cellW: number;
+  cellH: number;
   poll: PollHandle | null;
   lastMs: number | null;
 }
 
-const jellies = new Map<string, Jelly>();
+const wobbles = new Map<string, Wobble>();
 
-function jellyFor(window: WaylandWindow): Jelly {
-  let jelly = jellies.get(window.id);
-  if (jelly) {
-    return jelly;
+function wobbleFor(window: WaylandWindow): Wobble {
+  let wobble = wobbles.get(window.id);
+  if (wobble) {
+    return wobble;
   }
-  const lagX = signal(0);
-  const lagY = signal(0);
-  const grabX = signal(0);
-  const grabY = signal(0);
-  jelly = {
+  const bendSignals = Array.from({ length: GRID * GRID * 2 }, () => signal(0));
+  // Pack two points per vec4: d0 = points 0 and 1, d1 = points 2 and 3, ...
+  const opacity = signal(1);
+  const uniforms: ShaderUniformMap = { opacity };
+  for (let i = 0; i < 8; i++) {
+    const s = bendSignals;
+    uniforms[`d${i}`] = [s[i * 4], s[i * 4 + 1], s[i * 4 + 2], s[i * 4 + 3]];
+  }
+  wobble = {
     active: signal(false),
-    lagX,
-    lagY,
-    grabX,
-    grabY,
+    bendSignals,
+    opacity,
     effect: compileWindowEffect({
       input: windowSource(),
-      outsets: MAX_LAG_PX,
+      outsets: MAX_BEND_PX,
       alpha: "preserve",
       invalidate: { kind: "always" },
       pipeline: [
-        shaderStage(loadShader("./src/effect/jelly-drag.frag"), {
-          uniforms: { lag_px: [lagX, lagY], grab_px: [grabX, grabY] },
-        }),
+        shaderStage(loadShader("./src/effect/jelly-drag.frag"), { uniforms }),
       ],
     }),
     dragging: false,
+    pinned: 0,
+    bendX: new Float64Array(GRID * GRID),
+    bendY: new Float64Array(GRID * GRID),
+    speedX: new Float64Array(GRID * GRID),
+    speedY: new Float64Array(GRID * GRID),
+    lastX: 0,
+    lastY: 0,
     targetX: 0,
     targetY: 0,
-    farX: 0,
-    farY: 0,
-    velocityX: 0,
-    velocityY: 0,
+    cellW: 1,
+    cellH: 1,
     poll: null,
     lastMs: null,
   };
-  jellies.set(window.id, jelly);
-  return jelly;
+  wobbles.set(window.id, wobble);
+  return wobble;
 }
 
-/** Advance the spring by `dt` seconds. Returns false once it has settled. */
-function step(jelly: Jelly, dt: number): boolean {
-  for (let left = dt; left > 0; left -= MAX_STEP_S) {
-    const h = Math.min(left, MAX_STEP_S);
-    jelly.velocityX +=
-      (STIFFNESS * (jelly.targetX - jelly.farX) - DAMPING * jelly.velocityX) * h;
-    jelly.velocityY +=
-      (STIFFNESS * (jelly.targetY - jelly.farY) - DAMPING * jelly.velocityY) * h;
-    jelly.farX += jelly.velocityX * h;
-    jelly.farY += jelly.velocityY * h;
+/** Advance the springs by `dt` seconds. Returns false once settled. */
+function step(wobble: Wobble, dt: number) {
+  const { bendX, bendY, speedX, speedY } = wobble;
+
+  // The window moved since last frame: a small share of that motion kicks
+  // every point backwards. A kick on the speed (not a jump in position)
+  // keeps uneven pointer events from showing as jerks.
+  const moveX = wobble.targetX - wobble.lastX;
+  const moveY = wobble.targetY - wobble.lastY;
+  wobble.lastX = wobble.targetX;
+  wobble.lastY = wobble.targetY;
+  if (dt > 0) {
+    for (let i = 0; i < GRID * GRID; i++) {
+      speedX[i] -= (moveX * MOVE_FACTOR) / dt;
+      speedY[i] -= (moveY * MOVE_FACTOR) / dt;
+    }
   }
 
-  // Keep the lag inside the effect margin.
-  let lagX = jelly.farX - jelly.targetX;
-  let lagY = jelly.farY - jelly.targetY;
-  const length = Math.hypot(lagX, lagY);
-  if (length > MAX_LAG_PX) {
-    lagX *= MAX_LAG_PX / length;
-    lagY *= MAX_LAG_PX / length;
-    jelly.farX = jelly.targetX + lagX;
-    jelly.farY = jelly.targetY + lagY;
+  for (let left = dt; left > 0; left -= STEP_S) {
+    const h = Math.min(left, STEP_S);
+    for (let i = 0; i < GRID * GRID; i++) {
+      if (wobble.dragging && i === wobble.pinned) {
+        // Pinned under the pointer: no bend, no speed.
+        bendX[i] = 0;
+        bendY[i] = 0;
+        speedX[i] = 0;
+        speedY[i] = 0;
+        continue;
+      }
+      // Springs to the neighbours: pull towards the neighbours' bend.
+      const links = NEIGHBOURS[i];
+      let forceX = 0;
+      let forceY = 0;
+      for (const j of links) {
+        forceX += bendX[j] - bendX[i];
+        forceY += bendY[j] - bendY[i];
+      }
+      forceX *= SPRING / links.length;
+      forceY *= SPRING / links.length;
+      // Always pulled back to the rest place, so the shape holds.
+      forceX -= SETTLE * bendX[i];
+      forceY -= SETTLE * bendY[i];
+      speedX[i] += (forceX - FRICTION * speedX[i]) * h;
+      speedY[i] += (forceY - FRICTION * speedY[i]) * h;
+    }
+    for (let i = 0; i < GRID * GRID; i++) {
+      bendX[i] += speedX[i] * h;
+      bendY[i] += speedY[i] * h;
+    }
   }
 
-  const speed = Math.hypot(jelly.velocityX, jelly.velocityY);
-  if (!jelly.dragging && Math.hypot(lagX, lagY) < 0.1 && speed < 5) {
-    jelly.lagX[1](0);
-    jelly.lagY[1](0);
-    return false;
+  // Keep every bend inside the effect margin, and publish it.
+  let biggest = 0;
+  let fastest = 0;
+  for (let i = 0; i < GRID * GRID; i++) {
+    const length = Math.hypot(bendX[i], bendY[i]);
+    if (length > MAX_BEND_PX) {
+      bendX[i] *= MAX_BEND_PX / length;
+      bendY[i] *= MAX_BEND_PX / length;
+    }
+    biggest = Math.max(biggest, Math.min(length, MAX_BEND_PX));
+    fastest = Math.max(fastest, Math.hypot(speedX[i], speedY[i]));
   }
-  jelly.lagX[1](lagX);
-  jelly.lagY[1](lagY);
-  return true;
+  // Fade towards the drag opacity while dragging, back to opaque after.
+  const fadeTarget = wobble.dragging ? DRAG_OPACITY : 1;
+  const fadeStep = ((1 - DRAG_OPACITY) * dt) / FADE_S;
+  const current = wobble.opacity();
+  const faded =
+    current < fadeTarget
+      ? Math.min(fadeTarget, current + fadeStep)
+      : Math.max(fadeTarget, current - fadeStep);
+  wobble.opacity[1](faded);
+
+  const settled =
+    !wobble.dragging && biggest < 0.1 && fastest < 5 && faded === 1;
+  for (let i = 0; i < GRID * GRID; i++) {
+    wobble.bendSignals[i * 2][1](settled ? 0 : bendX[i]);
+    wobble.bendSignals[i * 2 + 1][1](settled ? 0 : bendY[i]);
+  }
+  return !settled;
 }
 
-function startPoll(window: WaylandWindow, jelly: Jelly) {
-  if (jelly.poll) {
+function startPoll(window: WaylandWindow, wobble: Wobble) {
+  if (wobble.poll) {
     return;
   }
-  jelly.lastMs = null;
-  jelly.poll = window.createPoll(
+  wobble.lastMs = null;
+  wobble.poll = window.createPoll(
     1,
     (handle) => {
       // Cap the step so a stalled frame does not fling the window.
       const dt =
-        jelly.lastMs === null
+        wobble.lastMs === null
           ? 0
-          : Math.min((handle.nowMs - jelly.lastMs) / 1000, 0.05);
-      jelly.lastMs = handle.nowMs;
-      if (!step(jelly, dt)) {
+          : Math.min((handle.nowMs - wobble.lastMs) / 1000, 0.05);
+      wobble.lastMs = handle.nowMs;
+      if (!step(wobble, dt)) {
         handle.cancel();
-        jelly.poll = null;
-        jelly.active[1](false);
+        wobble.poll = null;
+        wobble.active[1](false);
       }
     },
     { dirty: "none" },
@@ -147,34 +239,41 @@ function startPoll(window: WaylandWindow, jelly: Jelly) {
 
 /** Feed every interactive window move here. */
 export function jellyDragOnWindowMove(event: WindowMoveEvent) {
-  const jelly = jellyFor(event.window);
+  const wobble = wobbleFor(event.window);
+  const rect = event.currentRect;
   if (event.phase === "start") {
-    jelly.grabX[1](event.startPointer.x - event.startRect.x);
-    jelly.grabY[1](event.startPointer.y - event.startRect.y);
-    jelly.farX = event.currentRect.x;
-    jelly.farY = event.currentRect.y;
-    jelly.velocityX = 0;
-    jelly.velocityY = 0;
+    // Pin the grid point nearest to where the window was grabbed.
+    const grabX = event.startPointer.x - event.startRect.x;
+    const grabY = event.startPointer.y - event.startRect.y;
+    wobble.cellW = Math.max(rect.width / (GRID - 1), 1);
+    wobble.cellH = Math.max(rect.height / (GRID - 1), 1);
+    const col = Math.min(GRID - 1, Math.max(0, Math.round(grabX / wobble.cellW)));
+    const row = Math.min(GRID - 1, Math.max(0, Math.round(grabY / wobble.cellH)));
+    wobble.pinned = row * GRID + col;
+    if (!wobble.poll) {
+      wobble.lastX = rect.x;
+      wobble.lastY = rect.y;
+    }
   }
-  jelly.targetX = event.currentRect.x;
-  jelly.targetY = event.currentRect.y;
-  jelly.dragging = event.phase === "start" || event.phase === "update";
-  if (jelly.dragging) {
-    jelly.active[1](true);
-    startPoll(event.window, jelly);
+  wobble.targetX = rect.x;
+  wobble.targetY = rect.y;
+  wobble.dragging = event.phase === "start" || event.phase === "update";
+  if (wobble.dragging) {
+    wobble.active[1](true);
+    startPoll(event.window, wobble);
   }
 }
 
-/** The window effect: the jelly while the window moves or settles, else none. */
+/** The window effect: the wobble while the window moves or settles, else none. */
 export function jellyDragEffect(
   window: WaylandWindow,
 ): WindowEffectAssignment | null {
-  const jelly = jellyFor(window);
-  return jelly.active() ? { replace: jelly.effect } : null;
+  const wobble = wobbleFor(window);
+  return wobble.active() ? { replace: wobble.effect } : null;
 }
 
 /** Forget a closed window. */
 export function jellyDragForget(window: WaylandWindow) {
-  jellies.get(window.id)?.poll?.cancel();
-  jellies.delete(window.id);
+  wobbles.get(window.id)?.poll?.cancel();
+  wobbles.delete(window.id);
 }
