@@ -797,11 +797,26 @@ COMPOSITOR.key.bind("tile-unstack", "Super+Period", () => {
   HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("tile-focus-up", "Super+Up", () => {
+// Move focus up and down inside a stacked column.
+COMPOSITOR.key.bind("tile-focus-up", "Super+Alt+Up", () => {
   HYBRID_WINDOW_MANAGER.focusInColumn(-1);
 });
-COMPOSITOR.key.bind("tile-focus-down", "Super+Down", () => {
+COMPOSITOR.key.bind("tile-focus-down", "Super+Alt+Down", () => {
   HYBRID_WINDOW_MANAGER.focusInColumn(1);
+});
+// Super+Down: the side-by-side Window View of the app you used last (every
+// window of that app), the same view as a click on its taskbar group.
+COMPOSITOR.key.bind("window-view-current-app", "Super+Down", () => {
+  if (SWITCHERS.blurSuspended.peek()) {
+    return; // A switcher is already open.
+  }
+  const recent = HYBRID_WINDOW_MANAGER.listWindowsByRecentUse();
+  const appId = recent[0]?.appId.peek();
+  if (!appId) {
+    return;
+  }
+  const windows = recent.filter((window) => window.appId.peek() === appId);
+  WINDOW_VIEW.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), windows);
 });
 COMPOSITOR.key.bind("window-move-workspace-prev", "Super+Shift+Up", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedWindowToWorkspace(-1);
