@@ -172,6 +172,7 @@ const WINDOW_SWITCHER = (
     window.state[WINDOW_STATE_FULLSCREEN]()
       ? FULLSCREEN_Z_INDEX
       : windowZIndex(window),
+  titlebarButtonAt: (window, x, y) => titlebarButtonAt(window, x, y),
 });
 // KDE's Window View: the taskbar's "show windows side by side" for a group
 // of windows (see the `windowView.activate` IPC command).
@@ -488,10 +489,13 @@ WORKSPACE_IPC.handle("debug.windowViewPointer", (params) => {
 // Debug: drive the window switcher without the real keyboard. `action`:
 // "open", "key" (`key`, `shift`) or "cancel". Returns the selected window's id.
 WORKSPACE_IPC.handle("debug.windowSwitcher", (params) => {
-  const { action, key, shift } = (params ?? {}) as {
-    action?: "open" | "key" | "cancel";
+  const { action, key, shift, x, y, button } = (params ?? {}) as {
+    action?: "open" | "key" | "cancel" | "pointer";
     key?: string;
     shift?: boolean;
+    x?: number;
+    y?: number;
+    button?: "left" | "middle";
   };
   if (action === "open") {
     WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
@@ -499,6 +503,8 @@ WORKSPACE_IPC.handle("debug.windowSwitcher", (params) => {
     WINDOW_SWITCHER.cancel();
   } else if (action === "key" && typeof key === "string") {
     return WINDOW_SWITCHER.debugKey(key, shift);
+  } else if (action === "pointer" && typeof x === "number" && typeof y === "number") {
+    return WINDOW_SWITCHER.debugPointer(x, y, button);
   }
   return SWITCHERS.selectedWindowId.peek();
 });
@@ -1855,14 +1861,16 @@ const TRAFFIC_LIGHT_SIZE = 12;
 const TITLEBAR_PADDING_X = 8;
 const TITLEBAR_GAP = 8;
 
-/** The window is the hovered card of the Window View or the grid. */
+/** The window is the hovered card of the Window View or the grid, or Alt+Tab's selected card. */
 const isWindowViewCard = (window: WaylandWindow) =>
   WINDOW_VIEW.selectedWindowId() === window.id ||
-  WINDOW_GRID.selectedWindowId() === window.id;
+  WINDOW_GRID.selectedWindowId() === window.id ||
+  WINDOW_SWITCHER.selectedWindowId() === window.id;
 
-/** While the Window View or the grid is open, only its hovered card shows traffic lights. */
+/** While a switcher is open, only its hovered or selected card shows traffic lights. */
 const trafficLightsShown = (window: WaylandWindow) =>
-  (!WINDOW_VIEW.isOpen() && !WINDOW_GRID.isOpen()) || isWindowViewCard(window);
+  (!WINDOW_VIEW.isOpen() && !WINDOW_GRID.isOpen() && !WINDOW_SWITCHER.isOpen()) ||
+  isWindowViewCard(window);
 
 /**
  * The traffic light at `(x, y)`, logical px from the top-left corner of

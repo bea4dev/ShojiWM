@@ -103,6 +103,8 @@ type FlipDirection = "to-left" | "to-right";
 
 interface CoverflowState {
   windows: readonly WaylandWindow[];
+  /** The windows' ids when the cards were last laid out (to spot a closed one). */
+  ids: string[];
   /**
    * The whole layout's scale (1 or less), so no card leaves the screen for
    * any selection. Worked out once, on the first frame.
@@ -187,10 +189,45 @@ function step(state: CoverflowState, controls: SwitcherControls, steps: number) 
 const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
   name: "coverflow",
   dimAlpha: SWITCHER_DIM_ALPHA,
+  // The selected card's traffic lights work, and a middle click closes a card.
+  cardActions: true,
+
+  // A window closed: drop its card. The window after it (or the last one)
+  // slides into the middle and is selected.
+  windowsChanged(state, controls) {
+    const alive = new Set(state.windows.map((window) => window.id));
+    const removed = state.ids.findIndex((id) => !alive.has(id));
+    if (removed < 0) {
+      return;
+    }
+    state.ids.splice(removed, 1);
+    state.cards.splice(removed, 1);
+    state.count = state.windows.length;
+    if (state.count === 0) {
+      return;
+    }
+    let selection = state.selection;
+    if (removed < selection) {
+      selection -= 1;
+    }
+    selection = Math.min(selection, state.count - 1);
+    // Every card moves from where it is to its new place.
+    for (const card of state.cards) {
+      if (card) {
+        card.selection = -1;
+      }
+    }
+    state.selection = selection;
+    state.changedAtMs = state.nowMs;
+    state.flip = null;
+    state.introStep = false;
+    controls.select(selection);
+  },
   cameraFovDegrees: CLUTTER_FOV_DEGREES,
 
   begin: (windows) => ({
     windows,
+    ids: windows.map((window) => window.id),
     layoutScale: null,
     count: windows.length,
     nowMs: 0,
@@ -289,6 +326,12 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
       case "Up":
         previous(state, controls);
         return true;
+      case "q": {
+        // As in the extension: q closes the selected window.
+        const window = controls.windows[mod(controls.selected, controls.windows.length)];
+        window?.close();
+        return true;
+      }
     }
     return false;
   },

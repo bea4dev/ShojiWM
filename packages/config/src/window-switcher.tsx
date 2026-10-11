@@ -191,7 +191,7 @@ export interface SwitcherLayout<State> {
   /** How opaque a minimized window's card is (default 1). */
   readonly minimizedOpacity?: number;
   /** A window left `state.windows` (it closed): lay out the rest again. */
-  windowsChanged?(state: State): void;
+  windowsChanged?(state: State, controls: SwitcherControls): void;
 }
 
 /** A title bar button. */
@@ -699,7 +699,8 @@ export function createWindowSwitcher<State>(
         if (event.buttonName !== "left") {
           return;
         }
-        if (hit && layout.cardActions && session.phase === "shown") {
+        // Only the selected card shows its title bar buttons.
+        if (hit && layout.cardActions && session.phase === "shown" && hit.window === selectedWindow(session)) {
           const button = options.titlebarButtonAt?.(hit.window, hit.x, hit.y) ?? null;
           if (button) {
             pressCardButton(session, hit.window, button);
@@ -816,7 +817,7 @@ export function createWindowSwitcher<State>(
     session.cardAlpha.delete(window.id);
     session.hasSelection = false;
     setSelectedWindowId(null);
-    layout.windowsChanged?.(session.state);
+    layout.windowsChanged?.(session.state, session.controls);
     session.moveProgress = 0;
     ensureTicking(session);
     touch();
@@ -829,6 +830,9 @@ export function createWindowSwitcher<State>(
     if (session.windows.length === 0) {
       close(session, null);
       return;
+    }
+    if (session.hasSelection) {
+      return; // The layout picked the next window itself.
     }
     const cursor = COMPOSITOR.cursor.getPosition();
     const window = cursor ? windowAt(session, cursor.x, cursor.y) : undefined;
@@ -1041,7 +1045,12 @@ export function createWindowSwitcher<State>(
         pose,
         planeWidth: rect.width + MARGIN * 2,
         planeHeight: rect.height + MARGIN * 2,
-        transform: transform3d().translate(pose.x, pose.y, pose.z).scale(pose.scale),
+        // Keeps its turn (a Coverflow side card stays turned while it fades).
+        transform: transform3d()
+          .translate(pose.x, pose.y, pose.z)
+          .rotateX(pose.rotateX)
+          .rotateY(pose.rotateY)
+          .scale(pose.scale),
       };
     });
   }
