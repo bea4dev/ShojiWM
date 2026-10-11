@@ -29,9 +29,12 @@ import {
   Popup,
   type ReadonlySignal,
   DefaultComposition,
-  Windows,
 } from "shoji_wm";
-import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
+import type {
+  CompositionRenderable,
+  ManagedWindowRect,
+  WindowDecorationState,
+} from "shoji_wm/types";
 import { createIpcServer, defaultSocketPath } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
@@ -53,6 +56,7 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid, createWindowView } from "./window-grid";
+import type { TitlebarButton } from "./window-switcher";
 import {
   jellyDragEffect,
   jellyDragForget,
@@ -61,7 +65,9 @@ import {
 import {
   configureMagicLamp,
   magicLampEffect,
+  magicLampDebug,
   magicLampForget,
+  magicLampRunning,
 } from "./magic-lamp";
 
 COMPOSITOR.env.apply({
@@ -162,9 +168,7 @@ const WINDOW_VIEW = createWindowView({
     window.state[WINDOW_STATE_FULLSCREEN]()
       ? FULLSCREEN_Z_INDEX
       : windowZIndex(window),
-  // The KDE wallpaper is a plasmashell window, not a layer. The panels hide,
-  // as in KWin.
-  backdrop: () => <Windows windows={plasmaShellWindows("desktop")} />,
+  titlebarButtonAt: (window, x, y) => titlebarButtonAt(window, x, y),
 });
 COMPOSITOR.rendering.composition = (output) =>
   WINDOW_SWITCHER.compose(output) ??
@@ -178,6 +182,7 @@ const SWITCHERS = {
   backdropStrength: computed(() =>
     Math.min(WINDOW_SWITCHER.backdropStrength(), WINDOW_VIEW.backdropStrength()),
   ),
+  // Both glow the same white around the selected window.
   selectedWindowId: computed(
     () => WINDOW_SWITCHER.selectedWindowId() ?? WINDOW_VIEW.selectedWindowId(),
   ),
@@ -191,6 +196,8 @@ const backdropFade = () =>
   });
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
+/** A window in the Magic Lamp: over fullscreen windows, under the panel. */
+const MAGIC_LAMP_Z_INDEX = 2_010_000_000;
 const FLOATING_WINDOW_Z_INDEX_BASE = 1_500_000_000;
 const WINDOW_STACK_Z_INDEX_RANGE = 100_000_000;
 const FOCUSED_TILED_WINDOW_Z_INDEX = 1_000_000_000;
@@ -198,6 +205,11 @@ const REORDERING_TILED_WINDOW_Z_INDEX = -2_000_000_000;
 
 /** Where a (non-fullscreen) window sits in the stack; higher is on top. */
 function windowZIndex(window: WaylandWindow): number {
+  if (magicLampRunning(window)) {
+    // Like KWin: the window keeps its place on top while it pours into its
+    // icon, even after focus moves on. KWin's panel stays above it.
+    return MAGIC_LAMP_Z_INDEX;
+  }
   const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window)();
   if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
     return stackZIndex;
@@ -340,6 +352,21 @@ WORKSPACE_IPC.handle("windows.activate", (params) => {
   }
 });
 
+// A window's rect in global logical px, for ./helpers/screenshot-dbus.py
+// (Spectacle's "active window" capture). Null when the window is gone.
+WORKSPACE_IPC.handle("windows.rect", (params) => {
+  const windowId = (params as { windowId?: string } | undefined)?.windowId;
+  const window =
+    typeof windowId === "string"
+      ? HYBRID_WINDOW_MANAGER.findWindowById(windowId)
+      : undefined;
+  if (!window) {
+    return null;
+  }
+  const { x, y, width, height } = window.rect;
+  return { x, y, width, height };
+});
+
 WORKSPACE_IPC.handle("windows.minimize", (params) => {
   const windowId = (params as { windowId?: string } | undefined)?.windowId;
   if (typeof windowId === "string") {
@@ -363,6 +390,46 @@ WORKSPACE_IPC.handle("windowView.activate", (params) => {
 });
 
 WORKSPACE_IPC.handle("windowView.deactivate", () => WINDOW_VIEW.cancel());
+
+// Debug: a pointer motion or press (`button`: "left" / "middle") in the open
+// Window View, at global logical `x`, `y`. Tests use it instead of the real
+// pointer. Returns the card hit, false for none, null when the view is shut.
+WORKSPACE_IPC.handle("debug.windowViewPointer", (params) => {
+  const { x, y, button } = (params ?? {}) as {
+    x?: number;
+    y?: number;
+    button?: "left" | "middle";
+  };
+  if (typeof x !== "number" || typeof y !== "number") {
+    return null;
+  }
+  return WINDOW_VIEW.debugPointer(x, y, button);
+});
+
+// Debug: the last Magic Lamp runs with frame times; `durationMs` slows it.
+WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
+  runs: magicLampDebug(
+    (params as { durationMs?: number | null } | undefined)?.durationMs,
+  ),
+  // plasmashell's windows and the layer-shell surfaces.
+  shell: [...PLASMA_SHELL_WINDOWS.values()].map((window) => ({
+    id: window.id,
+    role: window.plasma.peek()?.role,
+    rect: window.rect,
+  })),
+  layers: Object.values(COMPOSITOR.layer.current).map((layer) => ({
+    namespace: layer.namespace,
+    layer: layer.layer,
+    position: layer.position,
+  })),
+  // Each window's taskbar entry, as plasmashell sent it.
+  taskbarEntries: Object.fromEntries(
+    HYBRID_WINDOW_MANAGER.listWindows().map((window) => [
+      window.id,
+      window.minimizedGeometry?.peek() ?? null,
+    ]),
+  ),
+}));
 
 // ---------------------------------------------------------------------------
 // Dock proximity: watch the pointer and broadcast enter/leave for the bottom
@@ -507,6 +574,18 @@ if (!INSIDE_KDE) {
     ],
     restart: "on-exit",
   });
+  // Owns KWin's screenshot D-Bus name, so Spectacle (Print Screen) works:
+  // on Wayland it can only capture through KWin (see the helper's header).
+  COMPOSITOR.process.service("screenshot-dbus", {
+    command: [
+      "sh",
+      "-c",
+      'exec python3 "$HOME/.config/shojiwm/src/helpers/screenshot-dbus.py" "$1"',
+      "screenshot-dbus",
+      defaultSocketPath(),
+    ],
+    restart: "on-exit",
+  });
   // The KDE window that asks for your password when an app needs admin rights.
   COMPOSITOR.process.service("polkit-agent", {
     command: ["/usr/lib/polkit-kde-authentication-agent-1"],
@@ -620,6 +699,22 @@ const LOCK_COMMAND = "pidof hyprlock || hyprlock";
 COMPOSITOR.key.bind("lock", "Super+L", () => {
   COMPOSITOR.process.spawn({ command: LOCK_COMMAND });
 });
+
+// Screenshots with Spectacle, on KDE's default keys. In KDE, KWin catches
+// these keys; here ShojiWM does. Spectacle captures through
+// ./helpers/screenshot-dbus.py.
+const SCREENSHOT_KEYS: [string, string, string][] = [
+  ["screenshot", "Print", "spectacle"],
+  ["screenshot-window", "Super+Print", "spectacle -a"],
+  ["screenshot-full", "Shift+Print", "spectacle -f"],
+  ["screenshot-region", "Super+Shift+Print", "spectacle -r"],
+  ["screenshot-region-s", "Super+Shift+S", "spectacle -r"],
+];
+for (const [name, key, command] of SCREENSHOT_KEYS) {
+  COMPOSITOR.key.bind(name, key, () => {
+    COMPOSITOR.process.spawn({ command });
+  });
+}
 
 // Log out, like Ctrl+Alt+Delete in KDE. Plasma's own "Log Out" button needs
 // KDE's session manager, which does not run under ShojiWM.
@@ -1283,19 +1378,24 @@ function plasmaShellComposition(
   );
 }
 
+/** The client draws its own title bar (CSD), so ours is not drawn. */
+function usesClientDecoration(decoration: WindowDecorationState): boolean {
+  return (
+    decoration.mode === "client" &&
+    !(
+      decoration.clientPreference === "server" &&
+      decoration.configuredMode === "server"
+    )
+  );
+}
+
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const plasma = window.plasma();
   if (plasma && isPlasmaShellSurface(plasma)) {
     return plasmaShellComposition(window, plasma);
   }
 
-  const decoration = window.decoration();
-  const useClientDecoration =
-    decoration.mode === "client" &&
-    !(
-      decoration.clientPreference === "server" &&
-      decoration.configuredMode === "server"
-    );
+  const useClientDecoration = usesClientDecoration(window.decoration());
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
   const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
   const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
@@ -1321,6 +1421,11 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const inactive = computed(
     () => minimizeVisualIdle() || (!workspaceVisible() && !tileDragging()),
   );
+  // A window in the Magic Lamp stays drawn (and stacked) until the lamp
+  // ends, though it takes no input.
+  const idle = computed(
+    () => inactive() && !(magicLampRunning(window) && workspaceVisible()),
+  );
 
   const borderColor = window.isFocused((focused) =>
     // A faint white hairline, like macOS, instead of a gold focus border.
@@ -1345,8 +1450,8 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
   const titlebarStyle: SSDStyle = {
     height: TITLEBAR_HEIGHT,
-    paddingX: 8,
-    gap: 8,
+    paddingX: TITLEBAR_PADDING_X,
+    gap: TITLEBAR_GAP,
     alignItems: "center",
     background: titlebarBackground,
   };
@@ -1418,13 +1523,10 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const closeButton = <CloseButton window={window} />;
 
   // Traffic lights on the right, in the KDE order: minimize, maximize, close.
-  const titlebarContent = [
-    appIcon,
-    label,
-    minimizeButton,
-    maximizeButton,
-    closeButton,
-  ];
+  // In the Window View only the hovered card shows them.
+  const titlebarContent = trafficLightsShown(window)
+    ? [appIcon, label, minimizeButton, maximizeButton, closeButton]
+    : [appIcon, label];
   var innerComponents = (
     <Box direction="column">
       {blurSuspended ? (
@@ -1476,7 +1578,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         opacity={workspaceOpacity}
         forceRectSize={forceRectSize}
         tiled={tiled}
-        idle={inactive}
+        idle={idle}
         interactive={inactive((value) => !value)}
         // Permit low-latency tearing for fullscreen windows. The compositor only actually tears
         // once the window is on the direct-scanout fast path and is committing faster than the
@@ -1499,7 +1601,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         opacity={workspaceOpacity}
         forceRectSize={forceRectSize}
         tiled={tiled}
-        idle={inactive}
+        idle={idle}
         interactive={inactive((value) => !value)}
       >
         <WindowBorder
@@ -1534,7 +1636,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       opacity={workspaceOpacity}
       forceRectSize={forceRectSize}
       tiled={tiled}
-      idle={inactive}
+      idle={idle}
       interactive={inactive((value) => !value)}
     >
       <WindowBorder
@@ -1562,6 +1664,47 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
 // macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
 const TRAFFIC_LIGHT_SIZE = 12;
+/** The title bar's padding left and right, and the space between its items. */
+const TITLEBAR_PADDING_X = 8;
+const TITLEBAR_GAP = 8;
+
+/** The window is the hovered card of the Window View. */
+const isWindowViewCard = (window: WaylandWindow) =>
+  WINDOW_VIEW.selectedWindowId() === window.id;
+
+/** While the Window View is open, only its hovered card shows traffic lights. */
+const trafficLightsShown = (window: WaylandWindow) =>
+  !WINDOW_VIEW.isOpen() || isWindowViewCard(window);
+
+/**
+ * The traffic light at `(x, y)`, logical px from the top-left corner of
+ * `window.rect` (the frame: border, then our title bar). Each light takes
+ * the whole title bar height and half the gap on both sides, so a
+ * scaled-down card still has a usable target.
+ */
+function titlebarButtonAt(window: WaylandWindow, x: number, y: number): TitlebarButton | null {
+  if (
+    window.plasma.peek() ||
+    window.state[WINDOW_STATE_FULLSCREEN].peek() ||
+    usesClientDecoration(window.decoration.peek())
+  ) {
+    return null;
+  }
+  if (y < WINDOW_BORDER_PX || y > WINDOW_BORDER_PX + TITLEBAR_HEIGHT) {
+    return null;
+  }
+  // From the right: close, maximize, minimize.
+  const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
+  const pitch = TRAFFIC_LIGHT_SIZE + TITLEBAR_GAP;
+  const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
+  for (let i = 0; i < buttons.length; i++) {
+    const center = right - TRAFFIC_LIGHT_SIZE / 2 - i * pitch;
+    if (Math.abs(x - center) <= pitch / 2) {
+      return buttons[i];
+    }
+  }
+  return null;
+}
 const TRAFFIC_LIGHT_BORDER = "#00000033";
 const TRAFFIC_LIGHT_COLORS = {
   close: "#FF5F57",
@@ -1570,9 +1713,12 @@ const TRAFFIC_LIGHT_COLORS = {
   inactive: "#FFFFFF30",
 };
 
+// The Window View's hovered card shows colour, like a focused window.
 const trafficLightColor = (window: WaylandWindow, color: string) =>
-  window.isFocused((focused) =>
-    focused ? color : TRAFFIC_LIGHT_COLORS.inactive,
+  computed(() =>
+    window.isFocused() || isWindowViewCard(window)
+      ? color
+      : TRAFFIC_LIGHT_COLORS.inactive,
   );
 
 const trafficLightStyle = (background: string | ReadonlySignal<string>) => ({
@@ -1665,7 +1811,7 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
 
   // A window that cannot resize gets a grey light, like on macOS.
   const background = computed(() => {
-    if (!window.isResizable() || !window.isFocused()) {
+    if (!window.isResizable() || !(window.isFocused() || isWindowViewCard(window))) {
       return TRAFFIC_LIGHT_COLORS.inactive;
     }
     return TRAFFIC_LIGHT_COLORS.maximize;

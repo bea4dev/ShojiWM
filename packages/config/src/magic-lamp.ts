@@ -11,7 +11,6 @@ import {
   type WaylandWindow,
 } from "shoji_wm";
 import type {
-  EffectOutsets,
   WindowEffectAssignment,
   WindowEffectHandle,
   WindowPosition,
@@ -39,6 +38,15 @@ import type {
  * machine. KWin's default is 250 ms times the factor.
  */
 const DURATION_MS = 700 * 0.25;
+/** A slower lamp for testing (debug IPC); `null` = `DURATION_MS`. */
+let debugDurationMs: number | null = null;
+/**
+ * The longest an opening window waits for plasmashell to lay out its taskbar
+ * entry (measured: 100-200 ms after the window maps).
+ */
+const OPEN_ICON_WAIT_MS = 300;
+/** The longest frame the lamp advances by; longer ones (stalls) slow it down. */
+const MAX_FRAME_STEP_MS = 1000 / 30;
 /** Room for the window's shadow, which KWin bends with the window (logical px). */
 const SHADOW_MARGIN = 48;
 
@@ -46,12 +54,13 @@ type Side = "top" | "bottom" | "left" | "right";
 const SIDE_INDEX: Record<Side, number> = { top: 0, bottom: 1, left: 2, right: 3 };
 
 type NumberSignal = ReturnType<typeof signal<number>>;
+type Outsets = { left: number; top: number; right: number; bottom: number };
 
 interface Lamp {
   window: WaylandWindow;
   active: ReturnType<typeof signal<boolean>>;
   /** How far the effect may draw past the window: from the window to the icon. */
-  outsets: ReturnType<typeof signal<EffectOutsets>>;
+  outsets: ReturnType<typeof signal<Outsets>>;
   /** The icon relative to the window frame: x, y, width, height. */
   icon: NumberSignal[];
   progressSignal: NumberSignal;
@@ -66,9 +75,64 @@ interface Lamp {
   side: Side;
   poll: PollHandle | null;
   lastMs: number | null;
+  /** Called once when the animation reaches its end. */
+  onDone: (() => void) | null;
+  /** An opening window waits (drawn as nothing) for its taskbar entry. */
+  waitingForIcon: boolean;
+  run: LampRun | null;
+}
+
+/** One animation, for `magicLampDebug` (frame times in ms). */
+interface LampRun {
+  windowId: string;
+  minimized: boolean;
+  side: Side;
+  target: WindowPosition;
+  startMs: number;
+  /** How long an opening window waited for its taskbar entry. */
+  waitedMs?: number;
+  deltas: number[];
+}
+
+const debugRuns: LampRun[] = [];
+
+function recordRun(run: LampRun) {
+  debugRuns.push(run);
+  if (debugRuns.length > 8) {
+    debugRuns.shift();
+  }
+}
+
+/**
+ * The last few animations with their frame times (debug IPC). A number sets
+ * a slow test duration, `null` goes back to the real one.
+ */
+export function magicLampDebug(durationMs?: number | null): readonly LampRun[] {
+  if (durationMs !== undefined) {
+    debugDurationMs = durationMs;
+  }
+  return debugRuns;
 }
 
 const lamps = new Map<string, Lamp>();
+
+/**
+ * Per window: moves the icon for a lamp drawn somewhere else than the
+ * window's real place (the Window View pours a card, drawn scaled).
+ */
+const redirects = new Map<string, (icon: WindowPosition) => WindowPosition>();
+
+/** Set (or clear, `null`) where the window's next lamp aims; see `redirects`. */
+export function magicLampRedirect(
+  window: WaylandWindow,
+  redirect: ((icon: WindowPosition) => WindowPosition) | null,
+) {
+  if (redirect) {
+    redirects.set(window.id, redirect);
+  } else {
+    redirects.delete(window.id);
+  }
+}
 
 /** The plasma panels' rects (KWin looks for the dock that holds the icon). */
 let panelRects: () => readonly WindowPosition[] = () => [];
@@ -89,7 +153,12 @@ function lampFor(window: WaylandWindow): Lamp {
   lamp = {
     window,
     active: signal(false),
-    outsets: signal<EffectOutsets>(SHADOW_MARGIN),
+    outsets: signal<Outsets>({
+      left: SHADOW_MARGIN,
+      top: SHADOW_MARGIN,
+      right: SHADOW_MARGIN,
+      bottom: SHADOW_MARGIN,
+    }),
     icon,
     progressSignal,
     sideSignal,
@@ -113,6 +182,9 @@ function lampFor(window: WaylandWindow): Lamp {
     side: "bottom",
     poll: null,
     lastMs: null,
+    onDone: null,
+    waitingForIcon: false,
+    run: null,
   };
   lamps.set(window.id, lamp);
   return lamp;
@@ -153,59 +225,84 @@ function screenAt(x: number, y: number): WindowPosition | null {
   );
 }
 
+type Target = { icon: WindowPosition; side: Side };
+
+/** A laid-out taskbar entry (plasmashell sends nothing, or 0x0, before). */
+function isEntry(rect: WindowPosition | null | undefined): rect is WindowPosition {
+  return rect !== null && rect !== undefined && rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * The window's taskbar entry, else the entry of another window of the same
+ * app: plasmashell groups an app's windows under one icon.
+ */
+function taskbarEntry(window: WaylandWindow): WindowPosition | null {
+  const own = window.minimizedGeometry.peek();
+  if (isEntry(own)) {
+    return own;
+  }
+  const appId = window.appId.peek();
+  if (!appId) {
+    return null;
+  }
+  for (const other of lamps.values()) {
+    if (other.window.id !== window.id && other.window.appId.peek() === appId) {
+      const entry = other.window.minimizedGeometry.peek();
+      if (isEntry(entry)) {
+        return entry;
+      }
+    }
+  }
+  return null;
+}
+
 /** KWin's choice of icon and side (MagicLampEffect::apply, top half). */
-function pickTarget(window: WaylandWindow): { icon: WindowPosition; side: Side } {
+function pickTarget(window: WaylandWindow): Target {
+  const icon = taskbarEntry(window);
+  return icon ? iconTarget(window, icon) : cursorTarget(window);
+}
+
+/** KWin without a taskbar entry: the cursor, as an empty icon. */
+function cursorTarget(window: WaylandWindow): Target {
   const geo = window.rect;
   const right = geo.x + geo.width - 1; // QRect::right()
   const bottom = geo.y + geo.height - 1; // QRect::bottom()
-  // A ShojiWM installed before `minimizedGeometry` existed lacks the signal.
-  const geometrySignal = window.minimizedGeometry as typeof window.minimizedGeometry | undefined;
-  const icon = geometrySignal?.peek();
-
-  if (!geometrySignal) {
-    const guess = taskbarGuess(window);
-    if (guess) {
-      return guess;
-    }
-  }
-
-  if (!icon || icon.width <= 0 || icon.height <= 0) {
-    // No taskbar entry: the cursor, as an empty icon.
-    const cursor = COMPOSITOR.cursor.getPosition();
-    let x = Math.round(cursor?.x ?? geo.x + geo.width / 2);
-    let y = Math.round(cursor?.y ?? bottom);
-    let side: Side = "top";
-    if (contains(geo, x, y)) {
-      // Inside the window: go to the nearest border, Top first on ties.
-      let best = y - geo.y;
-      if (x - geo.x < best) {
-        best = x - geo.x;
-        side = "left";
-      }
-      if (bottom - y < best) {
-        best = bottom - y;
-        side = "bottom";
-      }
-      if (right - x < best) {
-        side = "right";
-      }
-      if (side === "top") y = geo.y;
-      if (side === "left") x = geo.x;
-      if (side === "bottom") y = bottom;
-      if (side === "right") x = right;
-    } else if (y < geo.y) {
-      side = "top";
-    } else if (x < geo.x) {
+  const cursor = COMPOSITOR.cursor.getPosition();
+  let x = Math.round(cursor?.x ?? geo.x + geo.width / 2);
+  let y = Math.round(cursor?.y ?? bottom);
+  let side: Side = "top";
+  if (contains(geo, x, y)) {
+    // Inside the window: go to the nearest border, Top first on ties.
+    let best = y - geo.y;
+    if (x - geo.x < best) {
+      best = x - geo.x;
       side = "left";
-    } else if (y > bottom) {
+    }
+    if (bottom - y < best) {
+      best = bottom - y;
       side = "bottom";
-    } else if (x > right) {
+    }
+    if (right - x < best) {
       side = "right";
     }
-    return { icon: { x, y, width: 0, height: 0 }, side };
+    if (side === "top") y = geo.y;
+    if (side === "left") x = geo.x;
+    if (side === "bottom") y = bottom;
+    if (side === "right") x = right;
+  } else if (y < geo.y) {
+    side = "top";
+  } else if (x < geo.x) {
+    side = "left";
+  } else if (y > bottom) {
+    side = "bottom";
+  } else if (x > right) {
+    side = "right";
   }
+  return { icon: { x, y, width: 0, height: 0 }, side };
+}
 
-  // The panel that holds the icon decides the side.
+/** KWin with a taskbar entry: the panel that holds it decides the side. */
+function iconTarget(window: WaylandWindow, icon: WindowPosition): Target {
   const panel = panelRects().find((rect) => intersects(rect, icon));
   if (panel) {
     const screen = screenOf(window) ?? panel;
@@ -232,31 +329,47 @@ function pickTarget(window: WaylandWindow): { icon: WindowPosition; side: Side }
   return { icon, side };
 }
 
-/**
- * Not KWin: a ShojiWM too old to know the taskbar entries still aims at the
- * panel at the bottom of the window's screen. The cursor's x when the
- * cursor is on that panel (a taskbar click), else the panel's middle.
- */
-function taskbarGuess(window: WaylandWindow): { icon: WindowPosition; side: Side } | null {
+/** The panel along the bottom of the window's screen, if any. */
+function bottomPanel(window: WaylandWindow): WindowPosition | null {
   const screen = screenOf(window);
   if (!screen) {
     return null;
   }
   const screenBottom = screen.y + screen.height;
-  const panel = panelRects().find(
-    (rect) =>
-      rect.width >= rect.height &&
-      rect.y + rect.height >= screenBottom - 1 &&
-      rect.x < screen.x + screen.width &&
-      screen.x < rect.x + rect.width,
+  return (
+    panelRects().find(
+      (rect) =>
+        rect.width >= rect.height &&
+        rect.y + rect.height >= screenBottom - 1 &&
+        rect.x < screen.x + screen.width &&
+        screen.x < rect.x + rect.width,
+    ) ?? null
   );
+}
+
+/**
+ * Not KWin (KWin has no lamp on open): where a new window without a taskbar
+ * entry comes out of. A click on the bottom panel (a launcher) gives the
+ * spot; `orMiddle` falls back to the panel's middle.
+ */
+function launcherTarget(window: WaylandWindow, orMiddle: boolean): Target | null {
+  const panel = bottomPanel(window);
   if (!panel) {
     return null;
   }
   const cursor = COMPOSITOR.cursor.getPosition();
-  const x =
-    cursor && contains(panel, cursor.x, cursor.y) ? cursor.x : panel.x + panel.width / 2;
+  const onPanel = cursor !== undefined && contains(panel, cursor.x, cursor.y);
+  if (!onPanel && !orMiddle) {
+    return null;
+  }
+  const x = onPanel ? cursor.x : panel.x + panel.width / 2;
   return { icon: { x: Math.round(x), y: panel.y, width: 0, height: 0 }, side: "bottom" };
+}
+
+/** Where a window opening now comes out of; `null` while it is not known. */
+function openTarget(window: WaylandWindow): Target | null {
+  const icon = taskbarEntry(window);
+  return icon ? iconTarget(window, icon) : launcherTarget(window, false);
 }
 
 /** Send this frame's numbers to the shader. */
@@ -269,10 +382,28 @@ function publish(lamp: Lamp) {
   lamp.icon[3][1](icon.height);
   lamp.progressSignal[1](lamp.progress);
   lamp.sideSignal[1](SIDE_INDEX[lamp.side]);
+  // The window may move meanwhile (a tile making room on restore): grow the
+  // drawing area when it no longer reaches the icon. Only growing keeps the
+  // offscreen texture from being made again every frame.
+  const need = outsetsFor(lamp.window, icon);
+  const have = lamp.outsets.peek();
+  if (
+    need.left > have.left ||
+    need.top > have.top ||
+    need.right > have.right ||
+    need.bottom > have.bottom
+  ) {
+    lamp.outsets[1]({
+      left: Math.max(need.left, have.left),
+      top: Math.max(need.top, have.top),
+      right: Math.max(need.right, have.right),
+      bottom: Math.max(need.bottom, have.bottom),
+    });
+  }
 }
 
 /** Room around the window for the drawing: up to the icon, plus the shadow. */
-function outsetsFor(window: WaylandWindow, icon: WindowPosition): EffectOutsets {
+function outsetsFor(window: WaylandWindow, icon: WindowPosition): Outsets {
   const geo = window.rect;
   return {
     left: Math.ceil(Math.max(0, geo.x - icon.x) + SHADOW_MARGIN),
@@ -282,38 +413,95 @@ function outsetsFor(window: WaylandWindow, icon: WindowPosition): EffectOutsets 
   };
 }
 
+/** End the animation where it is, and tell its owner (`onDone`). */
 function stopLamp(lamp: Lamp) {
   lamp.poll?.cancel();
   lamp.poll = null;
   lamp.active[1](false);
+  const done = lamp.onDone;
+  lamp.onDone = null;
+  done?.();
 }
 
 /**
  * Start (or turn around) the animation for a minimize (`minimized` true) or
  * a restore. Returns how long it runs, in ms.
  */
-export function magicLampStart(window: WaylandWindow, minimized: boolean): number {
+export function magicLampStart(
+  window: WaylandWindow,
+  minimized: boolean,
+  onDone: () => void,
+  options: { opening?: boolean } = {},
+): number {
   const lamp = lampFor(window);
   if (!lamp.poll) {
     // A fresh animation (KWin: a running one only turns around).
     lamp.progress = minimized ? 0 : 1;
-    const { icon, side } = pickTarget(window);
-    lamp.target = icon;
-    lamp.side = side;
+    lamp.waitingForIcon = false;
+    let target: Target | null = pickTarget(window);
+    if (options.opening) {
+      target = openTarget(window);
+      if (!target) {
+        // plasmashell lays out a new window's taskbar entry 100-200 ms
+        // after the window maps. Wait for it, the window still inside an
+        // empty icon (so not drawn).
+        lamp.waitingForIcon = true;
+        target = launcherTarget(window, true) ?? cursorTarget(window);
+      }
+    }
+    // The side stays the real icon's: a redirect only scales and moves.
+    lamp.target = redirects.get(window.id)?.(target.icon) ?? target.icon;
+    lamp.side = target.side;
   }
   lamp.forward = minimized;
+  // A turn-around ends the previous run for its owner first.
+  const previous = lamp.onDone;
+  lamp.onDone = onDone;
+  previous?.();
   lamp.outsets[1](outsetsFor(window, lamp.target));
   publish(lamp);
   lamp.active[1](true);
+  const run: LampRun = {
+    windowId: window.id,
+    minimized,
+    side: lamp.side,
+    target: lamp.target,
+    startMs: Date.now(),
+    deltas: [],
+  };
+  recordRun(run);
+  lamp.run = run;
 
   if (!lamp.poll) {
     lamp.lastMs = null;
+    let waitStartMs: number | null = null;
     lamp.poll = window.createPoll(
       1,
       (handle) => {
-        const delta = lamp.lastMs === null ? 0 : handle.nowMs - lamp.lastMs;
+        if (lamp.waitingForIcon) {
+          waitStartMs ??= handle.nowMs;
+          const entry = taskbarEntry(window);
+          if (!entry && handle.nowMs - waitStartMs < OPEN_ICON_WAIT_MS) {
+            publish(lamp);
+            return;
+          }
+          lamp.waitingForIcon = false;
+          const target = entry
+            ? iconTarget(window, entry)
+            : (launcherTarget(window, true) ?? cursorTarget(window));
+          lamp.target = target.icon;
+          lamp.side = target.side;
+          run.target = target.icon;
+          run.side = target.side;
+          run.waitedMs = handle.nowMs - waitStartMs;
+        }
+        const raw = lamp.lastMs === null ? 0 : handle.nowMs - lamp.lastMs;
         lamp.lastMs = handle.nowMs;
-        const step = delta / DURATION_MS;
+        lamp.run?.deltas.push(Math.round(raw * 10) / 10);
+        // A stalled frame (the shader's first compile, a busy main loop)
+        // slows the lamp down instead of skipping it.
+        const delta = Math.min(raw, MAX_FRAME_STEP_MS);
+        const step = delta / (debugDurationMs ?? DURATION_MS);
         lamp.progress = Math.min(1, Math.max(0, lamp.progress + (lamp.forward ? step : -step)));
         publish(lamp);
         if (lamp.forward ? lamp.progress >= 1 : lamp.progress <= 0) {
@@ -324,7 +512,7 @@ export function magicLampStart(window: WaylandWindow, minimized: boolean): numbe
     );
   }
   const left = minimized ? 1 - lamp.progress : lamp.progress;
-  return Math.max(1, Math.round(left * DURATION_MS));
+  return Math.max(1, Math.round(left * (debugDurationMs ?? DURATION_MS)));
 }
 
 /** Drop the animation at once (instant minimize or restore). */
@@ -345,8 +533,17 @@ export function magicLampEffect(window: WaylandWindow): WindowEffectAssignment |
   return { replace: { ...lamp.effect, outsets: lamp.outsets() } };
 }
 
+/** True while the window pours into or out of its icon (reactive). */
+export function magicLampRunning(window: WaylandWindow): boolean {
+  return lampFor(window).active();
+}
+
 /** Forget a closed window. */
 export function magicLampForget(window: WaylandWindow) {
-  lamps.get(window.id)?.poll?.cancel();
+  const lamp = lamps.get(window.id);
+  if (lamp) {
+    stopLamp(lamp);
+  }
   lamps.delete(window.id);
+  redirects.delete(window.id);
 }

@@ -24,6 +24,7 @@ import {
   type Viewport,
   type WindowSwitcher,
   type WindowSwitcherOptions,
+  SWITCHER_DIM_ALPHA,
 } from "./window-switcher";
 
 /** How far the desktop dims behind the grid. */
@@ -61,22 +62,19 @@ export function createWindowGrid(options: WindowSwitcherOptions): WindowSwitcher
  * set of windows, opened with `open(output, windows)`. The taskbar opens it
  * for a group of windows ("show windows side by side").
  *
- * Like KWin: the desktop dims to the Breeze Dark window colour at 75%, the
- * view opens and closes with OutCubic easing, nothing is selected until the
- * pointer or a key picks a window, and a click on empty space or `Escape`
- * closes it.
+ * The backdrop is the Alt+Tab switcher's (`SWITCHER_DIM_ALPHA`, its fade, the
+ * panels still shown). Like KWin, nothing is selected until the pointer or a
+ * key picks a window, and a click on empty space or `Escape` closes it.
+ *
+ * The hovered card shows its title bar buttons: minimize pours the card into
+ * the taskbar (the card stays, dimmed; a click restores it), maximize
+ * maximizes the window and switches to it, close closes it (the other cards
+ * make room; the view closes with the last one). A middle click closes the
+ * window too, as in KWin.
  */
 export function createWindowView(options: WindowSwitcherOptions): WindowSwitcher {
   return createWindowSwitcher(WINDOW_VIEW_LAYOUT, options);
 }
-
-/** kdeglobals [Colors:Window] BackgroundNormal of Breeze Dark (32, 35, 38). */
-const BREEZE_DARK_WINDOW: readonly [number, number, number] = [32 / 255, 35 / 255, 38 / 255];
-/**
- * KWin's `animationTime(300ms)`: 300 ms times kdeglobals
- * AnimationDurationFactor=0.25 on this machine.
- */
-const WINDOW_VIEW_MS = 300 * 0.25;
 
 const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   name: "window-grid",
@@ -154,17 +152,19 @@ const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
 const WINDOW_VIEW_LAYOUT: SwitcherLayout<GridState> = {
   ...WINDOW_GRID_LAYOUT,
   name: "window-view",
-  dimAlpha: 0.75,
-  dimColor: BREEZE_DARK_WINDOW,
-  transitionMs: WINDOW_VIEW_MS,
-  // Qt's Easing.OutCubic.
-  easing: (progress) => 1 - (1 - progress) ** 3,
+  // The same backdrop as Alt+Tab.
+  dimAlpha: SWITCHER_DIM_ALPHA,
   startsWithoutSelection: true,
-  // KWin fades the panels out under the view.
-  hidesTopLayers: true,
   initialSelection: () => 0,
   // Opened by a click, not by a held key.
   onSuperReleased: () => {},
+  // The hovered card's title bar buttons work; a minimized window stays as a
+  // dimmed card (KWin shows it at full opacity; dimmed by request).
+  cardActions: true,
+  minimizedOpacity: 0.5,
+  windowsChanged: (state) => {
+    state.cellsKey = "";
+  },
 };
 
 /** The window in the row above (`-1`) or below (`1`) nearest the selection. */
@@ -188,7 +188,9 @@ function neighbourRow(state: GridState, controls: SwitcherControls, direction: n
 
 function cellsFor(state: GridState, viewport: Viewport): Cell[] {
   const area = gridArea(viewport);
-  const key = `${area.x},${area.y},${area.width},${area.height}`;
+  // Windows can change size while shown (a tile making room): lay out again.
+  const sizes = state.windows.map((window) => `${window.rect.width}x${window.rect.height}`);
+  const key = `${area.x},${area.y},${area.width},${area.height} ${sizes.join(" ")}`;
   if (key !== state.cellsKey) {
     state.cells = layoutGrid(state.windows.map((window) => window.rect), area);
     state.cellsKey = key;

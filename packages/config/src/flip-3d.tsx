@@ -22,14 +22,13 @@ import {
   type SwitcherLayout,
   type WindowSwitcher,
   type WindowSwitcherOptions,
+  SWITCHER_DIM_ALPHA,
 } from "./window-switcher";
 
 /** How quickly flipping follows the selection (time constant, ms). */
 const SCROLL_TIME_CONSTANT_MS = 70;
 /** Windows shown in the stack at once. */
 const VISIBLE_WINDOWS = 7;
-/** How far the desktop dims behind the stack. */
-const DIM_ALPHA = 0.45;
 // The stack, after Windows Vista: the front window low on the right, the rest
 // receding to the upper left, every window turned about 40° and seen slightly
 // from above through a long lens (almost no perspective within a window).
@@ -72,7 +71,7 @@ function flip(controls: SwitcherControls, steps: number) {
 
 const FLIP_3D_LAYOUT: SwitcherLayout<FlipState> = {
   name: "flip-3d",
-  dimAlpha: DIM_ALPHA,
+  dimAlpha: SWITCHER_DIM_ALPHA,
 
   begin: (windows) => ({
     count: windows.length,

@@ -1442,10 +1442,17 @@ export class HybridWindowManager {
         event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(true);
       }
       markWindowCompositionDirty(event.window);
+      // KDE: nothing else moves while a window pours into the taskbar. The
+      // other tiles fill the gap once the lamp is done.
+      const releaseLayout =
+        event.minimized && !this.instantTransitions && workspace?.isTiled
+          ? workspace.holdLayout()
+          : undefined;
       scheduleMinimizeAnimation(
         event.window,
         event.minimized,
         this.instantTransitions,
+        releaseLayout,
       );
     }
     // A minimized window keeps the keyboard until something else is focused:
@@ -1461,6 +1468,11 @@ export class HybridWindowManager {
     if (workspace?.isTiled) {
       if (!event.minimized && workspace.shouldTile(event.window)) {
         workspace.focusWindow(event.window);
+        if (wasMinimized) {
+          // The lamp pours the window straight into its new slot; only the
+          // other tiles slide to make room.
+          stopRectAnimation(event.window, WINDOW_STATE_RECT);
+        }
       } else if (successor && workspace.shouldTile(successor)) {
         workspace.focusWindow(successor);
       } else {
@@ -3518,6 +3530,10 @@ export class HybridWindowManager {
 export class Workspace {
   public index: number;
   private readonly windows: WaylandWindow[] = [];
+  /** Open `holdLayout` holds; `applyLayout` waits while there is one. */
+  private layoutHolds = 0;
+  /** A layout was asked for during a hold. */
+  private layoutPending = false;
   private readonly naturalRootRect: (
     window: WaylandWindow,
   ) => ManagedWindowRect;
@@ -4300,8 +4316,33 @@ export class Workspace {
     }
   }
 
+  /**
+   * Keep the tiles still until the returned function is called, like KDE,
+   * where nothing else moves while a window minimizes. A layout asked for
+   * meanwhile runs once at the release.
+   */
+  public holdLayout(): () => void {
+    this.layoutHolds += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.layoutHolds -= 1;
+      if (this.layoutHolds === 0 && this.layoutPending) {
+        this.layoutPending = false;
+        this.applyLayout();
+      }
+    };
+  }
+
   public applyLayout(options: LayoutOptions = {}) {
     if (!this.isTiled) {
+      return;
+    }
+    if (this.layoutHolds > 0) {
+      this.layoutPending = true;
       return;
     }
 
@@ -6069,6 +6110,13 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
 // opacity is already 0 can still fade back in deterministically.
 
 function scheduleOpenAnimation(window: WaylandWindow): void {
+  if (!window.isTransient()) {
+    // An app window pours out of its taskbar icon, like a restore (the
+    // Magic Lamp backwards). Not KWin, which glides new windows in.
+    magicLampStart(window, false, () => {}, { opening: true });
+    return;
+  }
+  // Dialogs and other child windows slide and fade in.
   window.scheduleAnimation({
     channel: OPEN_ANIMATION_CHANNEL,
     rect: {
@@ -6112,6 +6160,7 @@ function scheduleMinimizeAnimation(
   window: WaylandWindow,
   minimized: boolean,
   instant = false,
+  onLampDone?: () => void,
 ): void {
   const rest = { x: 0, y: 0, width: 0, height: 0 };
   if (instant) {
@@ -6127,9 +6176,14 @@ function scheduleMinimizeAnimation(
   }
   // The Magic Lamp effect draws the window flowing into (or out of) its
   // taskbar entry. This channel holds the window still and opaque meanwhile;
-  // a running animation also keeps a minimized (idle) window drawn until
-  // the lamp is done.
-  const duration = magicLampStart(window, minimized);
+  // a running animation also keeps a minimized (idle) window drawn. The lamp
+  // ends the channel when it is done, so a slow frame never cuts it short.
+  // The channel's own duration is only a safety net.
+  const lampMs = magicLampStart(window, minimized, () => {
+    window.cancelAnimation(MINIMIZE_ANIMATION_CHANNEL);
+    onLampDone?.();
+  });
+  const duration = lampMs * 4 + 1000;
   window.scheduleAnimation({
     channel: MINIMIZE_ANIMATION_CHANNEL,
     rect: { from: rest, to: rest, duration, mode: "add" },

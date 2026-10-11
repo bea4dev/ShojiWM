@@ -82,7 +82,7 @@ vec4 shader_main(EffectContext effect) {
         return vec4(0.0);
     }
     // The landing place only grows with s: bisect for the line on this pixel.
-    for (int i = 0; i < 18; i++) {
+    for (int i = 0; i < 14; i++) {
         float mid = 0.5 * (lo + hi);
         if (move_line(mid, len.x, box.x, box.z, towards_end, p).x < target.x) {
             lo = mid;

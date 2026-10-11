@@ -13,7 +13,14 @@
  * Each window is a render texture of its own, framed with a margin for its
  * shadow, laid out as a plane of a 3D scene. Opening and closing ease with
  * the window manager's easing; the layout starts and ends exactly on the
- * windows' real positions, so the desktop morphs into it and back.
+ * windows' real positions, so the desktop morphs into it and back. A window
+ * that is not on screen (another workspace, a column scrolled away,
+ * minimized) fades in and out at its place in the layout instead.
+ *
+ * A layout with `cardActions` (the Window View) also acts on the windows: the
+ * title bar buttons of the hovered card minimize, maximize or close its
+ * window, a middle click closes it, and the other cards make room when one
+ * closes.
  *
  * Backdrop blur cannot work inside a texture that holds one window (nothing
  * lies under the window there), so window blur is switched off while the
@@ -30,7 +37,9 @@ import {
   outputLogicalSize,
   pickPlane,
   Plane,
+  projectPoint,
   renderTexture,
+  TextureView,
   Scene3D,
   lookAt,
   perspective,
@@ -43,6 +52,8 @@ import {
   type GestureSwipeEvent,
   type InputGrab,
   type InputGrabKeyEvent,
+  type InputGrabOptions,
+  type InputGrabPointerButtonEvent,
   type InputGrabPointerMotionEvent,
   type InputGrabScrollEvent,
   type OutputInfo,
@@ -50,11 +61,19 @@ import {
   type ReadonlySignal,
   type WaylandWindow,
 } from "shoji_wm";
+import type { WindowPosition } from "shoji_wm/types";
+import { magicLampRedirect, magicLampRunning } from "./magic-lamp";
 import {
   WINDOW_MANAGEMENT_EASING,
+  WINDOW_STATE_MINIMIZED,
   type HybridWindowManager,
 } from "./window-manager";
 
+/**
+ * How far the desktop dims behind the Alt+Tab switcher and the taskbar's
+ * Window View (both use this, so they look the same).
+ */
+export const SWITCHER_DIM_ALPHA = 0.45;
 /** Opening and closing, in ms. */
 const TRANSITION_MS = 450;
 /** The blur fading back in after closing, in ms. */
@@ -72,6 +91,12 @@ const HANDOFF_EPSILON_PX = 0.75;
 const STACK_DEPTH_STEP = 2;
 /** The camera's vertical field of view: narrow, for Vista's long-lens look. */
 const CAMERA_FOV_DEGREES = 12;
+/** A window this much on screen (of its area) morphs in; less fades in. */
+const ON_SCREEN_FRACTION = 0.5;
+/** Cards making room after one closes, and the closed card fading out (ms). */
+const RELAYOUT_MS = 300;
+/** A card fading to or from its minimized look (ms). */
+const CARD_FADE_MS = 200;
 
 /** A window's placement in the scene (world units; z = 0 is the screen, 1:1). */
 export interface Pose {
@@ -124,16 +149,8 @@ export interface SwitcherLayout<State> {
   readonly name: string;
   /** How far the desktop dims behind the windows. */
   readonly dimAlpha: number;
-  /** The dimming colour, RGB 0..1 (default black). */
-  readonly dimColor?: readonly [number, number, number];
-  /** Opening and closing time in ms (default `TRANSITION_MS`). */
-  readonly transitionMs?: number;
-  /** Opening and closing easing (default the window manager's). */
-  readonly easing?: (progress: number) => number;
   /** Open with no window selected; the pointer or a key selects one. */
   readonly startsWithoutSelection?: boolean;
-  /** Hide the top and overlay layers (bars, panels) while open. */
-  readonly hidesTopLayers?: boolean;
   /** Fresh per-session state. */
   begin(windows: readonly WaylandWindow[], output: string): State;
   /** The window selected on opening. */
@@ -156,7 +173,19 @@ export interface SwitcherLayout<State> {
   onSwipe?(state: State, event: GestureSwipeEvent, controls: SwitcherControls): void;
   /** A left click that hit no window. */
   onClickOutside?(state: State, controls: SwitcherControls): void;
+  /**
+   * The windows act on clicks (title bar buttons, middle click) and stay in
+   * the layout when minimized. Needs `windowsChanged`.
+   */
+  readonly cardActions?: boolean;
+  /** How opaque a minimized window's card is (default 1). */
+  readonly minimizedOpacity?: number;
+  /** A window left `state.windows` (it closed): lay out the rest again. */
+  windowsChanged?(state: State): void;
 }
+
+/** A title bar button. */
+export type TitlebarButton = "minimize" | "maximize" | "close";
 
 /** A window switcher, whatever its layout. */
 export interface WindowSwitcher {
@@ -175,14 +204,52 @@ export interface WindowSwitcher {
   readonly backdropStrength: ReadonlySignal<number>;
   /** The selected window while the switcher is open, else `null`. */
   readonly selectedWindowId: ReadonlySignal<string | null>;
+  /** True from opening until the real desktop is back. */
+  readonly isOpen: ReadonlySignal<boolean>;
+  /**
+   * Debug (tests over IPC): feed a pointer motion, or a press of `button`, at
+   * a global point to the open switcher, as if the real pointer did it.
+   * Returns the card hit (window-local point, title bar button), or `null`
+   * when nothing is open.
+   */
+  debugPointer(
+    x: number,
+    y: number,
+    button?: "left" | "middle",
+  ): { windowId: string; x: number; y: number; button: TitlebarButton | null } | false | null;
 }
 
 export interface WindowSwitcherOptions {
   windowManager: HybridWindowManager;
   /** A window's place in the real stack, higher on top (its decoration's zIndex). */
   stackOrder: (window: WaylandWindow) => number;
-  /** Drawn over the background layers, under the dimming (e.g. a desktop window). */
-  backdrop?: (output: OutputInfo) => CompositionRenderable | null;
+  /** The title bar button at `(x, y)`: logical px from `window.rect`'s top-left corner. */
+  titlebarButtonAt?: (window: WaylandWindow, x: number, y: number) => TitlebarButton | null;
+}
+
+/** A card pouring into the taskbar (Magic Lamp), drawn flat over the scene. */
+interface LampCard {
+  window: WaylandWindow;
+  /** The card's scale, and its window's top-left corner on the output. */
+  scale: number;
+  left: number;
+  top: number;
+  /** The window's top-left corner (global) when the card started pouring. */
+  windowX: number;
+  windowY: number;
+  /** The lamp's icon, moved so the card's lamp lands on the real icon. */
+  target: WindowPosition | null;
+  /** The lamp ran: once it stops, the card is done. */
+  started: boolean;
+  /** The first frame after the click (the frame clock's ms). */
+  startMs: number | null;
+}
+
+/** A card whose window closed, fading out where it was. */
+interface DepartingCard {
+  window: WaylandWindow;
+  rect: Rect;
+  from: Pose;
 }
 
 type Phase = "entering" | "shown" | "leaving";
@@ -211,6 +278,17 @@ interface Session<State> {
   poll: PollHandle | null;
   controls: SwitcherControls;
   state: State;
+  /** Where each card moves from while the cards make room; progress 0..1. */
+  moveFrom: Map<string, Pose>;
+  moveProgress: number;
+  departing: DepartingCard[];
+  /** Each card's opacity factor (a minimized card is dimmed). */
+  cardAlpha: Map<string, number>;
+  lamps: Map<string, LampCard>;
+  /** Stops listening for windows that close. */
+  unlisten: (() => void) | null;
+  /** The input grab's handlers (`debugPointer` calls them). */
+  handlers: InputGrabOptions | null;
 }
 
 export function createWindowSwitcher<State>(
@@ -218,9 +296,6 @@ export function createWindowSwitcher<State>(
   options: WindowSwitcherOptions,
 ): WindowSwitcher {
   const wm = options.windowManager;
-  const easing = layout.easing ?? WINDOW_MANAGEMENT_EASING;
-  const transitionMs = layout.transitionMs ?? TRANSITION_MS;
-  const dimColor = layout.dimColor ?? [0, 0, 0];
   const [current, setCurrent] = signal<Session<State> | null>(null);
   // Bumped whenever the session's animated state changes, so the composition
   // re-evaluates once per frame while something moves.
@@ -228,6 +303,7 @@ export function createWindowSwitcher<State>(
   const [blurSuspended, setBlurSuspended] = signal(false);
   const [backdropStrength, setBackdropStrength] = signal(1);
   const [selectedWindowId, setSelectedWindowId] = signal<string | null>(null);
+  const [isOpen, setIsOpen] = signal(false);
   let blurFade: PollHandle | null = null;
 
   const touch = () => setRevision(revision.peek() + 1);
@@ -246,9 +322,27 @@ export function createWindowSwitcher<State>(
     return new Map(ordered.map(({ window }, rank) => [window.id, rank]));
   }
 
+  /**
+   * The window is on this output's screen right now: on its active
+   * workspace, not minimized, and mostly inside the output (a column of the
+   * scrolling layout can sit beside the screen).
+   */
+  function onScreen(window: WaylandWindow, viewport: Viewport): boolean {
+    if (!wm.isWindowShownOn(window, viewport.output.name)) {
+      return false;
+    }
+    const rect = rectOf(window);
+    const { x, y } = viewport.output.position;
+    const width = Math.min(rect.x + rect.width, x + viewport.width) - Math.max(rect.x, x);
+    const height = Math.min(rect.y + rect.height, y + viewport.height) - Math.max(rect.y, y);
+    const area = Math.max(0, width) * Math.max(0, height);
+    return area >= rect.width * rect.height * ON_SCREEN_FRACTION;
+  }
+
   /** Every window's pose for this frame. */
   function poses(session: Session<State>, viewport: Viewport) {
-    const eased = easing(session.progress);
+    const eased = WINDOW_MANAGEMENT_EASING(session.progress);
+    const moved = WINDOW_MANAGEMENT_EASING(session.moveProgress);
     return session.windows.map((window, index) => {
       const rect = rectOf(window);
       const shown = layout.pose(session.state, index, rect, viewport, session.selected);
@@ -263,13 +357,68 @@ export function createWindowSwitcher<State>(
         const start = session.startPoses.get(window.id);
         const from = start ?? { ...shown, z: shown.z - viewport.height * 0.3, opacity: 0 };
         pose = session.phase === "entering" ? lerpPose(from, shown, eased) : shown;
+        const movingFrom = session.moveFrom.get(window.id);
+        if (movingFrom && session.phase === "shown") {
+          pose = lerpPose(movingFrom, shown, moved);
+        }
       }
-      return { window, rect, pose };
+      const alpha = session.cardAlpha.get(window.id) ?? 1;
+      return { window, rect, pose: alpha === 1 ? pose : { ...pose, opacity: pose.opacity * alpha } };
     });
   }
 
+  /** How opaque a card wants to be: hidden while it pours, dim when minimized. */
+  function cardAlphaTarget(session: Session<State>, window: WaylandWindow): number {
+    const lamp = session.lamps.get(window.id);
+    if (lamp) {
+      // The lamp's own drawing takes over from the card once it runs.
+      return lamp.started ? 0 : (session.cardAlpha.get(window.id) ?? 1);
+    }
+    if (layout.minimizedOpacity !== undefined && window.state[WINDOW_STATE_MINIMIZED].peek()) {
+      return layout.minimizedOpacity;
+    }
+    return 1;
+  }
+
+  /** Move the cards' opacities towards their targets; true while one moves. */
+  function stepCardAlphas(session: Session<State>, dtMs: number): boolean {
+    let moving = false;
+    for (const window of session.windows) {
+      const target = cardAlphaTarget(session, window);
+      const now = session.cardAlpha.get(window.id) ?? target;
+      const step = dtMs / CARD_FADE_MS;
+      const next = now < target ? Math.min(target, now + step) : Math.max(target, now - step);
+      session.cardAlpha.set(window.id, next);
+      moving ||= next !== target;
+    }
+    return moving;
+  }
+
+  /** Drop the cards whose lamp has finished; true while one still pours. */
+  function stepLamps(session: Session<State>, nowMs: number): boolean {
+    for (const lamp of session.lamps.values()) {
+      const running = magicLampRunning(lamp.window);
+      if (running && !lamp.started) {
+        lamp.started = true;
+        session.cardAlpha.set(lamp.window.id, 0);
+      }
+      lamp.startMs ??= nowMs;
+      // The lamp never started (the window did not minimize): give up.
+      const gaveUp = !lamp.started && nowMs - lamp.startMs > 1000;
+      if ((lamp.started && !running) || gaveUp) {
+        endLamp(session, lamp);
+      }
+    }
+    return session.lamps.size > 0;
+  }
+
+  function endLamp(session: Session<State>, lamp: LampCard) {
+    magicLampRedirect(lamp.window, null);
+    session.lamps.delete(lamp.window.id);
+  }
+
   function dimAlpha(session: Session<State>): number {
-    const eased = easing(session.progress);
+    const eased = WINDOW_MANAGEMENT_EASING(session.progress);
     switch (session.phase) {
       case "entering":
         return layout.dimAlpha * eased;
@@ -306,9 +455,25 @@ export function createWindowSwitcher<State>(
 
     if (session.phase !== "shown") {
       session.phaseStartMs ??= nowMs;
-      session.progress = Math.min(1, (nowMs - session.phaseStartMs) / transitionMs);
+      session.progress = Math.min(1, (nowMs - session.phaseStartMs) / TRANSITION_MS);
     }
-    const moving = layout.tick?.(session.state, session.selected, dt) ?? false;
+    let moving = layout.tick?.(session.state, session.selected, dt) ?? false;
+    if (session.moveProgress < 1) {
+      session.moveProgress = Math.min(1, session.moveProgress + dt / RELAYOUT_MS);
+      moving = true;
+      if (session.moveProgress >= 1) {
+        relayoutDone(session);
+        if (current.peek() !== session) {
+          return;
+        }
+      }
+    }
+    if (stepLamps(session, nowMs)) {
+      moving = true;
+    }
+    if (stepCardAlphas(session, dt)) {
+      moving = true;
+    }
 
     if (session.phase === "entering" && session.progress >= 1) {
       session.phase = "shown";
@@ -369,7 +534,7 @@ export function createWindowSwitcher<State>(
     for (const window of windows) {
       startPoses.set(
         window.id,
-        wm.isWindowShownOn(window, outputName)
+        onScreen(window, viewport)
           ? realPose(rectOf(window), viewport, ranks.get(window.id) ?? 0)
           : null,
       );
@@ -391,7 +556,25 @@ export function createWindowSwitcher<State>(
       poll: null,
       controls: undefined as unknown as SwitcherControls,
       state: layout.begin(windows, outputName),
+      moveFrom: new Map(),
+      moveProgress: 1,
+      departing: [],
+      cardAlpha: new Map(),
+      lamps: new Map(),
+      unlisten: null,
+      handlers: null,
     };
+    for (const window of windows) {
+      session.cardAlpha.set(window.id, cardAlphaTarget(session, window));
+    }
+    if (layout.cardActions && layout.windowsChanged) {
+      const stopStart = COMPOSITOR.event.onStartClose((window) => removeCard(session, window));
+      const stopClose = COMPOSITOR.event.onClose((window) => removeCard(session, window));
+      session.unlisten = () => {
+        stopStart();
+        stopClose();
+      };
+    }
     session.controls = {
       output: outputName,
       windows,
@@ -414,7 +597,7 @@ export function createWindowSwitcher<State>(
     blurFade = null;
     setBackdropStrength(0);
     setBlurSuspended(true);
-    session.grab = COMPOSITOR.input.grab({
+    session.grab = COMPOSITOR.input.grab((session.handlers = {
       onKey: (event) => {
         if (event.state === "released") {
           // Releasing Super (Super+Tab) or Alt (Alt+Tab) picks the window.
@@ -444,12 +627,29 @@ export function createWindowSwitcher<State>(
       },
       onPointerMotion: (event) => layout.onPointerMotion?.(state, event, controls),
       onPointerButton: (event) => {
-        if (event.state !== "pressed" || event.buttonName !== "left") {
+        if (event.state !== "pressed") {
           return;
         }
-        const window = windowAt(session, event.position.x, event.position.y);
-        if (window) {
-          close(session, window);
+        const hit = cardAt(session, event.position.x, event.position.y);
+        if (event.buttonName === "middle") {
+          // KWin: a middle click closes the window.
+          if (hit && layout.cardActions) {
+            hit.window.close();
+          }
+          return;
+        }
+        if (event.buttonName !== "left") {
+          return;
+        }
+        if (hit && layout.cardActions && session.phase === "shown") {
+          const button = options.titlebarButtonAt?.(hit.window, hit.x, hit.y) ?? null;
+          if (button) {
+            pressCardButton(session, hit.window, button);
+            return;
+          }
+        }
+        if (hit) {
+          close(session, hit.window);
         } else {
           layout.onClickOutside?.(state, controls);
         }
@@ -461,10 +661,122 @@ export function createWindowSwitcher<State>(
         session.grab = null;
         finish(session);
       },
-    });
+    }));
     setCurrent(session);
+    setIsOpen(true);
     setSelectedWindowId(selectedWindow(session)?.id ?? null);
     ensureTicking(session);
+  }
+
+  /** A title bar button of a card. */
+  function pressCardButton(session: Session<State>, window: WaylandWindow, button: TitlebarButton) {
+    switch (button) {
+      case "close":
+        // The card leaves once the window really closes (it may ask first).
+        window.close();
+        return;
+      case "maximize":
+        if (!window.isResizable.peek()) {
+          return;
+        }
+        close(session, window);
+        if (window.isMaximized.peek()) {
+          window.unmaximize();
+        } else {
+          window.maximize();
+        }
+        return;
+      case "minimize":
+        minimizeCard(session, window);
+        return;
+    }
+  }
+
+  /**
+   * Minimize from a card: the Magic Lamp pours the card (not the window at
+   * its real place) into the taskbar, then the card comes back dimmed.
+   */
+  function minimizeCard(session: Session<State>, window: WaylandWindow) {
+    const viewport = viewportOf(session.output);
+    if (!viewport || session.lamps.has(window.id) || window.state[WINDOW_STATE_MINIMIZED].peek()) {
+      return;
+    }
+    const placed = poses(session, viewport).find((entry) => entry.window === window);
+    if (!placed) {
+      return;
+    }
+    const { rect, pose } = placed;
+    const lamp: LampCard = {
+      window,
+      scale: pose.scale,
+      left: viewport.width / 2 + pose.x - (rect.width * pose.scale) / 2,
+      top: viewport.height / 2 - pose.y - (rect.height * pose.scale) / 2,
+      windowX: rect.x,
+      windowY: rect.y,
+      target: null,
+      started: false,
+      startMs: null,
+    };
+    // The lamp is drawn scaled by `scale` with the window on the card, so its
+    // icon goes where that drawing puts it on the real icon.
+    const { x: outputX, y: outputY } = viewport.output.position;
+    magicLampRedirect(window, (icon) => {
+      lamp.target = {
+        x: lamp.windowX + (icon.x - outputX - lamp.left) / lamp.scale,
+        y: lamp.windowY + (icon.y - outputY - lamp.top) / lamp.scale,
+        width: icon.width / lamp.scale,
+        height: icon.height / lamp.scale,
+      };
+      return lamp.target;
+    });
+    session.lamps.set(window.id, lamp);
+    window.minimize();
+    ensureTicking(session);
+    touch();
+  }
+
+  /** A window closed: its card fades out and the others make room. */
+  function removeCard(session: Session<State>, window: WaylandWindow) {
+    const index = session.windows.findIndex((entry) => entry.id === window.id);
+    const viewport = viewportOf(session.output);
+    if (current.peek() !== session || index < 0 || !viewport) {
+      return;
+    }
+    const lamp = session.lamps.get(window.id);
+    if (lamp) {
+      endLamp(session, lamp);
+    }
+    session.moveFrom.clear();
+    for (const placed of poses(session, viewport)) {
+      if (placed.window === window) {
+        session.departing.push({ window, rect: placed.rect, from: placed.pose });
+      } else {
+        session.moveFrom.set(placed.window.id, placed.pose);
+      }
+    }
+    session.windows.splice(index, 1);
+    session.cardAlpha.delete(window.id);
+    session.hasSelection = false;
+    setSelectedWindowId(null);
+    layout.windowsChanged?.(session.state);
+    session.moveProgress = 0;
+    ensureTicking(session);
+    touch();
+  }
+
+  /** The cards are in their new places: select the one under the pointer. */
+  function relayoutDone(session: Session<State>) {
+    session.moveFrom.clear();
+    session.departing = [];
+    if (session.windows.length === 0) {
+      close(session, null);
+      return;
+    }
+    const cursor = COMPOSITOR.cursor.getPosition();
+    const window = cursor ? windowAt(session, cursor.x, cursor.y) : undefined;
+    if (window) {
+      select(session, session.windows.indexOf(window));
+    }
   }
 
   function select(session: Session<State>, index: number) {
@@ -513,7 +825,7 @@ export function createWindowSwitcher<State>(
       wm.activateWindowById(target.id, { instant: true });
     }
     for (const window of session.windows) {
-      if (wm.isWindowShownOn(window, session.output)) {
+      if (onScreen(window, viewport)) {
         session.shownAfter.add(window.id);
       }
     }
@@ -535,9 +847,15 @@ export function createWindowSwitcher<State>(
     stopTicking(session);
     session.grab?.release();
     session.grab = null;
+    session.unlisten?.();
+    session.unlisten = null;
+    for (const lamp of [...session.lamps.values()]) {
+      endLamp(session, lamp);
+    }
     if (current.peek() !== session) {
       return;
     }
+    setIsOpen(false);
     setBackdropStrength(0);
     setBlurSuspended(false);
     setCurrent(null);
@@ -560,7 +878,7 @@ export function createWindowSwitcher<State>(
     );
   }
 
-  function windowAt(session: Session<State>, globalX: number, globalY: number) {
+  function planeAt(session: Session<State>, globalX: number, globalY: number) {
     const viewport = viewportOf(session.output);
     if (!viewport) {
       return undefined;
@@ -578,7 +896,61 @@ export function createWindowSwitcher<State>(
       globalX - output.position.x,
       globalY - output.position.y,
     );
-    return hit === null ? undefined : placed[hit].window;
+    return hit === null ? undefined : placed[hit];
+  }
+
+  function windowAt(session: Session<State>, globalX: number, globalY: number) {
+    return planeAt(session, globalX, globalY)?.window;
+  }
+
+  /**
+   * The card under a global point, with the point in its window's own
+   * logical px (from the top-left corner of `window.rect`, unscaled).
+   */
+  function cardAt(session: Session<State>, globalX: number, globalY: number) {
+    const placed = planeAt(session, globalX, globalY);
+    const viewport = viewportOf(session.output);
+    if (!placed || !viewport) {
+      return undefined;
+    }
+    const { width, height, output } = viewport;
+    const camera = switcherCamera(width, height);
+    const matrix = placed.transform.matrix;
+    // The plane's corners on screen: top-left, top-right, bottom-left.
+    const corner = (x: number, y: number) => {
+      const world = [
+        matrix[0] * x + matrix[4] * y + matrix[12],
+        matrix[1] * x + matrix[5] * y + matrix[13],
+        matrix[2] * x + matrix[6] * y + matrix[14],
+      ] as [number, number, number];
+      return projectPoint(camera, { width, height }, world);
+    };
+    const halfWidth = placed.planeWidth / 2;
+    const halfHeight = placed.planeHeight / 2;
+    const origin = corner(-halfWidth, halfHeight);
+    const right = corner(halfWidth, halfHeight);
+    const down = corner(-halfWidth, -halfHeight);
+    if (!origin || !right || !down) {
+      return undefined;
+    }
+    // Solve point = origin + u * (right - origin) + v * (down - origin).
+    const ax = right.x - origin.x;
+    const ay = right.y - origin.y;
+    const bx = down.x - origin.x;
+    const by = down.y - origin.y;
+    const px = globalX - output.position.x - origin.x;
+    const py = globalY - output.position.y - origin.y;
+    const det = ax * by - ay * bx;
+    if (Math.abs(det) < 1e-6) {
+      return undefined;
+    }
+    const u = (px * by - py * bx) / det;
+    const v = (ax * py - ay * px) / det;
+    return {
+      window: placed.window,
+      x: u * placed.planeWidth - MARGIN,
+      y: v * placed.planeHeight - MARGIN,
+    };
   }
 
   function visiblePlanes(session: Session<State>, viewport: Viewport) {
@@ -597,6 +969,62 @@ export function createWindowSwitcher<State>(
           .rotateY(pose.rotateY)
           .scale(pose.scale),
       }));
+  }
+
+  /** Cards whose window closed, fading out where they were. */
+  function departingPlanes(session: Session<State>) {
+    const eased = WINDOW_MANAGEMENT_EASING(session.moveProgress);
+    return session.departing.map(({ window, rect, from }) => {
+      const pose = lerpPose(from, { ...from, scale: from.scale * 0.85, opacity: 0 }, eased);
+      return {
+        window,
+        rect,
+        pose,
+        planeWidth: rect.width + MARGIN * 2,
+        planeHeight: rect.height + MARGIN * 2,
+        transform: transform3d().translate(pose.x, pose.y, pose.z).scale(pose.scale),
+      };
+    });
+  }
+
+  /**
+   * A card pouring into the taskbar. The window, with its lamp, is drawn
+   * into a texture that covers it and the (moved) icon, and the texture is
+   * drawn scaled so the window lies on its card.
+   */
+  function lampView(lamp: LampCard, output: OutputInfo) {
+    const target = lamp.target;
+    if (!target || !magicLampRunning(lamp.window)) {
+      return null;
+    }
+    const rect = rectOf(lamp.window);
+    const left = Math.floor(Math.min(rect.x, target.x) - MARGIN);
+    const top = Math.floor(Math.min(rect.y, target.y) - MARGIN);
+    const right = Math.ceil(Math.max(rect.x + rect.width, target.x + target.width) + MARGIN);
+    const bottom = Math.ceil(Math.max(rect.y + rect.height, target.y + target.height) + MARGIN);
+    const texture = renderTexture({
+      key: `${layout.name}-lamp-${lamp.window.id}`,
+      width: right - left,
+      height: bottom - top,
+      // As many pixels as it covers on screen.
+      scale: Math.max(0.1, lamp.scale * (output.scale ?? 1)),
+      content: (
+        <Windows
+          windows={[lamp.window]}
+          offsetX={output.position.x - left}
+          offsetY={output.position.y - top}
+        />
+      ),
+    });
+    return (
+      <TextureView
+        texture={texture}
+        x={lamp.left + (left - lamp.windowX) * lamp.scale}
+        y={lamp.top + (top - lamp.windowY) * lamp.scale}
+        width={(right - left) * lamp.scale}
+        height={(bottom - top) * lamp.scale}
+      />
+    );
   }
 
   function windowTexture(window: WaylandWindow, rect: Rect, output: OutputInfo) {
@@ -621,12 +1049,14 @@ export function createWindowSwitcher<State>(
     }
     revision();
     const { width, height } = outputLogicalSize(output);
-    const planes = visiblePlanes(session, { output, width, height });
+    const planes = [
+      ...departingPlanes(session),
+      ...visiblePlanes(session, { output, width, height }),
+    ];
     return (
       <>
         <Layers layers={["background", "bottom"]} />
-        {options.backdrop?.(output) ?? null}
-        <Solid color={[...dimColor, dimAlpha(session)]} />
+        <Solid color={[0, 0, 0, dimAlpha(session)]} />
         <Scene3D camera={switcherCamera(width, height)}>
           {planes.map(({ window, rect, pose, planeWidth, planeHeight, transform }) => (
             <Plane
@@ -638,7 +1068,8 @@ export function createWindowSwitcher<State>(
             />
           ))}
         </Scene3D>
-        {layout.hidesTopLayers ? null : <Layers layers={["top", "overlay"]} />}
+        {[...session.lamps.values()].map((lamp) => lampView(lamp, output))}
+        <Layers layers={["top", "overlay"]} />
         <LayerPopups />
       </>
     );
@@ -656,6 +1087,40 @@ export function createWindowSwitcher<State>(
     blurSuspended,
     backdropStrength,
     selectedWindowId,
+    isOpen,
+    debugPointer: (x, y, button) => {
+      const session = current.peek();
+      const handlers = session?.handlers;
+      if (!session || session.phase === "leaving" || !handlers) {
+        return null;
+      }
+      const hit = cardAt(session, x, y);
+      const report = hit
+        ? {
+            windowId: hit.window.id,
+            x: Math.round(hit.x * 10) / 10,
+            y: Math.round(hit.y * 10) / 10,
+            button: options.titlebarButtonAt?.(hit.window, hit.x, hit.y) ?? null,
+          }
+        : false;
+      const common = {
+        position: { x, y },
+        outputName: session.output,
+        modifiers: {} as InputGrabPointerMotionEvent["modifiers"],
+        timestamp: 0,
+      };
+      if (button) {
+        handlers.onPointerButton?.({
+          ...common,
+          button: button === "left" ? 272 : 274,
+          buttonName: button,
+          state: "pressed",
+        } as InputGrabPointerButtonEvent);
+      } else {
+        handlers.onPointerMotion?.({ ...common, delta: { x: 0, y: 0 } });
+      }
+      return report;
+    },
   };
 }
 
