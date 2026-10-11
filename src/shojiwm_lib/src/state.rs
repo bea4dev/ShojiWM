@@ -1578,6 +1578,7 @@ impl ShojiWM {
             crate::plasma_window_management::PlasmaWindowManagementState::new(&dh);
         let plasma_virtual_desktop_state =
             crate::plasma_virtual_desktop::PlasmaVirtualDesktopState::new(&dh);
+        crate::xdg_toplevel_tag::init_xdg_toplevel_tag(&dh);
         let plasma_shell_state = crate::protocols::plasma_shell::PlasmaShellState::new(&dh);
         let ext_workspace_manager_state =
             crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
