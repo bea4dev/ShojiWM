@@ -313,13 +313,53 @@ COMPOSITOR.workspace.configure(() => {
         hidden: !workspace.active && workspace.windowCount === 0,
       })),
     })),
+    virtualDesktops: virtualDesktops(view),
   };
 });
+
+/**
+ * KDE's virtual desktops for plasmashell's Pager: workspaces 1 to N of the
+ * current monitor, N being the highest one in use or shown. Desktop N is
+ * workspace N, so the Pager's numbers match Super+N; empty workspaces in
+ * between show as empty desktops.
+ */
+function virtualDesktops(view: ReturnType<typeof HYBRID_WINDOW_MANAGER.viewForIpc>) {
+  const monitorName = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
+  const monitor = view.monitors.find((candidate) => candidate.name === monitorName);
+  const workspaces = monitor?.workspaces ?? [];
+  const count = Math.max(1, ...workspaces.map((workspace) => workspace.index));
+  const desktops = Array.from({ length: count }, (_, offset) => {
+    const index = offset + 1;
+    const workspace = workspaces.find((candidate) => candidate.index === index);
+    return {
+      id: `${monitorName}:${index}`,
+      name: `Desktop ${index}`,
+      active: workspace?.active ?? false,
+      windowIds: workspace?.windows.map((window) => window.id) ?? [],
+    };
+  });
+  const minimizedWindowIds = desktops
+    .flatMap((desktop) => desktop.windowIds)
+    .filter((id) => {
+      const window = HYBRID_WINDOW_MANAGER.findWindowById(id);
+      return window?.state[WINDOW_STATE_MINIMIZED].peek() === true;
+    });
+  return { desktops, rows: 1, minimizedWindowIds };
+}
 
 COMPOSITOR.workspace.event.onActivate((event) => {
   const [monitor, rawIndex] = event.workspaceId.split(":");
   const index = Number(rawIndex);
   if (!monitor || !Number.isInteger(index) || index < 1) {
+    return;
+  }
+  // KDE's Pager drag or the taskbar's "move to desktop": move the window.
+  if (event.windowId) {
+    const window = HYBRID_WINDOW_MANAGER.findWindowById(event.windowId);
+    if (window) {
+      HYBRID_WINDOW_MANAGER.moveWindowToWorkspace(window, monitor, index);
+    }
+    scheduleWorkspaceBroadcast();
     return;
   }
   HYBRID_WINDOW_MANAGER.activate(monitor, index);
@@ -1331,6 +1371,8 @@ COMPOSITOR.event.onWindowMinimizeRequest((event) => {
     return;
   }
   HYBRID_WINDOW_MANAGER.onWindowMinimizeRequest(event);
+  // The Pager's desktops carry which windows are minimized.
+  scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.event.onWindowFullscreenRequest((event) => {

@@ -732,6 +732,7 @@ interface WorkspaceActivateRequest {
   kind: "workspaceActivate";
   workspaceId: string;
   groupId?: string;
+  windowId?: string;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
@@ -1708,6 +1709,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
         const invoked = emitWorkspaceActivate({
           workspaceId: request.workspaceId,
           groupId: request.groupId,
+          windowId: request.windowId,
         });
         const mutation = invoked
           ? collectRuntimeMutationState()

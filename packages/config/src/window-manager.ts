@@ -1705,6 +1705,31 @@ export class HybridWindowManager {
     });
   }
 
+  /**
+   * Move `window` to workspace `index` of `monitor`, staying where you are
+   * (KDE's Pager drag and the taskbar's "move to desktop" do not switch).
+   */
+  public moveWindowToWorkspace(window: WaylandWindow, monitor: string, index: number) {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      this.syncWorkspaces();
+      const fromWorkspace = this.findWorkspaceForWindow(window);
+      if (!fromWorkspace || (fromWorkspace.monitor === monitor && fromWorkspace.index === index)) {
+        return;
+      }
+      const targetWorkspace = this.ensureWorkspace(monitor, index);
+      const moved = fromWorkspace.takeWindowForMove(window);
+      if (!moved) {
+        return;
+      }
+      targetWorkspace.addMovedWindow(window, moved.snapshot);
+      fromWorkspace.applyLayout();
+      targetWorkspace.applyLayout();
+      this.applyWorkspaceStackPolicy(fromWorkspace);
+      this.applyWorkspaceStackPolicy(targetWorkspace);
+      this.syncWorkspaceVisibility();
+    });
+  }
+
   public closeFocusedWindow() {
     for (const workspace of this.workspaces.values()) {
       const focused = workspace.focusedWindow();

@@ -300,6 +300,8 @@ pub struct ShojiWM {
     /// KDE's taskbar protocol, for plasmashell.
     pub plasma_window_management_state:
         crate::plasma_window_management::PlasmaWindowManagementState,
+    /// KDE's virtual desktops, for plasmashell's Pager.
+    pub plasma_virtual_desktop_state: crate::plasma_virtual_desktop::PlasmaVirtualDesktopState,
     pub plasma_shell_state: crate::protocols::plasma_shell::PlasmaShellState,
     pub ext_workspace_manager_state: crate::workspace_manager::ExtWorkspaceManagerState,
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
@@ -1574,6 +1576,8 @@ impl ShojiWM {
             crate::wlr_foreign_toplevel::WlrForeignToplevelManagerState::new::<Self>(&dh);
         let plasma_window_management_state =
             crate::plasma_window_management::PlasmaWindowManagementState::new(&dh);
+        let plasma_virtual_desktop_state =
+            crate::plasma_virtual_desktop::PlasmaVirtualDesktopState::new(&dh);
         let plasma_shell_state = crate::protocols::plasma_shell::PlasmaShellState::new(&dh);
         let ext_workspace_manager_state =
             crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
@@ -1734,6 +1738,7 @@ impl ShojiWM {
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
             plasma_window_management_state,
+            plasma_virtual_desktop_state,
             plasma_shell_state,
             ext_workspace_manager_state,
             image_capture_source_state,
@@ -3951,10 +3956,14 @@ impl ShojiWM {
         &mut self,
         update: Option<RuntimeWorkspaceConfigUpdate>,
     ) {
-        if let Some(update) = update {
+        if let Some(mut update) = update {
+            let virtual_desktops = update.virtual_desktops.take();
             let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
             self.ext_workspace_manager_state
                 .sync::<Self>(update, &self.display_handle, &outputs);
+            if let Some(virtual_desktops) = virtual_desktops {
+                self.consume_runtime_virtual_desktop_config(virtual_desktops);
+            }
         }
     }
 

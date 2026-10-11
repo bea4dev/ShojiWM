@@ -71,6 +71,8 @@ import type {
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
+  VirtualDesktopConfig,
+  VirtualDesktopEntry,
   WorkspaceActivateEvent,
   WorkspaceConfig,
   WorkspaceConfigEntry,

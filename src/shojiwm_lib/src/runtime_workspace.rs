@@ -3,6 +3,38 @@
 pub struct RuntimeWorkspaceConfigUpdate {
     #[serde(default)]
     pub groups: Vec<RuntimeWorkspaceGroupConfig>,
+    /// KDE's virtual desktops (`org_kde_plasma_virtual_desktop_management`,
+    /// for plasmashell's Pager), if the config maps workspaces to them.
+    #[serde(default)]
+    pub virtual_desktops: Option<RuntimeVirtualDesktopConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeVirtualDesktopConfig {
+    /// In order: a desktop's position is its index here.
+    #[serde(default)]
+    pub desktops: Vec<RuntimeVirtualDesktopEntry>,
+    /// How many rows the Pager lays the desktops out in (default 1).
+    #[serde(default)]
+    pub rows: Option<u32>,
+    /// Windows that are really minimized. A window on an inactive desktop is
+    /// hidden too, but must not look minimized to the taskbar.
+    #[serde(default)]
+    pub minimized_window_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeVirtualDesktopEntry {
+    /// Activating the desktop activates the workspace with this id.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub active: bool,
+    /// The windows on this desktop.
+    #[serde(default)]
+    pub window_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -36,4 +68,7 @@ pub struct RuntimeWorkspaceActivateRequestSnapshot {
     pub workspace_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// Move this window to the workspace instead of switching to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
 }

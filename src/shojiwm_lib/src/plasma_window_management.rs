@@ -52,6 +52,7 @@ mod flag {
     pub const MAXIMIZED: u32 = 0x4;
     pub const FULLSCREEN: u32 = 0x8;
     pub const ON_ALL_DESKTOPS: u32 = 0x40;
+    pub const VIRTUAL_DESKTOP_CHANGEABLE: u32 = 0x20000;
     pub const CLOSEABLE: u32 = 0x100;
     pub const MINIMIZABLE: u32 = 0x200;
     pub const MAXIMIZABLE: u32 = 0x400;
@@ -77,6 +78,8 @@ struct PlasmaWindowInfo {
     geometry: Rect,
     /// The client area only (`client_geometry`, version 18).
     client_geometry: Rect,
+    /// The virtual desktop it is on; `None`: on all of them.
+    desktop: Option<String>,
 }
 
 /// One window as the protocol sees it. Lives in the window's user data.
@@ -158,6 +161,7 @@ impl PlasmaWindowHandle {
         resource.state_changed(info.flags);
         send_geometry(&resource, &info);
         send_client_geometry(&resource, &info);
+        send_desktop_change(&resource, None, info.desktop.as_ref());
         if resource.version() >= 4 {
             resource.initial_state();
         }
@@ -257,8 +261,23 @@ fn send_client_geometry(resource: &OrgKdePlasmaWindow, info: &PlasmaWindowInfo) 
     }
 }
 
+/// `virtual_desktop_left` for the old desktop, `_entered` for the new one.
+fn send_desktop_change(resource: &OrgKdePlasmaWindow, old: Option<&String>, new: Option<&String>) {
+    if resource.version() < 8 || old == new {
+        return;
+    }
+    if let Some(old) = old {
+        resource.virtual_desktop_left(old.clone());
+    }
+    if let Some(new) = new {
+        resource.virtual_desktop_entered(new.clone());
+    }
+}
+
 fn send_changes(resources: &[OrgKdePlasmaWindow], old: &PlasmaWindowInfo, new: &PlasmaWindowInfo) {
     for resource in resources {
+        // Before `state_changed`, so "on all desktops" never shows with a desktop.
+        send_desktop_change(resource, old.desktop.as_ref(), new.desktop.as_ref());
         if old.title != new.title {
             send_title(resource, new);
         }
@@ -410,19 +429,28 @@ impl ShojiWM {
 
     fn plasma_window_info(&self, window: &Window) -> PlasmaWindowInfo {
         let snapshot = self.snapshot_window(window);
-        // Same rule as the wlr taskbar: an idle window is minimized (or on
-        // another workspace, which a taskbar shows the same way).
-        let minimized = self
-            .window_decorations
-            .get(window)
-            .is_some_and(|decoration| decoration.managed_window.idle);
         let shell_window = snapshot
             .plasma
             .as_ref()
             .is_some_and(|plasma| plasma.is_shell_window());
+        // A window on a workspace is on that virtual desktop. plasmashell's
+        // own windows (and every window, until the config sends desktops)
+        // are on all of them.
+        let desktops = &self.plasma_virtual_desktop_state;
+        let desktop = if shell_window { None } else { desktops.desktop_of(&snapshot.id) };
+        // An idle window is minimized, or on another workspace. On the
+        // active desktop (or with no desktops) idle means minimized; on
+        // another desktop only the config knows.
+        let idle = self
+            .window_decorations
+            .get(window)
+            .is_some_and(|decoration| decoration.managed_window.idle);
+        let minimized = match desktop.as_deref() {
+            Some(id) if !desktops.is_active(id) => desktops.is_minimized(&snapshot.id),
+            _ => idle,
+        };
 
-        // ShojiWM has no virtual desktops, so every window is on all of them.
-        let mut flags = flag::ON_ALL_DESKTOPS;
+        let mut flags = if desktop.is_some() { 0 } else { flag::ON_ALL_DESKTOPS };
         let mut set = |bit: u32, on: bool| {
             if on {
                 flags |= bit;
@@ -444,6 +472,7 @@ impl ShojiWM {
                     | flag::MOVABLE,
                 true,
             );
+            set(flag::VIRTUAL_DESKTOP_CHANGEABLE, desktop.is_some());
             set(flag::RESIZABLE, snapshot.is_resizable);
             if let Some(plasma) = snapshot.plasma.as_ref() {
                 set(flag::SKIP_TASKBAR, plasma.skip_taskbar);
@@ -466,6 +495,7 @@ impl ShojiWM {
             flags,
             geometry: rect(&snapshot.rect),
             client_geometry: rect(&snapshot.position),
+            desktop,
         }
     }
 
@@ -709,8 +739,14 @@ impl Dispatch<OrgKdePlasmaWindow, PlasmaWindowHandle> for ShojiWM {
                     state.plasma_minimized_geometry_changed(&window);
                 }
             }
-            // Not supported: virtual desktops, activities, highlight,
-            // interactive move/resize, send to output.
+            // A Pager drag, or the taskbar's "move to desktop".
+            Request::RequestEnterVirtualDesktop { id } => {
+                let window_id = state.snapshot_window(&window).id;
+                state.move_window_to_virtual_desktop(window_id, id);
+            }
+            // Not supported: new desktops, leaving a desktop (on all
+            // desktops), activities, highlight, interactive move/resize,
+            // send to output.
             _ => {}
         }
     }

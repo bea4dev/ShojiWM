@@ -1599,8 +1599,30 @@ export interface WorkspaceGroupConfig {
   workspaces: WorkspaceConfigEntry[];
 }
 
+/** One of KDE's virtual desktops (plasmashell's Pager shows them). */
+export interface VirtualDesktopEntry {
+  /** Activating the desktop sends `workspace.event.onActivate` with this id. */
+  id: string;
+  name: string;
+  active?: boolean;
+  /** The windows on this desktop. */
+  windowIds?: string[];
+}
+
+/** KDE's virtual desktops (`org_kde_plasma_virtual_desktop_management`). */
+export interface VirtualDesktopConfig {
+  /** In order: a desktop's position is its index. */
+  desktops: VirtualDesktopEntry[];
+  /** Rows the Pager lays the desktops out in (default 1). */
+  rows?: number;
+  /** Windows that are really minimized (not just on another desktop). */
+  minimizedWindowIds?: string[];
+}
+
 export interface WorkspaceConfig {
   groups: WorkspaceGroupConfig[];
+  /** Also show the workspaces to KDE's Pager as virtual desktops. */
+  virtualDesktops?: VirtualDesktopConfig;
 }
 
 export type WorkspaceConfigureFactory = () => WorkspaceConfig;
@@ -1608,6 +1630,11 @@ export type WorkspaceConfigureFactory = () => WorkspaceConfig;
 export interface WorkspaceActivateEvent {
   groupId?: string;
   workspaceId: string;
+  /**
+   * Set when a client (KDE's Pager or taskbar) asks to move this window to
+   * the workspace, rather than to switch to the workspace.
+   */
+  windowId?: string;
 }
 
 export interface WorkspaceController {
