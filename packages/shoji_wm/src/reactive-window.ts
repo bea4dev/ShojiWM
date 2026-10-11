@@ -16,6 +16,7 @@ import type {
   WaylandWindowActions,
   WaylandWindowSnapshot,
   ManagedWindowState,
+  PlasmaSurfaceState,
   WindowIcon,
   WindowDecorationState,
   WindowPosition,
@@ -39,6 +40,7 @@ interface MutableWindowSignals {
   isResizable: Signal<boolean>;
   isTransient: Signal<boolean>;
   parentId: Signal<string | undefined>;
+  plasma: Signal<PlasmaSurfaceState | undefined>;
   icon: Signal<WindowIcon | undefined>;
   interaction: Signal<WindowCompositionInteractionSnapshot>;
   decoration: Signal<WindowDecorationState>;
@@ -76,6 +78,7 @@ export function createReactiveWindow(
     isResizable: signal(snapshot.isResizable),
     isTransient: signal(snapshot.isTransient),
     parentId: signal(snapshot.parentId),
+    plasma: signal(snapshot.plasma),
     icon: signal(snapshot.icon),
     interaction: signal(snapshot.interaction),
     decoration: signal(snapshot.decoration),
@@ -176,6 +179,7 @@ export function createReactiveWindow(
     isResizable: signals.isResizable,
     isTransient: signals.isTransient,
     parentId: signals.parentId,
+    plasma: signals.plasma,
     icon: signals.icon,
     interaction: signals.interaction,
     decoration: signals.decoration,
@@ -244,6 +248,9 @@ export function createReactiveWindow(
           )
         ) {
           signals.sizeConstraints.value = nextSnapshot.sizeConstraints;
+        }
+        if (!shallowEqual(signals.plasma.peek(), nextSnapshot.plasma)) {
+          signals.plasma.value = nextSnapshot.plasma;
         }
         if (!shallowEqual(signals.icon.peek(), nextSnapshot.icon)) {
           signals.icon.value = nextSnapshot.icon;

@@ -2468,11 +2468,23 @@ export class HybridWindowManager {
     this.applyWorkspaceStackPolicy(gesture.fromWorkspace);
   }
 
+  /**
+   * While true, the pointer does not move focus to the tiled window under
+   * it. The config sets this while a plasmashell popup (Kickoff, a tray
+   * popup) has the keyboard: plasmashell closes the popup when it loses
+   * focus, so hovering a window on the way would close the menu.
+   */
+  private pointerFocusPaused = false;
+
+  public setPointerFocusPaused(paused: boolean) {
+    this.pointerFocusPaused = paused;
+  }
+
   private focusWindowAtPointerTarget(
     target: PointerMoveEvent["target"],
     monitorHint?: string,
   ) {
-    if (target.kind !== "window") {
+    if (target.kind !== "window" || this.pointerFocusPaused) {
       return;
     }
 
@@ -2503,7 +2515,11 @@ export class HybridWindowManager {
     position: PointerMoveEvent["position"] | null | undefined,
     monitorHint?: string,
   ) {
-    if (!position || this.lastPointerTarget.kind === "layer") {
+    if (
+      !position ||
+      this.lastPointerTarget.kind === "layer" ||
+      this.pointerFocusPaused
+    ) {
       return;
     }
 

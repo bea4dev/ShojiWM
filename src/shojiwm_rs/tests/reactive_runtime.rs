@@ -16,6 +16,7 @@ static WIDTH: WindowStateKey<f64> = WindowStateKey::new("width", |_| 400.0);
 fn snapshot(id: &str, title: &str, focused: bool) -> WaylandWindowSnapshot {
     WaylandWindowSnapshot {
         output_name: None,
+        plasma: None,
         id: id.into(),
         title: title.into(),
         app_id: Some("test".into()),

@@ -43,6 +43,10 @@ pub struct WaylandWindowSnapshot {
     /// `primary_output_name_for_window`); `None` when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_name: Option<String>,
+    /// What plasmashell asked for this window through `org_kde_plasma_surface`
+    /// (role, position); `None` for a window without a plasma surface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plasma: Option<crate::protocols::plasma_shell::PlasmaSurfaceSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -914,6 +918,7 @@ impl ShojiWM {
                 bytes: None,
             }),
             interaction: DecorationInteractionSnapshot::default(),
+            plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
         }
     }
 
@@ -938,6 +943,7 @@ impl ShojiWM {
                 parent_id: None,
                 icon: None,
                 interaction: DecorationInteractionSnapshot::default(),
+                plasma: None,
             };
         };
 
@@ -1013,6 +1019,7 @@ impl ShojiWM {
                 bytes: None,
             }),
             interaction: DecorationInteractionSnapshot::default(),
+            plasma: None,
         }
     }
 

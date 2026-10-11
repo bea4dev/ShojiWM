@@ -4282,6 +4282,7 @@ mod tests {
     fn make_window(is_focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),

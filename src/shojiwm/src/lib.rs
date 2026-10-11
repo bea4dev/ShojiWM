@@ -294,6 +294,7 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
 
         let window = shojiwm_lib::ssd::WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: Some("test".into()),
@@ -567,6 +568,7 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             RuntimeHandle::new("none", Box::new(NullRuntime), RuntimeHost::detached());
         let window = shojiwm_lib::ssd::WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: None,

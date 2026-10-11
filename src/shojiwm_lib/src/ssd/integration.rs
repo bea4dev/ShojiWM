@@ -4834,7 +4834,7 @@ impl ShojiWM {
             .retain(|window_id| live_window_ids.contains(window_id));
         self.runtime_poll_dirty = !self.runtime_dirty_window_ids.is_empty();
         self.async_asset_dirty = false;
-        self.sync_wlr_foreign_toplevel_states();
+        self.sync_taskbar_window_states();
         self.sync_popup_dismissals();
 
         Ok(())

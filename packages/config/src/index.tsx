@@ -14,6 +14,8 @@ import {
   dualKawaseBlur,
   type SSDStyle,
   type WaylandWindow,
+  type PlasmaSurfaceRole,
+  type PlasmaSurfaceState,
   computed,
   useState,
   shaderStage,
@@ -78,9 +80,37 @@ COMPOSITOR.process.once("GTK-CSD-control-buttons", {
   runPolicy: "once-per-session",
 });
 
-COMPOSITOR.window.decoration.configure((_window, context) => {
+COMPOSITOR.window.decoration.configure((window, context) => {
+  // plasmashell draws its popups and panels itself: no title bar on them.
+  if (isPlasmaShellWindow(window)) {
+    return { mode: "client" };
+  }
   return { mode: context.clientPreference ?? "server" };
 });
+
+/**
+ * plasmashell's own windows: Kickoff, tray popups, the calendar, OSDs,
+ * notifications, tooltips. KDE's plasma-shell protocol gives each one a
+ * role other than "normal" and a screen position.
+ *
+ * The window manager never sees them: no tiling, no workspace, no window
+ * switcher, no title bar. They sit where plasmashell asks, above normal
+ * windows (see `plasmaShellComposition`).
+ */
+function isPlasmaShellWindow(window: WaylandWindow): boolean {
+  const role = window.plasma.peek()?.role;
+  return role !== undefined && role !== "normal";
+}
+
+/** Shell windows that need the keyboard as soon as they open. */
+function plasmaShellWindowTakesFocus(window: WaylandWindow): boolean {
+  const plasma = window.plasma.peek();
+  // Kickoff and the other applet popups have search fields and lists.
+  return (
+    plasma?.role === "appletpopup" ||
+    (plasma?.role === "panel" && plasma.panelTakesFocus)
+  );
+}
 
 // enable triple buffer mode for massive performance
 COMPOSITOR.rendering.framePacing = "throughput";
@@ -358,9 +388,30 @@ const INSIDE_KDE =
   ).Deno?.env.get("KDE_FULL_SESSION") === "true";
 
 if (!INSIDE_KDE) {
+  // KDE's shortcut service. In KDE, KWin gives it a Wayland backend; here it
+  // runs on its X11 backend. plasmashell needs it to give Kickoff a
+  // shortcut, and without one `activateLauncherMenu` (Super) does nothing.
+  COMPOSITOR.process.service("kglobalaccel", {
+    command: [
+      "env",
+      "-u",
+      "WAYLAND_DISPLAY",
+      "KGLOBALACCELD_PLATFORM=xcb",
+      "QT_QPA_PLATFORM=xcb",
+      "XDG_SESSION_TYPE=x11",
+      "/usr/lib/kglobalacceld",
+    ],
+    restart: "on-exit",
+  });
   // The KDE desktop: your taskbar, start menu, icons, tray and wallpaper.
+  // It waits up to 3 s for the shortcut service, then starts. Errors go to
+  // ~/.local/state/plasmashell.log.
   COMPOSITOR.process.service("plasmashell", {
-    command: ["plasmashell", "--no-respawn"],
+    command: [
+      "sh",
+      "-c",
+      'for i in 1 2 3 4 5 6; do qdbus6 org.kde.kglobalaccel >/dev/null 2>&1 && break; sleep 0.5; done; exec plasmashell --no-respawn 2>>"$HOME/.local/state/plasmashell.log"',
+    ],
     // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
     env: { XDG_CURRENT_DESKTOP: "KDE" },
     restart: "on-exit",
@@ -870,31 +921,61 @@ COMPOSITOR.rendering.surfacePolicy = (surface) => {
   return null;
 };
 
+// plasmashell's own windows skip the window manager in every handler
+// below (see `isPlasmaShellWindow`).
 COMPOSITOR.event.onOpen((window) => {
+  if (isPlasmaShellWindow(window)) {
+    if (plasmaShellWindowTakesFocus(window)) {
+      window.focus();
+    }
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onOpen(window);
 });
 
 COMPOSITOR.event.onInitialConfigure((window) => {
+  if (isPlasmaShellWindow(window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onInitialConfigure(window);
 });
 
 COMPOSITOR.event.onFirstCommit((window) => {
+  if (isPlasmaShellWindow(window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onFirstCommit(window);
   scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.event.onStartClose((window) => {
+  if (isPlasmaShellWindow(window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onStartClose(window);
   scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.event.onClose((window) => {
+  if (isPlasmaShellWindow(window)) {
+    // A focused popup can close before it reports the focus loss.
+    if (window.isFocused.peek()) {
+      HYBRID_WINDOW_MANAGER.setPointerFocusPaused(false);
+    }
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onClose(window);
   jellyDragForget(window);
   scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.event.onFocus((window, focused) => {
+  if (isPlasmaShellWindow(window)) {
+    // plasmashell closes Kickoff when it loses focus. Do not let the
+    // pointer move focus to a tiled window while a shell popup has it.
+    HYBRID_WINDOW_MANAGER.setPointerFocusPaused(focused);
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onFocus(window, focused);
   if (focused) {
     HYBRID_WINDOW_MANAGER.recordFocus(window.id);
@@ -944,6 +1025,9 @@ COMPOSITOR.event.onDestroyLayer(() => {
 });
 
 COMPOSITOR.event.onWindowResize((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowResize(event);
 });
 
@@ -952,23 +1036,39 @@ COMPOSITOR.pointer.bindWindowResizeModifier("Super");
 COMPOSITOR.cursor.bindAppLockIgnoreModifier("Super");
 
 COMPOSITOR.event.onWindowMove((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowMove(event);
   jellyDragOnWindowMove(event);
 });
 
 COMPOSITOR.event.onWindowMaximizeRequest((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowMaximizeRequest(event);
 });
 
 COMPOSITOR.event.onWindowMinimizeRequest((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowMinimizeRequest(event);
 });
 
 COMPOSITOR.event.onWindowFullscreenRequest((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowFullscreenRequest(event);
 });
 
 COMPOSITOR.event.onWindowActivateRequest((event) => {
+  if (isPlasmaShellWindow(event.window)) {
+    event.window.focus();
+    return;
+  }
   HYBRID_WINDOW_MANAGER.onWindowActivateRequest(event);
   scheduleWorkspaceBroadcast();
 });
@@ -983,7 +1083,44 @@ function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
   };
 }
 
+// Stack order of plasmashell's windows: the desktop under everything, the
+// rest above every normal window (even a fullscreen one, as in KWin).
+const PLASMA_Z_INDEX: Record<PlasmaSurfaceRole, number> = {
+  normal: 0,
+  desktop: -2_100_000_000,
+  panel: 2_050_000_000,
+  appletpopup: 2_100_000_000,
+  notification: 2_110_000_000,
+  onscreendisplay: 2_110_000_000,
+  criticalnotification: 2_120_000_000,
+  tooltip: 2_130_000_000,
+};
+
+/** A plasmashell window: bare client surface where plasmashell asked. */
+function plasmaShellComposition(
+  window: WaylandWindow,
+  plasma: PlasmaSurfaceState,
+) {
+  const rect = computed(() => ({
+    // Before plasmashell sends a position, keep the window where it is.
+    x: plasma.x ?? window.position.x,
+    y: plasma.y ?? window.position.y,
+    width: window.position.width,
+    height: window.position.height,
+  }));
+  return (
+    <ManagedWindow rect={rect} zIndex={PLASMA_Z_INDEX[plasma.role]}>
+      <ClientWindow />
+    </ManagedWindow>
+  );
+}
+
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
+  const plasma = window.plasma();
+  if (plasma && plasma.role !== "normal") {
+    return plasmaShellComposition(window, plasma);
+  }
+
   const decoration = window.decoration();
   const useClientDecoration =
     decoration.mode === "client" &&

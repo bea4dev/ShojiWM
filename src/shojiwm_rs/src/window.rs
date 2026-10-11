@@ -293,6 +293,7 @@ impl Window {
 fn empty_snapshot() -> WaylandWindowSnapshot {
     WaylandWindowSnapshot {
         output_name: None,
+        plasma: None,
         id: String::new(),
         title: String::new(),
         app_id: None,

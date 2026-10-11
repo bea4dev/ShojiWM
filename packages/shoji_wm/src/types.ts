@@ -18,6 +18,34 @@ export interface WaylandWindowSnapshot {
   readonly interaction: WindowCompositionInteractionSnapshot;
   /** Output whose frames drive this window's runtime work. / このウィンドウのランタイム処理を駆動する出力。 */
   readonly outputName?: string;
+  /** What plasmashell asked for this window; absent without a plasma surface. */
+  readonly plasma?: PlasmaSurfaceState;
+}
+
+/** The `role` of KDE's `org_kde_plasma_surface.set_role`. */
+export type PlasmaSurfaceRole =
+  | "normal"
+  | "desktop"
+  | "panel"
+  | "onscreendisplay"
+  | "notification"
+  | "tooltip"
+  | "criticalnotification"
+  | "appletpopup";
+
+/**
+ * What plasmashell asked for one of its windows (Kickoff, tray popups, OSDs,
+ * notifications) through KDE's `org_kde_plasma_surface` protocol.
+ */
+export interface PlasmaSurfaceState {
+  readonly role: PlasmaSurfaceRole;
+  /** Global logical position from `set_position`, if the shell sent one. */
+  readonly x?: number;
+  readonly y?: number;
+  readonly skipTaskbar: boolean;
+  readonly skipSwitcher: boolean;
+  /** A panel that wants keyboard focus (e.g. for a search field). */
+  readonly panelTakesFocus: boolean;
 }
 
 export type WindowDecorationMode = "client" | "server";
@@ -211,6 +239,11 @@ export interface WaylandWindow {
   readonly isTransient: import("./signals").ReadonlySignal<boolean>;
   /** `id` of the parent window if this is a transient, otherwise `undefined`. / トランジェントの場合は親ウィンドウの `id`、そうでない場合は `undefined`。 */
   readonly parentId: import("./signals").ReadonlySignal<string | undefined>;
+  /**
+   * Role and position plasmashell asked for this window (KDE
+   * `org_kde_plasma_surface`); `undefined` for every other window.
+   */
+  readonly plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -3226,6 +3259,7 @@ export interface ReactiveWaylandWindowSignals {
   isResizable: import("./signals").ReadonlySignal<boolean>;
   isTransient: import("./signals").ReadonlySignal<boolean>;
   parentId: import("./signals").ReadonlySignal<string | undefined>;
+  plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   output: import("./signals").ReadonlySignal<string | undefined>;

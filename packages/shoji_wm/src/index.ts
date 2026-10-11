@@ -725,6 +725,8 @@ export type {
   WaylandWindowActions,
   WaylandWindowSnapshot,
   WaylandWindow,
+  PlasmaSurfaceRole,
+  PlasmaSurfaceState,
   LayerPosition,
   ReactiveWaylandLayer,
   ReactiveWaylandLayerHandle,
