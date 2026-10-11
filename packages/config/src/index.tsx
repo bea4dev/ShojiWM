@@ -952,12 +952,13 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const maximizeButton = <MaximizeButton window={window} />;
   const closeButton = <CloseButton window={window} />;
 
+  // macOS order: traffic lights on the left, then the icon and the title.
   const titlebarContent = [
-    appIcon,
-    label,
+    closeButton,
     minimizeButton,
     maximizeButton,
-    closeButton,
+    appIcon,
+    label,
   ];
   var innerComponents = (
     <Box direction="column">
@@ -1094,41 +1095,60 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   );
 };
 
+// macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
+const TRAFFIC_LIGHT_SIZE = 12;
+const TRAFFIC_LIGHT_BORDER = "#00000033";
+const TRAFFIC_LIGHT_COLORS = {
+  close: "#FF5F57",
+  minimize: "#FEBC2E",
+  maximize: "#28C840",
+  inactive: "#FFFFFF30",
+};
+
+const trafficLightColor = (window: WaylandWindow, color: string) =>
+  window.isFocused((focused) =>
+    focused ? color : TRAFFIC_LIGHT_COLORS.inactive,
+  );
+
+const trafficLightStyle = (background: string | ReadonlySignal<string>) => ({
+  width: TRAFFIC_LIGHT_SIZE,
+  height: TRAFFIC_LIGHT_SIZE,
+  borderRadius: TRAFFIC_LIGHT_SIZE / 2,
+  background,
+  border: { px: 1, color: TRAFFIC_LIGHT_BORDER },
+});
+
+/** The dark glyph that shows on a traffic light while the pointer is on it. */
+const TrafficLightGlyph = ({
+  src,
+}: {
+  src: string | ReadonlySignal<string>;
+}) => (
+  <Image
+    src={src}
+    style={{
+      width: TRAFFIC_LIGHT_SIZE,
+      height: TRAFFIC_LIGHT_SIZE,
+      position: "absolute",
+      zIndex: 1,
+      pointerEvents: "none",
+    }}
+  />
+);
+
 const CloseButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
-
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F0808030"));
-
-  var icon: CompositionRenderable | null = null;
-  if (hover()) {
-    icon = (
-      <Image
-        src="./assets/x.svg"
-        style={{
-          width: 16,
-          height: 16,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
-  }
 
   return (
     <Box style={{ position: "relative", flexShrink: 0 }}>
       <Button
         onHoverChange={setHover}
-        style={{
-          width: 16,
-          height: 16,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
+        style={trafficLightStyle(
+          trafficLightColor(window, TRAFFIC_LIGHT_COLORS.close),
+        )}
         onClick={window.close}
       />
-      {icon}
+      {hover() ? <TrafficLightGlyph src="./assets/mac-x.svg" /> : null}
     </Box>
   );
 };
@@ -1178,45 +1198,31 @@ const TitlebarTooltip = ({
 const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
 
-  const borderColor = computed(() => {
-    if (!window.isResizable()) {
-      return "#00000000";
+  // A window that cannot resize gets a grey light, like on macOS.
+  const background = computed(() => {
+    if (!window.isResizable() || !window.isFocused()) {
+      return TRAFFIC_LIGHT_COLORS.inactive;
     }
-    return hover() ? "#00000000" : "#00BFFF30";
+    return TRAFFIC_LIGHT_COLORS.maximize;
   });
   const shouldHover = computed(() => hover() && window.isResizable());
 
   var icon: CompositionRenderable | null = null;
   if (shouldHover()) {
     const src = window.isMaximized((maximized) => {
-      return maximized ? "./assets/minimize-2.svg" : "./assets/maximize-2.svg";
+      return maximized
+        ? "./assets/mac-minimize-2.svg"
+        : "./assets/mac-maximize-2.svg";
     });
 
-    icon = (
-      <Image
-        src={src}
-        style={{
-          width: 16,
-          height: 16,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
+    icon = <TrafficLightGlyph src={src} />;
   }
 
   return (
     <Box style={{ position: "relative", flexShrink: 0 }}>
       <Button
         onHoverChange={setHover}
-        style={{
-          width: 16,
-          height: 16,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
+        style={trafficLightStyle(background)}
         onClick={() => {
           if (!read(window.isResizable)) {
             return;
@@ -1244,38 +1250,16 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
 const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
 
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F8FF7530"));
-
-  var icon: CompositionRenderable | null = null;
-  if (hover()) {
-    icon = (
-      <Image
-        src="./assets/minus.svg"
-        style={{
-          width: 16,
-          height: 16,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
-  }
-
   return (
     <Box style={{ position: "relative", flexShrink: 0 }}>
       <Button
         onHoverChange={setHover}
-        style={{
-          width: 16,
-          height: 16,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
+        style={trafficLightStyle(
+          trafficLightColor(window, TRAFFIC_LIGHT_COLORS.minimize),
+        )}
         onClick={() => window.minimize()}
       />
-      {icon}
+      {hover() ? <TrafficLightGlyph src="./assets/mac-minus.svg" /> : null}
       <TitlebarTooltip text="Minimize" />
     </Box>
   );
