@@ -30,10 +30,10 @@ import type { WindowPosition } from "shoji_wm/types";
 /** KWin's default SlideInTime / SlideOutTime. */
 const KWIN_SLIDE_MS = 200;
 /**
- * KWin's stock speed (1.0, so 200 ms). kdeglobals here says 0.25 (50 ms), but
- * that reads as a snap, and Abhishek wants to see the slide.
+ * 0.75, so 150 ms. kdeglobals here says 0.25 (50 ms), which reads as a snap;
+ * KWin's stock 1.0 (200 ms) felt slow.
  */
-const ANIMATION_DURATION_FACTOR = 1;
+const ANIMATION_DURATION_FACTOR = 0.75;
 /** KWin's `animationTime(200ms)`. */
 const SLIDE_MS = KWIN_SLIDE_MS * ANIMATION_DURATION_FACTOR;
 /** QFontMetrics(QGuiApplication::font()).height() * 8, for Noto Sans 10 pt. */
@@ -41,8 +41,11 @@ const SLIDE_LENGTH = 19 * 8;
 /** A slower slide for testing (debug IPC); `null` = `SLIDE_MS`. */
 let debugSlideMs: number | null = null;
 
-/** Qt's OutCubic and InCubic (KWin's OutCubic run backwards), as Béziers. */
-const OUT_CUBIC = cubicBezier(0.33, 1, 0.68, 1);
+/**
+ * Opening: OutQuint, a softer landing than KWin's OutCubic. Closing: InCubic
+ * (KWin's OutCubic run backwards). As Béziers.
+ */
+const OUT_CUBIC = cubicBezier(0.22, 1, 0.36, 1);
 const IN_CUBIC = cubicBezier(0.32, 0, 0.67, 0);
 
 const CHANNEL = "sliding-popup";
