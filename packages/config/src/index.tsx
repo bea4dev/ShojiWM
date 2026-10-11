@@ -54,6 +54,7 @@ import {
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
+import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid, createWindowView } from "./window-grid";
 import type { TitlebarButton } from "./window-switcher";
@@ -148,11 +149,16 @@ COMPOSITOR.rendering.framePacing = "throughput";
 
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 
-// Window switcher (Super+Tab): "flip-3d" stacks the windows in 3D
-// (./flip-3d.tsx), "grid" lays them out side by side (./window-grid.tsx).
-const WINDOW_SWITCHER_STYLE = "flip-3d" as "flip-3d" | "grid";
+// Window switcher (Super+Tab): "coverflow" is GNOME's Coverflow Alt-Tab
+// (./coverflow.tsx), "flip-3d" stacks the windows in 3D (./flip-3d.tsx),
+// "grid" lays them out side by side (./window-grid.tsx).
+const WINDOW_SWITCHER_STYLE = "coverflow" as "coverflow" | "flip-3d" | "grid";
 const WINDOW_SWITCHER = (
-  WINDOW_SWITCHER_STYLE === "grid" ? createWindowGrid : createFlip3D
+  WINDOW_SWITCHER_STYLE === "grid"
+    ? createWindowGrid
+    : WINDOW_SWITCHER_STYLE === "flip-3d"
+      ? createFlip3D
+      : createCoverflow
 )({
   windowManager: HYBRID_WINDOW_MANAGER,
   stackOrder: (window) =>
@@ -404,6 +410,24 @@ WORKSPACE_IPC.handle("debug.windowViewPointer", (params) => {
     return null;
   }
   return WINDOW_VIEW.debugPointer(x, y, button);
+});
+
+// Debug: drive the window switcher without the real keyboard. `action`:
+// "open", "key" (`key`, `shift`) or "cancel". Returns the selected window's id.
+WORKSPACE_IPC.handle("debug.windowSwitcher", (params) => {
+  const { action, key, shift } = (params ?? {}) as {
+    action?: "open" | "key" | "cancel";
+    key?: string;
+    shift?: boolean;
+  };
+  if (action === "open") {
+    WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+  } else if (action === "cancel") {
+    WINDOW_SWITCHER.cancel();
+  } else if (action === "key" && typeof key === "string") {
+    return WINDOW_SWITCHER.debugKey(key, shift);
+  }
+  return SWITCHERS.selectedWindowId.peek();
 });
 
 // Debug: the last Magic Lamp runs with frame times; `durationMs` slows it.

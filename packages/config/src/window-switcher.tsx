@@ -4,8 +4,8 @@
  * A switcher lifts every window (all workspaces, minimized ones too, most
  * recently used first) off the desktop and lays them out in a scene; a
  * `SwitcherLayout` decides where each window goes and how input moves the
- * selection (`./flip-3d.tsx`: a receding 3D stack, `./window-grid.tsx`: a
- * flat grid). The core does the rest, the same for every layout:
+ * selection (`./coverflow.tsx`: GNOME's Coverflow Alt-Tab, `./flip-3d.tsx`:
+ * a receding 3D stack, `./window-grid.tsx`: a flat grid). The core does the rest, the same for every layout:
  *
  * - `Escape` returns to the desktop unchanged
  * - `Return` / `Space` or a click on a window switches
@@ -149,6 +149,8 @@ export interface SwitcherLayout<State> {
   readonly name: string;
   /** How far the desktop dims behind the windows. */
   readonly dimAlpha: number;
+  /** The camera's vertical field of view (default: a narrow long lens). */
+  readonly cameraFovDegrees?: number;
   /** Open with no window selected; the pointer or a key selects one. */
   readonly startsWithoutSelection?: boolean;
   /** Fresh per-session state. */
@@ -217,6 +219,12 @@ export interface WindowSwitcher {
     y: number,
     button?: "left" | "middle",
   ): { windowId: string; x: number; y: number; button: TitlebarButton | null } | false | null;
+  /**
+   * Debug (tests over IPC): feed a key press to the open switcher, as if
+   * the real keyboard did it. Returns the selected window's id, or `null`
+   * when nothing is open.
+   */
+  debugKey(key: string, shift?: boolean): string | null;
 }
 
 export interface WindowSwitcherOptions {
@@ -307,6 +315,14 @@ export function createWindowSwitcher<State>(
   let blurFade: PollHandle | null = null;
 
   const touch = () => setRevision(revision.peek() + 1);
+  const fov = layout.cameraFovDegrees ?? CAMERA_FOV_DEGREES;
+  const camera = (width: number, height: number) => switcherCamera(width, height, fov);
+  const placeReal = (rect: Rect, viewport: Viewport, rank: number) =>
+    realPose(rect, viewport, rank, fov);
+  // Windows fade in from (out to) this far behind the layout. It grows with
+  // the camera distance, so the fade looks the same with any camera.
+  const fadeDepth = (height: number, fraction: number) =>
+    height * fraction * (cameraDistance(height, fov) / cameraDistance(height));
 
   function viewportOf(name: string): Viewport | null {
     const output = COMPOSITOR.output.get(name);
@@ -350,12 +366,12 @@ export function createWindowSwitcher<State>(
       if (session.phase === "leaving") {
         const from = session.leaveFrom.get(window.id) ?? shown;
         const target = session.shownAfter.has(window.id)
-          ? realPose(rect, viewport, session.ranksAfter.get(window.id) ?? 0)
-          : { ...from, z: from.z - viewport.height * 0.15, opacity: 0 };
+          ? placeReal(rect, viewport, session.ranksAfter.get(window.id) ?? 0)
+          : { ...from, z: from.z - fadeDepth(viewport.height, 0.15), opacity: 0 };
         pose = lerpPose(from, target, eased);
       } else {
         const start = session.startPoses.get(window.id);
-        const from = start ?? { ...shown, z: shown.z - viewport.height * 0.3, opacity: 0 };
+        const from = start ?? { ...shown, z: shown.z - fadeDepth(viewport.height, 0.3), opacity: 0 };
         pose = session.phase === "entering" ? lerpPose(from, shown, eased) : shown;
         const movingFrom = session.moveFrom.get(window.id);
         if (movingFrom && session.phase === "shown") {
@@ -505,7 +521,7 @@ export function createWindowSwitcher<State>(
       if (!session.shownAfter.has(window.id)) {
         return pose.opacity < 0.02;
       }
-      const target = realPose(rect, viewport, session.ranksAfter.get(window.id) ?? 0);
+      const target = placeReal(rect, viewport, session.ranksAfter.get(window.id) ?? 0);
       const halfExtent = Math.max(rect.width, rect.height) / 2 + MARGIN;
       const deviation =
         Math.abs(pose.x - target.x) +
@@ -535,7 +551,7 @@ export function createWindowSwitcher<State>(
       startPoses.set(
         window.id,
         onScreen(window, viewport)
-          ? realPose(rectOf(window), viewport, ranks.get(window.id) ?? 0)
+          ? placeReal(rectOf(window), viewport, ranks.get(window.id) ?? 0)
           : null,
       );
     }
@@ -886,7 +902,7 @@ export function createWindowSwitcher<State>(
     const { output, width, height } = viewport;
     const placed = visiblePlanes(session, viewport);
     const hit = pickPlane(
-      switcherCamera(width, height),
+      camera(width, height),
       { width, height },
       placed.map(({ planeWidth, planeHeight, transform }) => ({
         width: planeWidth,
@@ -914,7 +930,7 @@ export function createWindowSwitcher<State>(
       return undefined;
     }
     const { width, height, output } = viewport;
-    const camera = switcherCamera(width, height);
+    const view = camera(width, height);
     const matrix = placed.transform.matrix;
     // The plane's corners on screen: top-left, top-right, bottom-left.
     const corner = (x: number, y: number) => {
@@ -923,7 +939,7 @@ export function createWindowSwitcher<State>(
         matrix[1] * x + matrix[5] * y + matrix[13],
         matrix[2] * x + matrix[6] * y + matrix[14],
       ] as [number, number, number];
-      return projectPoint(camera, { width, height }, world);
+      return projectPoint(view, { width, height }, world);
     };
     const halfWidth = placed.planeWidth / 2;
     const halfHeight = placed.planeHeight / 2;
@@ -1057,7 +1073,7 @@ export function createWindowSwitcher<State>(
       <>
         <Layers layers={["background", "bottom"]} />
         <Solid color={[0, 0, 0, dimAlpha(session)]} />
-        <Scene3D camera={switcherCamera(width, height)}>
+        <Scene3D camera={camera(width, height)}>
           {planes.map(({ window, rect, pose, planeWidth, planeHeight, transform }) => (
             <Plane
               texture={windowTexture(window, rect, output)}
@@ -1121,6 +1137,21 @@ export function createWindowSwitcher<State>(
       }
       return report;
     },
+    debugKey: (key, shift = false) => {
+      const session = current.peek();
+      const handlers = session?.handlers;
+      if (!session || session.phase === "leaving" || !handlers) {
+        return null;
+      }
+      handlers.onKey?.({
+        key,
+        keycode: 0,
+        state: "pressed",
+        modifiers: { shift } as InputGrabKeyEvent["modifiers"],
+        timestamp: 0,
+      });
+      return selectedWindow(session)?.id ?? null;
+    },
   };
 }
 
@@ -1130,18 +1161,18 @@ function rectOf(window: WaylandWindow): Rect {
 }
 
 /** Distance at which the camera sees the plane z = 0 1:1 in logical pixels. */
-export function cameraDistance(height: number): number {
-  return height / 2 / Math.tan((CAMERA_FOV_DEGREES * Math.PI) / 360);
+export function cameraDistance(height: number, fovDegrees = CAMERA_FOV_DEGREES): number {
+  return height / 2 / Math.tan((fovDegrees * Math.PI) / 360);
 }
 
 /**
  * Like `screenCamera` with a narrow field of view, but with room for a layout
  * that recedes several times the camera distance.
  */
-function switcherCamera(width: number, height: number): Camera {
-  const distance = cameraDistance(height);
+function switcherCamera(width: number, height: number, fovDegrees: number): Camera {
+  const distance = cameraDistance(height, fovDegrees);
   return {
-    projection: perspective(CAMERA_FOV_DEGREES, width / Math.max(height, 1), distance / 100, distance * 6),
+    projection: perspective(fovDegrees, width / Math.max(height, 1), distance / 100, distance * 6),
     view: lookAt([0, 0, distance], [0, 0, 0]),
   };
 }
@@ -1172,11 +1203,11 @@ export function flatPose(
  * window `rank` steps up the stack sits that much nearer the camera, shrunk
  * by the perspective it gains so it covers the same pixels.
  */
-function realPose(rect: Rect, viewport: Viewport, rank: number): Pose {
+function realPose(rect: Rect, viewport: Viewport, rank: number, fovDegrees: number): Pose {
   const { output, width, height } = viewport;
   const centerX = rect.x - output.position.x + rect.width / 2;
   const centerY = rect.y - output.position.y + rect.height / 2;
-  const distance = cameraDistance(height);
+  const distance = cameraDistance(height, fovDegrees);
   const z = rank * STACK_DEPTH_STEP;
   const shrink = (distance - z) / distance;
   return {
