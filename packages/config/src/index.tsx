@@ -71,6 +71,12 @@ import {
   magicLampForget,
   magicLampRunning,
 } from "./magic-lamp";
+import {
+  configureSlidingPopups,
+  slidePopupIn,
+  slidePopupOut,
+  slidingPopupsDebug,
+} from "./sliding-popups";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -484,6 +490,11 @@ if (WINDOW_SWITCHER_STYLE === "coverflow") {
 }
 
 // Debug: the last Magic Lamp runs with frame times; `durationMs` slows it.
+// Debug: slow the sliding popups down (`durationMs`), `null` restores KWin's.
+WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
+  slidingPopupsDebug((params as { durationMs?: number | null } | undefined)?.durationMs ?? null);
+});
+
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(
     (params as { durationMs?: number | null } | undefined)?.durationMs,
@@ -636,7 +647,14 @@ if (!INSIDE_KDE) {
     ],
     // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
     // XDG_MENU_PREFIX: Kickoff reads its app list from plasma-applications.menu.
-    env: { XDG_CURRENT_DESKTOP: "KDE", XDG_MENU_PREFIX: "plasma-" },
+    // KDE_FULL_SESSION and KDE_SESSION_VERSION: KDE libraries only apply
+    // KDE behaviour (like panel-coloured tray icons) in a full KDE session.
+    env: {
+      XDG_CURRENT_DESKTOP: "KDE",
+      XDG_MENU_PREFIX: "plasma-",
+      KDE_FULL_SESSION: "true",
+      KDE_SESSION_VERSION: "6",
+    },
     restart: "on-exit",
   });
   // Owns KWin's Window View D-Bus name, so the taskbar shows a group's
@@ -1167,10 +1185,16 @@ const LAYER_BLUR_MASK = compileLayerEffect({
 const JELLY_DRAG = true;
 // Magic Lamp (KDE's minimize effect, ./magic-lamp.ts): a minimizing window
 // pours into its taskbar entry. It wins over the jelly drag while it runs.
-configureMagicLamp({
-  // KWin's "docks": plasma panels (windows or layer-shell surfaces) and any
-  // other bar.
-  panels: () => [
+configureMagicLamp({ panels: () => panelRects() });
+// The popups slide out of these panels too (KWin's sliding popups).
+configureSlidingPopups({ panels: () => panelRects() });
+
+/**
+ * KWin's "docks": plasma panels (windows or layer-shell surfaces) and any
+ * other bar, in global logical px.
+ */
+function panelRects() {
+  return [
     ...plasmaShellWindows("panel").map((window) => ({
       x: window.rect.x,
       y: window.rect.y,
@@ -1194,8 +1218,8 @@ configureMagicLamp({
           },
         ];
       }),
-  ],
-});
+  ];
+}
 COMPOSITOR.effect.window = (window) =>
   magicLampEffect(window) ?? (JELLY_DRAG ? jellyDragEffect(window) : null);
 
@@ -1302,8 +1326,19 @@ COMPOSITOR.event.onInitialConfigure((window) => {
   HYBRID_WINDOW_MANAGER.onInitialConfigure(window);
 });
 
+/** plasmashell popups that slide out of their panel (KWin's sliding popups). */
+function slidesFromPanel(window: WaylandWindow): boolean {
+  const plasma = window.plasma.peek();
+  // Kickoff, the calendar, the tray popups, and the taskbar's grouped-window
+  // list (a positioned "normal" window).
+  return plasma?.role === "appletpopup" || plasma?.role === "normal";
+}
+
 COMPOSITOR.event.onFirstCommit((window) => {
   if (isPlasmaShellWindow(window)) {
+    if (slidesFromPanel(window)) {
+      slidePopupIn(window);
+    }
     return;
   }
   HYBRID_WINDOW_MANAGER.onFirstCommit(window);
@@ -1312,6 +1347,9 @@ COMPOSITOR.event.onFirstCommit((window) => {
 
 COMPOSITOR.event.onStartClose((window) => {
   if (isPlasmaShellWindow(window)) {
+    if (slidesFromPanel(window)) {
+      slidePopupOut(window);
+    }
     return;
   }
   HYBRID_WINDOW_MANAGER.onStartClose(window);
