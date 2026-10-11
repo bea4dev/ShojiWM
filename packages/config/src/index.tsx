@@ -925,7 +925,20 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     capturePadding: 24,
     invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
     alpha: "preserve",
-    pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
+    // Liquid glass on every title bar, not only on the terminals.
+    pipeline: [
+      dualKawaseBlur({ radius: 4, passes: 2 }),
+      shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
+        uniforms: {
+          glass_radius_px: -1.0,
+          distortion_depth: 0.2,
+          distortion_strength: 0.15,
+          chromatic_shift_px: 3.0,
+          glass_tint: 0.9,
+        },
+      }),
+      backdropFade(),
+    ],
   });
   // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
@@ -952,13 +965,13 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const maximizeButton = <MaximizeButton window={window} />;
   const closeButton = <CloseButton window={window} />;
 
-  // macOS order: traffic lights on the left, then the icon and the title.
+  // Traffic lights on the right, in the KDE order: minimize, maximize, close.
   const titlebarContent = [
-    closeButton,
-    minimizeButton,
-    maximizeButton,
     appIcon,
     label,
+    minimizeButton,
+    maximizeButton,
+    closeButton,
   ];
   var innerComponents = (
     <Box direction="column">
