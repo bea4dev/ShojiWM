@@ -59,6 +59,7 @@ import {
   type OutputInfo,
   type PollHandle,
   type ReadonlySignal,
+  read,
   type WaylandWindow,
 } from "shoji_wm";
 import type { WindowPosition } from "shoji_wm/types";
@@ -66,6 +67,7 @@ import { magicLampRedirect, magicLampRunning } from "./magic-lamp";
 import {
   WINDOW_MANAGEMENT_EASING,
   WINDOW_STATE_MINIMIZED,
+  WINDOW_STATE_RECT,
   type HybridWindowManager,
 } from "./window-manager";
 
@@ -299,6 +301,13 @@ interface Session<State> {
   /** Each card's opacity factor (a minimized card is dimmed). */
   cardAlpha: Map<string, number>;
   lamps: Map<string, LampCard>;
+  /**
+   * Opened for some windows only (the Window View): the other windows on
+   * screen, bottom first. They fade out as it opens and back in as it closes.
+   */
+  others: WaylandWindow[];
+  /** Opened with an explicit list of windows. */
+  subset: boolean;
   /** Stops listening for windows that close. */
   unlisten: (() => void) | null;
   /** The input grab's handlers (`debugPointer` calls them). */
@@ -353,7 +362,7 @@ export function createWindowSwitcher<State>(
     if (!wm.isWindowShownOn(window, viewport.output.name)) {
       return false;
     }
-    const rect = rectOf(window);
+    const rect = placedRect(window);
     const { x, y } = viewport.output.position;
     const width = Math.min(rect.x + rect.width, x + viewport.width) - Math.max(rect.x, x);
     const height = Math.min(rect.y + rect.height, y + viewport.height) - Math.max(rect.y, y);
@@ -372,7 +381,7 @@ export function createWindowSwitcher<State>(
       if (session.phase === "leaving") {
         const from = session.leaveFrom.get(window.id) ?? shown;
         const target = session.shownAfter.has(window.id)
-          ? placeReal(rect, viewport, session.ranksAfter.get(window.id) ?? 0)
+          ? placeReal(placedRect(window), viewport, session.ranksAfter.get(window.id) ?? 0)
           : { ...from, z: from.z - fadeDepth(viewport.height, 0.15), opacity: 0 };
         pose =
           (session.shownAfter.has(window.id)
@@ -446,16 +455,21 @@ export function createWindowSwitcher<State>(
     session.lamps.delete(lamp.window.id);
   }
 
-  function dimAlpha(session: Session<State>): number {
+  /** 0 on the desktop, 1 once open; eased like the windows. */
+  function openness(session: Session<State>): number {
     const eased = WINDOW_MANAGEMENT_EASING(session.progress);
     switch (session.phase) {
       case "entering":
-        return layout.dimAlpha * eased;
+        return eased;
       case "shown":
-        return layout.dimAlpha;
+        return 1;
       case "leaving":
-        return layout.dimAlpha * (1 - eased);
+        return 1 - eased;
     }
+  }
+
+  function dimAlpha(session: Session<State>): number {
+    return layout.dimAlpha * openness(session);
   }
 
   function ensureTicking(session: Session<State>) {
@@ -534,7 +548,7 @@ export function createWindowSwitcher<State>(
       if (!session.shownAfter.has(window.id)) {
         return pose.opacity < 0.02;
       }
-      const target = placeReal(rect, viewport, session.ranksAfter.get(window.id) ?? 0);
+      const target = placeReal(placedRect(window), viewport, session.ranksAfter.get(window.id) ?? 0);
       const halfExtent = Math.max(rect.width, rect.height) / 2 + MARGIN;
       const deviation =
         Math.abs(pose.x - target.x) +
@@ -544,6 +558,18 @@ export function createWindowSwitcher<State>(
         Math.abs(pose.scale - target.scale) * halfExtent;
       return deviation < HANDOFF_EPSILON_PX;
     });
+  }
+
+  /** The windows on screen that the session does not show as cards. */
+  function otherWindows(session: Session<State>, viewport: Viewport): WaylandWindow[] {
+    if (!session.subset) {
+      return [];
+    }
+    const cards = new Set(session.windows.map((window) => window.id));
+    return wm
+      .listWindows()
+      .filter((window) => !cards.has(window.id) && onScreen(window, viewport))
+      .sort((a, b) => options.stackOrder(a) - options.stackOrder(b));
   }
 
   function open(outputName: string, only?: readonly WaylandWindow[]) {
@@ -564,7 +590,7 @@ export function createWindowSwitcher<State>(
       startPoses.set(
         window.id,
         onScreen(window, viewport)
-          ? placeReal(rectOf(window), viewport, ranks.get(window.id) ?? 0)
+          ? placeReal(placedRect(window), viewport, ranks.get(window.id) ?? 0)
           : null,
       );
     }
@@ -590,12 +616,15 @@ export function createWindowSwitcher<State>(
       departing: [],
       cardAlpha: new Map(),
       lamps: new Map(),
+      others: [],
+      subset: only !== undefined,
       unlisten: null,
       handlers: null,
     };
     for (const window of windows) {
       session.cardAlpha.set(window.id, cardAlphaTarget(session, window));
     }
+    session.others = otherWindows(session, viewport);
     if (layout.cardActions && layout.windowsChanged) {
       const stopStart = COMPOSITOR.event.onStartClose((window) => removeCard(session, window));
       const stopClose = COMPOSITOR.event.onClose((window) => removeCard(session, window));
@@ -859,6 +888,7 @@ export function createWindowSwitcher<State>(
       }
     }
     session.ranksAfter = stackRanks(session.windows);
+    session.others = otherWindows(session, viewport);
     if (target) {
       // Activation puts it on top; its focus may land a moment later.
       session.ranksAfter.set(target.id, session.windows.length);
@@ -1082,9 +1112,21 @@ export function createWindowSwitcher<State>(
       ...departingPlanes(session),
       ...visiblePlanes(session, { output, width, height }),
     ];
+    // The windows that are not cards stay where they are and fade.
+    const others =
+      session.others.length > 0 ? (
+        <TextureView
+          texture={renderTexture({
+            key: `${layout.name}-others`,
+            content: <Windows windows={session.others} />,
+          })}
+          opacity={1 - openness(session)}
+        />
+      ) : null;
     return (
       <>
         <Layers layers={["background", "bottom"]} />
+        {others}
         <Solid color={[0, 0, 0, dimAlpha(session)]} />
         <Scene3D camera={camera(width, height)}>
           {planes.map(({ window, rect, pose, planeWidth, planeHeight, transform }) => (
@@ -1166,6 +1208,28 @@ export function createWindowSwitcher<State>(
       return selectedWindow(session)?.id ?? null;
     },
   };
+}
+
+/**
+ * Where the window manager places the window now. Activating a window pans a
+ * scrolling workspace at once, but `window.rect` follows only a frame or more
+ * later; closing with the old rect sent cards sideways to where the window
+ * had been. Falls back to `window.rect` for windows the manager does not place.
+ */
+function placedRect(window: WaylandWindow): Rect {
+  const managed = window.state[WINDOW_STATE_RECT].peek();
+  if (managed) {
+    const rect = {
+      x: read(managed.x),
+      y: read(managed.y),
+      width: read(managed.width),
+      height: read(managed.height),
+    };
+    if ([rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0) {
+      return rect;
+    }
+  }
+  return rectOf(window);
 }
 
 function rectOf(window: WaylandWindow): Rect {
