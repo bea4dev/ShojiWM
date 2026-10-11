@@ -547,6 +547,20 @@ COMPOSITOR.key.bind("preview-move-right", "Alt+Shift+Right", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
   scheduleWorkspaceBroadcast();
 });
+// Mouse wheel moves along the row of tiles. Super for the real session,
+// Alt for the preview inside KDE.
+COMPOSITOR.key.bind("tile-scroll-left", "Super+WheelScrollUp", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(-1);
+});
+COMPOSITOR.key.bind("tile-scroll-right", "Super+WheelScrollDown", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(1);
+});
+COMPOSITOR.key.bind("preview-scroll-left", "Alt+WheelScrollUp", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(-1);
+});
+COMPOSITOR.key.bind("preview-scroll-right", "Alt+WheelScrollDown", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(1);
+});
 COMPOSITOR.key.bind("preview-workspace-prev", "Alt+Up", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
   scheduleWorkspaceBroadcast();
