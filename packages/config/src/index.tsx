@@ -361,6 +361,8 @@ if (!INSIDE_KDE) {
   // The KDE desktop: your taskbar, start menu, icons, tray and wallpaper.
   COMPOSITOR.process.service("plasmashell", {
     command: ["plasmashell", "--no-respawn"],
+    // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
+    env: { XDG_CURRENT_DESKTOP: "KDE" },
     restart: "on-exit",
   });
   // The KDE window that asks for your password when an app needs admin rights.
