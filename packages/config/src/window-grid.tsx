@@ -212,34 +212,21 @@ function gridArea({ output, width, height }: Viewport): Rect {
 }
 
 /**
- * Rows of windows in order, each row centred, the rows centred together. The
- * column count is the one that shows the windows largest overall.
+ * Rows of windows in order, each row centred, the rows centred together:
+ * ceil(sqrt(n)) columns and as many rows as needed, so the windows fill the
+ * screen as a balanced grid (2: side by side, 3: 2 + 1, 4: 2 x 2, 5: 3 + 2).
+ * Each window keeps its shape and fits its cell.
  */
 export function layoutGrid(sizes: readonly { width: number; height: number }[], area: Rect): Cell[] {
   const count = sizes.length;
   if (count === 0) {
     return [];
   }
-  let best: { columns: number; scales: number[]; score: number } | null = null;
-  for (let columns = 1; columns <= count; columns++) {
-    const rows = Math.ceil(count / columns);
-    const cellWidth = (area.width - (columns - 1) * GAP) / columns;
-    const cellHeight = (area.height - (rows - 1) * GAP) / rows;
-    if (cellWidth <= 0 || cellHeight <= 0) {
-      continue;
-    }
-    const scales = sizes.map((size) =>
-      Math.min(MAX_SCALE, cellWidth / Math.max(size.width, 1), cellHeight / Math.max(size.height, 1)),
-    );
-    const score = sizes.reduce(
-      (sum, size, index) => sum + size.width * size.height * scales[index] ** 2,
-      0,
-    );
-    if (!best || score >= best.score) {
-      best = { columns, scales, score };
-    }
-  }
-  if (!best) {
+  const columns = Math.ceil(Math.sqrt(count));
+  const rowCount = Math.ceil(count / columns);
+  const cellWidth = (area.width - (columns - 1) * GAP) / columns;
+  const cellHeight = (area.height - (rowCount - 1) * GAP) / rowCount;
+  if (cellWidth <= 0 || cellHeight <= 0) {
     return sizes.map(() => ({
       centerX: area.x + area.width / 2,
       centerY: area.y + area.height / 2,
@@ -247,7 +234,9 @@ export function layoutGrid(sizes: readonly { width: number; height: number }[], 
       row: 0,
     }));
   }
-  const { columns, scales } = best;
+  const scales = sizes.map((size) =>
+    Math.min(MAX_SCALE, cellWidth / Math.max(size.width, 1), cellHeight / Math.max(size.height, 1)),
+  );
   const rows: number[][] = [];
   for (let start = 0; start < count; start += columns) {
     rows.push(Array.from({ length: Math.min(columns, count - start) }, (_, offset) => start + offset));
