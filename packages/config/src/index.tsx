@@ -324,11 +324,17 @@ COMPOSITOR.workspace.configure(() => {
  * workspace N, so the Pager's numbers match Super+N; empty workspaces in
  * between show as empty desktops.
  */
+/**
+ * The Pager always shows at least this many desktops. KDE's Pager hides
+ * itself when there is only one desktop, so without a minimum it vanishes
+ * whenever every window sits on workspace 1.
+ */
+const MIN_PAGER_DESKTOPS = 4;
 function virtualDesktops(view: ReturnType<typeof HYBRID_WINDOW_MANAGER.viewForIpc>) {
   const monitorName = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   const monitor = view.monitors.find((candidate) => candidate.name === monitorName);
   const workspaces = monitor?.workspaces ?? [];
-  const count = Math.max(1, ...workspaces.map((workspace) => workspace.index));
+  const count = Math.max(MIN_PAGER_DESKTOPS, ...workspaces.map((workspace) => workspace.index));
   const desktops = Array.from({ length: count }, (_, offset) => {
     const index = offset + 1;
     const workspace = workspaces.find((candidate) => candidate.index === index);
