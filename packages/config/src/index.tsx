@@ -90,24 +90,33 @@ COMPOSITOR.window.decoration.configure((window, context) => {
 
 /**
  * plasmashell's own windows: Kickoff, tray popups, the calendar, OSDs,
- * notifications, tooltips. KDE's plasma-shell protocol gives each one a
- * role other than "normal" and a screen position.
+ * notifications, tooltips, and the taskbar's list of grouped windows. KDE's
+ * plasma-shell protocol gives each one a role and a screen position. The
+ * grouped-window list keeps the role "normal" but asks for a position, so a
+ * position alone also marks a shell window.
  *
  * The window manager never sees them: no tiling, no workspace, no window
  * switcher, no title bar. They sit where plasmashell asks, above normal
  * windows (see `plasmaShellComposition`).
  */
+function isPlasmaShellSurface(plasma: PlasmaSurfaceState | undefined): boolean {
+  return (
+    plasma !== undefined && (plasma.role !== "normal" || plasma.x !== undefined)
+  );
+}
+
 function isPlasmaShellWindow(window: WaylandWindow): boolean {
-  const role = window.plasma.peek()?.role;
-  return role !== undefined && role !== "normal";
+  return isPlasmaShellSurface(window.plasma.peek());
 }
 
 /** Shell windows that need the keyboard as soon as they open. */
 function plasmaShellWindowTakesFocus(window: WaylandWindow): boolean {
   const plasma = window.plasma.peek();
-  // Kickoff and the other applet popups have search fields and lists.
+  // Kickoff, the applet popups and the grouped-window list have search
+  // fields and lists, and plasmashell closes them when they lose focus.
   return (
     plasma?.role === "appletpopup" ||
+    plasma?.role === "normal" ||
     (plasma?.role === "panel" && plasma.panelTakesFocus)
   );
 }
@@ -413,7 +422,8 @@ if (!INSIDE_KDE) {
       'for i in 1 2 3 4 5 6; do qdbus6 org.kde.kglobalaccel >/dev/null 2>&1 && break; sleep 0.5; done; exec plasmashell --no-respawn 2>>"$HOME/.local/state/plasmashell.log"',
     ],
     // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
-    env: { XDG_CURRENT_DESKTOP: "KDE" },
+    // XDG_MENU_PREFIX: Kickoff reads its app list from plasma-applications.menu.
+    env: { XDG_CURRENT_DESKTOP: "KDE", XDG_MENU_PREFIX: "plasma-" },
     restart: "on-exit",
   });
   // The KDE window that asks for your password when an app needs admin rights.
@@ -485,9 +495,21 @@ COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
 });
 
 // Your KDE start menu (Kickoff), like the Windows key on KDE.
+// plasmashell's `activateLauncherMenu` does nothing outside KWin, so this
+// fires Kickoff's own shortcut ("activate widget <id>") in kglobalaccel. If
+// plasmashell lost the shortcut (it does when it starts before kglobalaccel),
+// the script gives Kickoff its Alt+F1 back first.
+const KICKOFF_ID_SCRIPT =
+  'panels().forEach(function (p) { p.widgets("org.kde.plasma.kickoff").forEach(function (w) { if (!w.globalShortcut) { w.globalShortcut = "Alt+F1"; } print(w.id + "\\n"); }); });';
 function toggleLauncher() {
   COMPOSITOR.process.spawn({
-    command: "qdbus6 org.kde.plasmashell /PlasmaShell activateLauncherMenu",
+    command: [
+      "sh",
+      "-c",
+      'id=$(qdbus6 org.kde.plasmashell /PlasmaShell evaluateScript "$1" | head -n 1) && [ -n "$id" ] && qdbus6 org.kde.kglobalaccel /component/plasmashell org.kde.kglobalaccel.Component.invokeShortcut "activate widget $id"',
+      "toggle-launcher",
+      KICKOFF_ID_SCRIPT,
+    ],
   });
 }
 COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
@@ -1092,7 +1114,8 @@ function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
 // Stack order of plasmashell's windows: the desktop under everything, the
 // rest above every normal window (even a fullscreen one, as in KWin).
 const PLASMA_Z_INDEX: Record<PlasmaSurfaceRole, number> = {
-  normal: 0,
+  // A positioned "normal" window: the taskbar's grouped-window list.
+  normal: 2_100_000_000,
   desktop: -2_100_000_000,
   panel: 2_050_000_000,
   appletpopup: 2_100_000_000,
@@ -1102,7 +1125,14 @@ const PLASMA_Z_INDEX: Record<PlasmaSurfaceRole, number> = {
   tooltip: 2_130_000_000,
 };
 
-/** A plasmashell window: bare client surface where plasmashell asked. */
+// KWin draws a soft shadow under plasmashell's popups (plasmashell asks for
+// it through org_kde_kwin_shadow, which ShojiWM does not speak). This is a
+// close copy: Breeze's popup corner radius and a dark, wide, soft shadow.
+// The panel and the desktop get none, as in KWin.
+const PLASMA_POPUP_RADIUS = 8;
+const PLASMA_POPUP_SHADOW = [{ y: 6, blur: 28, spread: 0, color: "#000000a0" }];
+
+/** A plasmashell window: the client surface where plasmashell asked. */
 function plasmaShellComposition(
   window: WaylandWindow,
   plasma: PlasmaSurfaceState,
@@ -1114,16 +1144,34 @@ function plasmaShellComposition(
     width: window.position.width,
     height: window.position.height,
   }));
+  const zIndex = PLASMA_Z_INDEX[plasma.role];
+  if (plasma.role === "panel" || plasma.role === "desktop") {
+    return (
+      <ManagedWindow rect={rect} zIndex={zIndex}>
+        <ClientWindow />
+      </ManagedWindow>
+    );
+  }
   return (
-    <ManagedWindow rect={rect} zIndex={PLASMA_Z_INDEX[plasma.role]}>
-      <ClientWindow />
+    <ManagedWindow rect={rect} zIndex={zIndex}>
+      <WindowBorder
+        style={{
+          border: { px: 0, color: "#00000000" },
+          borderRadius: PLASMA_POPUP_RADIUS,
+          boxShadow: PLASMA_POPUP_SHADOW,
+          background: "#00000000",
+          padding: 0,
+        }}
+      >
+        <ClientWindow />
+      </WindowBorder>
     </ManagedWindow>
   );
 }
 
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const plasma = window.plasma();
-  if (plasma && plasma.role !== "normal") {
+  if (plasma && isPlasmaShellSurface(plasma)) {
     return plasmaShellComposition(window, plasma);
   }
 
