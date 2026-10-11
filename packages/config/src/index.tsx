@@ -183,21 +183,40 @@ const WINDOW_VIEW = createWindowView({
       : windowZIndex(window),
   titlebarButtonAt: (window, x, y) => titlebarButtonAt(window, x, y),
 });
+// Super+Tab: every window of every app side by side, in rows and columns.
+const WINDOW_GRID = createWindowGrid({
+  windowManager: HYBRID_WINDOW_MANAGER,
+  stackOrder: (window) =>
+    window.state[WINDOW_STATE_FULLSCREEN]()
+      ? FULLSCREEN_Z_INDEX
+      : windowZIndex(window),
+});
 COMPOSITOR.rendering.composition = (output) =>
   WINDOW_SWITCHER.compose(output) ??
+  WINDOW_GRID.compose(output) ??
   WINDOW_VIEW.compose(output) ?? <DefaultComposition />;
 
-/** What both switchers share with the rest of the config. */
+/** What the switchers share with the rest of the config. */
 const SWITCHERS = {
   blurSuspended: computed(
-    () => WINDOW_SWITCHER.blurSuspended() || WINDOW_VIEW.blurSuspended(),
+    () =>
+      WINDOW_SWITCHER.blurSuspended() ||
+      WINDOW_GRID.blurSuspended() ||
+      WINDOW_VIEW.blurSuspended(),
   ),
   backdropStrength: computed(() =>
-    Math.min(WINDOW_SWITCHER.backdropStrength(), WINDOW_VIEW.backdropStrength()),
+    Math.min(
+      WINDOW_SWITCHER.backdropStrength(),
+      WINDOW_GRID.backdropStrength(),
+      WINDOW_VIEW.backdropStrength(),
+    ),
   ),
-  // Both glow the same white around the selected window.
+  // All glow the same white around the selected window.
   selectedWindowId: computed(
-    () => WINDOW_SWITCHER.selectedWindowId() ?? WINDOW_VIEW.selectedWindowId(),
+    () =>
+      WINDOW_SWITCHER.selectedWindowId() ??
+      WINDOW_GRID.selectedWindowId() ??
+      WINDOW_VIEW.selectedWindowId(),
   ),
 };
 
@@ -794,7 +813,7 @@ COMPOSITOR.key.bind("clipboard", "Super+V", () => {
 COMPOSITOR.key.bind("settings", "Super+I", () => {
   COMPOSITOR.process.spawn({ command: "systemsettings" });
 });
-// Alt+Tab opens ShojiWM's window switcher, the same one as Super+Tab.
+// Alt+Tab opens the window switcher (Coverflow). Super+Tab opens the grid.
 COMPOSITOR.key.bind("alt-tab-switcher", "Alt+Tab", () => {
   WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
 });
@@ -861,8 +880,8 @@ COMPOSITOR.key.bind("toggle-tiling-mode", "Super+S", () => {
   HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("window-switcher", "Super+Tab", () => {
-  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+COMPOSITOR.key.bind("window-grid", "Super+Tab", () => {
+  WINDOW_GRID.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
 });
 COMPOSITOR.key.bind("close-focused-window", "Super+Q", () => {
   HYBRID_WINDOW_MANAGER.closeFocusedWindow();
