@@ -94,8 +94,10 @@ pub mod prelude {
             set_timeout,
         },
         compositor::{
-            Command, DisableEvent, EnableEvent, FramePacing, InputChangeEvent, OutputChangeEvent,
-            OutputConfig, OutputContext, OutputPower, OutputPowerOptions, Sender, SurfaceRef,
+            Command, DisableEvent, EnableEvent, FramePacing, HotCorner, HotCornerOptions,
+            InputChangeEvent, OutputChangeEvent, OutputConfig, OutputContext, OutputPower,
+            OutputPowerOptions, PointerRegion, PointerRegionAnchor, PointerRegionEventSnapshot,
+            PointerRegionOffset, PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,
         },
         effect::{
             Effect, Include, Invalidate, PaintShader, ShaderStage, Source, Stage, StateTexture,
@@ -144,7 +146,8 @@ pub use shojiwm_lib::ssd;
 /// Config types the compositor consumes (outputs, input, processes, ...).
 pub use shojiwm_lib::{
     config, cursor, frame_pacing, keyboard_layout, runtime_debug, runtime_input,
-    runtime_input_grab, runtime_key_binding, runtime_process, runtime_workspace,
+    runtime_input_grab, runtime_key_binding, runtime_pointer_region, runtime_process,
+    runtime_workspace,
 };
 
 /// [`RuntimeLauncher`] for a config compiled into the binary.

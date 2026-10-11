@@ -125,6 +125,9 @@ pub enum InputRequest<'a> {
     KeyBinding { binding_id: &'a str },
     PointerMove(&'a PointerMoveEventSnapshot),
     GestureSwipe(&'a GestureSwipeEventSnapshot),
+    /// The pointer entered, left or pressed against a `defineRegion` region.
+    /// Answered like a pointer hook.
+    PointerRegion(&'a crate::runtime_pointer_region::PointerRegionEventSnapshot),
     /// Input taken by the config's input grab `grab_id`. Answered like a
     /// pointer hook; a runtime that does not grab answers `Unhandled`.
     InputGrab {

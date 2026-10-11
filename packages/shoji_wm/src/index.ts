@@ -176,6 +176,10 @@ import type {
   KeyBindingOptions,
   KeyBindingEventPhase,
   PointerController,
+  PointerRegionAnchor,
+  PointerRegionOptions,
+  HotCorner,
+  HotCornerOptions,
   PreloadController,
   RuntimeController,
   DebugController,
@@ -184,6 +188,7 @@ import type {
   SSDRebuildSuppressionViolationPolicy,
 } from "./types";
 import { createCompositorEventController } from "./events";
+import { installPointerRegionEventSource } from "./pointer";
 import { suppressSSDRebuild, withSSDRebuildSuppressed } from "./runtime-hooks";
 import {
   KEY_BINDING_CONTROLLER,
@@ -382,6 +387,9 @@ export {
   type KeyboardLayoutChangeListener,
   type PointerMoveEvent,
   type PointerMovePoint,
+  type PointerRegionEvent,
+  type PointerRegionListener,
+  type PointerRegionPhase,
   type RuntimeEventConfig,
   type WindowMoveEvent,
   type WindowMoveListener,
@@ -740,6 +748,10 @@ export type {
   KeyBindingOptions,
   KeyBindingEventPhase,
   PointerController,
+  PointerRegionAnchor,
+  PointerRegionOptions,
+  HotCorner,
+  HotCornerOptions,
   InputAccelProfile,
   InputClickMethod,
   InputConfigDraft,
@@ -1140,6 +1152,10 @@ installOutputChangeEmitter((event) => {
 installInputDeviceChangeEmitter((event) => {
   COMPOSITOR.event.emitInputDeviceChange(event);
 });
+
+installPointerRegionEventSource((listener) =>
+  COMPOSITOR.event.onPointerRegion(listener),
+);
 
 export function windowAction(action: WindowActionType): WindowActionDescriptor {
   return {

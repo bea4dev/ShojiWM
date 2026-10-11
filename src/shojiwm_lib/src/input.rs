@@ -428,6 +428,66 @@ impl ShojiWM {
         }
     }
 
+    /// Report `defineRegion` transitions caused by this motion. `push` is the
+    /// part of the motion the output layout clamp discarded.
+    fn update_pointer_regions(
+        &mut self,
+        pos: Point<f64, Logical>,
+        push: Point<f64, Logical>,
+        time_msec: u32,
+    ) {
+        use crate::runtime_pointer_region::{
+            PointerRegionEventSnapshot, PointerRegionMotion, PointerRegionOutput,
+        };
+
+        if self.pointer_regions.is_empty() {
+            return;
+        }
+        let outputs: Vec<PointerRegionOutput> = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                Some(PointerRegionOutput {
+                    name: output.name(),
+                    geometry: self.space.output_geometry(output)?,
+                    fullscreen: self.output_has_topmost_fullscreen_window(output),
+                })
+            })
+            .collect();
+        let button_held = self
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed());
+        let transitions = self.pointer_regions.update(
+            &outputs,
+            PointerRegionMotion {
+                position: pos,
+                push,
+                button_held,
+            },
+        );
+        if transitions.is_empty() {
+            return;
+        }
+        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+        for transition in transitions {
+            let event = PointerRegionEventSnapshot {
+                id: transition.id,
+                phase: transition.phase,
+                output_name: transition.output_name,
+                position: PointerMovePointSnapshot { x: pos.x, y: pos.y },
+                modifiers: self.input_grab_modifiers(),
+                timestamp: u64::from(time_msec),
+            };
+            match self.config_runtime.pointer_region(&event, now_ms) {
+                Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
+                Err(error) => {
+                    tracing::warn!(?error, region = event.id, "runtime pointer region event failed");
+                }
+            }
+        }
+    }
+
     fn pointer_hit_target_snapshot(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -1114,6 +1174,11 @@ impl ShojiWM {
                 self.activate_pointer_constraint_at(pos);
 
                 self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                self.update_pointer_regions(
+                    pos,
+                    previous_pos + motion_delta - pos,
+                    event.time_msec(),
+                );
                 self.update_decoration_hover_target(pos);
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);
@@ -1169,6 +1234,8 @@ impl ShojiWM {
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
                 self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                // An absolute device cannot push past the layout edge.
+                self.update_pointer_regions(pos, Point::default(), event.time_msec());
                 self.update_decoration_hover_target(pos);
                 if !pointer.is_grabbed() {
                     self.update_decoration_cursor_icon(pos);

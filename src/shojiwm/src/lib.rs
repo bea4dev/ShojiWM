@@ -163,6 +163,9 @@ impl ConfigRuntime for TypeScriptRuntime {
                 InputRequest::GestureSwipe(event) => {
                     RuntimeReply::PointerHook(evaluator.gesture_swipe(event, now)?)
                 }
+                InputRequest::PointerRegion(event) => {
+                    RuntimeReply::PointerHook(evaluator.pointer_region(event, now)?)
+                }
                 InputRequest::InputGrab { grab_id, event } => {
                     RuntimeReply::PointerHook(evaluator.input_grab_event(grab_id, event, now)?)
                 }
@@ -328,6 +331,112 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
             key_binding_ids(&host),
             Some(vec!["first".to_string(), "second".to_string()])
         );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// `defineRegion` / `bindHotCorner` reach the compositor as pointer config,
+    /// and region events reach `onPointerRegion` and the hot corner handler.
+    #[test]
+    fn typescript_runtime_delivers_pointer_regions() {
+        use shojiwm_lib::runtime_pointer_region::{
+            PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionPhase,
+        };
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-pointer-region-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.pointer.defineRegion("strip", {
+  anchor: "top",
+  size: { width: 10, height: 2 },
+  pressure: 5,
+});
+COMPOSITOR.pointer.bindHotCorner("corner", "bottom-right", (event) => {
+  COMPOSITOR.key.bind(`corner-${event.phase}`, "Super+F1", () => {});
+});
+COMPOSITOR.event.onPointerRegion((event) => {
+  if (event.id === "strip") {
+    COMPOSITOR.key.bind(`strip-${event.phase}-${event.outputName}`, "Super+F2", () => {});
+  }
+});
+COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
+"#,
+        )
+        .expect("test config should be written");
+        let args = CommonArgs::parse(
+            &[
+                "--dev".to_string(),
+                "--config".to_string(),
+                config_path.display().to_string(),
+                "--runtime-dir".to_string(),
+                repository_root.display().to_string(),
+            ],
+            TypeScriptLauncher.extra_args(),
+        );
+        let host = RuntimeHost::detached();
+        let mut runtime =
+            shojiwm_lib::runtime_api::RuntimeBoot::new(Box::new(TypeScriptLauncher), &args)
+                .launch(host.clone());
+        runtime.preload().expect("config should preload");
+        runtime.enable().expect("config should enable");
+
+        let regions = std::iter::from_fn(|| host.pop())
+            .filter_map(|message| match message {
+                HostMessage::Pointer(update) => Some(update.regions),
+                _ => None,
+            })
+            .last()
+            .expect("pointer config should be published");
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].id, "strip");
+        assert_eq!(regions[0].anchor, PointerRegionAnchor::Top);
+        assert_eq!(regions[0].pressure, Some(5.0));
+        assert!(!regions[0].outer_edges_only);
+        assert_eq!(regions[1].id, "hot-corner:corner");
+        assert_eq!(regions[1].anchor, PointerRegionAnchor::BottomRight);
+        assert!(regions[1].outer_edges_only);
+        assert!(regions[1].ignore_when_fullscreen);
+        assert_eq!(regions[1].leave_margin, 8.0);
+
+        let event = |id: &str, phase| PointerRegionEventSnapshot {
+            id: id.into(),
+            phase,
+            output_name: "eDP-1".into(),
+            position: shojiwm_lib::ssd::PointerMovePointSnapshot { x: 0.0, y: 0.0 },
+            modifiers: shojiwm_lib::ssd::PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            timestamp: 0,
+        };
+        assert!(
+            runtime
+                .pointer_region(&event("strip", PointerRegionPhase::Pressure), 1)
+                .expect("region event should be delivered")
+                .invoked
+        );
+        assert!(
+            runtime
+                .pointer_region(&event("hot-corner:corner", PointerRegionPhase::Enter), 2)
+                .expect("hot corner event should be delivered")
+                .invoked
+        );
+        let ids = key_binding_ids(&host).expect("handlers should bind keys");
+        assert!(ids.contains(&"strip-pressure-eDP-1".to_string()), "{ids:?}");
+        assert!(ids.contains(&"corner-enter".to_string()), "{ids:?}");
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }

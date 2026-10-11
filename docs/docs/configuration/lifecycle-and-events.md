@@ -96,6 +96,7 @@ window manager decides how to honor them.
 | --- | --- |
 | `onPointerMove(event)` / `onPointerMoveAsync(event)` | The pointer moves |
 | `onGestureSwipe(event)` / `onGestureSwipeAsync(event)` | A multi-finger touchpad swipe progresses |
+| `onPointerRegion(event)` | The pointer enters, leaves or pushes against a [pointer region](./keybindings-and-pointer.md#pointer-regions) |
 | `onOutputChange(event)` | An output is added/removed/reconfigured |
 | `onInputDeviceChange(...)` | The set of input devices changes (hotplug) |
 | `onCreateLayer(...)` / `onUpdateLayer(...)` / `onDestroyLayer(...)` | A layer-shell surface (bar/dock/wallpaper) is mapped/updated/unmapped |

@@ -361,6 +361,7 @@ import {
   type RuntimeWindowFullscreenRequestEvent,
   type RuntimeWindowActivateRequestEvent,
   type PointerMoveEvent,
+  type PointerRegionEvent,
   type GestureSwipeEvent,
   dispatchInputGrabEvent,
   type RuntimeEventConfig,
@@ -663,6 +664,15 @@ interface GestureSwipeRequest {
   inputState?: Record<string, InputDeviceInfo>;
 }
 
+interface PointerRegionRequest {
+  requestId: number;
+  kind: "pointerRegion";
+  event: PointerRegionEvent;
+  nowMs: number;
+  displayState?: Record<string, OutputStateSnapshot>;
+  inputState?: Record<string, InputDeviceInfo>;
+}
+
 interface InputGrabRequest {
   requestId: number;
   kind: "inputGrab";
@@ -746,6 +756,7 @@ type RuntimeRequest =
   | WindowActivateRequest
   | PointerMoveRequest
   | GestureSwipeRequest
+  | PointerRegionRequest
   | InputGrabRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest
@@ -1050,6 +1061,7 @@ interface NativeInteractionSuccess {
     | "pointerMoveAsync"
     | "gestureSwipe"
     | "gestureSwipeAsync"
+    | "pointerRegion"
     | "inputGrab"
     | "windowMove"
     | "windowResize";
@@ -1637,6 +1649,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           case "lifecycleDisable":
           case "windowDecorationPolicy":
           case "workspaceActivate":
+          case "pointerRegion":
           case "inputGrab":
             break;
         }
@@ -2306,6 +2319,30 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               request.kind === "pointerMove"
                 ? invokePointerMove(events, request.event)
                 : await invokePointerMoveAsync(events, request.event);
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const inputConfig = pendingInputConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeInteractionEventResponse(embeddedBridge, {
+              requestId: request.requestId,
+              ok: true,
+              kind: request.kind,
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              inputConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "pointerRegion") {
+            const result = interactionMutationResult(
+              events.emitPointerRegion(request.event),
+            );
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
             const inputConfig = pendingInputConfigPayload();

@@ -1,10 +1,13 @@
 use smithay::input::keyboard::ModifiersState;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimePointerConfigUpdate {
     pub window_move_modifier: Option<String>,
     pub window_resize_modifier: Option<String>,
+    /// `COMPOSITOR.pointer.defineRegion`. The whole set, replacing the previous one.
+    #[serde(default)]
+    pub regions: Vec<crate::runtime_pointer_region::PointerRegionSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

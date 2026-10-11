@@ -212,6 +212,17 @@ pub enum NativeInteractionRequest {
         #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
         input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
+    PointerRegion {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: shojiwm_lib::runtime_pointer_region::PointerRegionEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
+    },
     InputGrab {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -422,6 +433,7 @@ pub enum NativeInteractionKind {
     PointerMoveAsync,
     GestureSwipe,
     GestureSwipeAsync,
+    PointerRegion,
     InputGrab,
     WindowMove,
     WindowResize,
@@ -434,6 +446,7 @@ impl NativeInteractionKind {
             Self::PointerMoveAsync => "pointerMoveAsync",
             Self::GestureSwipe => "gestureSwipe",
             Self::GestureSwipeAsync => "gestureSwipeAsync",
+            Self::PointerRegion => "pointerRegion",
             Self::InputGrab => "inputGrab",
             Self::WindowMove => "windowMove",
             Self::WindowResize => "windowResize",
@@ -2287,6 +2300,7 @@ fn native_interaction_kind(value: &str) -> Result<NativeInteractionKind, std::io
         "pointerMoveAsync" => Ok(NativeInteractionKind::PointerMoveAsync),
         "gestureSwipe" => Ok(NativeInteractionKind::GestureSwipe),
         "gestureSwipeAsync" => Ok(NativeInteractionKind::GestureSwipeAsync),
+        "pointerRegion" => Ok(NativeInteractionKind::PointerRegion),
         "inputGrab" => Ok(NativeInteractionKind::InputGrab),
         "windowMove" => Ok(NativeInteractionKind::WindowMove),
         "windowResize" => Ok(NativeInteractionKind::WindowResize),

@@ -76,6 +76,8 @@ pub(crate) struct Listeners {
     pub pointer_move_async: Vec<RefListener<PointerMoveEventSnapshot>>,
     pub gesture_swipe: Vec<RefListener<GestureSwipeEventSnapshot>>,
     pub gesture_swipe_async: Vec<RefListener<GestureSwipeEventSnapshot>>,
+    pub pointer_region:
+        Vec<RefListener<shojiwm_lib::runtime_pointer_region::PointerRegionEventSnapshot>>,
     pub create_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub update_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub destroy_layer: Vec<RefListener<WaylandLayerSnapshot>>,
@@ -123,6 +125,12 @@ pub(crate) struct Registry {
     pub key_handlers: HashMap<String, Rc<dyn Fn()>>,
     pub window_move_modifier: Option<String>,
     pub window_resize_modifier: Option<String>,
+    pub pointer_regions: Vec<shojiwm_lib::runtime_pointer_region::PointerRegionSpec>,
+    /// Handlers of `bind_hot_corner`, by region id.
+    pub region_handlers: HashMap<
+        String,
+        Rc<dyn Fn(&shojiwm_lib::runtime_pointer_region::PointerRegionEventSnapshot)>,
+    >,
     pub processes: Vec<RuntimeProcessEntry>,
     pub debug: RuntimeDebugConfigUpdate,
     pub env: BTreeMap<String, String>,
@@ -406,6 +414,7 @@ pub(crate) fn publish_pending() {
                 shojiwm_lib::runtime_pointer::RuntimePointerConfigUpdate {
                     window_move_modifier: registry.window_move_modifier.clone(),
                     window_resize_modifier: registry.window_resize_modifier.clone(),
+                    regions: registry.pointer_regions.clone(),
                 },
             ));
         }

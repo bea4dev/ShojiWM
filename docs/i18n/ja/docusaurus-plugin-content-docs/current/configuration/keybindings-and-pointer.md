@@ -90,6 +90,86 @@ COMPOSITOR.pointer.bindWindowMoveModifier('Super');
 [SSD コンポーネント](./components.md#windowborder) を参照してください。
 :::
 
+### ホットコーナー
+
+`bindHotCorner(id, corner, handler, options?)` は、ポインターが画面の角に届いたときに
+`handler` を実行します。角の判定はコンポジター側で行うため、それ以外の場所での
+ポインター移動にはコストがかかりません。
+
+```ts
+COMPOSITOR.pointer.bindHotCorner('overview', 'top-left', () => {
+  openWindowSwitcher();
+});
+```
+
+| オプション | 既定値 | 意味 |
+| --- | --- | --- |
+| `output` | 全出力 | この出力の角だけ |
+| `size` | `1` | 角の正方形の一辺（論理px） |
+| `delay` | `0` | 角にこの ms 留まってから `handler` を実行 |
+| `pressure` | — | 入ったときではなく、角へこの px 押し込んだときに実行 |
+| `leaveMargin` | `8` | この距離だけ離れるまで、角は再発火しません |
+| `ignoreWhenFullscreen` | `true` | 全画面ウィンドウを表示中の出力では無効 |
+| `ignoreWhileButtonHeld` | `true` | ドラッグ中は無効 |
+
+本当の角だけが対象です。辺の先に別のモニターが続いている場合、ポインターはそのまま
+隣へ移動するだけなので、その角は発火しません。同じ `id` で再登録すると置き換わり、
+戻り値の関数で解除できます。
+
+`pressure` は誤爆を防ぐための指定です。カーソルは画面の端で止まりますが、コンポジターには
+その後もマウスの動きが届いています。「角へさらに 100px 押し込む」は意図しないと起きない
+操作なので、通りがかりで発火しなくなります。
+
+```ts
+COMPOSITOR.pointer.bindHotCorner('overview', 'top-left', openOverview, {pressure: 100});
+```
+
+### ポインター領域
+
+ホットコーナーはポインター領域の上に作られています。ポインター領域は出力を基準に置く
+矩形で、ポインターの出入りを通知します。`defineRegion(id, options)` で定義し、
+`COMPOSITOR.event.onPointerRegion` でイベントを受け取ります。
+
+```ts
+// 各出力の上端中央にある 400 × 2 px の帯
+COMPOSITOR.pointer.defineRegion('top-strip', {
+  anchor: 'top',
+  size: {width: 400, height: 2},
+  outerEdgesOnly: true,
+});
+
+COMPOSITOR.event.onPointerRegion((event) => {
+  // { id, phase: "enter" | "leave" | "pressure", outputName, position, modifiers, timestamp }
+  if (event.id === 'top-strip' && event.phase === 'enter') {
+    showBar(event.outputName);
+  }
+});
+```
+
+| オプション | 既定値 | 意味 |
+| --- | --- | --- |
+| `size` | （必須） | `{width, height}`（論理px）。出力からはみ出た部分は切り捨て |
+| `anchor` | `"top-left"` | `"top-left"`, `"top"`, `"top-right"`, `"left"`, `"center"`, `"right"`, `"bottom-left"`, `"bottom"`, `"bottom-right"`。領域の同名の点を出力の同名の点に合わせます |
+| `offset` | `{x: 0, y: 0}` | 配置後の移動量（x は右、y は下が正） |
+| `output` | 全出力 | この出力だけ。省略時は出力ごとに1つずつ置かれます |
+| `outerEdgesOnly` | `false` | 領域が接する辺の先に別の出力が続く場合、その出力では無効 |
+| `leaveMargin` | `0` | 入った後はこの px だけ領域を広げ、そこを出るまで `leave` にしない |
+| `pressure` | — | 領域内で画面の端へこの px 押し込んだら `pressure` を通知（滞在中1回） |
+| `ignoreWhenFullscreen` | `false` | 全画面ウィンドウを表示中の出力では無効 |
+| `ignoreWhileButtonHeld` | `false` | ポインターのボタンを押している間は無効 |
+
+- **配置は出力に追従します。** 出力を基準に指定するので、モニターの抜き差しや
+  解像度・スケールの変更があっても定義し直す必要はありません。
+- **イベントは順番どおりに届きます。** 1回の移動で別の領域へ移った場合、`leave` が
+  すべて先に、`enter` が後に届きます。ある出力の領域から別の出力の同じ領域へ直接
+  移ったときも、それぞれの `outputName` を持つ `leave` と `enter` になります。
+- **判定はポインターが動いたときに行います。** ポインターが止まったまま全画面に
+  なっても、次に動くまでは何も通知されません。
+- **定義し直しても状態は保たれます。** 既存の id で `defineRegion` すると、新たな
+  `enter` なしで領域が置き換わります。`removeRegion(id)` は `leave` なしで削除します。
+- `onPointerRegion` はキーバインドと同じく同期実行で、ハンドラ内のウィンドウ操作は
+  すぐに反映されます。短い処理に留めてください。
+
 ## 入力グラブ
 
 `COMPOSITOR.input.grab(handlers)` は、返されたグラブを解放するまで入力をすべて

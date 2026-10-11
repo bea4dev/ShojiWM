@@ -58,6 +58,7 @@ pub mod runtime_input;
 pub mod runtime_input_grab;
 pub mod runtime_key_binding;
 pub mod runtime_pointer;
+pub mod runtime_pointer_region;
 pub mod runtime_process;
 pub mod runtime_workspace;
 pub mod ssd;

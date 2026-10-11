@@ -459,6 +459,7 @@ pub struct ShojiWM {
     pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
+    pub pointer_regions: crate::runtime_pointer_region::PointerRegionTracker,
     pub runtime_window_resize_modifier: Option<RuntimePointerModifier>,
     pub runtime_input_config: RuntimeInputConfig,
     pub runtime_applied_xkb_config: Option<crate::runtime_input::RuntimeKeyboardInputConfig>,
@@ -1813,6 +1814,7 @@ impl ShojiWM {
             runtime_key_binding_entries: Default::default(),
             runtime_key_bindings: Vec::new(),
             runtime_window_move_modifier: None,
+            pointer_regions: Default::default(),
             runtime_window_resize_modifier: None,
             runtime_input_config: Default::default(),
             runtime_applied_xkb_config: None,
@@ -3799,6 +3801,7 @@ impl ShojiWM {
     }
 
     pub fn apply_runtime_pointer_config_update(&mut self, update: RuntimePointerConfigUpdate) {
+        self.pointer_regions.set_regions(update.regions);
         self.runtime_window_move_modifier = update.window_move_modifier.and_then(|shortcut| {
             match parse_runtime_pointer_modifier(&shortcut) {
                 Ok(modifier) => Some(modifier),
@@ -4282,7 +4285,7 @@ impl ShojiWM {
     /// the Top layer (only Overlay stays in front of it). `with_committed_state`
     /// (client-acked) means this flips on only once the client has actually
     /// committed its fullscreen buffer, matching what is on screen.
-    fn output_has_topmost_fullscreen_window(&self, output: &Output) -> bool {
+    pub(crate) fn output_has_topmost_fullscreen_window(&self, output: &Output) -> bool {
         self.windows_for_output_top_to_bottom(output)
             .first()
             .and_then(|window| window.toplevel())

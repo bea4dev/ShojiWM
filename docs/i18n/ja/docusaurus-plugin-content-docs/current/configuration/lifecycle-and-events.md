@@ -95,6 +95,7 @@ COMPOSITOR.event.onFocus((window, focused) => {
 | --- | --- |
 | `onPointerMove(event)` / `onPointerMoveAsync(event)` | ポインターが移動したとき |
 | `onGestureSwipe(event)` / `onGestureSwipeAsync(event)` | マルチフィンガースワイプが進行したとき |
+| `onPointerRegion(event)` | [ポインター領域](./keybindings-and-pointer.md#ポインター領域)にポインターが入った・出た・押し込んだとき |
 | `onOutputChange(event)` | 出力が追加／削除／再構成されたとき |
 | `onInputDeviceChange(...)` | 入力デバイスのセットが変わったとき（ホットプラグ） |
 | `onCreateLayer(...)` / `onUpdateLayer(...)` / `onDestroyLayer(...)` | レイヤーシェルサーフェス（バー／ドック／壁紙）がマップ／更新／アンマップされたとき |

@@ -1025,6 +1025,17 @@ impl ConfigRuntime for ReactiveRuntime {
                         let invoked = batch(|| emit(|listeners| listeners.gesture_swipe.clone(), |listener| listener(event)));
                         RuntimeReply::PointerHook(pointer_hook(invoked))
                     }
+                    InputRequest::PointerRegion(event) => {
+                        let handler = with_registry(|registry| registry.region_handlers.get(&event.id).cloned());
+                        let invoked = batch(|| {
+                            let listened = emit(|listeners| listeners.pointer_region.clone(), |listener| listener(event));
+                            if let Some(handler) = &handler {
+                                handler(event);
+                            }
+                            listened || handler.is_some()
+                        });
+                        RuntimeReply::PointerHook(pointer_hook(invoked))
+                    }
                     InputRequest::InputGrab { grab_id, event } => {
                         let invoked = batch(|| crate::input_grab::dispatch(grab_id, event));
                         RuntimeReply::PointerHook(pointer_hook(invoked))

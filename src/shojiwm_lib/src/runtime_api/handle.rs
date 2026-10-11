@@ -435,6 +435,14 @@ impl RuntimeHandle {
         self.post(now_ms as f64, RuntimeEvent::GestureSwipe(event));
     }
 
+    pub fn pointer_region(
+        &mut self,
+        event: &crate::runtime_pointer_region::PointerRegionEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, RuntimeError> {
+        self.pointer_hook_reply("pointer region", now_ms, InputRequest::PointerRegion(event))
+    }
+
     pub fn input_grab_event(
         &mut self,
         grab_id: u64,

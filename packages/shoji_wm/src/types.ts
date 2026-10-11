@@ -1863,6 +1863,132 @@ export interface PointerController {
    * えーと、マウスの右クリック、ウィンドウのサイズ変更
    */
   bindWindowResizeModifier(modifier: string): void;
+
+  /**
+   * Define (or replace) the pointer region `id`: a rectangle placed on each
+   * output (or only `options.output`) by `anchor`, then moved by `offset`.
+   * The compositor hit-tests it on every pointer motion and reports only
+   * transitions through `COMPOSITOR.event.onPointerRegion`.
+   * ポインター領域 `id` を定義（同じ id なら置き換え）します。各出力（または
+   * `options.output` のみ）に `anchor` で配置し `offset` でずらした矩形です。
+   * 判定はポインター移動ごとにコンポジター側で行い、出入りだけが
+   * `COMPOSITOR.event.onPointerRegion` に届きます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.pointer.defineRegion("top-strip", {
+   *   anchor: "top",
+   *   size: { width: 400, height: 2 },
+   *   outerEdgesOnly: true,
+   * });
+   * ```
+   */
+  defineRegion(id: string, options: PointerRegionOptions): void;
+
+  /**
+   * Remove the pointer region `id` (no `leave` is reported).
+   * ポインター領域 `id` を削除します（`leave` は届きません）。
+   */
+  removeRegion(id: string): void;
+
+  /**
+   * A hot corner: `handler` runs when the pointer reaches `corner` (after
+   * `delay` ms there, or once pushed `pressure` px into it). Built on
+   * `defineRegion` with the region id `hot-corner:<id>`; binding the same
+   * `id` again replaces it. Returns a function that removes it.
+   * ホットコーナー: ポインターが `corner` に届いたとき（`delay` ms 留まった後、
+   * または `pressure` px 押し込んだとき）に `handler` を実行します。
+   * `defineRegion`（領域 id は `hot-corner:<id>`）の上に作られたラッパーで、
+   * 同じ `id` で再登録すると置き換わります。戻り値の関数で解除できます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.pointer.bindHotCorner("overview", "top-left", () => {
+   *   openWindowSwitcher();
+   * }, { delay: 150 });
+   * ```
+   */
+  bindHotCorner(
+    id: string,
+    corner: HotCorner,
+    handler: (event: import("./events").PointerRegionEvent) => void,
+    options?: HotCornerOptions,
+  ): () => void;
+}
+
+/**
+ * Where a pointer region sits on its output. The region's own point of the
+ * same name is placed on the output's: `"bottom-right"` puts the region's
+ * bottom-right corner on the output's bottom-right corner.
+ * 領域を出力のどこに置くか。領域の同名の点を出力の同名の点に合わせます
+ * （`"bottom-right"` なら領域の右下を出力の右下に）。
+ */
+export type PointerRegionAnchor =
+  | "top-left"
+  | "top"
+  | "top-right"
+  | "left"
+  | "center"
+  | "right"
+  | "bottom-left"
+  | "bottom"
+  | "bottom-right";
+
+export interface PointerRegionOptions {
+  /** Only this output. Default: a copy on every output. / 特定の出力のみ。省略時は全出力 */
+  output?: string;
+  /** Default `"top-left"`. */
+  anchor?: PointerRegionAnchor;
+  /**
+   * Moves the region after anchoring, in screen axes (x right, y down),
+   * logical px. 配置後の移動量（x は右、y は下が正、論理px）。
+   */
+  offset?: { x?: number; y?: number };
+  /** Logical px. The part outside the output is cut off. / 出力からはみ出た分は切り捨て */
+  size: { width: number; height: number };
+  /**
+   * Disable the region on an output where an edge it touches continues into
+   * another output (the pointer just passes through there). Default `false`.
+   * 領域が接する辺の先に別の出力が続く場合、その出力では無効にします
+   * （ポインターが通り抜けるだけなので）。既定 `false`。
+   */
+  outerEdgesOnly?: boolean;
+  /**
+   * Once inside, the region grows by this many px before the pointer counts
+   * as leaving, so jitter at its edge does not repeat `enter`. Default `0`.
+   * 入った後はこの px だけ領域を広げて判定し、縁での揺れで `enter` が
+   * 繰り返されないようにします。既定 `0`。
+   */
+  leaveMargin?: number;
+  /**
+   * Report a `pressure` event once the pointer, inside the region, has been
+   * pushed this many px against the edge of the output layout.
+   * 領域内で画面配置の端へこの px 押し込んだら `pressure` を1回通知します。
+   */
+  pressure?: number;
+  /** Inactive on an output showing a fullscreen window. Default `false`. / 全画面ウィンドウ表示中は無効 */
+  ignoreWhenFullscreen?: boolean;
+  /** Inactive while a pointer button is held (e.g. dragging). Default `false`. / ボタン押下中（ドラッグ中など）は無効 */
+  ignoreWhileButtonHeld?: boolean;
+}
+
+export type HotCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+export interface HotCornerOptions {
+  /** Only this output. Default: every output. / 特定の出力のみ。省略時は全出力 */
+  output?: string;
+  /** Side of the square corner region, logical px. Default `1`. / 角の正方形の一辺 */
+  size?: number;
+  /** Stay this many ms in the corner before `handler` runs. Default `0`. / 発火までの滞在時間 */
+  delay?: number;
+  /** Run on this much push into the corner instead of on entering it. / 入ったときではなく押し込み量で発火 */
+  pressure?: number;
+  /** Default `8`. See `PointerRegionOptions.leaveMargin`. */
+  leaveMargin?: number;
+  /** Default `true`. */
+  ignoreWhenFullscreen?: boolean;
+  /** Default `true`. */
+  ignoreWhileButtonHeld?: boolean;
 }
 
 export interface InputDeviceKindFlags {

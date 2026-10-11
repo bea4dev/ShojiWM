@@ -99,6 +99,90 @@ Interactive resize hit areas are configured per-window via the
 [SSD Components](./components.md#windowborder).
 :::
 
+### Hot corners
+
+`bindHotCorner(id, corner, handler, options?)` runs `handler` when the pointer
+reaches a corner of the screen. The compositor watches the corner itself, so
+moving the pointer anywhere else costs nothing.
+
+```ts
+COMPOSITOR.pointer.bindHotCorner('overview', 'top-left', () => {
+  openWindowSwitcher();
+});
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `output` | every output | Only this output's corner |
+| `size` | `1` | Side of the square corner region, logical px |
+| `delay` | `0` | Stay this many ms in the corner before `handler` runs |
+| `pressure` | — | Run once the pointer is pushed this many px into the corner instead of on entering it |
+| `leaveMargin` | `8` | The pointer has to move this far away before the corner can fire again |
+| `ignoreWhenFullscreen` | `true` | Inactive on an output showing a fullscreen window |
+| `ignoreWhileButtonHeld` | `true` | Inactive while dragging |
+
+Only real corners count: where another monitor continues past an edge, the
+pointer just crosses into it, so that corner never fires. Binding the same `id`
+again replaces the corner; the returned function removes it.
+
+`pressure` is the way to avoid triggering a corner by accident. The cursor stops
+at the edge of the screen, but the compositor still sees the mouse moving, so
+"keep pushing 100 px into the corner" is something you do on purpose:
+
+```ts
+COMPOSITOR.pointer.bindHotCorner('overview', 'top-left', openOverview, {pressure: 100});
+```
+
+### Pointer regions
+
+Hot corners are built on pointer regions: rectangles placed relative to an
+output that report the pointer entering and leaving them. Define one with
+`defineRegion(id, options)` and receive its events with
+`COMPOSITOR.event.onPointerRegion`.
+
+```ts
+// A 400 × 2 px strip at the top centre of every output
+COMPOSITOR.pointer.defineRegion('top-strip', {
+  anchor: 'top',
+  size: {width: 400, height: 2},
+  outerEdgesOnly: true,
+});
+
+COMPOSITOR.event.onPointerRegion((event) => {
+  // { id, phase: "enter" | "leave" | "pressure", outputName, position, modifiers, timestamp }
+  if (event.id === 'top-strip' && event.phase === 'enter') {
+    showBar(event.outputName);
+  }
+});
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `size` | (required) | `{width, height}` in logical px. The part outside the output is cut off. |
+| `anchor` | `"top-left"` | `"top-left"`, `"top"`, `"top-right"`, `"left"`, `"center"`, `"right"`, `"bottom-left"`, `"bottom"`, `"bottom-right"`. The region's point of that name is placed on the output's. |
+| `offset` | `{x: 0, y: 0}` | Moves the region after anchoring (x right, y down) |
+| `output` | every output | Only this output; otherwise each output gets its own copy |
+| `outerEdgesOnly` | `false` | Disable the region on an output where an edge it touches continues into another output |
+| `leaveMargin` | `0` | Once inside, the region grows by this many px before the pointer counts as leaving |
+| `pressure` | — | Report `pressure` once the pointer, inside the region, has been pushed this many px against the edge of the screen (once per visit) |
+| `ignoreWhenFullscreen` | `false` | Inactive on an output showing a fullscreen window |
+| `ignoreWhileButtonHeld` | `false` | Inactive while a pointer button is held |
+
+- **Placement follows the outputs.** Regions are given relative to an output,
+  so they stay in place across hotplug, resolution and scale changes without
+  being defined again.
+- **Events come in order.** A single motion can leave one region and enter
+  another; every `leave` is reported before any `enter`. Moving from one
+  output's copy of a region straight into another's is a `leave` followed by
+  an `enter`, each with its own `outputName`.
+- **Regions are checked when the pointer moves.** A window going fullscreen
+  under a still pointer reports nothing until the pointer moves again.
+- **Redefining keeps the state.** `defineRegion` with an existing id replaces
+  the region without a fresh `enter`. `removeRegion(id)` removes it silently
+  (no `leave`).
+- `onPointerRegion` runs synchronously, like key bindings: window actions in
+  the handler take effect right away. Keep it short.
+
 ## Input grab
 
 `COMPOSITOR.input.grab(handlers)` takes all input until the returned grab is
