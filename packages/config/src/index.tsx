@@ -342,17 +342,28 @@ COMPOSITOR.process.once("fcitx5", {
   runPolicy: "once-per-session",
 });
 
-// shoji-bar-3, the session's shell: bar, wallpaper, notification daemon and
-// tray host.
-//
-// The shader is compiled first. The built .qsb is not in the repository, and
-// without it the islands have no silhouette at all. The two are sequenced with
-// `;` rather than `&&` on purpose: if the build fails, starting anyway with a
-// previously built .qsb is far better than a session with no shell in it.
-COMPOSITOR.process.once("shell", {
-  command: "cd ~/.config/shoji-bar-3 && bash build.sh; exec quickshell --path .",
-  runPolicy: "once-per-session",
-});
+// The preview runs inside KDE, which sets KDE_FULL_SESSION. A real ShojiWM
+// login does not. Inside KDE, the KDE desktop already runs, so the preview
+// must not start a second one.
+const INSIDE_KDE =
+  (
+    globalThis as {
+      Deno?: { env: { get(key: string): string | undefined } };
+    }
+  ).Deno?.env.get("KDE_FULL_SESSION") === "true";
+
+if (!INSIDE_KDE) {
+  // The KDE desktop: your taskbar, start menu, icons, tray and wallpaper.
+  COMPOSITOR.process.service("plasmashell", {
+    command: ["plasmashell", "--no-respawn"],
+    restart: "on-exit",
+  });
+  // The KDE window that asks for your password when an app needs admin rights.
+  COMPOSITOR.process.service("polkit-agent", {
+    command: ["/usr/lib/polkit-kde-authentication-agent-1"],
+    restart: "on-exit",
+  });
+}
 // cliphist clipboard history watchers. Text and image need separate watchers;
 // run as services so they are restarted if they ever exit.
 COMPOSITOR.process.service("cliphist-text", {
@@ -364,18 +375,20 @@ COMPOSITOR.process.service("cliphist-image", {
   restart: "on-exit",
 });
 
-// A bright wallpaper, so the liquid glass has something to bend.
-// swaybg comes from ShojiWM's .localdeps folder until it is installed.
-COMPOSITOR.process.service("wallpaper", {
-  command: [
-    "/home/abhishek/Downloads/work/ShojiWM/.localdeps/usr/bin/swaybg",
-    "--mode",
-    "fill",
-    "--image",
-    "/usr/share/wallpapers/WhiteSur-light/contents/images/3840x2160.jpg",
-  ],
-  restart: "on-exit",
-});
+// The preview has no KDE desktop of its own, so it shows your KDE wallpaper
+// with swaybg (from ShojiWM's .localdeps folder).
+if (INSIDE_KDE) {
+  COMPOSITOR.process.service("wallpaper", {
+    command: [
+      "/home/abhishek/Downloads/work/ShojiWM/.localdeps/usr/bin/swaybg",
+      "--mode",
+      "fill",
+      "--image",
+      "/home/abhishek/Pictures/lionel-messi-barcelona-priceless_pxl1zxyenorn1eq99f1emz5iw.jpg",
+    ],
+    restart: "on-exit",
+  });
+}
 
 COMPOSITOR.key.bind("terminal", "Super+T", () => {
   COMPOSITOR.process.spawn({ command: ["konsole"] });
@@ -413,20 +426,10 @@ COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
   COMPOSITOR.process.spawn({ command: "playerctl previous" });
 });
 
-// shoji-bar-3's application launcher, on the monitor under the cursor.
-//
-// The bar answers on Quickshell's IPC socket, which is addressed by the config
-// it was started with rather than by a running instance id, so this works
-// whether the bar was started by hand or by a service.
-//
-//   quickshell -p ~/.config/shoji-bar-3 ipc show
-//
-// lists the rest of the target's functions (open / close / toggle, each also
-// in a `...On <screen>` form). An empty screen name would open it everywhere.
+// Your KDE start menu (Kickoff), like the Windows key on KDE.
 function toggleLauncher() {
-  const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   COMPOSITOR.process.spawn({
-    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher toggleOn "${monitor}"`,
+    command: "qdbus6 org.kde.plasmashell /PlasmaShell activateLauncherMenu",
   });
 }
 COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
@@ -435,14 +438,20 @@ COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
   on: "release",
   within: 300,
 });
-// The same launcher panel with its field pointed at the clipboard's history.
-function toggleClipboard() {
-  const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
+// The KDE clipboard history (Klipper), as on KDE.
+COMPOSITOR.key.bind("clipboard", "Super+V", () => {
   COMPOSITOR.process.spawn({
-    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher clipboardOn "${monitor}"`,
+    command: "qdbus6 org.kde.klipper /klipper showKlipperPopupMenu",
   });
-}
-COMPOSITOR.key.bind("clipboard", "Super+V", toggleClipboard);
+});
+// KDE System Settings: Wi-Fi, Bluetooth, sound, look and feel.
+COMPOSITOR.key.bind("settings", "Super+I", () => {
+  COMPOSITOR.process.spawn({ command: "systemsettings" });
+});
+// Alt+Tab opens ShojiWM's window switcher, the same one as Super+Tab.
+COMPOSITOR.key.bind("alt-tab-switcher", "Alt+Tab", () => {
+  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+});
 
 // Lock the session. No monitor argument: a lock covers every screen there is,
 // and the shell refuses to expose an unlock over the same socket.
@@ -533,49 +542,55 @@ COMPOSITOR.key.bind("workspace-next", "Super+Ctrl+Down", () => {
 
 // Alt copies of the main shortcuts for the preview inside KDE.
 // KDE takes every Super shortcut before the preview window sees it.
-COMPOSITOR.key.bind("preview-terminal", "Alt+T", () => {
+// They exist only inside KDE, so a real session keeps Alt for the apps.
+function bindPreviewKey(name: string, shortcut: string, handler: () => void) {
+  if (INSIDE_KDE) {
+    COMPOSITOR.key.bind(name, shortcut, handler);
+  }
+}
+bindPreviewKey("preview-terminal", "Alt+T", () => {
   COMPOSITOR.process.spawn({ command: ["konsole"] });
 });
-COMPOSITOR.key.bind("preview-toggle-tiling", "Alt+S", () => {
+bindPreviewKey("preview-toggle-tiling", "Alt+S", () => {
   HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("preview-window-switcher", "Alt+W", () => {
+bindPreviewKey("preview-window-switcher", "Alt+W", () => {
   WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
 });
-COMPOSITOR.key.bind("preview-close", "Alt+Q", () => {
+bindPreviewKey("preview-close", "Alt+Q", () => {
   HYBRID_WINDOW_MANAGER.closeFocusedWindow();
 });
-COMPOSITOR.key.bind("preview-maximize", "Alt+M", () => {
+bindPreviewKey("preview-maximize", "Alt+M", () => {
   HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
 });
-COMPOSITOR.key.bind("preview-focus-left", "Alt+Left", () => {
+bindPreviewKey("preview-focus-left", "Alt+Left", () => {
   HYBRID_WINDOW_MANAGER.focusTile(-1);
 });
-COMPOSITOR.key.bind("preview-focus-right", "Alt+Right", () => {
+bindPreviewKey("preview-focus-right", "Alt+Right", () => {
   HYBRID_WINDOW_MANAGER.focusTile(1);
 });
-COMPOSITOR.key.bind("preview-move-left", "Alt+Shift+Left", () => {
+bindPreviewKey("preview-move-left", "Alt+Shift+Left", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedTile(-1);
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("preview-move-right", "Alt+Shift+Right", () => {
+bindPreviewKey("preview-move-right", "Alt+Shift+Right", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("preview-stack-left", "Alt+Comma", () => {
+bindPreviewKey("preview-stack-left", "Alt+Comma", () => {
   HYBRID_WINDOW_MANAGER.stackFocusedIntoLeftColumn();
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("preview-unstack", "Alt+Period", () => {
+bindPreviewKey("preview-unstack", "Alt+Period", () => {
   HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
   scheduleWorkspaceBroadcast();
 });
 // Alt+Up and Alt+Down switch workspaces, so column focus takes Shift.
-COMPOSITOR.key.bind("preview-focus-up", "Alt+Shift+Up", () => {
+bindPreviewKey("preview-focus-up", "Alt+Shift+Up", () => {
   HYBRID_WINDOW_MANAGER.focusInColumn(-1);
 });
-COMPOSITOR.key.bind("preview-focus-down", "Alt+Shift+Down", () => {
+bindPreviewKey("preview-focus-down", "Alt+Shift+Down", () => {
   HYBRID_WINDOW_MANAGER.focusInColumn(1);
 });
 // Mouse wheel moves along the row of tiles. Super for the real session,
@@ -586,17 +601,17 @@ COMPOSITOR.key.bind("tile-scroll-left", "Super+WheelScrollUp", () => {
 COMPOSITOR.key.bind("tile-scroll-right", "Super+WheelScrollDown", () => {
   HYBRID_WINDOW_MANAGER.focusTile(1);
 });
-COMPOSITOR.key.bind("preview-scroll-left", "Alt+WheelScrollUp", () => {
+bindPreviewKey("preview-scroll-left", "Alt+WheelScrollUp", () => {
   HYBRID_WINDOW_MANAGER.focusTile(-1);
 });
-COMPOSITOR.key.bind("preview-scroll-right", "Alt+WheelScrollDown", () => {
+bindPreviewKey("preview-scroll-right", "Alt+WheelScrollDown", () => {
   HYBRID_WINDOW_MANAGER.focusTile(1);
 });
-COMPOSITOR.key.bind("preview-workspace-prev", "Alt+Up", () => {
+bindPreviewKey("preview-workspace-prev", "Alt+Up", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
   scheduleWorkspaceBroadcast();
 });
-COMPOSITOR.key.bind("preview-workspace-next", "Alt+Down", () => {
+bindPreviewKey("preview-workspace-next", "Alt+Down", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(1);
   scheduleWorkspaceBroadcast();
 });
