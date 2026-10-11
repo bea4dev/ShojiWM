@@ -30,11 +30,20 @@ import type {
 
 const GRID = 4;
 const COUNT = GRID * GRID;
-// KDE defaults (WobblynessLevel 0, "Auto"): parameter set 0.
-const STIFFNESS = 0.15;
-/** Speed kept after each step. Lower stops the wobble sooner. */
-const DRAG = 0.8;
-const MOVE_FACTOR = 0.1;
+/**
+ * KDE's "Wobbliness" slider, 0 (stiff, KDE default) to 4 (very wobbly).
+ * Level 3 and 4 stop with a small visible jump.
+ */
+const WOBBLINESS = 2;
+// KWin's parameter sets: stiffness, drag (speed kept after each step), move factor.
+const LEVELS = [
+  [0.15, 0.8, 0.1],
+  [0.1, 0.85, 0.1],
+  [0.06, 0.9, 0.1],
+  [0.03, 0.92, 0.2],
+  [0.01, 0.97, 0.25],
+];
+const [STIFFNESS, DRAG, MOVE_FACTOR] = LEVELS[WOBBLINESS];
 const MIN_VELOCITY = 0;
 const MAX_VELOCITY = 1000;
 const STOP_VELOCITY = 0.5;
