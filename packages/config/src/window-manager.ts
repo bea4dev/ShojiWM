@@ -3484,6 +3484,9 @@ export class Workspace {
   ) => ManagedWindowRect;
   private readonly activeWorkspaceIndex: (monitor: string) => number;
   private readonly tileWidthByWindowId = new Map<string, number>();
+  // Tiles the user resized by hand. Only these keep their own width;
+  // every other tile gets the even split from defaultTileWidth.
+  private readonly userSizedTileIds = new Set<string>();
   private readonly restoredWindowStateById = new Map<
     string,
     WorkspaceWindowSnapshot
@@ -3699,6 +3702,7 @@ export class Workspace {
       const tileIndex = this.tileIndexOf(window.id);
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
+      this.userSizedTileIds.delete(window.id);
       this.initialTileStateByWindowId.delete(window.id);
       this.tileReorderTokenByWindowId.delete(window.id);
       window.state[WINDOW_STATE_TILE_REORDERING].set(false);
@@ -4287,6 +4291,7 @@ export class Workspace {
       Math.max(minWidth, maxWidth),
     );
     this.tileWidthByWindowId.set(event.window.id, width);
+    this.userSizedTileIds.add(event.window.id);
     this.scrollToWindow(event.window);
     this.applyLayout();
   }
@@ -4895,6 +4900,7 @@ export class Workspace {
         restoredInitialActiveWindowId = initialTileState.activeWindowId;
       }
       this.tileWidthByWindowId.delete(window.id);
+      this.userSizedTileIds.delete(window.id);
       stopRectAnimation(window, WINDOW_STATE_RECT);
       // Removing this tile can clamp scrollOffset. Defer the floating content
       // coordinate until applyLayout has established that final offset.
@@ -4951,6 +4957,7 @@ export class Workspace {
     this.activeWindowId = snapshot.activeWindowId;
     this.scrollOffset = snapshot.scrollOffset;
     this.tileWidthByWindowId.clear();
+    this.userSizedTileIds.clear();
     this.restoredWindowStateById.clear();
     for (const window of snapshot.windows) {
       if (window.tileWidth !== undefined) {
@@ -5419,9 +5426,10 @@ export class Workspace {
       return read(this.maximizedRootRect(window).width);
     }
 
-    const width =
-      this.tileWidthByWindowId.get(window.id) ??
-      this.defaultTileWidth(viewportRect);
+    const userWidth = this.userSizedTileIds.has(window.id)
+      ? this.tileWidthByWindowId.get(window.id)
+      : undefined;
+    const width = userWidth ?? this.defaultTileWidth(viewportRect);
     return clamp(
       width,
       this.minTileWidth(window, viewportRect),
