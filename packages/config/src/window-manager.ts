@@ -1621,6 +1621,35 @@ export class HybridWindowManager {
     });
   }
 
+  /** Move the focused tile to the bottom of the column on its left. */
+  public stackFocusedIntoLeftColumn() {
+    this.runOnTiledWorkspace((workspace) =>
+      workspace.stackFocusedIntoLeftColumn(),
+    );
+  }
+
+  /** Pop the focused tile out into its own column after its current one. */
+  public unstackFocusedWindow() {
+    this.runOnTiledWorkspace((workspace) => workspace.unstackFocusedWindow());
+  }
+
+  /** Move focus up (-1) or down (1) inside the focused column. */
+  public focusInColumn(direction: -1 | 1) {
+    this.runOnTiledWorkspace((workspace) =>
+      workspace.focusInColumn(direction),
+    );
+  }
+
+  private runOnTiledWorkspace(action: (workspace: Workspace) => boolean) {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const workspace = this.getCurrentWorkspace();
+      if (!workspace?.isTiled || !action(workspace)) {
+        return;
+      }
+      this.applyWorkspaceStackPolicy(workspace);
+    });
+  }
+
   public moveFocusedWindowToWorkspace(direction: -1 | 1) {
     withManagedWindowOnlySSDRebuildSuppressed(() => {
       this.syncWorkspaces();
@@ -3487,6 +3516,9 @@ export class Workspace {
   // Tiles the user resized by hand. Only these keep their own width;
   // every other tile gets the even split from defaultTileWidth.
   private readonly userSizedTileIds = new Set<string>();
+  // Tiles stacked under the tile before them: they share that tile's column
+  // and split its height. A tile not in this set starts a new column.
+  private readonly stackedWindowIds = new Set<string>();
   private readonly restoredWindowStateById = new Map<
     string,
     WorkspaceWindowSnapshot
@@ -3700,6 +3732,7 @@ export class Workspace {
       // have to be read before the splice takes it out.
       const wasTile = this.isTileable(window);
       const tileIndex = this.tileIndexOf(window.id);
+      this.forgetStacking(window, this.shouldTile(window));
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
       this.userSizedTileIds.delete(window.id);
@@ -3796,6 +3829,7 @@ export class Workspace {
     if (index < 0) {
       return;
     }
+    this.forgetStacking(window, true);
     this.windows.splice(index, 1);
     this.draggingWindowId = null;
   }
@@ -3805,6 +3839,7 @@ export class Workspace {
     if (index < 0) {
       return;
     }
+    this.stackedWindowIds.delete(window.id);
     this.windows.splice(index, 1);
     if (this.activeWindowId === window.id) {
       this.activeWindowId =
@@ -3846,26 +3881,116 @@ export class Workspace {
       return false;
     }
 
-    const tileable = this.tileableWindows();
-    const currentIndex = tileable.findIndex(
-      (window) => window.id === focused.id,
-    );
+    // The whole column moves: swap it with the next visible column.
+    const columns = this.tileColumns();
+    const currentIndex = this.columnIndexOf(columns, focused.id);
     if (currentIndex < 0) {
       return false;
     }
 
     const nextIndex = currentIndex + direction;
-    if (nextIndex < 0 || nextIndex >= tileable.length) {
+    if (nextIndex < 0 || nextIndex >= columns.length) {
       return false;
     }
 
+    const allColumns = this.allTileColumns();
+    const from = this.columnIndexOf(allColumns, focused.id);
+    const to = this.columnIndexOf(allColumns, columns[nextIndex][0].id);
+    if (from < 0 || to < 0) {
+      return false;
+    }
+    [allColumns[from], allColumns[to]] = [allColumns[to], allColumns[from]];
+
     this.stopKineticScroll();
     this.activeWindowId = focused.id;
-    this.markTileReordering(focused);
-    this.moveTileWindowToIndex(focused, nextIndex);
+    for (const window of columns[currentIndex]) {
+      this.markTileReordering(window);
+    }
+    this.writeColumns(allColumns);
     this.scrollToWindow(focused);
     this.applyLayout();
     focused.focus();
+    return true;
+  }
+
+  /** Move the focused tile to the bottom of the column on its left. */
+  public stackFocusedIntoLeftColumn(): boolean {
+    const focused = this.focusedTile();
+    if (!focused || this.isFullTile(focused)) {
+      return false;
+    }
+    const columns = this.tileColumns();
+    const index = this.columnIndexOf(columns, focused.id);
+    if (index <= 0 || columns[index - 1].some((w) => this.isFullTile(w))) {
+      return false;
+    }
+
+    const allColumns = this.allTileColumns()
+      .map((column) => column.filter((window) => window.id !== focused.id))
+      .filter((column) => column.length > 0);
+    const target = this.columnIndexOf(allColumns, columns[index - 1][0].id);
+    if (target < 0) {
+      return false;
+    }
+    allColumns[target].push(focused);
+    return this.commitColumnChange(focused, allColumns);
+  }
+
+  /** Pop the focused tile out of its column into its own column on the right. */
+  public unstackFocusedWindow(): boolean {
+    const focused = this.focusedTile();
+    if (!focused || !this.popOutOfColumn(focused)) {
+      return false;
+    }
+    return this.commitColumnChange(focused, null);
+  }
+
+  /** Move focus up (-1) or down (1) inside the focused column. */
+  public focusInColumn(direction: -1 | 1): boolean {
+    if (!this.isTiled) {
+      return false;
+    }
+    const columns = this.tileColumns();
+    const active = this.focusedTile() ?? this.activeWindow(columns.flat());
+    if (!active) {
+      return false;
+    }
+    const column = columns[this.columnIndexOf(columns, active.id)];
+    const row = column?.findIndex((window) => window.id === active.id) ?? -1;
+    const next = column?.[row + direction];
+    if (row < 0 || !next) {
+      return false;
+    }
+    this.activeWindowId = next.id;
+    this.scrollToWindow(next);
+    this.applyLayout();
+    next.focus();
+    return true;
+  }
+
+  /** The focused window when it is a tile in this tiled workspace. */
+  private focusedTile(): WaylandWindow | undefined {
+    if (!this.isTiled) {
+      return undefined;
+    }
+    const focused = this.focusedWindow();
+    return focused && this.isTileable(focused) ? focused : undefined;
+  }
+
+  /** Save new columns (when given), then lay out and keep focus on `window`. */
+  private commitColumnChange(
+    window: WaylandWindow,
+    columns: WaylandWindow[][] | null,
+  ): boolean {
+    this.stopKineticScroll();
+    if (columns) {
+      this.writeColumns(columns);
+    }
+    this.activeWindowId = window.id;
+    this.markTileReordering(window);
+    this.scrollToWindow(window);
+    this.applyLayout();
+    window.focus();
     return true;
   }
 
@@ -4081,6 +4206,8 @@ export class Workspace {
         ? focusedWindow
         : undefined;
     this.isTiled = tiled;
+    // Columns do not survive a trip through floating mode.
+    this.stackedWindowIds.clear();
     if (tiled) {
       this.scrollOffset = 0;
       for (const window of this.windows) {
@@ -4165,6 +4292,7 @@ export class Workspace {
       return;
     }
 
+    this.popFullTilesOutOfColumns();
     const tileable = this.tileableWindows();
     const animate = options.animate ?? true;
     const suppressSSDRebuild = options.suppressSSDRebuild ?? true;
@@ -4173,7 +4301,7 @@ export class Workspace {
       animate && suppressSSDRebuild && canSuppress
         ? MANAGED_WINDOW_ONLY_ANIMATION
         : undefined;
-    this.clampScrollOffset(tileable.length);
+    this.clampScrollOffset();
 
     if (tileable.length === 0) {
       this.activeWindowId = null;
@@ -4204,23 +4332,35 @@ export class Workspace {
 
     const viewportRect = this.tileViewportRect();
     this.lastAppliedTileViewportRect = snapshotManagedRect(viewportRect);
-    const tileHeight = read(viewportRect.height);
+    const viewportHeight = read(viewportRect.height);
     let nextX = read(viewportRect.x) - this.physicalAlignedScrollOffset();
     const appliedRects: Record<string, ManagedWindowRect> = {};
     this.lastDraggingSlotRect = null;
 
-    tileable.forEach((window, index) => {
-      const tileWidth = this.tileWidthForWindow(window, viewportRect);
-      const rect = window.state[WINDOW_STATE_FULLSCREEN]()
-        ? this.fullscreenRootRect(window)
-        : window.state[WINDOW_STATE_MAXIMIZED]()
-          ? this.maximizedTileRect(window, nextX)
-          : {
-              x: nextX,
-              y: read(viewportRect.y),
-              width: tileWidth,
-              height: tileHeight,
-            };
+    // One x and width per column. The windows of a column split its height.
+    const placements: { window: WaylandWindow; rect: ManagedWindowRect }[] =
+      [];
+    for (const column of this.tileColumns(tileable)) {
+      const columnWidth = this.tileWidthForWindow(column[0], viewportRect);
+      const tileHeight =
+        (viewportHeight - TILE_GAP * (column.length - 1)) / column.length;
+      column.forEach((window, row) => {
+        const rect = window.state[WINDOW_STATE_FULLSCREEN]()
+          ? this.fullscreenRootRect(window)
+          : window.state[WINDOW_STATE_MAXIMIZED]()
+            ? this.maximizedTileRect(window, nextX)
+            : {
+                x: nextX,
+                y: read(viewportRect.y) + row * (tileHeight + TILE_GAP),
+                width: columnWidth,
+                height: tileHeight,
+              };
+        placements.push({ window, rect });
+      });
+      nextX += columnWidth + TILE_GAP;
+    }
+
+    for (const { window, rect } of placements) {
       appliedRects[window.id] = rect;
       if (window.id === this.draggingWindowId) {
         this.lastDraggingSlotRect = rect;
@@ -4242,8 +4382,7 @@ export class Workspace {
           window.state[WINDOW_STATE_RECT].set(rect);
         }
       }
-      nextX += tileWidth + (index === tileable.length - 1 ? 0 : TILE_GAP);
-    });
+    }
 
     hotReloadDebug("workspace-apply-layout", {
       monitor: this.monitor,
@@ -4290,8 +4429,12 @@ export class Workspace {
       minWidth,
       Math.max(minWidth, maxWidth),
     );
-    this.tileWidthByWindowId.set(event.window.id, width);
-    this.userSizedTileIds.add(event.window.id);
+    // The column takes its width from its first window.
+    const columns = this.tileColumns(tileable);
+    const head = columns[this.columnIndexOf(columns, event.window.id)]?.[0];
+    const widthOwner = head ?? event.window;
+    this.tileWidthByWindowId.set(widthOwner.id, width);
+    this.userSizedTileIds.add(widthOwner.id);
     this.scrollToWindow(event.window);
     this.applyLayout();
   }
@@ -4305,6 +4448,8 @@ export class Workspace {
     if (!this.shouldTile(window)) {
       return;
     }
+    // A dragged tile leaves its column and moves as a column of its own.
+    this.popOutOfColumn(window);
     this.activeWindowId = window.id;
     this.draggingWindowId = window.id;
     const wasMaximized = window.state[WINDOW_STATE_MAXIMIZED]();
@@ -4531,7 +4676,7 @@ export class Workspace {
     const before = this.scrollOffset;
     this.scrollOffset += deltaX;
     const tileable = this.tileableWindows();
-    this.clampScrollOffset(tileable.length);
+    this.clampScrollOffset();
     if (this.scrollOffset === before) {
       return false;
     }
@@ -4563,16 +4708,16 @@ export class Workspace {
    * dropped; the clamped ends are natural stops already.
    */
   private tileSnapOffsets(): number[] {
-    const tileable = this.tileableWindows();
+    const columns = this.tileColumns();
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
-    const contentWidth = this.tileContentWidth(tileable, viewportRect);
+    const contentWidth = this.tileContentWidth(columns, viewportRect);
     const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
     const offsets: number[] = [];
     let left = 0;
-    for (const window of tileable) {
-      const width = this.tileWidthForWindow(window, viewportRect);
-      if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+    for (const column of columns) {
+      const width = this.tileWidthForWindow(column[0], viewportRect);
+      if (column[0].state[WINDOW_STATE_MAXIMIZED]()) {
         offsets.push(left + width / 2 - viewportWidth / 2);
       } else {
         offsets.push(left);
@@ -4640,19 +4785,19 @@ export class Workspace {
   private kineticSnapTarget(): number | null {
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
-    const tileable = this.tileableWindows();
-    const contentWidth = this.tileContentWidth(tileable, viewportRect);
+    const columns = this.tileColumns();
+    const contentWidth = this.tileContentWidth(columns, viewportRect);
     const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
     const from = clamp(this.scrollOffset, 0, maxScrollOffset);
     const viewportCenter = from + viewportWidth / 2;
 
     let best: { distance: number; target: number } | null = null;
     let left = 0;
-    for (const window of tileable) {
-      const width = this.tileWidthForWindow(window, viewportRect);
+    for (const column of columns) {
+      const width = this.tileWidthForWindow(column[0], viewportRect);
       const center = left + width / 2;
       const distance = Math.abs(center - viewportCenter);
-      const target = window.state[WINDOW_STATE_MAXIMIZED]()
+      const target = column[0].state[WINDOW_STATE_MAXIMIZED]()
         ? center - viewportWidth / 2
         : center < viewportCenter
           ? left
@@ -4772,27 +4917,30 @@ export class Workspace {
   }
 
   public focusRelative(direction: -1 | 1) {
-    const tileable = this.tileableWindows();
-    if (tileable.length === 0) {
+    // Focus moves by column. Entering a column focuses its top window.
+    const columns = this.tileColumns();
+    if (columns.length === 0) {
       return;
     }
-    const activeIndex = tileable.findIndex(
-      (window) => window.id === this.activeWindowId,
-    );
+    const activeIndex = this.columnIndexOf(columns, this.activeWindowId);
     if (
       activeIndex >= 0 &&
-      this.panActiveTileIntoView(tileable, activeIndex, direction)
+      this.panActiveTileIntoView(columns, activeIndex, direction)
     ) {
       return;
     }
-    const fallbackIndex = this.focusFallbackTileIndex(tileable, direction);
+    const fallbackIndex = this.focusFallbackTileIndex(columns, direction);
     const currentIndex =
       activeIndex >= 0
         ? activeIndex
-        : (fallbackIndex ?? (direction < 0 ? tileable.length : -1));
-    const nextIndex = clamp(currentIndex + direction, 0, tileable.length - 1);
-    this.activeWindowId = tileable[nextIndex].id;
-    this.scrollToWindow(tileable[nextIndex]);
+        : (fallbackIndex ?? (direction < 0 ? columns.length : -1));
+    const nextIndex = clamp(currentIndex + direction, 0, columns.length - 1);
+    const target =
+      nextIndex === activeIndex
+        ? (this.activeWindow(columns[nextIndex]) ?? columns[nextIndex][0])
+        : columns[nextIndex][0];
+    this.activeWindowId = target.id;
+    this.scrollToWindow(target);
     this.applyLayout();
     this.focusActiveWindow();
   }
@@ -4814,15 +4962,15 @@ export class Workspace {
    * 4px invisible pan for every fully-visible maximized tile.
    */
   private panActiveTileIntoView(
-    tileable: WaylandWindow[],
+    columns: WaylandWindow[][],
     index: number,
     direction: -1 | 1,
   ): boolean {
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
-    const windowLeft = this.tileLeftForIndex(tileable, index, viewportRect);
+    const windowLeft = this.tileLeftForIndex(columns, index, viewportRect);
     const windowRight =
-      windowLeft + this.tileWidthForWindow(tileable[index], viewportRect);
+      windowLeft + this.tileWidthForWindow(columns[index][0], viewportRect);
     const overflow =
       direction < 0
         ? this.scrollOffset - windowLeft - TILE_MARGIN
@@ -4834,14 +4982,14 @@ export class Workspace {
     this.stopKineticScroll();
     this.scrollOffset =
       direction < 0 ? windowLeft : windowRight - viewportWidth;
-    this.clampScrollOffset(tileable.length);
+    this.clampScrollOffset();
     this.applyLayout();
     this.focusActiveWindow();
     return true;
   }
 
   private focusFallbackTileIndex(
-    tileable: WaylandWindow[],
+    columns: WaylandWindow[][],
     direction: -1 | 1,
   ): number | undefined {
     const focused = this.focusedWindow();
@@ -4850,10 +4998,10 @@ export class Workspace {
     }
 
     const focusedCenter = rectCenterX(focused.state[WINDOW_STATE_RECT]());
-    const candidates = tileable
-      .map((window, index) => ({
+    const candidates = columns
+      .map((column, index) => ({
         index,
-        center: rectCenterX(window.state[WINDOW_STATE_RECT]()),
+        center: rectCenterX(column[0].state[WINDOW_STATE_RECT]()),
       }))
       .filter(({ center }) =>
         direction < 0 ? center < focusedCenter : center > focusedCenter,
@@ -4901,6 +5049,7 @@ export class Workspace {
       }
       this.tileWidthByWindowId.delete(window.id);
       this.userSizedTileIds.delete(window.id);
+      this.forgetStacking(window, true);
       stopRectAnimation(window, WINDOW_STATE_RECT);
       // Removing this tile can clamp scrollOffset. Defer the floating content
       // coordinate until applyLayout has established that final offset.
@@ -4925,6 +5074,7 @@ export class Workspace {
         : window.state[WINDOW_STATE_RECT]();
       window.state[WINDOW_STATE_FLOATING_RECT].set(viewportRect);
       this.setTileWidthFromRect(window, viewportRect, true);
+      this.moveBelowStackedTiles(window);
       if (read(window.isFocused) || !this.activeWindowId) {
         this.activeWindowId = window.id;
         this.scrollToWindow(window);
@@ -4958,6 +5108,8 @@ export class Workspace {
     this.scrollOffset = snapshot.scrollOffset;
     this.tileWidthByWindowId.clear();
     this.userSizedTileIds.clear();
+    // The tile order is not part of the snapshot, so columns start fresh.
+    this.stackedWindowIds.clear();
     this.restoredWindowStateById.clear();
     for (const window of snapshot.windows) {
       if (window.tileWidth !== undefined) {
@@ -5076,19 +5228,22 @@ export class Workspace {
     window: WaylandWindow,
     pointerX: number,
   ): number {
+    // The slot is always in front of a whole column, never inside one.
     const tileable = this.tileableWindows().filter(
       (current) => current.id !== window.id,
     );
     const viewportRect = this.tileViewportRect();
     const contentX = pointerX - read(viewportRect.x) + this.scrollOffset;
     let left = 0;
+    let tileIndex = 0;
 
-    for (let index = 0; index < tileable.length; index++) {
-      const width = this.tileWidthForWindow(tileable[index], viewportRect);
+    for (const column of this.tileColumns(tileable)) {
+      const width = this.tileWidthForWindow(column[0], viewportRect);
       if (contentX < left + width / 2) {
-        return index;
+        return tileIndex;
       }
       left += width + TILE_GAP;
+      tileIndex += column.length;
     }
 
     return tileable.length;
@@ -5105,10 +5260,15 @@ export class Workspace {
       return tileable.length;
     }
 
-    const anchorIndex = tileable.findIndex(
-      (window) => window.id === anchor.id,
-    );
-    return anchorIndex >= 0 ? anchorIndex + 1 : tileable.length;
+    // A new tile opens after the anchor's whole column.
+    const columns = this.tileColumns(tileable);
+    const anchorColumn = this.columnIndexOf(columns, anchor.id);
+    if (anchorColumn < 0) {
+      return tileable.length;
+    }
+    return columns
+      .slice(0, anchorColumn + 1)
+      .reduce((count, column) => count + column.length, 0);
   }
 
   private moveTileWindowToIndex(window: WaylandWindow, tileIndex: number) {
@@ -5120,12 +5280,20 @@ export class Workspace {
     }
 
     this.windows.splice(currentIndex, 1);
+    // The window lands as a column of its own.
+    this.stackedWindowIds.delete(window.id);
     const tileableWithoutWindow = this.tileableWindows();
     const beforeWindow = tileableWithoutWindow[tileIndex];
 
     if (beforeWindow) {
+      // Insert in front of the whole column, which can start with a
+      // minimized window, so the new tile never splits a column.
+      const allColumns = this.allTileColumns();
+      const columnHead =
+        allColumns[this.columnIndexOf(allColumns, beforeWindow.id)]?.[0] ??
+        beforeWindow;
       const insertIndex = this.windows.findIndex(
-        (current) => current.id === beforeWindow.id,
+        (current) => current.id === columnHead.id,
       );
       this.windows.splice(Math.max(0, insertIndex), 0, window);
       return;
@@ -5378,18 +5546,20 @@ export class Workspace {
     options: { force?: boolean } = {},
   ) {
     this.stopKineticScroll();
+    // A maximized tile leaves its column first, so it scrolls to its own slot.
+    this.popFullTilesOutOfColumns();
 
-    const tileable = this.tileableWindows();
-    const index = tileable.findIndex((current) => current.id === window.id);
+    const columns = this.tileColumns();
+    const index = this.columnIndexOf(columns, window.id);
     if (index < 0) {
       return;
     }
 
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
-    const windowLeft = this.tileLeftForIndex(tileable, index, viewportRect);
+    const windowLeft = this.tileLeftForIndex(columns, index, viewportRect);
     const windowRight =
-      windowLeft + this.tileWidthForWindow(window, viewportRect);
+      windowLeft + this.tileWidthForWindow(columns[index][0], viewportRect);
 
     if (window.state[WINDOW_STATE_MAXIMIZED]() || options.force) {
       // Center the window in the viewport. `force` is set by dock-style "go to
@@ -5403,15 +5573,14 @@ export class Workspace {
       this.scrollOffset = windowRight - viewportWidth;
     }
 
-    this.clampScrollOffset(tileable.length);
+    this.clampScrollOffset();
   }
 
-  private clampScrollOffset(tileCount: number) {
-    const tileable = this.tileableWindows();
+  private clampScrollOffset() {
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
     const contentWidth = this.tileContentWidth(
-      tileable.slice(0, tileCount),
+      this.tileColumns(),
       viewportRect,
     );
     const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
@@ -5476,13 +5645,9 @@ export class Workspace {
   }
 
   private defaultTileWidth(viewportRect: ManagedWindowRect): number {
-    // Up to TILE_FIT_MAX_COLUMNS windows share the screen evenly, so no
-    // window is cut at the edge. More windows scroll at that column width.
-    const columns = clamp(
-      this.tileableWindows().length,
-      1,
-      TILE_FIT_MAX_COLUMNS,
-    );
+    // Up to TILE_FIT_MAX_COLUMNS columns share the screen evenly, so no
+    // column is cut at the edge. More columns scroll at that width.
+    const columns = clamp(this.tileColumns().length, 1, TILE_FIT_MAX_COLUMNS);
     const gaps = TILE_GAP * (columns - 1);
     return Math.max(
       TILE_MIN_WIDTH,
@@ -5515,32 +5680,178 @@ export class Workspace {
     return Math.max(0, read(natural.width) - window.position.width);
   }
 
+  /** Left edge of column `index`, measured from the start of the row. */
   private tileLeftForIndex(
-    tileable: WaylandWindow[],
+    columns: WaylandWindow[][],
     index: number,
     viewportRect: ManagedWindowRect,
   ): number {
     let left = 0;
     for (let i = 0; i < index; i++) {
-      left += this.tileWidthForWindow(tileable[i], viewportRect) + TILE_GAP;
+      left += this.tileWidthForWindow(columns[i][0], viewportRect) + TILE_GAP;
     }
     return left;
   }
 
   private tileContentWidth(
-    tileable: WaylandWindow[],
+    columns: WaylandWindow[][],
     viewportRect: ManagedWindowRect,
   ): number {
-    if (tileable.length === 0) {
+    if (columns.length === 0) {
       return 0;
     }
     return (
-      tileable.reduce(
-        (sum, window) => sum + this.tileWidthForWindow(window, viewportRect),
+      columns.reduce(
+        (sum, column) => sum + this.tileWidthForWindow(column[0], viewportRect),
         0,
       ) +
-      (tileable.length - 1) * TILE_GAP
+      (columns.length - 1) * TILE_GAP
     );
+  }
+
+  /**
+   * Every tile grouped into columns, in row order. Minimized tiles are
+   * included, so a minimized window keeps its place in its column.
+   */
+  private allTileColumns(): WaylandWindow[][] {
+    const columns: WaylandWindow[][] = [];
+    for (const window of this.windows) {
+      if (!this.shouldTile(window)) {
+        continue;
+      }
+      const last = columns.at(-1);
+      if (last && this.stackedWindowIds.has(window.id)) {
+        last.push(window);
+      } else {
+        columns.push([window]);
+      }
+    }
+    return columns;
+  }
+
+  /**
+   * The visible columns: `allTileColumns` without minimized windows, or only
+   * with the windows in `tileable` when it is given. No column is empty.
+   */
+  private tileColumns(tileable?: WaylandWindow[]): WaylandWindow[][] {
+    const keep = tileable
+      ? new Set(tileable.map((window) => window.id))
+      : undefined;
+    return this.allTileColumns()
+      .map((column) =>
+        column.filter((window) =>
+          keep ? keep.has(window.id) : this.isTileable(window),
+        ),
+      )
+      .filter((column) => column.length > 0);
+  }
+
+  private columnIndexOf(
+    columns: WaylandWindow[][],
+    windowId: string | null,
+  ): number {
+    return columns.findIndex((column) =>
+      column.some((window) => window.id === windowId),
+    );
+  }
+
+  /**
+   * Store `columns` (all tiles, as from `allTileColumns`) back into the
+   * window list and the stacked set. Non-tile windows keep their slots.
+   */
+  private writeColumns(columns: WaylandWindow[][]): void {
+    const order = columns.flat();
+    let next = 0;
+    for (let i = 0; i < this.windows.length && next < order.length; i++) {
+      if (this.shouldTile(this.windows[i])) {
+        this.windows[i] = order[next++];
+      }
+    }
+    for (const column of columns) {
+      column.forEach((window, row) => {
+        if (row === 0) {
+          this.stackedWindowIds.delete(window.id);
+        } else {
+          this.stackedWindowIds.add(window.id);
+        }
+      });
+    }
+  }
+
+  /**
+   * Take `window` out of its column and put it in its own column right
+   * after. Returns false when it already is alone.
+   */
+  private popOutOfColumn(window: WaylandWindow): boolean {
+    const columns = this.allTileColumns();
+    const index = this.columnIndexOf(columns, window.id);
+    if (index < 0 || columns[index].length < 2) {
+      return false;
+    }
+    const rest = columns[index].filter((current) => current.id !== window.id);
+    columns.splice(index, 1, rest, [window]);
+    this.writeColumns(columns);
+    return true;
+  }
+
+  /** Maximized and fullscreen tiles never share a column. */
+  private isFullTile(window: WaylandWindow): boolean {
+    return (
+      window.state[WINDOW_STATE_MAXIMIZED]() ||
+      window.state[WINDOW_STATE_FULLSCREEN]()
+    );
+  }
+
+  private popFullTilesOutOfColumns(): void {
+    for (const window of this.tileableWindows()) {
+      if (this.isFullTile(window)) {
+        this.popOutOfColumn(window);
+      }
+    }
+  }
+
+  /**
+   * Drop `window` from the stacking state before it leaves the row (closed,
+   * floated, dragged away). When it led a column, the next window leads now.
+   */
+  private forgetStacking(window: WaylandWindow, wasTile: boolean): void {
+    if (this.stackedWindowIds.delete(window.id) || !wasTile) {
+      return;
+    }
+    const position = this.windows.findIndex((w) => w.id === window.id);
+    const next = this.windows
+      .slice(position + 1)
+      .find((current) => this.shouldTile(current));
+    if (position >= 0 && next) {
+      this.stackedWindowIds.delete(next.id);
+    }
+  }
+
+  /**
+   * A window that just became a tile starts a new column. If it sits
+   * between stacked tiles, move it after them so it does not split a column.
+   */
+  private moveBelowStackedTiles(window: WaylandWindow): void {
+    this.stackedWindowIds.delete(window.id);
+    const position = this.windows.findIndex((w) => w.id === window.id);
+    if (position < 0) {
+      return;
+    }
+    let end = position;
+    for (let i = position + 1; i < this.windows.length; i++) {
+      const current = this.windows[i];
+      if (!this.shouldTile(current)) {
+        continue;
+      }
+      if (!this.stackedWindowIds.has(current.id)) {
+        break;
+      }
+      end = i;
+    }
+    if (end > position) {
+      this.windows.splice(position, 1);
+      this.windows.splice(end, 0, window);
+    }
   }
 
   private tileViewportRect(): ManagedWindowRect {

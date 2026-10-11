@@ -498,6 +498,22 @@ COMPOSITOR.key.bind("tile-move-right", "Super+Shift+Right", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
   scheduleWorkspaceBroadcast();
 });
+// Columns: stack the focused tile under the column on its left, pop it back
+// out, and move focus up and down inside a column.
+COMPOSITOR.key.bind("tile-stack-left", "Super+Comma", () => {
+  HYBRID_WINDOW_MANAGER.stackFocusedIntoLeftColumn();
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("tile-unstack", "Super+Period", () => {
+  HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("tile-focus-up", "Super+Up", () => {
+  HYBRID_WINDOW_MANAGER.focusInColumn(-1);
+});
+COMPOSITOR.key.bind("tile-focus-down", "Super+Down", () => {
+  HYBRID_WINDOW_MANAGER.focusInColumn(1);
+});
 COMPOSITOR.key.bind("window-move-workspace-prev", "Super+Shift+Up", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedWindowToWorkspace(-1);
   scheduleWorkspaceBroadcast();
@@ -546,6 +562,21 @@ COMPOSITOR.key.bind("preview-move-left", "Alt+Shift+Left", () => {
 COMPOSITOR.key.bind("preview-move-right", "Alt+Shift+Right", () => {
   HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
   scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-stack-left", "Alt+Comma", () => {
+  HYBRID_WINDOW_MANAGER.stackFocusedIntoLeftColumn();
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-unstack", "Alt+Period", () => {
+  HYBRID_WINDOW_MANAGER.unstackFocusedWindow();
+  scheduleWorkspaceBroadcast();
+});
+// Alt+Up and Alt+Down switch workspaces, so column focus takes Shift.
+COMPOSITOR.key.bind("preview-focus-up", "Alt+Shift+Up", () => {
+  HYBRID_WINDOW_MANAGER.focusInColumn(-1);
+});
+COMPOSITOR.key.bind("preview-focus-down", "Alt+Shift+Down", () => {
+  HYBRID_WINDOW_MANAGER.focusInColumn(1);
 });
 // Mouse wheel moves along the row of tiles. Super for the real session,
 // Alt for the preview inside KDE.
@@ -1349,3 +1380,4 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
 };
 
 export default COMPOSITOR;
+
