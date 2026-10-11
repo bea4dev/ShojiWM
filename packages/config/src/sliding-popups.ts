@@ -29,8 +29,11 @@ import type { WindowPosition } from "shoji_wm/types";
 
 /** KWin's default SlideInTime / SlideOutTime. */
 const KWIN_SLIDE_MS = 200;
-/** kdeglobals [KDE] AnimationDurationFactor on this machine. */
-const ANIMATION_DURATION_FACTOR = 0.25;
+/**
+ * KWin's stock speed (1.0, so 200 ms). kdeglobals here says 0.25 (50 ms), but
+ * that reads as a snap, and Abhishek wants to see the slide.
+ */
+const ANIMATION_DURATION_FACTOR = 1;
 /** KWin's `animationTime(200ms)`. */
 const SLIDE_MS = KWIN_SLIDE_MS * ANIMATION_DURATION_FACTOR;
 /** QFontMetrics(QGuiApplication::font()).height() * 8, for Noto Sans 10 pt. */
