@@ -7,7 +7,9 @@
  *
  * The selected window faces you in the centre. The windows before it turn
  * 90° and stack to the left, the windows after it stack to the right, each
- * one further out smaller and 50 px further from the centre. Past the last
+ * one further out smaller and 50 px further from the centre. (Changed from
+ * the extension: the stacks start right beside the selected card, and the
+ * first neighbour keeps full size; see `cardTarget`.) Past the last
  * window the whole stack flips back to the first one ("Flip Stack", the
  * extension's default), and the other way round.
  *
@@ -16,7 +18,9 @@
  * This file keeps those four values per window, eases them the same way, and
  * turns them into a `Pose` every frame.
  */
+import type { WaylandWindow } from "shoji_wm";
 import {
+  cameraDistance,
   createWindowSwitcher,
   mod,
   type Pose,
@@ -47,6 +51,14 @@ const OFFSET = 0;
  * windows their strong perspective.
  */
 const CLUTTER_FOV_DEGREES = 60;
+// Our own changes to the extension's layout (Abhishek asked for a tighter,
+// bigger stack than the defaults give with narrow tiled windows):
+/** The first neighbour's inner end stops this far from the selected card (px). */
+const NEIGHBOUR_GAP = 15;
+/** The first neighbour keeps the selected card's size (no 0.8 shrink). */
+const FIRST_NEIGHBOUR_SCALE = 1;
+/** A small window may grow this much to fill its half-screen box. */
+const MAX_UPSCALE = 1.5;
 /** Touchpad scrolling / swiping distance per window (logical px). */
 const SCROLL_STEP_PX = 80;
 const SWIPE_STEP_PX = 140;
@@ -74,6 +86,7 @@ interface Card {
 type FlipDirection = "to-left" | "to-right";
 
 interface CoverflowState {
+  windows: readonly WaylandWindow[];
   count: number;
   /** The layout's own clock (ms). */
   nowMs: number;
@@ -139,6 +152,7 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
   cameraFovDegrees: CLUTTER_FOV_DEGREES,
 
   begin: (windows) => ({
+    windows,
     count: windows.length,
     nowMs: 0,
     selection: COVERFLOW_LAYOUT.initialSelection(windows.length),
@@ -154,7 +168,7 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
   initialSelection: (count) => (count > 1 ? 1 : 0),
 
   pose(state, index, rect, viewport) {
-    const target = cardTarget(index, state.selection, state.count, rect, viewport);
+    const target = cardTarget(index, state, rect, viewport);
     let card = state.cards[index];
     if (!card) {
       // First frame: start where the selection is, without moving.
@@ -281,49 +295,77 @@ interface CardValues {
   angle: number;
 }
 
+/** The window's scale: it fills its half-screen box, by width or by height. */
+function fitScale(rect: Rect, { width, height }: Viewport): number {
+  const boxWidth = width * PREVIEW_TO_MONITOR_RATIO;
+  const boxHeight = height * PREVIEW_TO_MONITOR_RATIO;
+  return Math.min(MAX_UPSCALE, boxWidth / rect.width, boxHeight / rect.height);
+}
+
+function windowRect(window: WaylandWindow | undefined): Rect | null {
+  return window ? { ...window.rect } : null;
+}
+
 /**
- * Where card `index` goes when `selection` is selected: `_updatePreview`,
- * `_animatePreviewToMid` and `_animatePreviewToSide` with the defaults, on
- * one monitor (so no perspective correction angle).
+ * Where card `index` goes for the current selection. The selected card faces
+ * you in the middle (`_animatePreviewToMid`). The side cards turn 90° about
+ * their outer edge, which stays on the screen plane, so it is their nearest
+ * and tallest edge (`_animatePreviewToSide`).
+ *
+ * Unlike the extension, the side stacks follow the selected card: the first
+ * neighbour is placed so its far (inner) end ends just beside the selected
+ * card's edge, and it keeps full size. The cards further out step 50 px
+ * outwards and shrink 0.8 per step, as in the extension.
+ *
+ *      near edge                          near edge
+ *         │╲     ┌──────────────┐      ╱│
+ *         │ ╲ gap│   selected   │gap  ╱ │
+ *         │ ╱    │     card     │     ╲ │
+ *         │╱     └──────────────┘      ╲│
  */
 function cardTarget(
   index: number,
-  selection: number,
-  count: number,
+  state: CoverflowState,
   rect: Rect,
-  { width, height }: Viewport,
+  viewport: Viewport,
 ): CardValues {
-  // The preview's own scale: it fits in half the monitor.
-  const previewWidth = width * PREVIEW_TO_MONITOR_RATIO;
-  const previewHeight = height * PREVIEW_TO_MONITOR_RATIO;
-  let fit = 1;
-  if (rect.width > previewWidth || rect.height > previewHeight) {
-    fit = Math.min(previewWidth / rect.width, previewHeight / rect.height);
-  }
+  const { selection, count } = state;
+  const fit = fitScale(rect, viewport);
   if (index === selection || count <= 1) {
     return { pivotX: 0.5, translationX: 0, scale: fit, angle: 0 };
   }
+  const { width, height } = viewport;
   const centerX = width / 2;
-  const ratio = PREVIEW_TO_MONITOR_RATIO;
-  const xOffsetLeft = width * (0.5 * (1 - ratio) - 0.1 * ratio);
-  const xOffsetRight = width - xOffsetLeft;
-  // Flip Stack: the pivot index is the selection, and every side card is a
-  // whole step or more away from it, so "progress" is always 1.
   const distance = index - selection;
-  const scale = Math.pow(PREVIEW_SCALING_FACTOR, Math.abs(distance)) * fit;
-  if (distance < 0) {
+  const side = distance < 0 ? -1 : 1;
+  const steps = Math.abs(distance);
+  // Half the selected card's width on screen.
+  const selectedRect = windowRect(state.windows[selection]) ?? rect;
+  const selectedHalf = (selectedRect.width * fitScale(selectedRect, viewport)) / 2;
+  // The first neighbour on this side: its length into the screen.
+  const firstRect = windowRect(state.windows[selection + side]) ?? rect;
+  const firstLength = firstRect.width * fitScale(firstRect, viewport) * FIRST_NEIGHBOUR_SCALE;
+  // Its near edge, placed so its far end (seen through the 60° camera at
+  // distance D) lands at the selected card's edge plus the gap:
+  // centre + (near - centre) * D / (D + length) = edge.
+  const cameraZ = cameraDistance(height, CLUTTER_FOV_DEGREES);
+  const nearOffset = ((selectedHalf + NEIGHBOUR_GAP) * (cameraZ + firstLength)) / cameraZ;
+  const nearEdge =
+    centerX + side * (nearOffset + WINDOW_OFFSET_WIDTH * (steps - 1));
+  const scale = fit * FIRST_NEIGHBOUR_SCALE * Math.pow(PREVIEW_SCALING_FACTOR, steps - 1);
+  if (side < 0) {
+    // Pivot on the left (outer) edge.
     return {
       pivotX: 0,
-      translationX:
-        xOffsetLeft - (centerX - rect.width / 2) + WINDOW_OFFSET_WIDTH * distance,
+      translationX: nearEdge - (centerX - rect.width / 2),
       scale,
       angle: WINDOW_ANGLE,
     };
   }
+  // Pivot on the right (outer) edge.
   return {
     pivotX: 1,
-    translationX:
-      xOffsetRight - (centerX + rect.width / 2) + WINDOW_OFFSET_WIDTH * distance,
+    translationX: nearEdge - (centerX + rect.width / 2),
     scale,
     angle: -WINDOW_ANGLE,
   };
