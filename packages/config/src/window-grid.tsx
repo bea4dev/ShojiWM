@@ -147,6 +147,14 @@ const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   },
 
   onClickOutside: (_state, controls) => controls.cancel(),
+
+  // The hovered card's title bar buttons work; a minimized window stays as a
+  // dimmed card (KWin shows it at full opacity; dimmed by request).
+  cardActions: true,
+  minimizedOpacity: 0.5,
+  windowsChanged: (state) => {
+    state.cellsKey = "";
+  },
 };
 
 const WINDOW_VIEW_LAYOUT: SwitcherLayout<GridState> = {
@@ -158,13 +166,6 @@ const WINDOW_VIEW_LAYOUT: SwitcherLayout<GridState> = {
   initialSelection: () => 0,
   // Opened by a click, not by a held key.
   onSuperReleased: () => {},
-  // The hovered card's title bar buttons work; a minimized window stays as a
-  // dimmed card (KWin shows it at full opacity; dimmed by request).
-  cardActions: true,
-  minimizedOpacity: 0.5,
-  windowsChanged: (state) => {
-    state.cellsKey = "";
-  },
 };
 
 /** The window in the row above (`-1`) or below (`1`) nearest the selection. */

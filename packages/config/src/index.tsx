@@ -190,6 +190,7 @@ const WINDOW_GRID = createWindowGrid({
     window.state[WINDOW_STATE_FULLSCREEN]()
       ? FULLSCREEN_Z_INDEX
       : windowZIndex(window),
+  titlebarButtonAt: (window, x, y) => titlebarButtonAt(window, x, y),
 });
 COMPOSITOR.rendering.composition = (output) =>
   WINDOW_SWITCHER.compose(output) ??
@@ -1854,13 +1855,14 @@ const TRAFFIC_LIGHT_SIZE = 12;
 const TITLEBAR_PADDING_X = 8;
 const TITLEBAR_GAP = 8;
 
-/** The window is the hovered card of the Window View. */
+/** The window is the hovered card of the Window View or the grid. */
 const isWindowViewCard = (window: WaylandWindow) =>
-  WINDOW_VIEW.selectedWindowId() === window.id;
+  WINDOW_VIEW.selectedWindowId() === window.id ||
+  WINDOW_GRID.selectedWindowId() === window.id;
 
-/** While the Window View is open, only its hovered card shows traffic lights. */
+/** While the Window View or the grid is open, only its hovered card shows traffic lights. */
 const trafficLightsShown = (window: WaylandWindow) =>
-  !WINDOW_VIEW.isOpen() || isWindowViewCard(window);
+  (!WINDOW_VIEW.isOpen() && !WINDOW_GRID.isOpen()) || isWindowViewCard(window);
 
 /**
  * The traffic light at `(x, y)`, logical px from the top-left corner of
