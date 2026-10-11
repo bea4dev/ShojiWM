@@ -391,7 +391,13 @@ export function createWindowSwitcher<State>(
     session.grab = COMPOSITOR.input.grab({
       onKey: (event) => {
         if (event.state === "released") {
-          if (event.key === "Super_L" || event.key === "Super_R") {
+          // Releasing Super (Super+Tab) or Alt (Alt+Tab) picks the window.
+          if (
+            event.key === "Super_L" ||
+            event.key === "Super_R" ||
+            event.key === "Alt_L" ||
+            event.key === "Alt_R"
+          ) {
             layout.onSuperReleased(state, controls);
           }
           return;

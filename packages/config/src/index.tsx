@@ -69,7 +69,7 @@ COMPOSITOR.env.apply({
 COMPOSITOR.env.publish();
 
 COMPOSITOR.cursor.configure({
-  theme: "Bibata-Modern-Ice",
+  theme: "breeze_cursors", // KDE default cursor, like Abhishek's KDE
   size: 24,
 });
 
