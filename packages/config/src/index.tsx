@@ -518,6 +518,12 @@ COMPOSITOR.key.bind("lock", "Super+L", () => {
   COMPOSITOR.process.spawn({ command: LOCK_COMMAND });
 });
 
+// Log out, like Ctrl+Alt+Delete in KDE. Plasma's own "Log Out" button needs
+// KDE's session manager, which does not run under ShojiWM.
+COMPOSITOR.key.bind("logout", "Ctrl+Alt+Delete", () => {
+  COMPOSITOR.process.spawn({ command: "shoji_wm --quit" });
+});
+
 // Auto-lock: lock after 10 minutes away, and before the PC goes to sleep.
 // `loginctl lock-session` (and the KDE "Lock" button) also land here.
 if (!INSIDE_KDE) {
