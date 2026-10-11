@@ -1,4 +1,4 @@
-// Wobbly windows, KDE style: a 4x4 grid of spring points bends the window.
+// Wobbly windows, ported from KWin: a 4x4 grid of spring points bends the window.
 // Each point carries how far it is from its rest place (logical px). The
 // grid is a bicubic Bezier patch, so the window bends as one smooth sheet.
 uniform vec4 d0;  // points 0 and 1 (row 0, columns 0-1): xy, zw
@@ -35,10 +35,10 @@ vec4 shader_main(EffectContext effect) {
     vec2 size = effect.frame_rect_phy_px.zw;
     vec2 here = effect_frame_phy_px(effect);
 
-    // Find the source pixel that bends onto this one. Three refinement steps
-    // keep even soft, large bends clean.
+    // Find the source pixel that bends onto this one. Most of a big bend is
+    // the window trailing the pointer, so four refinement steps keep it clean.
     vec2 source = here;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         source = here - bend(source / size) * effect.scale;
     }
 
