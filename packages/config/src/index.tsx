@@ -38,6 +38,7 @@ import type {
 import { createIpcServer, defaultSocketPath } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
+  isTileable,
   TITLEBAR_HEIGHT,
   WINDOW_BORDER_PX,
   WINDOW_STATE_FULLSCREEN,
@@ -1350,9 +1351,13 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       height: read(rect.height),
     };
   });
-  const forceRectSize = computed(
-    () => window.isResizable() && !window.isTransient(),
-  );
+  const forceRectSize = computed(() => {
+    // Read the signals so this updates when they change.
+    window.isResizable();
+    window.isTransient();
+    window.appId();
+    return isTileable(window);
+  });
 
   // force no corner rounding CSD
   const tiled = true;

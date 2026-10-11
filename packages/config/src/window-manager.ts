@@ -135,6 +135,26 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 );
 
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
+
+/**
+ * Dialogs that another program shows for an app: they always float, also on
+ * a tiled workspace. The app is not their parent, so `isTransient` is false.
+ * Example: Chrome's upload dialog comes from the file chooser portal.
+ */
+const ALWAYS_FLOAT_APP_IDS = new Set([
+  "org.freedesktop.impl.portal.desktop.kde",
+  "xdg-desktop-portal-gtk",
+  "org.kde.kdialog",
+]);
+
+/** The window can be a tile: resizable, not a child window, not a dialog. */
+export function isTileable(window: WaylandWindow): boolean {
+  return (
+    window.isResizable.peek() &&
+    !window.isTransient.peek() &&
+    !ALWAYS_FLOAT_APP_IDS.has(window.appId.peek() ?? "")
+  );
+}
 const INITIAL_TILEABILITY_SETTLE_DURATION = seconds(1);
 const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.3);
 const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
@@ -667,21 +687,17 @@ export class HybridWindowManager {
 
   private trackWindowTileability(window: WaylandWindow) {
     this.untrackWindowTileability(window.id);
-    this.tileabilityByWindowId.set(
-      window.id,
-      window.isResizable.peek() && !window.isTransient.peek(),
-    );
+    this.tileabilityByWindowId.set(window.id, isTileable(window));
 
     const onChange = () => {
       const wasTileable = this.tileabilityByWindowId.get(window.id);
-      const isTileable =
-        window.isResizable.peek() && !window.isTransient.peek();
-      if (wasTileable === undefined || wasTileable === isTileable) {
+      const tileable = isTileable(window);
+      if (wasTileable === undefined || wasTileable === tileable) {
         return;
       }
 
-      this.tileabilityByWindowId.set(window.id, isTileable);
-      if (!isTileable) {
+      this.tileabilityByWindowId.set(window.id, tileable);
+      if (!tileable) {
         this.pendingInitialFocusByWindowId.delete(window.id);
       }
       const workspace = this.findWorkspaceForWindow(window);
@@ -695,9 +711,11 @@ export class HybridWindowManager {
 
     const unsubscribeResizable = window.isResizable.subscribe(onChange);
     const unsubscribeTransient = window.isTransient.subscribe(onChange);
+    const unsubscribeAppId = window.appId.subscribe(onChange);
     this.tileabilitySubscriptionsByWindowId.set(window.id, () => {
       unsubscribeResizable();
       unsubscribeTransient();
+      unsubscribeAppId();
     });
   }
 
@@ -863,7 +881,7 @@ export class HybridWindowManager {
     // A floating window must commit its natural client size before it can be
     // centered. Using the pre-commit geometry here feeds the degenerate-size
     // fallback into the initial configure and makes fixed-size dialogs huge.
-    if (!window.isResizable.peek() || window.isTransient.peek()) {
+    if (!isTileable(window)) {
       return true;
     }
 
@@ -5206,7 +5224,11 @@ export class Workspace {
   }
 
   public shouldTile(window: WaylandWindow): boolean {
-    return window.isResizable() && !window.isTransient();
+    // Read the signals so a computed caller still tracks them.
+    window.isResizable();
+    window.isTransient();
+    window.appId();
+    return isTileable(window);
   }
 
   public reclassifyWindow(window: WaylandWindow, wasTileable: boolean) {
