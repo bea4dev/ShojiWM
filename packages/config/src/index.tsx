@@ -363,8 +363,21 @@ COMPOSITOR.process.service("cliphist-image", {
   restart: "on-exit",
 });
 
+// A bright wallpaper, so the liquid glass has something to bend.
+// swaybg comes from ShojiWM's .localdeps folder until it is installed.
+COMPOSITOR.process.service("wallpaper", {
+  command: [
+    "/home/abhishek/Downloads/work/ShojiWM/.localdeps/usr/bin/swaybg",
+    "--mode",
+    "fill",
+    "--image",
+    "/usr/share/wallpapers/WhiteSur-light/contents/images/3840x2160.jpg",
+  ],
+  restart: "on-exit",
+});
+
 COMPOSITOR.key.bind("terminal", "Super+T", () => {
-  COMPOSITOR.process.spawn({ command: ["kitty"] });
+  COMPOSITOR.process.spawn({ command: ["konsole"] });
 });
 
 // if kwallet6 is used as the password store, be sure to add the --password-store=kwallet6 flag
@@ -497,6 +510,47 @@ COMPOSITOR.key.bind("workspace-prev", "Super+Ctrl+Up", () => {
   scheduleWorkspaceBroadcast();
 });
 COMPOSITOR.key.bind("workspace-next", "Super+Ctrl+Down", () => {
+  HYBRID_WINDOW_MANAGER.switchWorkspace(1);
+  scheduleWorkspaceBroadcast();
+});
+
+// Alt copies of the main shortcuts for the preview inside KDE.
+// KDE takes every Super shortcut before the preview window sees it.
+COMPOSITOR.key.bind("preview-terminal", "Alt+T", () => {
+  COMPOSITOR.process.spawn({ command: ["konsole"] });
+});
+COMPOSITOR.key.bind("preview-toggle-tiling", "Alt+S", () => {
+  HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-window-switcher", "Alt+W", () => {
+  WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+});
+COMPOSITOR.key.bind("preview-close", "Alt+Q", () => {
+  HYBRID_WINDOW_MANAGER.closeFocusedWindow();
+});
+COMPOSITOR.key.bind("preview-maximize", "Alt+M", () => {
+  HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
+});
+COMPOSITOR.key.bind("preview-focus-left", "Alt+Left", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(-1);
+});
+COMPOSITOR.key.bind("preview-focus-right", "Alt+Right", () => {
+  HYBRID_WINDOW_MANAGER.focusTile(1);
+});
+COMPOSITOR.key.bind("preview-move-left", "Alt+Shift+Left", () => {
+  HYBRID_WINDOW_MANAGER.moveFocusedTile(-1);
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-move-right", "Alt+Shift+Right", () => {
+  HYBRID_WINDOW_MANAGER.moveFocusedTile(1);
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-workspace-prev", "Alt+Up", () => {
+  HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
+  scheduleWorkspaceBroadcast();
+});
+COMPOSITOR.key.bind("preview-workspace-next", "Alt+Down", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(1);
   scheduleWorkspaceBroadcast();
 });
@@ -650,7 +704,7 @@ COMPOSITOR.effect.layer = (layer) => {
   if (namespace === "liquid-island-qs" || namespace === "shoji-bar-3") {
     return { behind: ISLAND_GLASS };
   }
-  if (namespace === "no_blur") {
+  if (namespace === "no_blur" || namespace === "wallpaper") {
     return {};
   }
 
