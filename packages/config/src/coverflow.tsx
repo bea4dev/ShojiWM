@@ -59,6 +59,15 @@ const NEIGHBOUR_GAP = 15;
 const FIRST_NEIGHBOUR_SCALE = 1;
 /** A small window may grow this much to fill its half-screen box. */
 const MAX_UPSCALE = 1.5;
+/** The stacks keep this far from the screen's left and right edges (px). */
+const SCREEN_MARGIN = 48;
+/**
+ * Opening and closing: a turned card fades out (or in) at its place during
+ * this much of the eased progress, and its window fades in (or out) flat at
+ * its real place during the rest. Turning it in 3D instead would sweep it
+ * through the cards beside it.
+ */
+const SWAP_AT = 0.5;
 /** Touchpad scrolling / swiping distance per window (logical px). */
 const SCROLL_STEP_PX = 80;
 const SWIPE_STEP_PX = 140;
@@ -87,6 +96,11 @@ type FlipDirection = "to-left" | "to-right";
 
 interface CoverflowState {
   windows: readonly WaylandWindow[];
+  /**
+   * The whole layout's scale (1 or less), so no card leaves the screen for
+   * any selection. Worked out once, on the first frame.
+   */
+  layoutScale: number | null;
   count: number;
   /** The layout's own clock (ms). */
   nowMs: number;
@@ -153,6 +167,7 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
 
   begin: (windows) => ({
     windows,
+    layoutScale: null,
     count: windows.length,
     nowMs: 0,
     selection: COVERFLOW_LAYOUT.initialSelection(windows.length),
@@ -214,8 +229,17 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
   },
 
   settle(state) {
-    // Closing: jump to the end of every running transition.
-    state.nowMs = Number.MAX_SAFE_INTEGER / 2;
+    // Closing: stop every card where it is now. The closing animation starts
+    // from these poses, so a card mid-step does not jump.
+    for (const card of state.cards) {
+      if (card) {
+        card.pivotX = still(valueAt(card.pivotX, state.nowMs));
+        card.translationX = still(valueAt(card.translationX, state.nowMs));
+        card.scale = still(valueAt(card.scale, state.nowMs));
+        card.angle = still(valueAt(card.angle, state.nowMs));
+        card.selection = state.selection;
+      }
+    }
   },
 
   onKey(state, event, controls) {
@@ -241,6 +265,18 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
   },
 
   onSuperReleased: (_state, controls) => controls.commit(),
+
+  morph(_state, _index, from, to, t) {
+    const turned = Math.abs(from.rotateY) > 0.5 || Math.abs(to.rotateY) > 0.5;
+    if (!turned) {
+      // The selected card is flat: it flies straight to (from) its window.
+      return null;
+    }
+    if (t < SWAP_AT) {
+      return { ...from, opacity: from.opacity * (1 - t / SWAP_AT) };
+    }
+    return { ...to, opacity: to.opacity * ((t - SWAP_AT) / (1 - SWAP_AT)) };
+  },
 
   onScroll(state, event, controls) {
     if (event.source === "wheel") {
@@ -302,6 +338,71 @@ function fitScale(rect: Rect, { width, height }: Viewport): number {
   return Math.min(MAX_UPSCALE, boxWidth / rect.width, boxHeight / rect.height);
 }
 
+/**
+ * How far from the screen's centre the near edge of the card `steps` out
+ * lands: the first neighbour's far end stops `NEIGHBOUR_GAP` beside the
+ * selected card (seen from `cameraZ`), and each card further out is
+ * `WINDOW_OFFSET_WIDTH` further. Gaps shrink with the layout.
+ */
+function stackOffset(
+  selectedHalf: number,
+  firstLength: number,
+  steps: number,
+  layout: number,
+  cameraZ: number,
+): number {
+  const first = ((selectedHalf + NEIGHBOUR_GAP * layout) * (cameraZ + firstLength)) / cameraZ;
+  return first + WINDOW_OFFSET_WIDTH * layout * (steps - 1);
+}
+
+/**
+ * The largest layout scale (up to 1) at which, for every selection, the
+ * outermost near edge on each side stays `SCREEN_MARGIN` inside the screen.
+ * Only the sides can overflow: every card is at most half the screen tall
+ * and recedes from its near edge, so the top and bottom always fit.
+ */
+function layoutScaleFor(windows: readonly WaylandWindow[], viewport: Viewport): number {
+  const { width, height } = viewport;
+  const cameraZ = cameraDistance(height, CLUTTER_FOV_DEGREES);
+  const room = width / 2 - SCREEN_MARGIN;
+  const widths = windows.map((window) => window.rect.width * fitScale(window.rect, viewport));
+  const fits = (layout: number) =>
+    widths.every((selectedWidth, selection) => {
+      const left = selection;
+      const right = widths.length - 1 - selection;
+      const sides: [number, number][] = [
+        [left, widths[selection - 1] ?? 0],
+        [right, widths[selection + 1] ?? 0],
+      ];
+      return sides.every(
+        ([cards, firstWidth]) =>
+          cards === 0 ||
+          stackOffset(
+            (selectedWidth * layout) / 2,
+            firstWidth * layout * FIRST_NEIGHBOUR_SCALE,
+            cards,
+            layout,
+            cameraZ,
+          ) <= room,
+      );
+    });
+  if (fits(1)) {
+    return 1;
+  }
+  // The offsets grow with the scale: search for the largest one that fits.
+  let low = 0.05;
+  let high = 1;
+  for (let i = 0; i < 20; i++) {
+    const middle = (low + high) / 2;
+    if (fits(middle)) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
 function windowRect(window: WaylandWindow | undefined): Rect | null {
   return window ? { ...window.rect } : null;
 }
@@ -330,7 +431,8 @@ function cardTarget(
   viewport: Viewport,
 ): CardValues {
   const { selection, count } = state;
-  const fit = fitScale(rect, viewport);
+  const layout = (state.layoutScale ??= layoutScaleFor(state.windows, viewport));
+  const fit = fitScale(rect, viewport) * layout;
   if (index === selection || count <= 1) {
     return { pivotX: 0.5, translationX: 0, scale: fit, angle: 0 };
   }
@@ -341,17 +443,17 @@ function cardTarget(
   const steps = Math.abs(distance);
   // Half the selected card's width on screen.
   const selectedRect = windowRect(state.windows[selection]) ?? rect;
-  const selectedHalf = (selectedRect.width * fitScale(selectedRect, viewport)) / 2;
+  const selectedHalf = (selectedRect.width * fitScale(selectedRect, viewport) * layout) / 2;
   // The first neighbour on this side: its length into the screen.
   const firstRect = windowRect(state.windows[selection + side]) ?? rect;
-  const firstLength = firstRect.width * fitScale(firstRect, viewport) * FIRST_NEIGHBOUR_SCALE;
+  const firstLength =
+    firstRect.width * fitScale(firstRect, viewport) * layout * FIRST_NEIGHBOUR_SCALE;
   // Its near edge, placed so its far end (seen through the 60° camera at
   // distance D) lands at the selected card's edge plus the gap:
   // centre + (near - centre) * D / (D + length) = edge.
   const cameraZ = cameraDistance(height, CLUTTER_FOV_DEGREES);
-  const nearOffset = ((selectedHalf + NEIGHBOUR_GAP) * (cameraZ + firstLength)) / cameraZ;
   const nearEdge =
-    centerX + side * (nearOffset + WINDOW_OFFSET_WIDTH * (steps - 1));
+    centerX + side * stackOffset(selectedHalf, firstLength, steps, layout, cameraZ);
   const scale = fit * FIRST_NEIGHBOUR_SCALE * Math.pow(PREVIEW_SCALING_FACTOR, steps - 1);
   if (side < 0) {
     // Pivot on the left (outer) edge.

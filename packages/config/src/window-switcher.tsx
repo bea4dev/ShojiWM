@@ -173,6 +173,12 @@ export interface SwitcherLayout<State> {
   onPointerMotion?(state: State, event: InputGrabPointerMotionEvent, controls: SwitcherControls): void;
   onScroll?(state: State, event: InputGrabScrollEvent, controls: SwitcherControls): void;
   onSwipe?(state: State, event: GestureSwipeEvent, controls: SwitcherControls): void;
+  /**
+   * How window `index` moves between its pose on the desktop and its pose in
+   * the layout while opening (`from` the desktop) or closing (`to` it), at
+   * eased progress `t`. `null`: a straight blend of the two poses.
+   */
+  morph?(state: State, index: number, from: Pose, to: Pose, t: number): Pose | null;
   /** A left click that hit no window. */
   onClickOutside?(state: State, controls: SwitcherControls): void;
   /**
@@ -368,11 +374,18 @@ export function createWindowSwitcher<State>(
         const target = session.shownAfter.has(window.id)
           ? placeReal(rect, viewport, session.ranksAfter.get(window.id) ?? 0)
           : { ...from, z: from.z - fadeDepth(viewport.height, 0.15), opacity: 0 };
-        pose = lerpPose(from, target, eased);
+        pose =
+          (session.shownAfter.has(window.id)
+            ? layout.morph?.(session.state, index, from, target, eased)
+            : null) ?? lerpPose(from, target, eased);
       } else {
         const start = session.startPoses.get(window.id);
         const from = start ?? { ...shown, z: shown.z - fadeDepth(viewport.height, 0.3), opacity: 0 };
-        pose = session.phase === "entering" ? lerpPose(from, shown, eased) : shown;
+        pose =
+          session.phase !== "entering"
+            ? shown
+            : ((start ? layout.morph?.(session.state, index, from, shown, eased) : null) ??
+              lerpPose(from, shown, eased));
         const movingFrom = session.moveFrom.get(window.id);
         if (movingFrom && session.phase === "shown") {
           pose = lerpPose(movingFrom, shown, moved);
