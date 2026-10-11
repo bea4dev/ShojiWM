@@ -922,6 +922,30 @@ COMPOSITOR.key.bind("workspace-next", "Super+Ctrl+Down", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(1);
   scheduleWorkspaceBroadcast();
 });
+// Jump straight to workspace N: Ctrl+FN and Super+FN (your KDE keys), and
+// Super+N. Super+Shift+N sends the focused window to workspace N.
+for (let n = 1; n <= 9; n++) {
+  const goTo = () => {
+    HYBRID_WINDOW_MANAGER.activate(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), n);
+    scheduleWorkspaceBroadcast();
+  };
+  COMPOSITOR.key.bind(`workspace-${n}-ctrl-f`, `Ctrl+F${n}`, goTo);
+  COMPOSITOR.key.bind(`workspace-${n}-super-f`, `Super+F${n}`, goTo);
+  COMPOSITOR.key.bind(`workspace-${n}`, `Super+${n}`, goTo);
+  COMPOSITOR.key.bind(`window-to-workspace-${n}`, `Super+Shift+${n}`, () => {
+    const focused = HYBRID_WINDOW_MANAGER.listWindows().find((window) =>
+      window.isFocused.peek(),
+    );
+    if (focused) {
+      HYBRID_WINDOW_MANAGER.moveWindowToWorkspace(
+        focused,
+        HYBRID_WINDOW_MANAGER.getCurrentMonitorName(),
+        n,
+      );
+      scheduleWorkspaceBroadcast();
+    }
+  });
+}
 
 // Alt copies of the main shortcuts for the preview inside KDE.
 // KDE takes every Super shortcut before the preview window sees it.
