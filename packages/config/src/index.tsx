@@ -50,6 +50,11 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid } from "./window-grid";
+import {
+  jellyDragEffect,
+  jellyDragForget,
+  jellyDragOnWindowMove,
+} from "./jelly-drag";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -772,6 +777,14 @@ const LAYER_BLUR_MASK = compileLayerEffect({
   ],
 });
 
+// Jelly drag (like KDE's Wobbly Windows) while a window moves.
+// Set to false to turn it off. It shows only in a real session, not in the
+// preview inside KDE.
+const JELLY_DRAG = true;
+if (JELLY_DRAG) {
+  COMPOSITOR.effect.window = jellyDragEffect;
+}
+
 COMPOSITOR.effect.layer = (layer) => {
   const namespace = layer.namespace();
   // Both the LiquidIsland experiment and shoji-bar-3 draw only a translucent
@@ -875,6 +888,7 @@ COMPOSITOR.event.onStartClose((window) => {
 
 COMPOSITOR.event.onClose((window) => {
   HYBRID_WINDOW_MANAGER.onClose(window);
+  jellyDragForget(window);
   scheduleWorkspaceBroadcast();
 });
 
@@ -937,6 +951,7 @@ COMPOSITOR.cursor.bindAppLockIgnoreModifier("Super");
 
 COMPOSITOR.event.onWindowMove((event) => {
   HYBRID_WINDOW_MANAGER.onWindowMove(event);
+  jellyDragOnWindowMove(event);
 });
 
 COMPOSITOR.event.onWindowMaximizeRequest((event) => {
@@ -1409,4 +1424,3 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
 };
 
 export default COMPOSITOR;
-
