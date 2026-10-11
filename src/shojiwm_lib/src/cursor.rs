@@ -21,6 +21,35 @@ pub struct RuntimeCursorConfigUpdate {
     pub reload: bool,
 }
 
+/// `COMPOSITOR.cursor.setPosition`: where to move the cursor.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeCursorPositionTarget {
+    /// A point on `output`, placed like a pointer region's anchor.
+    Output {
+        output: String,
+        #[serde(default = "center_anchor")]
+        anchor: crate::runtime_pointer_region::PointerRegionAnchor,
+        #[serde(default)]
+        offset: crate::runtime_pointer_region::PointerRegionOffset,
+    },
+    /// Global logical coordinates in the output layout.
+    Global { x: f64, y: f64 },
+}
+
+fn center_anchor() -> crate::runtime_pointer_region::PointerRegionAnchor {
+    crate::runtime_pointer_region::PointerRegionAnchor::Center
+}
+
+/// `COMPOSITOR.cursor.getPosition`: the cursor as of the last pointer motion.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorPositionSnapshot {
+    pub x: f64,
+    pub y: f64,
+    pub output_name: Option<String>,
+}
+
 impl Cursor {
     pub fn load() -> Self {
         let name = std::env::var("XCURSOR_THEME")

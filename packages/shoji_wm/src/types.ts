@@ -1794,6 +1794,14 @@ export type KeyBindingEventPhase = "press" | "release";
 
 export interface KeyBindingOptions {
   on?: KeyBindingEventPhase;
+  /**
+   * Tap bindings (a bare modifier with `on: "release"`) only: fire only when
+   * the modifier is released within this many ms of being pressed, so holding
+   * it for a while (a drag, a combination never completed) does not trigger it.
+   * タップバインド（修飾キー単体＋`on: "release"`）専用: 押してからこの ms 以内に
+   * 離したときだけ発火します。長押し（ドラッグや途中でやめた組み合わせ）では発火しません。
+   */
+  within?: number;
 }
 
 /**
@@ -2200,6 +2208,72 @@ export interface CursorController {
   configure(config: CursorConfig): void;
   /** Reload the current theme and discard decoded cursor caches. / 現在のテーマをキャッシュ破棄して再読込します。 */
   reload(): void;
+
+  /**
+   * Move the cursor, either to global logical coordinates or to a point of an
+   * output placed like a pointer region (`anchor` defaults to `"center"`).
+   * Clients see it as an ordinary motion; `onPointerMove` does not fire, pointer
+   * regions do. Ignored while a client holds the pointer locked or confined,
+   * while a pointer button is held, and while the screen is locked.
+   * カーソルを移動します。全体の論理座標か、出力上の点（ポインター領域と同じ
+   * `anchor` 指定、既定は `"center"`）を指定します。クライアントには通常の移動として
+   * 届き、`onPointerMove` は発火せず、ポインター領域は判定されます。アプリがポインターを
+   * ロック・閉じ込め中、ボタン押下中、画面ロック中は無視されます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.cursor.setPosition({ x: 800, y: 500 });
+   * COMPOSITOR.cursor.setPosition({ output: "DP-1", anchor: "center" });
+   * ```
+   */
+  setPosition(position: CursorPositionTarget): void;
+
+  /**
+   * Where the cursor is, as of the last pointer motion (`undefined` before the
+   * first one). / 直近のポインター移動時点のカーソル位置（最初の移動前は `undefined`）。
+   */
+  getPosition(): CursorPosition | undefined;
+
+  /**
+   * Ignore client pointer locks and confinements (a game holding the cursor)
+   * while `true`. The client is told its lock was released; a lock it made for
+   * one use only is gone, as when the cursor leaves its window.
+   * `true` の間、アプリによるカーソルのロック・閉じ込め（ゲームなど）を無視します。
+   * アプリにはロック解除が通知されます。1回限りのロックは、カーソルがウィンドウを
+   * 出たときと同じく消えます。
+   */
+  setAppLockIgnored(ignored: boolean): void;
+
+  /**
+   * Ignore client pointer locks while `modifier` (e.g. `"Super"`) is held, so
+   * the cursor can leave a game without quitting it. Built on
+   * `setAppLockIgnored`; the compositor tracks the modifier itself.
+   * `modifier`（例: `"Super"`）を押している間、アプリのロックを無視します。
+   * ゲームを終了せずにカーソルを外へ出せます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.cursor.bindAppLockIgnoreModifier("Super");
+   * ```
+   */
+  bindAppLockIgnoreModifier(modifier: string): void;
+}
+
+export type CursorPositionTarget =
+  | { x: number; y: number }
+  | {
+      output: string;
+      /** Default `"center"`. */
+      anchor?: PointerRegionAnchor;
+      /** Moves the point after anchoring (x right, y down). */
+      offset?: { x?: number; y?: number };
+    };
+
+export interface CursorPosition {
+  x: number;
+  y: number;
+  /** The output under the cursor. */
+  outputName?: string;
 }
 
 export interface BorderValue {

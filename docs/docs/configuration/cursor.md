@@ -2,11 +2,12 @@
 sidebar_position: 4.5
 ---
 
-# Cursor theme
+# Cursor
 
 `COMPOSITOR.cursor` configures the XCursor theme used by ShojiWM's
 compositor-owned named cursors, including the default pointer and SSD resize
-cursors.
+cursors. It also [moves the cursor](#moving-the-cursor) and lets you
+[ignore app pointer locks](#ignoring-app-pointer-locks).
 
 ```ts
 COMPOSITOR.cursor.configure({
@@ -54,3 +55,84 @@ to reload its own settings before its client-owned cursor changes.
 
 Changing the cursor configuration never replaces or modifies a client-owned
 cursor surface.
+
+## Moving the cursor
+
+`setPosition` moves the cursor, either to global logical coordinates or to a
+point of an output. The output form places the point the same way as
+[pointer regions](./keybindings-and-pointer.md#pointer-regions): `anchor`
+(default `"center"`), then `offset` (x right, y down).
+
+```ts
+COMPOSITOR.cursor.setPosition({x: 800, y: 500});
+COMPOSITOR.cursor.setPosition({output: 'DP-1', anchor: 'center'});
+COMPOSITOR.cursor.setPosition({output: 'DP-1', anchor: 'top-right', offset: {x: -40, y: 40}});
+
+const position = COMPOSITOR.cursor.getPosition();
+// { x, y, outputName } — undefined until the pointer has moved once
+```
+
+- Clients see an ordinary motion: hover and pointer focus follow the cursor,
+  and pointer regions report `enter` / `leave`. `onPointerMove` does **not**
+  fire, so a listener that moves the cursor cannot call itself in a loop.
+- A point outside every output is moved to the nearest output. An output form
+  stays on the named output.
+- It is ignored while a client holds the pointer locked or confined (a game),
+  while a pointer button is held (a drag), and while the screen is locked.
+- `getPosition()` returns the position as of the last pointer motion without
+  asking the compositor, so it is cheap to call anywhere.
+
+```ts
+// Move the cursor to the centre of the next output
+COMPOSITOR.key.bind('cursor-next-output', 'Super+Ctrl+Right', () => {
+  const outputs = COMPOSITOR.output.list;
+  const current = COMPOSITOR.cursor.getPosition()?.outputName;
+  const next = outputs[(outputs.indexOf(current ?? '') + 1) % outputs.length];
+  if (next) COMPOSITOR.cursor.setPosition({output: next});
+});
+```
+
+Only your config can move the cursor. Wayland clients have no way to do so,
+and this API is not exposed to them.
+
+## Ignoring app pointer locks
+
+Games and other apps can lock the cursor in place or confine it to their
+window. While they hold it, the cursor cannot leave the window, so you cannot
+drag the game with `Super` or reach a bar on another output without quitting
+the game first.
+
+`bindAppLockIgnoreModifier(modifier)` ignores those locks while `modifier` is
+held. The default config uses `Super`:
+
+```ts
+COMPOSITOR.cursor.bindAppLockIgnoreModifier('Super');
+```
+
+Hold `Super`, and the cursor is free; with `Super` still held you can also
+drag the game window. Release it over the game and the lock comes back.
+
+To switch it on and off yourself, use `setAppLockIgnored`:
+
+```ts
+COMPOSITOR.cursor.setAppLockIgnored(true);   // ignore app locks
+COMPOSITOR.cursor.setAppLockIgnored(false);  // respect them again
+```
+
+While locks are ignored:
+
+- **The app is told its lock was released.** Most games (SDL and similar) keep
+  their lock and take it back on their own. A lock made for one use only, such
+  as a browser's pointer lock, is gone, just as when the cursor leaves the
+  window; click in the page again to lock it.
+- **The cursor appears where the app wants it.** Apps can say where the cursor
+  should show up when the lock ends (the crosshair, for instance); ShojiWM
+  follows that hint.
+- **The app stops receiving raw mouse motion**, so a game's camera does not
+  turn while you move the cursor across it.
+- **Over that app, ShojiWM shows its default arrow** instead of the app's own
+  cursor. Games usually hide the cursor while they lock it, so this is how you
+  can see that it is free. Elsewhere the cursor looks as usual.
+
+The modifier itself still reaches the focused app as a key, as it does for
+`Super` + drag.

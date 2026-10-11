@@ -417,7 +417,7 @@ fn setup_key_bindings(wm: &WindowManager, ipc: &Ipc, switcher: &WindowSwitcher) 
     };
     COMPOSITOR.key.bind("launcher", "Super+A", toggle_launcher.clone());
     // A Super tap: fires on release when nothing else was pressed meanwhile.
-    COMPOSITOR.key.bind_release("launcher-tap", "Super", toggle_launcher);
+    COMPOSITOR.key.bind_tap("launcher-tap", "Super", 300, toggle_launcher);
     {
         let wm = wm.clone();
         COMPOSITOR.key.bind("clipboard", "Super+V", move || {
@@ -541,6 +541,7 @@ fn setup_outputs_and_input() {
 
     COMPOSITOR.pointer.bind_window_move_modifier("Super");
     COMPOSITOR.pointer.bind_window_resize_modifier("Super");
+    COMPOSITOR.cursor.bind_app_lock_ignore_modifier("Super");
 }
 
 /// Window backdrop effects end with this stage so they can fade back in

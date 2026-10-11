@@ -440,6 +440,13 @@ impl ShojiWM {
             PointerRegionEventSnapshot, PointerRegionMotion, PointerRegionOutput,
         };
 
+        self.config_runtime
+            .host()
+            .set_cursor_position(crate::cursor::CursorPositionSnapshot {
+                x: pos.x,
+                y: pos.y,
+                output_name: self.output_at_point(pos).map(|output| output.name()),
+            });
         if self.pointer_regions.is_empty() {
             return;
         }
@@ -486,6 +493,167 @@ impl ShojiWM {
                 }
             }
         }
+    }
+
+    /// Re-evaluate whether client pointer locks and confinements are ignored,
+    /// after the setting or the held modifiers changed. Turning it on releases
+    /// the active constraint (a oneshot one is gone for good, as when the
+    /// pointer leaves the surface); turning it off lets the surface under the
+    /// pointer take its persistent constraint back.
+    pub(crate) fn refresh_app_lock_ignored(&mut self) {
+        let ignored = self.app_lock_ignored_setting
+            || self
+                .app_lock_ignore_modifier
+                .is_some_and(|modifier| modifier.held(&self.current_keyboard_modifiers));
+        if ignored == self.app_lock_ignored {
+            return;
+        }
+        self.app_lock_ignored = ignored;
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if ignored {
+            if let Some((surface, _)) = self.pointer_contents.surface.clone() {
+                let released = with_pointer_constraint(&surface, &pointer, |constraint| {
+                    let Some(constraint) = constraint else {
+                        return false;
+                    };
+                    if constraint.is_active() {
+                        constraint.deactivate();
+                    }
+                    true
+                });
+                // A oneshot constraint is gone after `deactivate`; remember the
+                // surface so its cursor stays overridden while the modifier is held.
+                if released {
+                    self.app_lock_released_surface = Some(surface);
+                }
+            }
+        } else {
+            self.app_lock_released_surface = None;
+            self.activate_pointer_constraint_at(pointer.current_location());
+        }
+        self.update_decoration_cursor_icon(pointer.current_location());
+    }
+
+    /// Whether the pointer is over a surface whose lock or confinement is
+    /// being ignored right now.
+    fn app_lock_released_under_pointer(&self, contents: &crate::state::PointerContents) -> bool {
+        if !self.app_lock_ignored {
+            return false;
+        }
+        let Some((surface, _)) = contents.surface.as_ref() else {
+            return false;
+        };
+        if self.app_lock_released_surface.as_ref() == Some(surface) {
+            return true;
+        }
+        self.seat.get_pointer().is_some_and(|pointer| {
+            with_pointer_constraint(surface, &pointer, |constraint| constraint.is_some())
+        })
+    }
+
+    /// `COMPOSITOR.cursor.setPosition`. Moves the cursor like an absolute
+    /// motion would (focus, hover, pointer regions) without reporting it to
+    /// `onPointerMove`. Ignored while a client holds the pointer locked or
+    /// confined, while a button is held, and while the session is locked.
+    pub(crate) fn set_cursor_position(&mut self, target: crate::cursor::RuntimeCursorPositionTarget) {
+        use crate::cursor::RuntimeCursorPositionTarget;
+
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let requested = match &target {
+            RuntimeCursorPositionTarget::Global { x, y } => Point::from((*x, *y)),
+            RuntimeCursorPositionTarget::Output {
+                output,
+                anchor,
+                offset,
+            } => {
+                let Some(geometry) = self
+                    .space
+                    .outputs()
+                    .find(|candidate| &candidate.name() == output)
+                    .and_then(|output| self.space.output_geometry(output))
+                else {
+                    warn!(output, "cursor setPosition: unknown output");
+                    return;
+                };
+                let geometry = geometry.to_f64();
+                let (fx, fy) = anchor.fraction();
+                let point: Point<f64, Logical> = Point::from((
+                    geometry.loc.x + fx * geometry.size.w + offset.x,
+                    geometry.loc.y + fy * geometry.size.h + offset.y,
+                ));
+                // Stay on the named output even past its edge.
+                let max_x = geometry.loc.x + geometry.size.w - POINTER_TRAILING_EDGE_INSET;
+                let max_y = geometry.loc.y + geometry.size.h - POINTER_TRAILING_EDGE_INSET;
+                Point::from((
+                    point.x.clamp(geometry.loc.x, max_x),
+                    point.y.clamp(geometry.loc.y, max_y),
+                ))
+            }
+        };
+        if !requested.x.is_finite() || !requested.y.is_finite() {
+            return;
+        }
+        let Some(pos) = constrain_pointer_location_to_outputs(
+            requested,
+            self.space
+                .outputs()
+                .filter_map(|output| self.space.output_geometry(output)),
+        ) else {
+            return;
+        };
+        if self.session_lock_active || pointer.is_grabbed() {
+            return;
+        }
+        if let Some((surface, _)) = self.pointer_contents.surface.as_ref()
+            && pointer.current_focus().as_ref() == Some(surface)
+            && with_pointer_constraint(surface, &pointer, |constraint| {
+                constraint.is_some_and(|constraint| constraint.is_active())
+            })
+        {
+            return;
+        }
+
+        let time = std::time::Duration::from(self.clock.now()).as_millis() as u32;
+        let serial = SERIAL_COUNTER.next_serial();
+        if self.runtime_input_grab.is_some() {
+            // The grab owns the pointer: move the cursor, focus nothing.
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: pos,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
+            self.request_redraw_for_pointer_motion();
+            return;
+        }
+
+        self.pointer_contents = self.pointer_contents_at(pos);
+        let under = self.pointer_contents.surface.clone();
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.activate_pointer_constraint_at(pos);
+        self.update_pointer_regions(pos, Point::default(), time);
+        self.update_decoration_hover_target(pos);
+        if !pointer.is_grabbed() {
+            self.update_decoration_cursor_icon(pos);
+        }
+        self.request_redraw_for_pointer_motion();
     }
 
     fn pointer_hit_target_snapshot(
@@ -806,6 +974,7 @@ impl ShojiWM {
                                     match tap_class {
                                         Some(class) if was_idle => {
                                             data.tap_armed_modifier = Some(class);
+                                            data.tap_armed_at = time;
                                             data.tap_interrupted = false;
                                         }
                                         _ => {
@@ -818,11 +987,15 @@ impl ShojiWM {
                                         && data.tap_armed_modifier == Some(class)
                                         && !data.tap_interrupted
                                     {
+                                        let held_ms = time.wrapping_sub(data.tap_armed_at);
                                         for binding in runtime_key_bindings.iter() {
                                             if binding.phase
                                                 == crate::runtime_key_binding::RuntimeKeyBindingPhase::Release
                                                 && binding.shortcut.modifier_class()
                                                     == Some(class)
+                                                && binding
+                                                    .within_ms
+                                                    .is_none_or(|within| held_ms <= within)
                                             {
                                                 data.pending_tap_binding_ids
                                                     .push(binding.id.clone());
@@ -995,6 +1168,7 @@ impl ShojiWM {
                         },
                     )
                     .unwrap_or(KeyboardAction::Forward);
+                self.refresh_app_lock_ignored();
 
                 match action {
                     KeyboardAction::Quit => self.shutdown(),
@@ -1161,15 +1335,19 @@ impl ShojiWM {
                         time: event.time_msec(),
                     },
                 );
-                pointer.relative_motion(
-                    self,
-                    under,
-                    &RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
-                    },
-                );
+                // While app locks are ignored the user is moving the cursor,
+                // not aiming: a game under it must not turn its camera too.
+                if !self.app_lock_ignored {
+                    pointer.relative_motion(
+                        self,
+                        under,
+                        &RelativeMotionEvent {
+                            delta: event.delta(),
+                            delta_unaccel: event.delta_unaccel(),
+                            utime: event.time(),
+                        },
+                    );
+                }
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
 
@@ -3168,7 +3346,10 @@ impl ShojiWM {
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
         let pointer_contents = self.pointer_contents_at(pos);
-        let next_override = if pointer_contents.layer.is_some() {
+        let next_override = if self.app_lock_released_under_pointer(&pointer_contents) {
+            // The app usually hid its cursor for the lock; show that it is free.
+            Some(CursorIcon::Default)
+        } else if pointer_contents.layer.is_some() {
             None
         } else {
             self.decoration_under(pos).and_then(|(window, hit)| {
@@ -3371,6 +3552,9 @@ impl ShojiWM {
         &mut self,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
+        if self.app_lock_ignored {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };

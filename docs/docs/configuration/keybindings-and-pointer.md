@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | Unique name (shown in help UIs). Re-binding the same id replaces it. |
 | `shortcut` | `string` | Modifier+key notation, e.g. `"Super+Shift+Left"` |
 | `handler` | `() => void` | Called when the shortcut fires |
-| `options` | `{on?: "press" \| "release"}` | When to fire — defaults to `"press"` |
+| `options` | `{on?: "press" \| "release", within?: number}` | When to fire — defaults to `"press"`. `within`: see [tap bindings](#tap-bindings-on-release) |
 
 ### Shortcut syntax
 
@@ -53,6 +53,15 @@ allowing `Super` to act as a modifier for other shortcuts.
 
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
+```
+
+Add `within` (milliseconds) to fire only on a quick tap. Holding the modifier
+longer, for a drag or while
+[ignoring a game's pointer lock](./cursor.md#ignoring-app-pointer-locks),
+then no longer opens the launcher on release. The default config uses 300 ms.
+
+```ts
+COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
 
 ### Quit and reload

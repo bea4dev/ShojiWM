@@ -29,7 +29,7 @@ pub enum PointerRegionAnchor {
 
 impl PointerRegionAnchor {
     /// Fraction of the output (and of the region) the anchor sits at.
-    fn fraction(self) -> (f64, f64) {
+    pub(crate) fn fraction(self) -> (f64, f64) {
         match self {
             Self::TopLeft => (0.0, 0.0),
             Self::Top => (0.5, 0.0),

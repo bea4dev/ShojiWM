@@ -8,6 +8,7 @@ interface RuntimeKeyBindingConfigEntry {
   id: string;
   shortcut: string;
   on: KeyBindingEventPhase;
+  within?: number;
 }
 
 type KeyBindingHandler = () => void;
@@ -43,6 +44,13 @@ function normalizePhase(options: KeyBindingOptions | undefined): KeyBindingEvent
   return options?.on ?? "press";
 }
 
+function normalizeWithin(within: number): number {
+  if (!Number.isFinite(within) || within < 0) {
+    throw new Error("key binding `within` must be a non-negative number of milliseconds");
+  }
+  return Math.round(within);
+}
+
 function cloneConfigEntry(
   entry: RuntimeKeyBindingConfigEntry,
 ): RuntimeKeyBindingConfigEntry {
@@ -59,6 +67,7 @@ export const KEY_BINDING_CONTROLLER: KeyBindingController = {
       id,
       shortcut: normalizeShortcut(shortcut),
       on: normalizePhase(options),
+      ...(options?.within === undefined ? {} : { within: normalizeWithin(options.within) }),
     };
 
     registrationEntriesTarget().set(id, entry);

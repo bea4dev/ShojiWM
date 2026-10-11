@@ -460,6 +460,16 @@ pub struct ShojiWM {
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
     pub pointer_regions: crate::runtime_pointer_region::PointerRegionTracker,
+    /// `COMPOSITOR.cursor.setAppLockIgnored`.
+    pub app_lock_ignored_setting: bool,
+    /// `COMPOSITOR.cursor.bindAppLockIgnoreModifier`.
+    pub app_lock_ignore_modifier: Option<RuntimePointerModifier>,
+    /// Effective: the setting, or the modifier held. Client pointer locks and
+    /// confinements stay inactive while set.
+    pub app_lock_ignored: bool,
+    /// The surface whose lock was released when ignoring began; its cursor is
+    /// overridden with the default one meanwhile.
+    pub app_lock_released_surface: Option<WlSurface>,
     pub runtime_window_resize_modifier: Option<RuntimePointerModifier>,
     pub runtime_input_config: RuntimeInputConfig,
     pub runtime_applied_xkb_config: Option<crate::runtime_input::RuntimeKeyboardInputConfig>,
@@ -481,6 +491,8 @@ pub struct ShojiWM {
     pub tap_pressed_keys: u32,
     pub tap_armed_modifier: Option<crate::runtime_key_binding::ModifierClass>,
     pub tap_interrupted: bool,
+    /// Event time (ms) the tap modifier was pressed, for `within`.
+    pub tap_armed_at: u32,
     pub pending_tap_binding_ids: Vec<String>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
@@ -1815,6 +1827,10 @@ impl ShojiWM {
             runtime_key_bindings: Vec::new(),
             runtime_window_move_modifier: None,
             pointer_regions: Default::default(),
+            app_lock_ignored_setting: false,
+            app_lock_ignore_modifier: None,
+            app_lock_ignored: false,
+            app_lock_released_surface: None,
             runtime_window_resize_modifier: None,
             runtime_input_config: Default::default(),
             runtime_applied_xkb_config: None,
@@ -1832,6 +1848,7 @@ impl ShojiWM {
             tap_pressed_keys: 0,
             tap_armed_modifier: None,
             tap_interrupted: false,
+            tap_armed_at: 0,
             pending_tap_binding_ids: Vec::new(),
             suggested_window_offset: None,
             async_asset_dirty: false,
@@ -2980,6 +2997,7 @@ impl ShojiWM {
                     self.apply_output_compositions(compositions);
                 }
                 HostMessage::InputGrab(update) => self.apply_runtime_input_grab_update(update),
+                HostMessage::CursorPosition(target) => self.set_cursor_position(target),
                 HostMessage::BackgroundEffect(config) => {
                     if self.configured_background_effect != config {
                         self.configured_background_effect = config;
@@ -3802,6 +3820,19 @@ impl ShojiWM {
 
     pub fn apply_runtime_pointer_config_update(&mut self, update: RuntimePointerConfigUpdate) {
         self.pointer_regions.set_regions(update.regions);
+        self.app_lock_ignored_setting = update.app_lock_ignored;
+        self.app_lock_ignore_modifier = update.app_lock_ignore_modifier.and_then(|shortcut| {
+            parse_runtime_pointer_modifier(&shortcut)
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        app_lock_ignore_modifier = shortcut,
+                        ?error,
+                        "ignoring invalid runtime pointer modifier"
+                    );
+                })
+                .ok()
+        });
+        self.refresh_app_lock_ignored();
         self.runtime_window_move_modifier = update.window_move_modifier.and_then(|shortcut| {
             match parse_runtime_pointer_modifier(&shortcut) {
                 Ok(modifier) => Some(modifier),

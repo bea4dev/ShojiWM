@@ -14,6 +14,10 @@ pub struct RuntimeKeyBindingEntry {
     pub shortcut: String,
     #[serde(default)]
     pub on: RuntimeKeyBindingPhase,
+    /// Tap bindings only: fire only if the modifier was released within this
+    /// many milliseconds of being pressed.
+    #[serde(default)]
+    pub within: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Default)]
@@ -35,6 +39,11 @@ impl RuntimeKeyBindingEntry {
                 self.shortcut.clone(),
             ));
         }
+        if self.within.is_some() && !shortcut.is_modifier_only() {
+            return Err(RuntimeKeyBindingParseError::WithinRequiresTap(
+                self.shortcut.clone(),
+            ));
+        }
         if shortcut.wheel_direction.is_some() && self.on != RuntimeKeyBindingPhase::Press {
             return Err(RuntimeKeyBindingParseError::WheelRequiresPress(
                 self.shortcut.clone(),
@@ -44,6 +53,7 @@ impl RuntimeKeyBindingEntry {
             id: self.id.clone(),
             phase: self.on,
             shortcut,
+            within_ms: self.within,
         })
     }
 }
@@ -70,6 +80,8 @@ pub struct CompiledRuntimeKeyBinding {
     pub id: String,
     pub phase: RuntimeKeyBindingPhase,
     pub shortcut: RuntimeKeyShortcut,
+    /// Tap bindings: the longest press, in ms, that still counts as a tap.
+    pub within_ms: Option<u32>,
 }
 
 impl CompiledRuntimeKeyBinding {
@@ -164,6 +176,8 @@ pub enum RuntimeKeyBindingParseError {
     ModifierOnlyRequiresRelease(String),
     #[error("mouse-wheel shortcut `{0}` is only valid with `on: \"press\"`")]
     WheelRequiresPress(String),
+    #[error("`within` on `{0}` only applies to modifier-only tap bindings")]
+    WithinRequiresTap(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
     UnknownModifier { shortcut: String, modifier: String },
     #[error("shortcut `{shortcut}` contains duplicate modifier `{modifier}`")]
@@ -347,6 +361,7 @@ mod tests {
             id: "test".to_string(),
             shortcut: shortcut.to_string(),
             on,
+            within: None,
         }
     }
 
@@ -431,6 +446,19 @@ mod tests {
             Err(RuntimeKeyBindingParseError::ModifierOnlyMultipleModifiers(
                 _
             )),
+        ));
+    }
+
+    #[test]
+    fn within_only_applies_to_tap_bindings() {
+        let mut tap = entry("Super", RuntimeKeyBindingPhase::Release);
+        tap.within = Some(300);
+        assert_eq!(tap.compile().unwrap().within_ms, Some(300));
+        let mut combo = entry("Super+T", RuntimeKeyBindingPhase::Press);
+        combo.within = Some(300);
+        assert!(matches!(
+            combo.compile(),
+            Err(RuntimeKeyBindingParseError::WithinRequiresTap(_)),
         ));
     }
 

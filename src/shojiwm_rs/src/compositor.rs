@@ -48,6 +48,9 @@ use shojiwm_lib::{
 };
 
 pub use shojiwm_lib::frame_pacing::FramePacing;
+pub use shojiwm_lib::cursor::{
+    CursorPositionSnapshot, RuntimeCursorPositionTarget as CursorPosition,
+};
 pub use shojiwm_lib::runtime_pointer_region::{
     PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionOffset, PointerRegionPhase,
     PointerRegionSize,
@@ -244,6 +247,45 @@ impl CursorController {
             });
         });
     }
+
+    /// Move the cursor. Ignored while a client holds the pointer locked or
+    /// confined, while a button is held, and while the session is locked.
+    ///
+    /// ```no_run
+    /// use shojiwm_rs::prelude::*;
+    ///
+    /// COMPOSITOR.cursor.set_position(CursorPosition::Global { x: 800.0, y: 500.0 });
+    /// COMPOSITOR.cursor.set_position(CursorPosition::Output {
+    ///     output: "DP-1".into(),
+    ///     anchor: PointerRegionAnchor::Center,
+    ///     offset: Default::default(),
+    /// });
+    /// ```
+    pub fn set_position(&self, position: CursorPosition) {
+        runtime::send(HostMessage::CursorPosition(position));
+    }
+
+    /// Where the cursor is, as of the last pointer motion.
+    pub fn get_position(&self) -> Option<CursorPositionSnapshot> {
+        runtime::host().and_then(|host| host.cursor_position())
+    }
+
+    /// Ignore client pointer locks and confinements (a game holding the
+    /// cursor) while `ignored`.
+    pub fn set_app_lock_ignored(&self, ignored: bool) {
+        with_registry(|registry| {
+            registry.app_lock_ignored = ignored;
+            registry.pending.pointer = true;
+        });
+    }
+
+    /// Ignore client pointer locks while `modifier` (e.g. `"Super"`) is held.
+    pub fn bind_app_lock_ignore_modifier(&self, modifier: &str) {
+        with_registry(|registry| {
+            registry.app_lock_ignore_modifier = Some(modifier.to_owned());
+            registry.pending.pointer = true;
+        });
+    }
 }
 
 /// How to start a process.
@@ -364,19 +406,48 @@ impl KeyController {
         phase: RuntimeKeyBindingPhase,
         handler: impl Fn() + 'static,
     ) {
-        let entry = RuntimeKeyBindingEntry {
-            id: id.to_owned(),
-            shortcut: shortcut.to_owned(),
-            on: phase,
-        };
+        self.bind_entry(
+            RuntimeKeyBindingEntry {
+                id: id.to_owned(),
+                shortcut: shortcut.to_owned(),
+                on: phase,
+                within: None,
+            },
+            handler,
+        );
+    }
+
+    /// A modifier tap (e.g. `"Super"`) that fires only when released within
+    /// `within_ms` of being pressed, so holding the modifier for a while (a
+    /// drag, a combination never completed) does not trigger it.
+    pub fn bind_tap(
+        &self,
+        id: &str,
+        modifier: &str,
+        within_ms: u32,
+        handler: impl Fn() + 'static,
+    ) {
+        self.bind_entry(
+            RuntimeKeyBindingEntry {
+                id: id.to_owned(),
+                shortcut: modifier.to_owned(),
+                on: RuntimeKeyBindingPhase::Release,
+                within: Some(within_ms),
+            },
+            handler,
+        );
+    }
+
+    fn bind_entry(&self, entry: RuntimeKeyBindingEntry, handler: impl Fn() + 'static) {
+        let id = entry.id.clone();
         if let Err(error) = entry.compile() {
-            tracing::warn!(id, shortcut, %error, "ignoring invalid key binding");
+            tracing::warn!(id, shortcut = entry.shortcut, %error, "ignoring invalid key binding");
             return;
         }
         with_registry(|registry| {
             registry.key_bindings.retain(|existing| existing.id != id);
             registry.key_bindings.push(entry);
-            registry.key_handlers.insert(id.to_owned(), Rc::new(handler));
+            registry.key_handlers.insert(id, Rc::new(handler));
             registry.pending.key_bindings = true;
         });
     }

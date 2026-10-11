@@ -8,6 +8,12 @@ pub struct RuntimePointerConfigUpdate {
     /// `COMPOSITOR.pointer.defineRegion`. The whole set, replacing the previous one.
     #[serde(default)]
     pub regions: Vec<crate::runtime_pointer_region::PointerRegionSpec>,
+    /// `COMPOSITOR.cursor.setAppLockIgnored`.
+    #[serde(default)]
+    pub app_lock_ignored: bool,
+    /// `COMPOSITOR.cursor.bindAppLockIgnoreModifier`.
+    #[serde(default)]
+    pub app_lock_ignore_modifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +30,14 @@ impl RuntimePointerModifier {
             && self.alt == modifiers.alt
             && self.shift == modifiers.shift
             && self.logo == modifiers.logo
+    }
+
+    /// Every modifier of this combination is held (others may be too).
+    pub fn held(&self, modifiers: &ModifiersState) -> bool {
+        (!self.ctrl || modifiers.ctrl)
+            && (!self.alt || modifiers.alt)
+            && (!self.shift || modifiers.shift)
+            && (!self.logo || modifiers.logo)
     }
 }
 

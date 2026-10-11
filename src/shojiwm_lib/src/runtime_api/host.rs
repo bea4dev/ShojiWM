@@ -76,6 +76,8 @@ pub enum HostMessage {
     /// `COMPOSITOR.effect.background_effect` changed after it was first read
     /// (one of its signals moved). Replaces the effect; `None` turns it off.
     BackgroundEffect(Option<crate::ssd::BackgroundEffectConfig>),
+    /// Move the cursor (`COMPOSITOR.cursor.setPosition`).
+    CursorPosition(crate::cursor::RuntimeCursorPositionTarget),
 }
 
 /// When a runtime that keeps a clock per output (see `SchedulerTickRequest`)
@@ -151,6 +153,7 @@ struct HostInner {
     queue: Mutex<VecDeque<HostMessage>>,
     wake_requested: AtomicBool,
     ping: Mutex<Option<Ping>>,
+    cursor_position: Mutex<Option<crate::cursor::CursorPositionSnapshot>>,
 }
 
 impl std::fmt::Debug for RuntimeHost {
@@ -201,6 +204,20 @@ impl RuntimeHost {
     /// for compositor-side state such as output overlays.
     pub fn notify(&self) {
         self.ping();
+    }
+
+    /// Record where the cursor is, for `COMPOSITOR.cursor.getPosition`.
+    /// Compositor side, after every pointer motion.
+    pub fn set_cursor_position(&self, position: crate::cursor::CursorPositionSnapshot) {
+        if let Ok(mut slot) = self.inner.cursor_position.lock() {
+            *slot = Some(position);
+        }
+    }
+
+    /// The cursor as of the last pointer motion; `None` before the first one.
+    /// Readable from the runtime's own thread.
+    pub fn cursor_position(&self) -> Option<crate::cursor::CursorPositionSnapshot> {
+        self.inner.cursor_position.lock().ok()?.clone()
     }
 
     /// Next queued message, oldest first. Compositor side.

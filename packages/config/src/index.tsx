@@ -416,9 +416,10 @@ function toggleLauncher() {
   });
 }
 COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
-// Super tap (fires on release only, when no other key/button was pressed in between).
+// Super tap: fires on a quick release (within 300 ms) with no other key/button pressed in between.
 COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
   on: "release",
+  within: 300,
 });
 // The same launcher panel with its field pointed at the clipboard's history.
 function toggleClipboard() {
@@ -803,6 +804,7 @@ COMPOSITOR.event.onWindowResize((event) => {
 
 COMPOSITOR.pointer.bindWindowMoveModifier("Super");
 COMPOSITOR.pointer.bindWindowResizeModifier("Super");
+COMPOSITOR.cursor.bindAppLockIgnoreModifier("Super");
 
 COMPOSITOR.event.onWindowMove((event) => {
   HYBRID_WINDOW_MANAGER.onWindowMove(event);

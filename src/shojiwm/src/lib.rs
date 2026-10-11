@@ -441,6 +441,126 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
+    /// `COMPOSITOR.cursor`: setPosition reaches the host at once, getPosition
+    /// reads what the compositor published, the app lock settings ride the
+    /// pointer config, and a tap's `within` reaches the key binding entry.
+    #[test]
+    fn typescript_runtime_controls_the_cursor() {
+        use shojiwm_lib::cursor::{CursorPositionSnapshot, RuntimeCursorPositionTarget};
+        use shojiwm_lib::runtime_pointer_region::PointerRegionAnchor;
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-cursor-control-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.cursor.bindAppLockIgnoreModifier("Super");
+COMPOSITOR.key.bind("tap", "Super", () => {}, { on: "release", within: 250 });
+COMPOSITOR.key.bind("warp", "Super+W", () => {
+  const position = COMPOSITOR.cursor.getPosition();
+  COMPOSITOR.key.bind(
+    `seen-${position?.x}-${position?.y}-${position?.outputName}`,
+    "Super+F3",
+    () => {},
+  );
+  COMPOSITOR.cursor.setPosition({ output: "eDP-1", anchor: "bottom-right", offset: { x: -10 } });
+  COMPOSITOR.cursor.setPosition({ x: 5, y: 6 });
+  COMPOSITOR.cursor.setAppLockIgnored(true);
+});
+COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
+"#,
+        )
+        .expect("test config should be written");
+        let args = CommonArgs::parse(
+            &[
+                "--dev".to_string(),
+                "--config".to_string(),
+                config_path.display().to_string(),
+                "--runtime-dir".to_string(),
+                repository_root.display().to_string(),
+            ],
+            TypeScriptLauncher.extra_args(),
+        );
+        let host = RuntimeHost::detached();
+        let mut runtime =
+            shojiwm_lib::runtime_api::RuntimeBoot::new(Box::new(TypeScriptLauncher), &args)
+                .launch(host.clone());
+        runtime.preload().expect("config should preload");
+        runtime.enable().expect("config should enable");
+
+        let mut pointer = None;
+        let mut tap_within = None;
+        while let Some(message) = host.pop() {
+            match message {
+                HostMessage::Pointer(update) => pointer = Some(update),
+                HostMessage::KeyBindings(update) => {
+                    tap_within = update
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == "tap")
+                        .map(|entry| entry.within);
+                }
+                _ => {}
+            }
+        }
+        let pointer = pointer.expect("pointer config should be published");
+        assert_eq!(pointer.app_lock_ignore_modifier.as_deref(), Some("Super"));
+        assert!(!pointer.app_lock_ignored);
+        assert_eq!(tap_within, Some(Some(250)));
+
+        host.set_cursor_position(CursorPositionSnapshot {
+            x: 12.0,
+            y: 34.0,
+            output_name: Some("eDP-1".into()),
+        });
+        assert!(
+            runtime
+                .invoke_key_binding("warp", 1)
+                .expect("key binding should run")
+                .invoked
+        );
+        let mut targets = Vec::new();
+        let mut ids = Vec::new();
+        let mut ignored = None;
+        while let Some(message) = host.pop() {
+            match message {
+                HostMessage::CursorPosition(target) => targets.push(target),
+                HostMessage::KeyBindings(update) => {
+                    ids = update.entries.into_iter().map(|entry| entry.id).collect();
+                }
+                HostMessage::Pointer(update) => ignored = Some(update.app_lock_ignored),
+                _ => {}
+            }
+        }
+        assert!(ids.contains(&"seen-12-34-eDP-1".to_string()), "{ids:?}");
+        assert_eq!(
+            targets,
+            vec![
+                RuntimeCursorPositionTarget::Output {
+                    output: "eDP-1".into(),
+                    anchor: PointerRegionAnchor::BottomRight,
+                    offset: shojiwm_lib::runtime_pointer_region::PointerRegionOffset {
+                        x: -10.0,
+                        y: 0.0,
+                    },
+                },
+                RuntimeCursorPositionTarget::Global { x: 5.0, y: 6.0 },
+            ]
+        );
+        assert_eq!(ignored, Some(true));
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
     #[test]
     fn unhandled_requests_fall_back_to_built_in_behavior() {
         let mut runtime =

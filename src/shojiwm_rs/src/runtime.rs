@@ -126,6 +126,8 @@ pub(crate) struct Registry {
     pub window_move_modifier: Option<String>,
     pub window_resize_modifier: Option<String>,
     pub pointer_regions: Vec<shojiwm_lib::runtime_pointer_region::PointerRegionSpec>,
+    pub app_lock_ignored: bool,
+    pub app_lock_ignore_modifier: Option<String>,
     /// Handlers of `bind_hot_corner`, by region id.
     pub region_handlers: HashMap<
         String,
@@ -415,6 +417,8 @@ pub(crate) fn publish_pending() {
                     window_move_modifier: registry.window_move_modifier.clone(),
                     window_resize_modifier: registry.window_resize_modifier.clone(),
                     regions: registry.pointer_regions.clone(),
+                    app_lock_ignored: registry.app_lock_ignored,
+                    app_lock_ignore_modifier: registry.app_lock_ignore_modifier.clone(),
                 },
             ));
         }

@@ -13,6 +13,8 @@ interface RuntimePointerConfig {
   windowMoveModifier?: string;
   windowResizeModifier?: string;
   regions?: RuntimePointerRegion[];
+  appLockIgnored?: boolean;
+  appLockIgnoreModifier?: string;
 }
 
 type RegionEventSource = (listener: PointerRegionListener) => () => void;
@@ -181,6 +183,22 @@ function normalizeRegion(id: string, options: PointerRegionOptions): RuntimePoin
     ignoreWhenFullscreen: options.ignoreWhenFullscreen ?? false,
     ignoreWhileButtonHeld: options.ignoreWhileButtonHeld ?? false,
   };
+}
+
+/** @internal `COMPOSITOR.cursor.setAppLockIgnored`. */
+export function setAppLockIgnored(ignored: boolean): void {
+  registrationTarget().appLockIgnored = ignored === true;
+  if (!stagedPointerConfig) {
+    pendingPointerConfig = true;
+  }
+}
+
+/** @internal `COMPOSITOR.cursor.bindAppLockIgnoreModifier`. */
+export function bindAppLockIgnoreModifier(modifier: string): void {
+  registrationTarget().appLockIgnoreModifier = normalizeModifier(modifier);
+  if (!stagedPointerConfig) {
+    pendingPointerConfig = true;
+  }
 }
 
 export function beginPointerConfigRegistration(): void {

@@ -1259,6 +1259,7 @@ impl EmbeddedDecorationEvaluator {
             self.script_path.clone(),
             self.config_path.clone(),
             self.working_dir.clone(),
+            Some(self.host.clone()),
         )
         .map_err(DecorationEvaluationError::RuntimeProtocol)?;
         Ok(EmbeddedDecorationRuntime {

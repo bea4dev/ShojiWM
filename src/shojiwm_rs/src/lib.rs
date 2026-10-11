@@ -94,7 +94,8 @@ pub mod prelude {
             set_timeout,
         },
         compositor::{
-            Command, DisableEvent, EnableEvent, FramePacing, HotCorner, HotCornerOptions,
+            Command, CursorPosition, CursorPositionSnapshot, DisableEvent, EnableEvent,
+            FramePacing, HotCorner, HotCornerOptions,
             InputChangeEvent, OutputChangeEvent, OutputConfig, OutputContext, OutputPower,
             OutputPowerOptions, PointerRegion, PointerRegionAnchor, PointerRegionEventSnapshot,
             PointerRegionOffset, PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,

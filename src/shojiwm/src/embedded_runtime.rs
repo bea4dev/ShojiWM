@@ -50,7 +50,7 @@ impl Drop for TestRuntimeDir {
 use rustyscript::{
     Module, Runtime, RuntimeOptions,
     deno_core::{
-        GarbageCollected, ModuleSource, ModuleSourceCode, ModuleSpecifier,
+        GarbageCollected, ModuleSource, ModuleSourceCode, ModuleSpecifier, OpState,
         error::ModuleLoaderError, extension, op2, v8,
     },
     json_args,
@@ -2433,6 +2433,36 @@ fn set_pending_native_response(
     Ok(())
 }
 
+/// The host of the compositor this isolate serves. Kept in the isolate's op
+/// state rather than `WAKE_HOST`, which belongs to whichever runtime started last.
+fn isolate_host(state: &OpState) -> Option<shojiwm_lib::runtime_api::RuntimeHost> {
+    state
+        .try_borrow::<shojiwm_lib::runtime_api::RuntimeHost>()
+        .cloned()
+}
+
+/// `COMPOSITOR.cursor.setPosition`: sent like any other host side effect, so it works
+/// from key bindings, IPC handlers and timers alike.
+#[op2]
+fn op_shoji_cursor_set_position(
+    state: &mut OpState,
+    #[serde] target: shojiwm_lib::cursor::RuntimeCursorPositionTarget,
+) {
+    if let Some(host) = isolate_host(state) {
+        host.send(shojiwm_lib::runtime_api::HostMessage::CursorPosition(target));
+    }
+}
+
+/// `COMPOSITOR.cursor.getPosition`: the compositor publishes the cursor after every
+/// pointer motion, so this reads it without a round trip.
+#[op2]
+#[serde]
+fn op_shoji_cursor_position(
+    state: &mut OpState,
+) -> Option<shojiwm_lib::cursor::CursorPositionSnapshot> {
+    isolate_host(state)?.cursor_position()
+}
+
 extension!(
     shoji_runtime_bridge,
     ops = [
@@ -2445,6 +2475,8 @@ extension!(
         op_shoji_wake_compositor,
         op_shoji_output_power,
         op_shoji_input_grab,
+        op_shoji_cursor_set_position,
+        op_shoji_cursor_position,
     ],
     objects = [
         ShojiRuntimeBridge,
@@ -2858,6 +2890,7 @@ impl EmbeddedRuntime {
         script_path: PathBuf,
         config_path: PathBuf,
         working_dir: Option<PathBuf>,
+        host: Option<shojiwm_lib::runtime_api::RuntimeHost>,
     ) -> Result<Self, String> {
         let bridge_id = NEXT_BRIDGE_ID.fetch_add(1, Ordering::Relaxed);
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2896,6 +2929,7 @@ impl EmbeddedRuntime {
                     &script_path,
                     &config_path,
                     working_dir.as_deref(),
+                    host,
                     &ready_tx,
                 );
                 shojiwm_lib::backend::overlay::close_owner(&overlay_owner_for_thread);
@@ -3159,6 +3193,7 @@ fn run_runtime(
     script_path: &PathBuf,
     config_path: &std::path::Path,
     working_dir: Option<&std::path::Path>,
+    host: Option<shojiwm_lib::runtime_api::RuntimeHost>,
     ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
     #[cfg(test)]
@@ -3198,6 +3233,9 @@ fn run_runtime(
         ..Default::default()
     })
     .map_err(|error| format!("failed to create RustyScript runtime: {error}"))?;
+    if let Some(host) = host {
+        runtime.deno_runtime().op_state().borrow_mut().put(host);
+    }
 
     runtime
         .set_current_dir(&runtime_working_dir)

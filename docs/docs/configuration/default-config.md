@@ -33,7 +33,7 @@ by default (see [Input](#input)).
 | `Super` + `D` | Discord |
 | `Super` + `E` | File manager (Dolphin) |
 | `Super` + `A` | Toggle the start menu (shoji-bar-3) |
-| `Super` (tap) | Toggle the start menu — a quick tap with no other key |
+| `Super` (tap) | Toggle the start menu — a quick tap (under 300 ms) with no other key |
 | `Super` + `V` | Toggle clipboard history (shoji-bar-3) |
 | `Super` + `P` | Screenshot a region (hyprshot → swappy) |
 | `Super` + `Ctrl` + `P` | Screenshot a region, freezing the screen first |
@@ -43,6 +43,7 @@ by default (see [Input](#input)).
 | Shortcut | Action |
 | --- | --- |
 | `Super` + drag | Move a window — hold `Super` and drag anywhere on it |
+| `Super` (hold) | Free the cursor from a game that locks it — [details](./cursor.md#ignoring-app-pointer-locks) |
 | `Super` + `Q` | Close the focused window |
 | `Super` + `M` | Toggle maximize on the focused window |
 | `Super` + `F` | Toggle fullscreen on the focused window (compositor-side, see below) |

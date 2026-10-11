@@ -152,6 +152,9 @@ smithay::delegate_dispatch2!(ShojiWM);
 
 impl PointerConstraintsHandler for ShojiWM {
     fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        if self.app_lock_ignored {
+            return;
+        }
         if pointer.current_focus().as_ref() != Some(surface) {
             return;
         }

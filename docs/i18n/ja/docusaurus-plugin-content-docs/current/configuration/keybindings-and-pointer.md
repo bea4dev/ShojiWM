@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | 一意な名前（ヘルプ UI に表示）。同じ id で再登録すると上書き。 |
 | `shortcut` | `string` | モディファイア＋キーの記法（例: `"Super+Shift+Left"`） |
 | `handler` | `() => void` | ショートカット発火時に呼ばれる |
-| `options` | `{on?: "press" \| "release"}` | 発火タイミング。デフォルトは `"press"` |
+| `options` | `{on?: "press" \| "release", within?: number}` | 発火タイミング。デフォルトは `"press"`。`within` は下の「タップバインド」を参照 |
 
 ### ショートカットの記法
 
@@ -47,6 +47,15 @@ COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
 
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
+```
+
+`within`（ミリ秒）を付けると、素早いタップのときだけ発火します。ドラッグや
+[ゲームのポインターロックの無視](./cursor.md#アプリのポインターロックを無視する)で
+モディファイアを長く押していた場合は、離してもランチャーが開きません。
+デフォルト設定では 300ms にしています。
+
+```ts
+COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
 
 ### 終了とリロード

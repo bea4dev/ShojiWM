@@ -1,9 +1,33 @@
 import { ENV_CONTROLLER } from "./env";
+import { bindAppLockIgnoreModifier, setAppLockIgnored } from "./pointer";
 import type {
   CursorConfig,
   CursorController,
+  CursorPosition,
+  CursorPositionTarget,
   RuntimeCursorConfigUpdate,
 } from "./types";
+
+type NativeCursorSetPosition = (target: CursorPositionTarget) => void;
+type NativeCursorPosition = () => CursorPosition | null | undefined;
+
+function normalizePositionTarget(target: CursorPositionTarget): CursorPositionTarget {
+  if ("output" in target) {
+    if (typeof target.output !== "string" || target.output.length === 0) {
+      throw new Error("cursor setPosition: output must be a non-empty string");
+    }
+    const x = target.offset?.x ?? 0;
+    const y = target.offset?.y ?? 0;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error("cursor setPosition: offset must be finite");
+    }
+    return { output: target.output, anchor: target.anchor ?? "center", offset: { x, y } };
+  }
+  if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) {
+    throw new Error("cursor setPosition: x and y must be finite numbers");
+  }
+  return { x: target.x, y: target.y };
+}
 
 const DEFAULT_CURSOR_THEME = "default";
 const DEFAULT_CURSOR_SIZE = 24;
@@ -61,6 +85,32 @@ export const CURSOR_CONTROLLER: CursorController = {
   reload() {
     publishCursorEnvironment(currentConfig);
     pendingConfig = { ...currentConfig, reload: true };
+  },
+  setPosition(position) {
+    const native = (
+      globalThis as { __SHOJI_CURSOR_SET_POSITION__?: NativeCursorSetPosition }
+    ).__SHOJI_CURSOR_SET_POSITION__;
+    native?.(normalizePositionTarget(position));
+  },
+  getPosition() {
+    const native = (
+      globalThis as { __SHOJI_CURSOR_POSITION__?: NativeCursorPosition }
+    ).__SHOJI_CURSOR_POSITION__;
+    const position = native?.();
+    if (!position) {
+      return undefined;
+    }
+    return {
+      x: position.x,
+      y: position.y,
+      ...(position.outputName ? { outputName: position.outputName } : {}),
+    };
+  },
+  setAppLockIgnored(ignored) {
+    setAppLockIgnored(ignored);
+  },
+  bindAppLockIgnoreModifier(modifier) {
+    bindAppLockIgnoreModifier(modifier);
   },
 };
 
