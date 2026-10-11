@@ -48,6 +48,7 @@ pub mod input;
 pub mod keyboard_layout;
 pub mod output_power;
 pub mod presentation;
+pub mod presentation_test_client;
 pub mod process_env;
 pub mod profiler;
 pub mod protocols;

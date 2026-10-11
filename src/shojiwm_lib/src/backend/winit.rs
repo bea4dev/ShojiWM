@@ -1121,15 +1121,24 @@ pub fn init_winit(
                         } else {
                             state.composition_windows.insert(output.name(), composition_windows);
                         }
-                        let built = built.unwrap_or_else(|error| {
+                        let mut built = built.unwrap_or_else(|error| {
                             warn!(?error, "failed to build the winit scene");
                             crate::backend::composition::BuiltScene {
                                 elements: Vec::new(),
                                 below_layers: 0,
                                 covers_fullscreen: false,
+                                presentation: Default::default(),
                             }
                         });
+                        for snapshot in state
+                            .live_window_snapshots
+                            .values()
+                            .chain(state.complete_window_snapshots.values())
+                        {
+                            built.presentation.add_snapshot(snapshot);
+                        }
                         let scene_elements = built.elements;
+                        let composition_presentation = built.presentation;
                         let mut overlay_below_layers = built.below_layers;
 
                         let computed_damage = if state.damage_blink_enabled {
@@ -1237,6 +1246,27 @@ pub fn init_winit(
                         timing.scene_build_elapsed_ms =
                             scene_build_started_at.elapsed().as_secs_f64() * 1000.0;
 
+                        if elements.is_empty() {
+                            if let Some(targets) =
+                                state.composition_targets.get_mut(&output.name())
+                            {
+                                targets.clear_presentation();
+                            }
+                            update_primary_scanout_output(
+                                &state.space,
+                                &output,
+                                &state.cursor_status,
+                                state.session_lock_surface_for_output(&output).as_ref(),
+                                &Default::default(),
+                                &state.window_decorations,
+                                &crate::presentation::WindowPrimaryOutputContext {
+                                    composition_targets: &state.composition_targets,
+                                    snapshot_window_ids: None,
+                                    restore_presented: false,
+                                    restore_replacements: false,
+                                },
+                            );
+                        }
                         if !elements.is_empty() {
                             let frame_target = state.clock.now()
                                 + output
@@ -1259,6 +1289,27 @@ pub fn init_winit(
                             timing.render_elapsed_ms =
                                 render_started_at.elapsed().as_secs_f64() * 1000.0;
                             if let Ok(render_output_result) = render_output_result {
+                                let output_states = &render_output_result.states;
+                                let composition_states = if state.session_lock_active {
+                                    Default::default()
+                                } else {
+                                    composition_presentation.presented_states(output_states)
+                                };
+                                let mut effective_render_states = output_states.clone();
+                                if !state.session_lock_active {
+                                    crate::backend::composition::merge_presented_states(
+                                        &mut effective_render_states,
+                                        &composition_presentation.source_states(output_states),
+                                    );
+                                }
+                                if let Some(targets) =
+                                    state.composition_targets.get_mut(&output.name())
+                                {
+                                    targets.update_presentation(
+                                        composition_states,
+                                        effective_render_states.clone(),
+                                    );
+                                }
                                 if manual_invalidate_debug_enabled() {
                                     info!(
                                         output = %output.name(),
@@ -1272,24 +1323,16 @@ pub fn init_winit(
                                     &output,
                                     &state.cursor_status,
                                     state.session_lock_surface_for_output(&output).as_ref(),
-                                    &render_output_result.states,
+                                    &effective_render_states,
                                     &state.window_decorations,
+                                    &crate::presentation::WindowPrimaryOutputContext {
+                                        composition_targets: &state.composition_targets,
+                                        snapshot_window_ids: (!state.session_lock_active)
+                                            .then_some(&state.transform_snapshot_window_ids),
+                                        restore_presented: false,
+                                        restore_replacements: false,
+                                    },
                                 );
-                                // Windows drawn through a full-window snapshot have no surface
-                                // element in the render states; keep them on this output so their
-                                // frame callbacks are not throttled (see the tty backend).
-                                for window in state.space.elements_for_output(&output) {
-                                    if state.window_decorations.get(window).is_some_and(|decoration| {
-                                        state
-                                            .transform_snapshot_window_ids
-                                            .contains(&decoration.snapshot.id)
-                                    }) {
-                                        crate::presentation::restore_primary_scanout_for_offscreen_window(
-                                            window, &output,
-                                        );
-                                    }
-                                }
-
                                 let frame_time = Duration::from(state.clock.now())
                                     + output
                                         .current_mode()
@@ -1304,7 +1347,7 @@ pub fn init_winit(
                                             state
                                                 .session_lock_surface_for_output(&output)
                                                 .as_ref(),
-                                            &render_output_result.states,
+                                            &effective_render_states,
                                         );
                                     output_presentation_feedback.presented::<Duration, Monotonic>(
                                         frame_time,
@@ -1317,7 +1360,7 @@ pub fn init_winit(
                                     );
                                 }
 
-                                state.post_repaint(&output, frame_time, &render_output_result.states);
+                                state.post_repaint(&output, frame_time, &effective_render_states);
                                 state.fps_counter.record_present(output.name().as_str());
                             }
                         }
