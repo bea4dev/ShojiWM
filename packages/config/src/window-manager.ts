@@ -161,7 +161,7 @@ const TILE_DRAG_WORKSPACE_EDGE_PX = 80;
 const TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS = 420;
 const TILE_GAP = 12;
 const TILE_MARGIN = 12;
-const TILE_WIDTH_RATIO = 0.5;
+const TILE_FIT_MAX_COLUMNS = 3;
 const TILE_MIN_WIDTH = 240;
 // Fractional-scale rounding can leave a tile a hair past the screen edge;
 // overflow at or below this is "fully visible" for the focus-key pan step.
@@ -5468,9 +5468,17 @@ export class Workspace {
   }
 
   private defaultTileWidth(viewportRect: ManagedWindowRect): number {
+    // Up to TILE_FIT_MAX_COLUMNS windows share the screen evenly, so no
+    // window is cut at the edge. More windows scroll at that column width.
+    const columns = clamp(
+      this.tileableWindows().length,
+      1,
+      TILE_FIT_MAX_COLUMNS,
+    );
+    const gaps = TILE_GAP * (columns - 1);
     return Math.max(
       TILE_MIN_WIDTH,
-      read(viewportRect.width) * TILE_WIDTH_RATIO,
+      (read(viewportRect.width) - gaps) / columns,
     );
   }
 

@@ -53,7 +53,8 @@ import { createWindowGrid } from "./window-grid";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
-  QT_QPA_PLATFORMTHEME: "qt6ct",
+  // Follow the KDE theme (Breeze dark) instead of qt6ct.
+  QT_QPA_PLATFORMTHEME: "kde",
   QT_IM_MODULE: "fcitx",
   XMODIFIERS: "@im=fcitx",
   SDL_IM_MODULE: "fcitx",
