@@ -121,20 +121,44 @@ class IconProvider(QQuickImageProvider):
         return pixmap, pixmap.size()
 
 
+def read_desktop_entry(path: str) -> configparser.ConfigParser | None:
+    entry = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        entry.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        return None
+    return entry if entry.has_section("Desktop Entry") else None
+
+
 def icon_name(app_id: str) -> str:
-    """The Icon= of the app's desktop file, or the app id itself."""
+    """The Icon= of the app's desktop file, or the app id itself.
+
+    Like KDE's taskbar, it tries the app id, then the app id in lower case,
+    then any desktop file whose StartupWMClass matches. X11 apps such as
+    Chrome report a WM class ("Google-chrome"), not a desktop file name.
+    """
     dirs = [os.path.expanduser("~/.local/share")]
     dirs += os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")
-    for data_dir in dirs:
-        path = os.path.join(data_dir, "applications", f"{app_id}.desktop")
-        if not os.path.exists(path):
+    app_dirs = [os.path.join(data_dir, "applications") for data_dir in dirs]
+    for name in (app_id, app_id.lower()):
+        for app_dir in app_dirs:
+            path = os.path.join(app_dir, f"{name}.desktop")
+            if os.path.exists(path):
+                entry = read_desktop_entry(path)
+                if entry:
+                    return entry.get("Desktop Entry", "Icon", fallback=app_id)
+    for app_dir in app_dirs:
+        if not os.path.isdir(app_dir):
             continue
-        entry = configparser.ConfigParser(interpolation=None, strict=False)
-        try:
-            entry.read(path, encoding="utf-8")
-            return entry.get("Desktop Entry", "Icon", fallback=app_id)
-        except (configparser.Error, UnicodeDecodeError):
-            return app_id
+        for file_name in sorted(os.listdir(app_dir)):
+            if not file_name.endswith(".desktop"):
+                continue
+            entry = read_desktop_entry(os.path.join(app_dir, file_name))
+            if not entry:
+                continue
+            wm_class = entry.get("Desktop Entry", "StartupWMClass", fallback="")
+            if wm_class.lower() == app_id.lower():
+                return entry.get("Desktop Entry", "Icon", fallback=app_id)
     return app_id
 
 
