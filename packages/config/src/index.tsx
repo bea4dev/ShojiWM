@@ -56,6 +56,7 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
+import { broadcastSwitcherLabel } from "./switcher-label";
 import { createWindowGrid, createWindowView } from "./window-grid";
 import type { TitlebarButton } from "./window-switcher";
 import {
@@ -470,6 +471,12 @@ WORKSPACE_IPC.handle("debug.windowSwitcher", (params) => {
   return SWITCHERS.selectedWindowId.peek();
 });
 
+// Coverflow's title under the selected card, drawn by
+// ./helpers/switcher-label.py (started below).
+if (WINDOW_SWITCHER_STYLE === "coverflow") {
+  broadcastSwitcherLabel(WORKSPACE_IPC, WINDOW_SWITCHER, HYBRID_WINDOW_MANAGER);
+}
+
 // Debug: the last Magic Lamp runs with frame times; `durationMs` slows it.
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(
@@ -656,6 +663,17 @@ if (!INSIDE_KDE) {
     restart: "on-exit",
   });
 }
+// Draws the Coverflow switcher's title (see the helper's header).
+COMPOSITOR.process.service("switcher-label", {
+  command: [
+    "sh",
+    "-c",
+    'exec python3 "$HOME/.config/shojiwm/src/helpers/switcher-label.py" "$1"',
+    "switcher-label",
+    defaultSocketPath(),
+  ],
+  restart: "on-exit",
+});
 // cliphist clipboard history watchers. Text and image need separate watchers;
 // run as services so they are restarted if they ever exit.
 COMPOSITOR.process.service("cliphist-text", {
