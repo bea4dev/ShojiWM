@@ -453,13 +453,31 @@ COMPOSITOR.key.bind("alt-tab-switcher", "Alt+Tab", () => {
   WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
 });
 
-// Lock the session. No monitor argument: a lock covers every screen there is,
-// and the shell refuses to expose an unlock over the same socket.
+// Lock the screen with hyprlock (config in ~/.config/hypr/hyprlock.conf).
+// `pidof` stops a second lock screen from starting on top of the first.
+const LOCK_COMMAND = "pidof hyprlock || hyprlock";
 COMPOSITOR.key.bind("lock", "Super+L", () => {
-  COMPOSITOR.process.spawn({
-    command: "quickshell -p ~/.config/shoji-bar-3 ipc call session lock",
-  });
+  COMPOSITOR.process.spawn({ command: LOCK_COMMAND });
 });
+
+// Auto-lock: lock after 10 minutes away, and before the PC goes to sleep.
+// `loginctl lock-session` (and the KDE "Lock" button) also land here.
+if (!INSIDE_KDE) {
+  COMPOSITOR.process.service("auto-lock", {
+    command: [
+      "swayidle",
+      "-w",
+      "timeout",
+      "600",
+      LOCK_COMMAND,
+      "before-sleep",
+      LOCK_COMMAND,
+      "lock",
+      LOCK_COMMAND,
+    ],
+    restart: "on-exit",
+  });
+}
 
 COMPOSITOR.key.bind("screenshot", "Super+P", () => {
   COMPOSITOR.process.spawn({
@@ -664,11 +682,12 @@ COMPOSITOR.output.configure((context) => {
     position: "auto",
     scale: 1.5,
   };
+  // Abhishek's monitor, same as his KDE display settings.
   display["DP-2"] = {
     mode: "extend",
-    resolution: "best",
+    resolution: { width: 2560, height: 1440, refreshRate: 144 },
     position: "auto",
-    scale: 1.6,
+    scale: 1,
   };
 
   const isDocked = context.connected.some(
@@ -691,21 +710,16 @@ COMPOSITOR.input.configure((input, _context) => {
       disableWhileTyping: true,
       scrollFactor: 0.3,
     },
+    // KDE defaults, like Abhishek's KDE session: normal mouse acceleration,
+    // Caps Lock stays Caps Lock, KDE's key repeat timing.
     pointer: {
-      pointerAccel: 0.0,
-      accelProfile: "flat",
+      accelProfile: "adaptive",
       motionSpace: "logical",
     },
     keyboard: {
-      options: "caps:ctrl_modifier",
-      repeatRate: 60,
-      repeatDelay: 250,
-    },
-  };
-
-  input.device["Razer Razer Blade Keyboard"] = {
-    keyboard: {
       layout: "us",
+      repeatRate: 25,
+      repeatDelay: 600,
     },
   };
 });
