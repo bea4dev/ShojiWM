@@ -77,7 +77,7 @@ import {
  */
 export const SWITCHER_DIM_ALPHA = 0.45;
 /** Opening and closing, in ms. */
-const TRANSITION_MS = 450;
+export const TRANSITION_MS = 450;
 /** The blur fading back in after closing, in ms. */
 const BLUR_FADE_MS = 350;
 /** Room around each window's texture for its shadow (logical px). */
@@ -165,7 +165,7 @@ export interface SwitcherLayout<State> {
    */
   pose(state: State, index: number, rect: Rect, viewport: Viewport, selected: number): Pose;
   /** Advance the layout's own animation by `dtMs`; true while it still moves. */
-  tick?(state: State, selected: number, dtMs: number): boolean;
+  tick?(state: State, selected: number, dtMs: number, controls: SwitcherControls): boolean;
   /** Closing started: stop the layout's own animation where it is headed. */
   settle?(state: State, selected: number): void;
   /** Keys besides `Escape` / `Return` / `Space`; true when handled. */
@@ -500,7 +500,7 @@ export function createWindowSwitcher<State>(
       session.phaseStartMs ??= nowMs;
       session.progress = Math.min(1, (nowMs - session.phaseStartMs) / TRANSITION_MS);
     }
-    let moving = layout.tick?.(session.state, session.selected, dt) ?? false;
+    let moving = layout.tick?.(session.state, session.selected, dt, session.controls) ?? false;
     if (session.moveProgress < 1) {
       session.moveProgress = Math.min(1, session.moveProgress + dt / RELAYOUT_MS);
       moving = true;

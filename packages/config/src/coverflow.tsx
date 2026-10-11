@@ -31,6 +31,7 @@ import {
   type WindowSwitcher,
   type WindowSwitcherOptions,
   SWITCHER_DIM_ALPHA,
+  TRANSITION_MS,
 } from "./window-switcher";
 
 // The extension's defaults (schemas/org.gnome.shell.extensions.coverflowalttab.gschema.xml).
@@ -68,6 +69,12 @@ const SCREEN_MARGIN = 48;
  * through the cards beside it.
  */
 const SWAP_AT = 0.5;
+/**
+ * start-with-next, made visible: the switcher opens on the current window
+ * (it zooms out into the middle card), then steps to the next one this long
+ * after opening, near the end of the opening animation.
+ */
+const INTRO_STEP_AT_MS = TRANSITION_MS * 0.8;
 /** Touchpad scrolling / swiping distance per window (logical px). */
 const SCROLL_STEP_PX = 80;
 const SWIPE_STEP_PX = 140;
@@ -114,14 +121,30 @@ interface CoverflowState {
   cards: (Card | null)[];
   scrollRemainder: number;
   swipeAppliedSteps: number;
+  /** The opening step to the next window has not happened yet. */
+  introStep: boolean;
 }
 
 export function createCoverflow(options: WindowSwitcherOptions): WindowSwitcher {
   return createWindowSwitcher(COVERFLOW_LAYOUT, options);
 }
 
-/** `_next`: one window on, from the last back to the first. */
+/** The opening step to the next window, if it is still due. */
+function takeIntroStep(state: CoverflowState, controls: SwitcherControls) {
+  if (state.introStep) {
+    state.introStep = false;
+    nextOnce(state, controls);
+  }
+}
+
+/** One window on; a key pressed during the opening comes after its step. */
 function next(state: CoverflowState, controls: SwitcherControls) {
+  takeIntroStep(state, controls);
+  nextOnce(state, controls);
+}
+
+/** `_next`: one window on, from the last back to the first. */
+function nextOnce(state: CoverflowState, controls: SwitcherControls) {
   const count = controls.windows.length;
   if (count <= 1) {
     return;
@@ -137,6 +160,7 @@ function next(state: CoverflowState, controls: SwitcherControls) {
 
 /** `_previous`: one window back, from the first round to the last. */
 function previous(state: CoverflowState, controls: SwitcherControls) {
+  takeIntroStep(state, controls);
   const count = controls.windows.length;
   if (count <= 1) {
     return;
@@ -177,10 +201,11 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
     cards: windows.map(() => null),
     scrollRemainder: 0,
     swipeAppliedSteps: 0,
+    introStep: windows.length > 1,
   }),
 
-  // start-with-next: the switcher opens on the previous window.
-  initialSelection: (count) => (count > 1 ? 1 : 0),
+  // Opens on the current window; `tick` then steps to the next one.
+  initialSelection: () => 0,
 
   pose(state, index, rect, viewport) {
     const target = cardTarget(index, state, rect, viewport);
@@ -214,8 +239,12 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
     );
   },
 
-  tick(state, selected, dtMs) {
+  tick(state, selected, dtMs, controls) {
     state.nowMs += dtMs;
+    if (state.introStep && state.nowMs >= INTRO_STEP_AT_MS) {
+      takeIntroStep(state, controls);
+      selected = controls.selected;
+    }
     const selection = mod(selected, state.count);
     if (selection !== state.selection) {
       state.selection = selection;
@@ -225,7 +254,7 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
     state.pendingFlip = null;
     // A flip takes up to twice the animation time.
     const longestS = state.flip ? ANIMATION_TIME_S * 2 : ANIMATION_TIME_S;
-    return state.nowMs < state.changedAtMs + longestS * 1000;
+    return state.introStep || state.nowMs < state.changedAtMs + longestS * 1000;
   },
 
   settle(state) {
@@ -264,7 +293,11 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
     return false;
   },
 
-  onSuperReleased: (_state, controls) => controls.commit(),
+  // A quick Alt+Tab still switches to the next window.
+  onSuperReleased: (state, controls) => {
+    takeIntroStep(state, controls);
+    controls.commit();
+  },
 
   morph(_state, _index, from, to, t) {
     const turned = Math.abs(from.rotateY) > 0.5 || Math.abs(to.rotateY) > 0.5;
