@@ -1,4 +1,5 @@
 import type {
+  VirtualDesktopConfig,
   WorkspaceActivateEvent,
   WorkspaceConfig,
   WorkspaceConfigureFactory,
@@ -11,8 +12,27 @@ let configureFactory: WorkspaceConfigureFactory | null = null;
 let stagedConfigureFactory: WorkspaceConfigureFactory | null | undefined;
 const activateListeners = new Set<(event: WorkspaceActivateEvent) => void>();
 
+function cloneVirtualDesktops(
+  config: VirtualDesktopConfig | undefined,
+): VirtualDesktopConfig | undefined {
+  if (!config) {
+    return undefined;
+  }
+  return {
+    desktops: config.desktops.map((desktop) => ({
+      id: String(desktop.id),
+      name: String(desktop.name),
+      active: desktop.active === true,
+      windowIds: (desktop.windowIds ?? []).map(String),
+    })),
+    rows: Math.max(1, Math.trunc(config.rows ?? 1)),
+    minimizedWindowIds: (config.minimizedWindowIds ?? []).map(String),
+  };
+}
+
 function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
   return {
+    virtualDesktops: cloneVirtualDesktops(config.virtualDesktops),
     groups: config.groups.map((group) => ({
       id: group.id,
       outputs: [...group.outputs],
@@ -32,6 +52,7 @@ function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
 
 function normalizeWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
   return {
+    virtualDesktops: cloneVirtualDesktops(config.virtualDesktops),
     groups: config.groups.map((group) => ({
       id: String(group.id),
       outputs: group.outputs.map(String),

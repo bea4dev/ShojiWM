@@ -172,6 +172,9 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "groupId")]
         #[serde(skip_serializing_if = "Option::is_none")]
         group_id: Option<&'a str>,
+        #[serde(rename = "windowId")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        window_id: Option<&'a str>,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -3226,6 +3229,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             request_id,
             workspace_id: &event.workspace_id,
             group_id: event.group_id.as_deref(),
+            window_id: event.window_id.as_deref(),
             now_ms,
             display_state: &display_state,
             input_state: &input_state,
@@ -4282,6 +4286,8 @@ mod tests {
     fn make_window(is_focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
+            minimized_geometry: None,
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),

@@ -297,6 +297,12 @@ pub struct ShojiWM {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
         crate::wlr_foreign_toplevel::WlrForeignToplevelManagerState,
+    /// KDE's taskbar protocol, for plasmashell.
+    pub plasma_window_management_state:
+        crate::plasma_window_management::PlasmaWindowManagementState,
+    /// KDE's virtual desktops, for plasmashell's Pager.
+    pub plasma_virtual_desktop_state: crate::plasma_virtual_desktop::PlasmaVirtualDesktopState,
+    pub plasma_shell_state: crate::protocols::plasma_shell::PlasmaShellState,
     pub ext_workspace_manager_state: crate::workspace_manager::ExtWorkspaceManagerState,
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
@@ -1568,6 +1574,12 @@ impl ShojiWM {
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let wlr_foreign_toplevel_manager_state =
             crate::wlr_foreign_toplevel::WlrForeignToplevelManagerState::new::<Self>(&dh);
+        let plasma_window_management_state =
+            crate::plasma_window_management::PlasmaWindowManagementState::new(&dh);
+        let plasma_virtual_desktop_state =
+            crate::plasma_virtual_desktop::PlasmaVirtualDesktopState::new(&dh);
+        crate::xdg_toplevel_tag::init_xdg_toplevel_tag(&dh);
+        let plasma_shell_state = crate::protocols::plasma_shell::PlasmaShellState::new(&dh);
         let ext_workspace_manager_state =
             crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
         let image_capture_source_state =
@@ -1726,6 +1738,9 @@ impl ShojiWM {
             color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
+            plasma_window_management_state,
+            plasma_virtual_desktop_state,
+            plasma_shell_state,
             ext_workspace_manager_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -3072,6 +3087,8 @@ impl ShojiWM {
     pub fn warmup_decoration_runtime(&mut self) {
         let snapshot = WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
+            minimized_geometry: None,
             id: "__warmup__".into(),
             title: "warmup".into(),
             app_id: Some("shoji_wm.warmup".into()),
@@ -3940,10 +3957,14 @@ impl ShojiWM {
         &mut self,
         update: Option<RuntimeWorkspaceConfigUpdate>,
     ) {
-        if let Some(update) = update {
+        if let Some(mut update) = update {
+            let virtual_desktops = update.virtual_desktops.take();
             let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
             self.ext_workspace_manager_state
                 .sync::<Self>(update, &self.display_handle, &outputs);
+            if let Some(virtual_desktops) = virtual_desktops {
+                self.consume_runtime_virtual_desktop_config(virtual_desktops);
+            }
         }
     }
 

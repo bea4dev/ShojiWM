@@ -4,6 +4,10 @@
 //! Each mapped window holds at most one [`ForeignToplevelHandle`] in its
 //! `Window::user_data()`. The handle is created on first map, updated when
 //! title or app_id changes, and removed on destroy/unmap.
+//!
+//! The same three calls also drive the other taskbar protocols:
+//! `zwlr_foreign_toplevel_manager_v1` (`wlr_foreign_toplevel.rs`) and KDE's
+//! `org_kde_plasma_window_management` (`plasma_window_management.rs`).
 
 use smithay::desktop::Window;
 use smithay::wayland::compositor::with_states;
@@ -52,6 +56,7 @@ impl ShojiWM {
         handle.send_done();
         window.user_data().insert_if_missing(|| handle);
         self.install_wlr_foreign_toplevel(window, &title, &app_id);
+        self.install_plasma_window(window);
     }
 
     /// Re-read title/app_id from the window and push any changes to the
@@ -66,6 +71,7 @@ impl ShojiWM {
         let app_id_changed = handle.app_id() != app_id;
         if !title_changed && !app_id_changed {
             self.sync_wlr_foreign_toplevel(window, &title, &app_id);
+            self.sync_plasma_window(window);
             return;
         }
         if title_changed {
@@ -76,6 +82,14 @@ impl ShojiWM {
         }
         handle.send_done();
         self.sync_wlr_foreign_toplevel(window, &title, &app_id);
+        self.sync_plasma_window(window);
+    }
+
+    /// Push focus, minimize and geometry changes of every window to all
+    /// taskbar protocols.
+    pub fn sync_taskbar_window_states(&mut self) {
+        self.sync_wlr_foreign_toplevel_states();
+        self.sync_plasma_window_states();
     }
 
     /// Announce the toplevel as closed and drop our reference. Safe to call
@@ -86,6 +100,7 @@ impl ShojiWM {
         };
         self.foreign_toplevel_list_state.remove_toplevel(&handle);
         self.remove_wlr_foreign_toplevel(window);
+        self.remove_plasma_window(window);
         // We can't remove from UserDataMap, but the handle is now inert so
         // subsequent sync_foreign_toplevel calls are harmless no-ops.
         let _ = window;

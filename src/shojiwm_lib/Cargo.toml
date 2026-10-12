@@ -27,6 +27,9 @@ satellite = {
 }
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
+# KDE-private protocols that plasmashell needs (taskbar window list, popup
+# placement); see `plasma_window_management.rs` and `protocols/plasma_shell.rs`.
+wayland-protocols-plasma = { version = "0.3.12", features = ["server"] }
 wayland-server = { version = "0.31.13", features = ["libwayland_1_23"] }
 # Protocols no published crate covers (`protocols/*.xml`).
 wayland-scanner = "0.31.10"

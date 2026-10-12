@@ -969,6 +969,55 @@ impl ShojiWM {
     }
 }
 
+impl ShojiWM {
+    /// A taskbar (wlr or plasma) asked to activate `window`.
+    pub(crate) fn activate_window_from_taskbar(&mut self, window: &Window) {
+        // Picking a window out of a taskbar is the user choosing it, even
+        // though the click itself landed on the panel rather than on the window
+        // — the input layer cannot attribute it. Record it so a later successor
+        // election knows about it, and so the focus-ordering rule cannot refuse
+        // it or anything the handler focuses instead.
+        self.note_window_user_input(window);
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
+        self.request_window_activate(
+            window,
+            crate::ssd::WindowActivateRequestSourceSnapshot::Api,
+        );
+        self.user_input_in_flight = previous;
+    }
+
+    /// A taskbar (wlr or plasma) asked to minimize or restore `window`.
+    pub(crate) fn minimize_window_from_taskbar(&mut self, window: &Window, minimized: bool) {
+        // A taskbar minimize is the user's pick just like a taskbar activate.
+        // Minimizing the focused window hands the keyboard to a successor, and
+        // the focus-ordering rule would otherwise refuse that handoff whenever
+        // the minimized window was created later and neither has been used
+        // yet — leaving the keyboard on the window that just disappeared.
+        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
+        self.request_window_minimize(
+            window,
+            minimized,
+            crate::ssd::WindowStateRequestSourceSnapshot::Api,
+        );
+        self.user_input_in_flight = previous;
+    }
+
+    /// A taskbar (wlr or plasma) asked to close `window`.
+    pub(crate) fn close_window_from_taskbar(&mut self, window: &Window) {
+        if let Err(error) = capture_live_snapshot_for_close(self, window) {
+            tracing::warn!(
+                ?error,
+                "failed to capture foreign toplevel before close request"
+            );
+        }
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.send_close();
+        } else if let Some(x11) = window.x11_surface() {
+            let _ = x11.close();
+        }
+    }
+}
+
 impl WlrForeignToplevelManagerHandler for ShojiWM {
     fn wlr_foreign_toplevel_manager_state(&mut self) -> &mut WlrForeignToplevelManagerState {
         &mut self.wlr_foreign_toplevel_manager_state
@@ -1007,36 +1056,15 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
         let Some(window) = self.wlr_foreign_toplevel_window(handle) else {
             return;
         };
-        // Picking a window out of a taskbar is the user choosing it, even
-        // though the click itself landed on the panel rather than on the window
-        // — the input layer cannot attribute it. Record it so a later successor
-        // election knows about it, and so the focus-ordering rule cannot refuse
-        // it or anything the handler focuses instead.
-        self.note_window_user_input(&window);
-        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
-        self.request_window_activate(
-            &window,
-            crate::ssd::WindowActivateRequestSourceSnapshot::Api,
-        );
-        self.user_input_in_flight = previous;
-        self.sync_wlr_foreign_toplevel_states();
+        self.activate_window_from_taskbar(&window);
+        self.sync_taskbar_window_states();
     }
 
     fn wlr_foreign_toplevel_close(&mut self, handle: &WlrForeignToplevelHandle) {
         let Some(window) = self.wlr_foreign_toplevel_window(handle) else {
             return;
         };
-        if let Err(error) = capture_live_snapshot_for_close(self, &window) {
-            tracing::warn!(
-                ?error,
-                "failed to capture foreign toplevel before close request"
-            );
-        }
-        if let Some(toplevel) = window.toplevel() {
-            toplevel.send_close();
-        } else if let Some(x11) = window.x11_surface() {
-            let _ = x11.close();
-        }
+        self.close_window_from_taskbar(&window);
     }
 
     fn wlr_foreign_toplevel_set_maximized(
@@ -1052,7 +1080,7 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
             maximized,
             crate::ssd::WindowStateRequestSourceSnapshot::Api,
         );
-        self.sync_wlr_foreign_toplevel_states();
+        self.sync_taskbar_window_states();
     }
 
     fn wlr_foreign_toplevel_set_minimized(
@@ -1063,19 +1091,8 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
         let Some(window) = self.wlr_foreign_toplevel_window(handle) else {
             return;
         };
-        // A taskbar minimize is the user's pick just like a taskbar activate.
-        // Minimizing the focused window hands the keyboard to a successor, and
-        // the focus-ordering rule would otherwise refuse that handoff whenever
-        // the minimized window was created later and neither has been used
-        // yet — leaving the keyboard on the window that just disappeared.
-        let previous = std::mem::replace(&mut self.user_input_in_flight, true);
-        self.request_window_minimize(
-            &window,
-            minimized,
-            crate::ssd::WindowStateRequestSourceSnapshot::Api,
-        );
-        self.user_input_in_flight = previous;
-        self.sync_wlr_foreign_toplevel_states();
+        self.minimize_window_from_taskbar(&window, minimized);
+        self.sync_taskbar_window_states();
     }
 
     fn wlr_foreign_toplevel_set_fullscreen(
@@ -1097,7 +1114,7 @@ impl WlrForeignToplevelManagerHandler for ShojiWM {
             output_name,
             crate::ssd::WindowStateRequestSourceSnapshot::Api,
         );
-        self.sync_wlr_foreign_toplevel_states();
+        self.sync_taskbar_window_states();
     }
 }
 

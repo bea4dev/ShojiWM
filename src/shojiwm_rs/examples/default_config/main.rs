@@ -253,6 +253,7 @@ fn setup_ipc(wm: &WindowManager) -> Ipc {
         COMPOSITOR.workspace.configure(move || {
             let view = wm.read(|wm| wm.view_for_ipc());
             RuntimeWorkspaceConfigUpdate {
+                virtual_desktops: None,
                 groups: view
                     .monitors
                     .iter()
@@ -1126,6 +1127,8 @@ mod tests {
     fn window(id: &str, focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
             output_name: None,
+            plasma: None,
+            minimized_geometry: None,
             id: id.into(),
             title: format!("window {id}"),
             app_id: Some("org.example.App".into()),
