@@ -32,7 +32,7 @@ use shojiwm_rs::{
     runtime_workspace::{RuntimeWorkspaceConfigUpdate, RuntimeWorkspaceEntry, RuntimeWorkspaceGroupConfig},
     ssd::{
         OpaqueRegionPolicy, PointerMoveEventSnapshot, PopupParentKindSnapshot, SurfacePolicy,
-        WindowDecorationModeSnapshot,
+        WindowDecorationModeSnapshot, WindowDecorationStateSnapshot,
     },
 };
 
@@ -79,13 +79,27 @@ fn main() -> std::process::ExitCode {
 }
 
 /// The client geometry plus the frame the decoration adds around it.
+fn uses_client_decoration(decoration: &WindowDecorationStateSnapshot) -> bool {
+    decoration.mode == WindowDecorationModeSnapshot::Client
+        && !(decoration.client_preference == Some(WindowDecorationModeSnapshot::Server)
+            && decoration.configured_mode == WindowDecorationModeSnapshot::Server)
+}
+
+// Must match the frame the composition draws: a client-decorated window gets
+// only the border, so counting the title bar would size its client past what
+// the layout meant (and past the client's own maximum).
 fn natural_root_rect(window: Window) -> Rect {
     let client = window.position().get_untracked();
+    let titlebar = if uses_client_decoration(&window.decoration().get_untracked()) {
+        0.0
+    } else {
+        TITLEBAR_HEIGHT
+    };
     Rect::new(
         client.x - WINDOW_BORDER_PX,
-        client.y - TITLEBAR_HEIGHT - WINDOW_BORDER_PX,
+        client.y - titlebar - WINDOW_BORDER_PX,
         client.width + WINDOW_BORDER_PX * 2.0,
-        client.height + TITLEBAR_HEIGHT + WINDOW_BORDER_PX * 2.0,
+        client.height + titlebar + WINDOW_BORDER_PX * 2.0,
     )
 }
 
@@ -752,9 +766,7 @@ fn setup_composition(wm: &WindowManager, switcher: &WindowSwitcher) {
         // Read in the body on purpose: these switch the whole structure, so a
         // change re-runs this function (like the TSX version).
         let decoration = window.decoration().get();
-        let use_client_decoration = decoration.mode == WindowDecorationModeSnapshot::Client
-            && !(decoration.client_preference == Some(WindowDecorationModeSnapshot::Server)
-                && decoration.configured_mode == WindowDecorationModeSnapshot::Server);
+        let use_client_decoration = uses_client_decoration(&decoration);
         let fullscreen = window.state(&WINDOW_STATE_FULLSCREEN).get();
         let is_terminal = matches!(window.app_id().get().as_deref(), Some("kitty" | "ghostty"));
 

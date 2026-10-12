@@ -883,6 +883,21 @@ impl WindowDecorationState {
         self.layout.hit_test_at(point.x, point.y)
     }
 
+    /// Whether global `pos` lies in the `<WindowBorder>` resize band outside
+    /// the frame (see `DecorationLayout::resize_hit_outset`).
+    pub fn resize_band_contains(&self, pos: Point<f64, Logical>) -> bool {
+        if self.layout.resize_hit_outset() <= 0.0 {
+            return false;
+        }
+        let local = inverse_transform_point(pos, self.layout.root.rect, self.visual_transform);
+        let root = self.layout.root.rect;
+        let inside_root = local.x >= root.x as f64
+            && local.y >= root.y as f64
+            && local.x < (root.x + root.width) as f64
+            && local.y < (root.y + root.height) as f64;
+        !inside_root && matches!(self.hit_test(local), DecorationHitTestResult::Resize(_))
+    }
+
     /// The open `<Popup>`s, which the backends draw in their own pass.
     pub fn popup_scopes(&self) -> super::PopupScopes {
         super::PopupScopes::of(&self.layout.root)
@@ -4862,9 +4877,9 @@ impl ShojiWM {
             let logical_point = LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32);
             let transformed_root =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
-            if !transformed_root.contains(logical_point)
-                || !self.client_input_region_accepts(window, Some(decoration), point)
-            {
+            let inside = transformed_root.contains(logical_point)
+                && self.client_input_region_accepts(window, Some(decoration), point);
+            if !inside && !decoration.resize_band_contains(point) {
                 return None;
             }
             let local_point = inverse_transform_point(
@@ -4910,7 +4925,10 @@ impl ShojiWM {
             if !transformed_root.contains(logical_point)
                 || !self.client_input_region_accepts(window, Some(decoration), point)
             {
-                return None;
+                // The resize band ends the search: nothing below it is hovered.
+                return decoration
+                    .resize_band_contains(point)
+                    .then(|| (window.clone(), Vec::new()));
             }
             let local_point = inverse_transform_point(
                 point,

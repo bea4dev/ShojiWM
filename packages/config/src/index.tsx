@@ -1263,13 +1263,19 @@ COMPOSITOR.event.onWindowActivateRequest((event) => {
   scheduleWorkspaceBroadcast();
 });
 
+// Must match the frame the composition below draws: a client-decorated window
+// gets only the border, so counting the title bar would size its client 30px
+// past what the layout meant (and past the client's own maximum).
 function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
   const client = window.position;
+  const titlebar = usesClientDecoration(window.decoration.peek())
+    ? 0
+    : TITLEBAR_HEIGHT;
   return {
     x: client.x - WINDOW_BORDER_PX,
-    y: client.y - TITLEBAR_HEIGHT - WINDOW_BORDER_PX,
+    y: client.y - titlebar - WINDOW_BORDER_PX,
     width: client.width + WINDOW_BORDER_PX * 2,
-    height: client.height + TITLEBAR_HEIGHT + WINDOW_BORDER_PX * 2,
+    height: client.height + titlebar + WINDOW_BORDER_PX * 2,
   };
 }
 

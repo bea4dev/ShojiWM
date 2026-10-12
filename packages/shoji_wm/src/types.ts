@@ -2368,7 +2368,9 @@ export interface BoxShadowValue {
 }
 
 export interface WindowResizeHitArea {
+  /** Grab band outside the frame, added to the visible border. / ボーダーに加えてフレーム外側に広がるつかみ幅。 */
   edgePx?: MaybeSignal<number>;
+  /** Corner grab length along each edge, from the band's outer corner. / つかみ領域の外側の角から各辺に沿ったコーナー判定の長さ。 */
   cornerPx?: MaybeSignal<number>;
 }
 

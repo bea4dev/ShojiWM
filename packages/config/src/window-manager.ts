@@ -4538,6 +4538,7 @@ export class Workspace {
     this.lastDraggingSlotRect = null;
 
     // One x and width per column. The windows of a column split its height.
+    // A window alone in its column keeps the client's height cap (centered).
     const placements: { window: WaylandWindow; rect: ManagedWindowRect }[] =
       [];
     for (const column of this.tileColumns(tileable)) {
@@ -4549,12 +4550,14 @@ export class Workspace {
           ? this.fullscreenRootRect(window)
           : window.state[WINDOW_STATE_MAXIMIZED]()
             ? this.maximizedTileRect(window, nextX)
-            : {
-                x: nextX,
-                y: read(viewportRect.y) + row * (tileHeight + TILE_GAP),
-                width: columnWidth,
-                height: tileHeight,
-              };
+            : column.length === 1
+              ? this.tileRect(window, nextX, columnWidth, viewportRect)
+              : {
+                  x: nextX,
+                  y: read(viewportRect.y) + row * (tileHeight + TILE_GAP),
+                  width: columnWidth,
+                  height: tileHeight,
+                };
         placements.push({ window, rect });
       });
       nextX += columnWidth + TILE_GAP;
@@ -5865,11 +5868,42 @@ export class Workspace {
   ): number {
     const constraints = window.sizeConstraints();
     const extra = this.rootClientWidthExtra(window);
+    const clientMin = (constraints.min?.width ?? 1) + extra;
+    // The layout floor must not widen a window past the client's own maximum.
     return Math.max(
-      TILE_MIN_WIDTH,
-      (constraints.min?.width ?? 1) + extra,
-      read(viewportRect.width) * 0.2,
+      clientMin,
+      Math.min(
+        Math.max(TILE_MIN_WIDTH, read(viewportRect.width) * 0.2),
+        this.maxTileWidth(window),
+      ),
     );
+  }
+
+  // A tile spans the viewport height unless the client caps its height; such a
+  // window keeps its maximum and is centered vertically instead of stretched.
+  private tileRect(
+    window: WaylandWindow,
+    x: number,
+    width: number,
+    viewportRect: ManagedWindowRect,
+  ): ManagedWindowRect {
+    const viewportHeight = read(viewportRect.height);
+    const constraints = window.sizeConstraints();
+    const height = Math.min(
+      viewportHeight,
+      constrainedMax(constraints, "height", this.rootClientHeightExtra(window)),
+    );
+    return {
+      x,
+      y: read(viewportRect.y) + Math.round((viewportHeight - height) / 2),
+      width,
+      height,
+    };
+  }
+
+  private rootClientHeightExtra(window: WaylandWindow): number {
+    const natural = this.naturalRootRect(window);
+    return Math.max(0, read(natural.height) - window.position.height);
   }
 
   private maxTileWidth(window: WaylandWindow): number {

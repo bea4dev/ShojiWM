@@ -1994,13 +1994,20 @@ pub fn device_added(
         .map_err(|error| driver_load_error(path, "initialize EGL", &error))?;
     let ctx = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
     let mut renderer = unsafe { GlesRenderer::new(ctx)? };
-    match renderer.bind_wl_display(&state.display_handle) {
-        Ok(()) => info!(?node, "bound wl_display for tty EGL clients"),
-        Err(error) => warn!(
-            ?node,
-            ?error,
-            "failed to bind wl_display for tty EGL clients"
-        ),
+    // Only the GPU clients render with (the first one opened, which hosts the dmabuf global)
+    // binds the display. Binding it on another GPU advertises that GPU's `wl_drm`: on a hybrid
+    // laptop with Mesa (no EGL_WL_bind_wayland_display) on the iGPU, NVIDIA's binding then
+    // made Xwayland render on the dGPU, and compositing those buffers on the iGPU failed the
+    // command submission (ENOMEM), which radeonsi answers with abort().
+    if state.dmabuf_global.is_none() {
+        match renderer.bind_wl_display(&state.display_handle) {
+            Ok(()) => info!(?node, "bound wl_display for tty EGL clients"),
+            Err(error) => warn!(
+                ?node,
+                ?error,
+                "failed to bind wl_display for tty EGL clients"
+            ),
+        }
     }
     state.shm_state.update_formats(renderer.shm_formats());
     if state.dmabuf_global.is_none() {

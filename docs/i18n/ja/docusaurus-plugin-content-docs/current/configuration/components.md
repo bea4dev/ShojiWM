@@ -150,8 +150,11 @@ const [hover, setHover] = useState(false);
 | `style` | `SSDStyle` | `border`・`borderRadius`・`background` などでボーダーを指定 |
 | `interaction` | `WindowBorderInteraction` | リサイズの当たり判定 |
 
-`interaction.resizeHitArea` は単一の数値か、`{edgePx?, cornerPx?}`（エッジ沿いと
-コーナーのつかみ厚）です。
+`interaction.resizeHitArea` は単一の数値か、`{edgePx?, cornerPx?}` です。
+リサイズのつかみ領域は、見えているボーダーにフレームの外側 `edgePx` を加えた範囲です。
+そのため、縁の近くのクライアント内容には被りません。`cornerPx` は斜めリサイズになる
+コーナー部分が各辺に沿ってどこまで伸びるかで、つかみ領域の外側の角から測ります。
+`resizeHitArea` を指定しない場合は、ボーダー自体だけがリサイズ領域になります。
 
 ```tsx
 <WindowBorder

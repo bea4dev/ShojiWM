@@ -152,7 +152,11 @@ the border and provides interactive resize hit areas.
 | `interaction` | `WindowBorderInteraction` | Resize hit areas |
 
 `interaction.resizeHitArea` is either a single number, or
-`{edgePx?, cornerPx?}` — the grab thickness along edges and in corners.
+`{edgePx?, cornerPx?}`. The resize grab covers the visible border plus
+`edgePx` outside the frame, so it never covers client content near the edge.
+`cornerPx` is how far the diagonal corner grab reaches along each edge, measured
+from the outer corner of that band. Without `resizeHitArea`, only the border
+itself resizes.
 
 ```tsx
 <WindowBorder
