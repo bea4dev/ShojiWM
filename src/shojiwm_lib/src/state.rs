@@ -4387,6 +4387,13 @@ impl ShojiWM {
         }
 
         if let Some((window, decoration)) = self.window_under_transformed(logical_pos) {
+            // The resize band outside the frame belongs to the decoration; it
+            // must not give the pointer to the client or a window below.
+            if !transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform)
+                .contains(logical_pos)
+            {
+                return None;
+            }
             let transformed_client = transformed_rect(
                 decoration.client_rect,
                 decoration.layout.root.rect,
@@ -4669,9 +4676,9 @@ impl ShojiWM {
             }
             let transformed_root =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
-            if !transformed_root.contains(logical_pos)
-                || !self.client_input_region_accepts(window, Some(decoration), pos)
-            {
+            let inside = transformed_root.contains(logical_pos)
+                && self.client_input_region_accepts(window, Some(decoration), pos);
+            if !inside && !decoration.resize_band_contains(pos) {
                 return None;
             }
             Some((window, decoration))

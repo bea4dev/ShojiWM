@@ -188,6 +188,20 @@ impl ComputedDecorationTree {
         self.hit_test_at(point.x as f64, point.y as f64)
     }
 
+    /// How far (logical px) the resize grab band reaches outside the root
+    /// rect. Input routing must offer points in that band to this window.
+    pub fn resize_hit_outset(&self) -> f64 {
+        if self.root.resolved_window_slot_rect().is_none()
+            || self.root.window_border_style().is_none()
+        {
+            return 0.0;
+        }
+        self.root
+            .window_border_resize_hit_area()
+            .and_then(|area| area.edge_width)
+            .map_or(0.0, |width| width.max(0) as f64)
+    }
+
     /// `hit_test` for a fractional logical point. The point is mapped onto
     /// the layout's physical pixel grid and tested against the same pixel
     /// rects that are rendered, so input matches what is on screen exactly.
@@ -210,17 +224,21 @@ impl ComputedDecorationTree {
                     .root
                     .window_border_resize_hit_area()
                     .unwrap_or_default();
-                let edge_width = hit_area
+                // The grab band is the visible border plus `edge_width` outside
+                // the frame, so it never covers client content near the edge.
+                let inset = ResolvedLayoutValue::border_width(border.width, scale);
+                let outset = hit_area
                     .edge_width
                     .map(|width| ResolvedLayoutValue::from_logical(width as f64, scale))
-                    .unwrap_or_else(|| ResolvedLayoutValue::border_width(border.width, scale));
+                    .unwrap_or(ResolvedLayoutValue::ZERO);
                 let corner_width = hit_area
                     .corner_width
                     .map(|width| ResolvedLayoutValue::from_logical(width as f64, scale))
-                    .unwrap_or(edge_width);
+                    .unwrap_or(inset + outset);
                 if let Some(edges) = hit_test_resize_edges(
                     self.root.resolved_rect,
-                    edge_width.raw(),
+                    inset.raw(),
+                    outset.raw(),
                     corner_width.raw(),
                     point,
                 ) {
@@ -3271,15 +3289,20 @@ fn has_interaction_target_beside_client(node: &ComputedDecorationNode, point: La
         && node.resolved_window_slot_rect().is_none()
 }
 
+/// Resize edges for a point in the band from `inset` inside `rect` to
+/// `outset` outside it. `corner_width` is measured from the band's outer
+/// corner along each edge.
 fn hit_test_resize_edges(
     rect: ResolvedLogicalRect,
-    edge_width: i32,
+    inset: i32,
+    outset: i32,
     corner_width: i32,
     point: LayoutPoint,
 ) -> Option<ResizeEdges> {
-    let edge_width = edge_width.max(0) as f64;
-    let corner_width = (corner_width as f64).max(edge_width).max(0.0);
-    if edge_width == 0.0 || !rect.contains_point(point) {
+    let inset = inset.max(0) as f64;
+    let outset = outset.max(0) as f64;
+    let corner_width = (corner_width as f64).max(inset + outset);
+    if inset + outset == 0.0 {
         return None;
     }
 
@@ -3287,14 +3310,21 @@ fn hit_test_resize_edges(
     let top = rect.y.0 as f64;
     let right = rect.right().0 as f64;
     let bottom = rect.bottom().0 as f64;
-    let on_left = point.x < left + edge_width;
-    let on_right = point.x >= right - edge_width;
-    let on_top = point.y < top + edge_width;
-    let on_bottom = point.y >= bottom - edge_width;
-    let near_left_corner = point.x < left + corner_width;
-    let near_right_corner = point.x >= right - corner_width;
-    let near_top_corner = point.y < top + corner_width;
-    let near_bottom_corner = point.y >= bottom - corner_width;
+    if point.x < left - outset
+        || point.y < top - outset
+        || point.x >= right + outset
+        || point.y >= bottom + outset
+    {
+        return None;
+    }
+    let on_left = point.x < left + inset;
+    let on_right = point.x >= right - inset;
+    let on_top = point.y < top + inset;
+    let on_bottom = point.y >= bottom - inset;
+    let near_left_corner = point.x < left - outset + corner_width;
+    let near_right_corner = point.x >= right + outset - corner_width;
+    let near_top_corner = point.y < top - outset + corner_width;
+    let near_bottom_corner = point.y >= bottom + outset - corner_width;
 
     let mut edges = ResizeEdges::empty();
     if on_top {
@@ -4662,17 +4692,38 @@ mod tests {
             .layout(LogicalRect::new(0, 0, 100, 60))
             .expect("layout should succeed");
 
+        // The band is the 2px border plus 8px outside the frame; client
+        // content just inside the border keeps the pointer.
+        assert_eq!(layout.resize_hit_outset(), 8.0);
         assert_eq!(
-            layout.hit_test(LogicalPoint::new(6, 30)),
+            layout.hit_test_at(-8.0, 30.0),
+            DecorationHitTestResult::Resize(ResizeEdges::LEFT)
+        );
+        assert_eq!(layout.hit_test_at(-8.5, 30.0), DecorationHitTestResult::Outside);
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(1, 30)),
             DecorationHitTestResult::Resize(ResizeEdges::LEFT)
         );
         assert_eq!(
-            layout.hit_test(LogicalPoint::new(10, 1)),
+            layout.hit_test(LogicalPoint::new(2, 30)),
+            DecorationHitTestResult::ClientArea
+        );
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(6, 30)),
+            DecorationHitTestResult::ClientArea
+        );
+        // Corners reach 14px from the band's outer corner (-8, -8).
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(5, -1)),
             DecorationHitTestResult::Resize(ResizeEdges::TOP_LEFT)
         );
         assert_eq!(
-            layout.hit_test(LogicalPoint::new(20, 1)),
+            layout.hit_test(LogicalPoint::new(6, -1)),
             DecorationHitTestResult::Resize(ResizeEdges::TOP)
+        );
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(105, 65)),
+            DecorationHitTestResult::Resize(ResizeEdges::BOTTOM_RIGHT)
         );
     }
 
