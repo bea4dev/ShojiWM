@@ -490,19 +490,30 @@ WORKSPACE_IPC.handle("debug.windowViewPointer", (params) => {
 
 // Debug: drive the window switcher without the real keyboard. `action`:
 // "open", "key" (`key`, `shift`) or "cancel". Returns the selected window's id.
+// "open" takes `switcher: "grid"` for the Super+Tab grid, and `windowIds` to
+// show only those windows, in recent-use order (demo recordings).
 WORKSPACE_IPC.handle("debug.windowSwitcher", (params) => {
-  const { action, key, shift, x, y, button } = (params ?? {}) as {
+  const { action, key, shift, x, y, button, switcher, windowIds } = (params ?? {}) as {
     action?: "open" | "key" | "cancel" | "pointer";
     key?: string;
     shift?: boolean;
     x?: number;
     y?: number;
     button?: "left" | "middle";
+    switcher?: "coverflow" | "grid";
+    windowIds?: string[];
   };
   if (action === "open") {
-    WINDOW_SWITCHER.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName());
+    const target = switcher === "grid" ? WINDOW_GRID : WINDOW_SWITCHER;
+    const only = Array.isArray(windowIds)
+      ? HYBRID_WINDOW_MANAGER.listWindowsByRecentUse().filter((window) =>
+          windowIds.includes(window.id),
+        )
+      : undefined;
+    target.open(HYBRID_WINDOW_MANAGER.getCurrentMonitorName(), only);
   } else if (action === "cancel") {
     WINDOW_SWITCHER.cancel();
+    WINDOW_GRID.cancel();
   } else if (action === "key" && typeof key === "string") {
     return WINDOW_SWITCHER.debugKey(key, shift);
   } else if (action === "pointer" && typeof x === "number" && typeof y === "number") {
