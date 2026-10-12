@@ -46,6 +46,8 @@ interface KeyBind {
   keys: string;
   action: () => void;
   options?: KeyBindOptions;
+  /** The binding's name (default: from the entry id). Keeps upstream's names. */
+  name?: string;
 }
 
 /** One line of the cheat sheet: one or more chords with one meaning. */
@@ -235,8 +237,16 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       tiling: "Focus the tile on the left / right",
       floating: "Left / right half of the screen",
       binds: [
-        { keys: "Super+Left", action: byMode(() => wm.focusTile(-1), () => wm.placeFocusedWindowInHalf("left")) },
-        { keys: "Super+Right", action: byMode(() => wm.focusTile(1), () => wm.placeFocusedWindowInHalf("right")) },
+        {
+          keys: "Super+Left",
+          name: "tile-focus-left-quick",
+          action: byMode(() => wm.focusTile(-1), () => wm.placeFocusedWindowInHalf("left")),
+        },
+        {
+          keys: "Super+Right",
+          name: "tile-focus-right-quick",
+          action: byMode(() => wm.focusTile(1), () => wm.placeFocusedWindowInHalf("right")),
+        },
       ],
     },
     {
@@ -517,7 +527,7 @@ export function bindKeymap(entries: readonly KeyEntry[]) {
         throw new Error(`keymap: ${bind.keys} is in "${owner}" and in "${entry.id}"`);
       }
       seen.set(chord, entry.id);
-      const id = entry.binds.length === 1 ? entry.id : `${entry.id}-${index}`;
+      const id = bind.name ?? (entry.binds.length === 1 ? entry.id : `${entry.id}-${index}`);
       if (bind.options) {
         COMPOSITOR.key.bind(id, bind.keys, bind.action, bind.options);
       } else {

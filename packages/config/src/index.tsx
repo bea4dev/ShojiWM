@@ -38,6 +38,7 @@ import type {
 import { createIpcServer, defaultSocketPath } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
+  configureEvenTileSplit,
   isTileable,
   TITLEBAR_HEIGHT,
   WINDOW_BORDER_PX,
@@ -234,6 +235,8 @@ const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
 /** A window in the Magic Lamp: over fullscreen windows, under the panel. */
 const MAGIC_LAMP_Z_INDEX = 2_010_000_000;
+/** Stack order inside the lamp band: stays over fullscreen and under the panel. */
+const MAGIC_LAMP_Z_INDEX_RANGE = 9_000_000;
 const FLOATING_WINDOW_Z_INDEX_BASE = 1_500_000_000;
 const WINDOW_STACK_Z_INDEX_RANGE = 100_000_000;
 const FOCUSED_TILED_WINDOW_Z_INDEX = 1_000_000_000;
@@ -241,12 +244,16 @@ const REORDERING_TILED_WINDOW_Z_INDEX = -2_000_000_000;
 
 /** Where a (non-fullscreen) window sits in the stack; higher is on top. */
 function windowZIndex(window: WaylandWindow): number {
+  const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window)();
   if (magicLampRunning(window)) {
     // Like KWin: the window keeps its place on top while it pours into its
-    // icon, even after focus moves on. KWin's panel stays above it.
-    return MAGIC_LAMP_Z_INDEX;
+    // icon, even after focus moves on. KWin's panel stays above it. Two
+    // windows in the lamp at once (two apps opening) keep their stack order.
+    return (
+      MAGIC_LAMP_Z_INDEX +
+      Math.max(-MAGIC_LAMP_Z_INDEX_RANGE, Math.min(MAGIC_LAMP_Z_INDEX_RANGE, stackZIndex))
+    );
   }
-  const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window)();
   if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
     return stackZIndex;
   }
@@ -972,6 +979,9 @@ const JELLY_DRAG = true;
 // Magic Lamp (KDE's minimize effect, ./magic-lamp.ts): a minimizing window
 // pours into its taskbar entry. It wins over the jelly drag while it runs.
 configureMagicLamp({ panels: () => panelRects() });
+// With the KDE desktop (plasmashell's panel), tiles split the screen evenly
+// like KDE. Without it, ShojiWM's own tile width stays.
+configureEvenTileSplit(() => plasmaShellWindows("panel").length > 0);
 // The popups slide out of these panels too (KWin's sliding popups).
 configureSlidingPopups({ panels: () => panelRects() });
 

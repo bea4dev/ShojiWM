@@ -181,8 +181,24 @@ const TILE_DRAG_WORKSPACE_EDGE_PX = 80;
 const TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS = 420;
 const TILE_GAP = 12;
 const TILE_MARGIN = 12;
+/** ShojiWM's default: a new tile takes this share of the viewport width. */
+const TILE_WIDTH_RATIO = 0.5;
+/** With the even split: up to this many columns share the screen. */
 const TILE_FIT_MAX_COLUMNS = 3;
 const TILE_MIN_WIDTH = 240;
+
+/** True when tiles split the screen evenly (see `configureEvenTileSplit`). */
+let evenTileSplit: () => boolean = () => false;
+
+/**
+ * Split tiles evenly, like KDE: up to TILE_FIT_MAX_COLUMNS columns share the
+ * screen, and only a tile the user resized by hand keeps its own width.
+ * Off by default: each new tile takes TILE_WIDTH_RATIO of the viewport.
+ * Example: `configureEvenTileSplit(() => kdePanelIsPresent())`.
+ */
+export function configureEvenTileSplit(enabled: () => boolean) {
+  evenTileSplit = enabled;
+}
 // Fractional-scale rounding can leave a tile a hair past the screen edge;
 // overflow at or below this is "fully visible" for the focus-key pan step.
 const TILE_FOCUS_OVERFLOW_EPSILON = 1;
@@ -5802,10 +5818,13 @@ export class Workspace {
       return read(this.maximizedRootRect(window).width);
     }
 
-    const userWidth = this.userSizedTileIds.has(window.id)
-      ? this.tileWidthByWindowId.get(window.id)
-      : undefined;
-    const width = userWidth ?? this.defaultTileWidth(viewportRect);
+    const even = evenTileSplit();
+    // With the even split, only a tile the user resized keeps its width.
+    const storedWidth =
+      even && !this.userSizedTileIds.has(window.id)
+        ? undefined
+        : this.tileWidthByWindowId.get(window.id);
+    const width = storedWidth ?? this.defaultTileWidth(viewportRect, even);
     return clamp(
       width,
       this.minTileWidth(window, viewportRect),
@@ -5851,7 +5870,10 @@ export class Workspace {
     );
   }
 
-  private defaultTileWidth(viewportRect: ManagedWindowRect): number {
+  private defaultTileWidth(viewportRect: ManagedWindowRect, even: boolean): number {
+    if (!even) {
+      return Math.max(TILE_MIN_WIDTH, read(viewportRect.width) * TILE_WIDTH_RATIO);
+    }
     // Up to TILE_FIT_MAX_COLUMNS columns share the screen evenly, so no
     // column is cut at the edge. More columns scroll at that width.
     const columns = clamp(this.tileColumns().length, 1, TILE_FIT_MAX_COLUMNS);
