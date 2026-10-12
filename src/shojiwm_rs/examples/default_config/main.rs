@@ -253,6 +253,7 @@ fn setup_ipc(wm: &WindowManager) -> Ipc {
         COMPOSITOR.workspace.configure(move || {
             let view = wm.read(|wm| wm.view_for_ipc());
             RuntimeWorkspaceConfigUpdate {
+                virtual_desktops: None,
                 groups: view
                     .monitors
                     .iter()
