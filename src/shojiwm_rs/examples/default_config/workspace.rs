@@ -676,7 +676,6 @@ impl Workspace {
 
         let viewport = self.tile_viewport_rect();
         self.last_applied_tile_viewport_rect = Some(viewport);
-        let tile_height = viewport.height;
         let mut next_x = viewport.x - self.physical_aligned_scroll_offset();
         self.last_dragging_slot_rect = None;
 
@@ -688,7 +687,7 @@ impl Workspace {
             } else if get(window, &WINDOW_STATE_MAXIMIZED) {
                 self.maximized_tile_rect(window, next_x)
             } else {
-                Rect::new(next_x, viewport.y, tile_width, tile_height)
+                self.tile_rect(window, next_x, tile_width, viewport)
             };
             if Some(window) == self.dragging_window {
                 self.last_dragging_slot_rect = Some(rect);
@@ -1641,9 +1640,35 @@ impl Workspace {
     fn min_tile_width(&self, window: Window, viewport: Rect) -> f64 {
         let constraints = window.size_constraints().get_untracked();
         let extra = self.root_client_width_extra(window);
-        TILE_MIN_WIDTH
-            .max(constraints.min.map_or(1.0, |min| min.width as f64) + extra)
-            .max(viewport.width * 0.2)
+        let client_min = constraints.min.map_or(1.0, |min| min.width as f64) + extra;
+        // The layout floor must not widen a window past the client's own maximum.
+        client_min.max(
+            TILE_MIN_WIDTH
+                .max(viewport.width * 0.2)
+                .min(self.max_tile_width(window)),
+        )
+    }
+
+    // A tile spans the viewport height unless the client caps its height; such a
+    // window keeps its maximum and is centered vertically instead of stretched.
+    fn tile_rect(&self, window: Window, x: f64, width: f64, viewport: Rect) -> Rect {
+        let constraints = window.size_constraints().get_untracked();
+        let max_height = match constraints.max.map(|max| max.height) {
+            Some(max) if max > 0 => max as f64 + self.root_client_height_extra(window),
+            _ => f64::INFINITY,
+        };
+        let height = viewport.height.min(max_height);
+        Rect::new(
+            x,
+            viewport.y + ((viewport.height - height) / 2.0).round(),
+            width,
+            height,
+        )
+    }
+
+    fn root_client_height_extra(&self, window: Window) -> f64 {
+        let natural = (self.natural_root_rect)(window);
+        (natural.height - window.position().get_untracked().height).max(0.0)
     }
 
     fn max_tile_width(&self, window: Window) -> f64 {

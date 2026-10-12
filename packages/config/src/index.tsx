@@ -14,6 +14,7 @@ import {
   dualKawaseBlur,
   type SSDStyle,
   type WaylandWindow,
+  type WindowDecorationState,
   computed,
   useState,
   shaderStage,
@@ -827,24 +828,34 @@ COMPOSITOR.event.onWindowActivateRequest((event) => {
   scheduleWorkspaceBroadcast();
 });
 
-function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
-  const client = window.position;
-  return {
-    x: client.x - WINDOW_BORDER_PX,
-    y: client.y - TITLEBAR_HEIGHT - WINDOW_BORDER_PX,
-    width: client.width + WINDOW_BORDER_PX * 2,
-    height: client.height + TITLEBAR_HEIGHT + WINDOW_BORDER_PX * 2,
-  };
-}
-
-COMPOSITOR.window.composition = (window: WaylandWindow) => {
-  const decoration = window.decoration();
-  const useClientDecoration =
+function usesClientDecoration(decoration: WindowDecorationState): boolean {
+  return (
     decoration.mode === "client" &&
     !(
       decoration.clientPreference === "server" &&
       decoration.configuredMode === "server"
-    );
+    )
+  );
+}
+
+// Must match the frame the composition below draws: a client-decorated window
+// gets only the border, so counting the title bar would size its client 30px
+// past what the layout meant (and past the client's own maximum).
+function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
+  const client = window.position;
+  const titlebar = usesClientDecoration(window.decoration.peek())
+    ? 0
+    : TITLEBAR_HEIGHT;
+  return {
+    x: client.x - WINDOW_BORDER_PX,
+    y: client.y - titlebar - WINDOW_BORDER_PX,
+    width: client.width + WINDOW_BORDER_PX * 2,
+    height: client.height + titlebar + WINDOW_BORDER_PX * 2,
+  };
+}
+
+COMPOSITOR.window.composition = (window: WaylandWindow) => {
+  const useClientDecoration = usesClientDecoration(window.decoration());
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
   const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
   const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
