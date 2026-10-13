@@ -46,6 +46,7 @@ pub mod grabs;
 pub mod handlers;
 pub mod input;
 pub mod keyboard_layout;
+pub mod log_rate_limit;
 pub mod output_power;
 pub mod plasma_virtual_desktop;
 pub mod plasma_window_management;
@@ -271,12 +272,21 @@ fn init_logging(
         .buffered_lines_limit(64 * 1024)
         .finish(log_file);
 
-    tracing_subscriber::fmt()
-        .compact()
-        .with_ansi(false)
-        .with_writer(writer)
-        .with_env_filter(env_filter)
-        .init();
+    // One warning per surface per frame must not fill the disk: see
+    // `log_rate_limit`.
+    let rate_limit = log_rate_limit::enabled_from_env()
+        .then(|| log_rate_limit::LogRateLimitLayer::new(writer.clone()));
+    {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::fmt()
+            .compact()
+            .with_ansi(false)
+            .with_writer(writer)
+            .with_env_filter(env_filter)
+            .finish()
+            .with(rate_limit)
+            .init();
+    }
 
     // After the subscriber is installed, so the summary lands in the log it
     // just pruned around.

@@ -1,10 +1,12 @@
+use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{
         renderer::{
-            ImportEgl, ImportMemWl, Texture,
+            ImportDma, ImportMemWl, Texture,
             damage::OutputDamageTracker,
             element::Element,
             element::solid::SolidColorRenderElement,
@@ -13,6 +15,7 @@ use smithay::{
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             gles::{GlesRenderer, GlesTexture},
         },
+        egl::EGLDevice,
         winit::{self, WinitEvent},
     },
     desktop::{WindowSurface, layer_map_for_output},
@@ -21,7 +24,10 @@ use smithay::{
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
     reexports::wayland_server::Resource,
     utils::{Logical, Monotonic, Point, Rectangle, Transform},
-    wayland::{background_effect::BackgroundEffectSurfaceCachedState, compositor},
+    wayland::{
+        background_effect::BackgroundEffectSurfaceCachedState, compositor,
+        dmabuf::DmabufFeedbackBuilder,
+    },
 };
 use tracing::{info, trace, warn};
 
@@ -917,21 +923,72 @@ fn compose_one_popup_elements(
     }
 }
 
+/// Offer `linux-dmabuf` for the GPU the winit renderer runs on, so GPU clients hand over
+/// buffers that renderer can import.
+///
+/// The nested session used to only bind `wl_display` (`wl_drm`). On Mesa that fails and
+/// clients fall back to shm. On NVIDIA it succeeds, clients then send `wl_drm`/EGLStream
+/// buffers the renderer cannot import, and every GPU-rendered window stays black (with an
+/// import error per surface per frame in the log).
+fn init_winit_dmabuf(backend: &mut winit::WinitGraphicsBackend<GlesRenderer>, state: &mut ShojiWM) {
+    let renderer = backend.renderer();
+    let formats = renderer.dmabuf_formats();
+    let render_node = EGLDevice::device_for_display(renderer.egl_context().display())
+        .and_then(|device| device.try_get_render_node());
+    let feedback = match render_node {
+        Ok(Some(node)) => match DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build() {
+            Ok(feedback) => Some((node, feedback)),
+            Err(error) => {
+                warn!(?node, ?error, "failed to build winit dmabuf feedback; offering dmabuf v3");
+                None
+            }
+        },
+        Ok(None) => {
+            warn!("winit renderer has no render node; offering dmabuf v3");
+            None
+        }
+        Err(error) => {
+            warn!(?error, "failed to query the winit EGL device; offering dmabuf v3");
+            None
+        }
+    };
+    let global = match feedback {
+        Some((node, feedback)) => {
+            info!(?node, "initialized winit linux-dmabuf global");
+            state
+                .dmabuf_state
+                .create_global_with_default_feedback::<ShojiWM>(&state.display_handle, &feedback)
+        }
+        None => state
+            .dmabuf_state
+            .create_global::<ShojiWM>(&state.display_handle, formats),
+    };
+    state.dmabuf_global = Some(global);
+}
+
 pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
     state: &mut ShojiWM,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
-    match backend.renderer().bind_wl_display(&state.display_handle) {
-        Ok(()) => trace!("winit renderer bound wl_display for EGL clients"),
-        Err(error) => warn!(?error, "failed to bind wl_display for winit EGL clients"),
-    }
     state
         .shm_state
         .update_formats(backend.renderer().shm_formats());
+    init_winit_dmabuf(&mut backend, state);
+    // Shared with the dmabuf import check, which runs between redraws.
+    let backend = Rc::new(RefCell::new(backend));
+    state.winit_dmabuf_import = Some(Box::new({
+        let backend = backend.clone();
+        move |dmabuf| match backend.try_borrow_mut() {
+            Ok(mut backend) => backend.renderer().import_dmabuf(dmabuf, None).is_ok(),
+            // Never happens (imports run from client dispatch, not from a redraw); if it
+            // did, let the render-time import decide.
+            Err(_) => true,
+        }
+    }));
 
     let mode = Mode {
-        size: backend.window_size(),
+        size: backend.borrow().window_size(),
         refresh: 60_000,
     };
 
@@ -978,6 +1035,7 @@ pub fn init_winit(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    let mut backend = backend.borrow_mut();
                     timescope::scope!("winit redraw");
                     sync_winit_damage_tracker(&mut damage_tracker, &output);
                     sync_winit_damage_tracker(&mut blink_damage_tracker, &output);

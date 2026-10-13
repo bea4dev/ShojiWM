@@ -379,6 +379,10 @@ pub struct ShojiWM {
     pub config_runtime: RuntimeHandle,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// The nested (winit) session's check for `dmabuf_imported`: imports the buffer with the
+    /// winit renderer. There are no tty backends to try it on there.
+    pub winit_dmabuf_import:
+        Option<Box<dyn FnMut(&smithay::backend::allocator::dmabuf::Dmabuf) -> bool>>,
     /// `linux-drm-syncobj-v1` (explicit sync). `None` when the primary GPU cannot wait on
     /// syncobj timelines. Without this, drivers that provide no implicit dma-buf fences (the
     /// NVIDIA proprietary driver) let the compositor sample a client buffer before the client
@@ -1795,6 +1799,7 @@ impl ShojiWM {
             config_runtime,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
+            winit_dmabuf_import: None,
             drm_syncobj_state: None,
             implicit_sync_trusted: false,
             background_effect_state,

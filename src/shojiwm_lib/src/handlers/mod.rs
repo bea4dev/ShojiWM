@@ -952,6 +952,14 @@ impl DmabufHandler for ShojiWM {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
+        if let Some(import) = self.winit_dmabuf_import.as_mut() {
+            if import(&dmabuf) {
+                let _ = notifier.successful::<ShojiWM>();
+            } else {
+                notifier.failed();
+            }
+            return;
+        }
         // Every output is rendered on the GPU clients render with (`tty_render_node`), so that
         // is the one that has to take the buffer; another GPU importing it is no use.
         let render_node = self
