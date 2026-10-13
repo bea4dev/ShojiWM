@@ -865,10 +865,18 @@ impl ExtWorkspaceManagerHandler for ShojiWM {
     }
 
     fn ext_workspace_activate(&mut self, workspace_id: String, group_id: Option<String>) {
-        let event = RuntimeWorkspaceActivateRequestSnapshot {
+        self.runtime_workspace_activate(RuntimeWorkspaceActivateRequestSnapshot {
             workspace_id,
             group_id,
-        };
+            window_id: None,
+        });
+    }
+}
+
+impl ShojiWM {
+    /// Send a workspace activation (or, with `window_id`, a move of that
+    /// window) to the runtime's `workspace.event.onActivate` listeners.
+    pub(crate) fn runtime_workspace_activate(&mut self, event: RuntimeWorkspaceActivateRequestSnapshot) {
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();
         match self.config_runtime.workspace_activate(&event, now_ms) {

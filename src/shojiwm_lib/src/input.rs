@@ -3467,7 +3467,7 @@ impl ShojiWM {
         self.set_window_keyboard_focus_target_surface(window, surface);
         self.focus_layer_surface_if_on_demand(None);
         self.update_keyboard_focus(serial);
-        self.sync_wlr_foreign_toplevel_states();
+        self.sync_taskbar_window_states();
         debug!(
             window_id,
             focus_surface_id = surface.map(|surface| surface.id().protocol_id()),
