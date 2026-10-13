@@ -404,3 +404,46 @@ fn ipc_socket_follows_the_compositor_display_not_the_environment() {
     let path = PATH.with(|path| path.borrow().clone()).unwrap();
     assert_eq!(path.file_name().unwrap(), "shojiwm-wayland-nested-test.sock");
 }
+
+#[test]
+fn workspace_requests_with_a_window_go_to_on_move_window() {
+    use shojiwm_rs::runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot;
+    use std::{cell::RefCell, rc::Rc};
+
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let moved = Rc::new(RefCell::new(Vec::new()));
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new({
+            let activated = activated.clone();
+            let moved = moved.clone();
+            move || {
+                let activated = activated.clone();
+                COMPOSITOR
+                    .workspace
+                    .on_activate(move |event| activated.borrow_mut().push(event.workspace_id.clone()));
+                let moved = moved.clone();
+                COMPOSITOR.workspace.on_move_window(move |event| {
+                    moved
+                        .borrow_mut()
+                        .push((event.workspace_id.clone(), event.window_id.clone()))
+                });
+            }
+        })),
+        &args,
+    )
+    .launch(host);
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+
+    let request = |workspace_id: &str, window_id: Option<&str>| RuntimeWorkspaceActivateRequestSnapshot {
+        workspace_id: workspace_id.into(),
+        group_id: None,
+        window_id: window_id.map(Into::into),
+    };
+    assert!(runtime.workspace_activate(&request("desk-2", Some("w1")), 1000).unwrap().invoked);
+    assert!(runtime.workspace_activate(&request("desk-1", None), 1000).unwrap().invoked);
+    assert_eq!(*moved.borrow(), [("desk-2".to_string(), "w1".to_string())]);
+    assert_eq!(*activated.borrow(), ["desk-1".to_string()]);
+}

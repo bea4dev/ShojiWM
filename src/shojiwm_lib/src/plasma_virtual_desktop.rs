@@ -106,10 +106,21 @@ impl PlasmaVirtualDesktopState {
         self.minimized_windows.contains(window_id)
     }
 
-    /// Apply the config's desktops and tell the clients what changed.
-    /// Returns true when windows moved between desktops or minimized.
-    pub fn sync(&mut self, config: RuntimeVirtualDesktopConfig) -> bool {
+    /// Apply the config's desktops (`None`: the config sends none, so
+    /// remove them all) and tell the clients what changed. Returns true when
+    /// the taskbar state of windows may have changed: a desktop came, went
+    /// or became active, or windows moved between desktops or minimized.
+    pub fn sync(&mut self, config: Option<RuntimeVirtualDesktopConfig>) -> bool {
         self.managers.retain(|manager| manager.is_alive());
+        let Some(config) = config else {
+            if !self.configured {
+                return false;
+            }
+            // Back to "every window on all desktops".
+            self.sync(Some(RuntimeVirtualDesktopConfig::default()));
+            self.configured = false;
+            return true;
+        };
         let mut changed = !self.configured;
         self.configured = true;
 
@@ -211,7 +222,7 @@ impl PlasmaVirtualDesktopState {
             window_desktops != self.window_desktops || minimized_windows != self.minimized_windows;
         self.window_desktops = window_desktops;
         self.minimized_windows = minimized_windows;
-        windows_changed
+        changed || windows_changed
     }
 
     fn announce_all(&self, manager: &OrgKdePlasmaVirtualDesktopManagement) {
@@ -320,7 +331,10 @@ impl Dispatch<OrgKdePlasmaVirtualDesktop, String> for ShojiWM {
 impl ShojiWM {
     /// The config's virtual desktops changed: tell the desktop clients, and
     /// the taskbar which window is on which desktop.
-    pub fn consume_runtime_virtual_desktop_config(&mut self, config: RuntimeVirtualDesktopConfig) {
+    pub fn consume_runtime_virtual_desktop_config(
+        &mut self,
+        config: Option<RuntimeVirtualDesktopConfig>,
+    ) {
         if self.plasma_virtual_desktop_state.sync(config) {
             self.sync_plasma_window_states();
         }

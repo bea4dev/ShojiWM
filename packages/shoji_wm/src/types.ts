@@ -18,13 +18,13 @@ export interface WaylandWindowSnapshot {
   readonly interaction: WindowCompositionInteractionSnapshot;
   /** Output whose frames drive this window's runtime work. / このウィンドウのランタイム処理を駆動する出力。 */
   readonly outputName?: string;
-  /** What plasmashell asked for this window; absent without a plasma surface. */
+  /** What plasmashell asked for this window; absent without a plasma surface. / plasmashell がこのウィンドウに要求した内容。plasma surface が無ければ省略。 */
   readonly plasma?: PlasmaSurfaceState;
-  /** The window's taskbar entry (global logical px), from KDE's `set_minimized_geometry`. */
+  /** The window's taskbar entry (global logical px), from KDE's `set_minimized_geometry`. / KDE の `set_minimized_geometry` によるタスクバー上の位置（グローバル論理 px）。 */
   readonly minimizedGeometry?: WindowPosition;
 }
 
-/** The `role` of KDE's `org_kde_plasma_surface.set_role`. */
+/** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
 export type PlasmaSurfaceRole =
   | "normal"
   | "desktop"
@@ -38,15 +38,17 @@ export type PlasmaSurfaceRole =
 /**
  * What plasmashell asked for one of its windows (Kickoff, tray popups, OSDs,
  * notifications) through KDE's `org_kde_plasma_surface` protocol.
+ * plasmashell が自身のウィンドウ（Kickoff、トレイのポップアップ、OSD、通知）に
+ * KDE の `org_kde_plasma_surface` プロトコルで要求した内容。
  */
 export interface PlasmaSurfaceState {
   readonly role: PlasmaSurfaceRole;
-  /** Global logical position from `set_position`, if the shell sent one. */
+  /** Global logical position from `set_position`, if the shell sent one. / `set_position` によるグローバル論理座標（送られた場合のみ）。 */
   readonly x?: number;
   readonly y?: number;
   readonly skipTaskbar: boolean;
   readonly skipSwitcher: boolean;
-  /** A panel that wants keyboard focus (e.g. for a search field). */
+  /** A panel that wants keyboard focus (e.g. for a search field). / キーボードフォーカスを求めるパネル（検索欄など）。 */
   readonly panelTakesFocus: boolean;
 }
 
@@ -244,12 +246,17 @@ export interface WaylandWindow {
   /**
    * Role and position plasmashell asked for this window (KDE
    * `org_kde_plasma_surface`); `undefined` for every other window.
+   * plasmashell がこのウィンドウに要求した役割と位置（KDE
+   * `org_kde_plasma_surface`）。それ以外のウィンドウでは `undefined`。
    */
   readonly plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   /**
    * Where the taskbar shows this window (global logical px), from KDE's
    * `org_kde_plasma_window.set_minimized_geometry`; `undefined` when no
-   * taskbar set one. The minimize animation flies the window there.
+   * taskbar set one. A minimize animation can fly the window there.
+   * KDE の `org_kde_plasma_window.set_minimized_geometry` によるタスクバー上の
+   * 位置（グローバル論理 px）。未設定なら `undefined`。最小化アニメーションの
+   * 行き先に使えます。
    */
   readonly minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
@@ -1599,29 +1606,46 @@ export interface WorkspaceGroupConfig {
   workspaces: WorkspaceConfigEntry[];
 }
 
-/** One of KDE's virtual desktops (plasmashell's Pager shows them). */
+/**
+ * One of KDE's virtual desktops (plasmashell's Pager shows them).
+ * KDE の仮想デスクトップ 1 つ（plasmashell の Pager に表示されます）。
+ */
 export interface VirtualDesktopEntry {
-  /** Activating the desktop sends `workspace.event.onActivate` with this id. */
+  /**
+   * Activating the desktop sends `workspace.event.onActivate` with this id.
+   * デスクトップの activate はこの id で `workspace.event.onActivate` に届きます。
+   */
   id: string;
   name: string;
   active?: boolean;
-  /** The windows on this desktop. */
+  /** The windows on this desktop. / このデスクトップ上のウィンドウ。 */
   windowIds?: string[];
 }
 
-/** KDE's virtual desktops (`org_kde_plasma_virtual_desktop_management`). */
+/**
+ * KDE's virtual desktops (`org_kde_plasma_virtual_desktop_management`).
+ * KDE の仮想デスクトップ（`org_kde_plasma_virtual_desktop_management`）。
+ */
 export interface VirtualDesktopConfig {
-  /** In order: a desktop's position is its index. */
+  /** In order: a desktop's position is its index. / 並び順がそのまま位置になります。 */
   desktops: VirtualDesktopEntry[];
-  /** Rows the Pager lays the desktops out in (default 1). */
+  /** Rows the Pager lays the desktops out in (default 1). / Pager の行数（既定 1）。 */
   rows?: number;
-  /** Windows that are really minimized (not just on another desktop). */
+  /**
+   * Windows that are really minimized (not just on another desktop).
+   * 本当に最小化されているウィンドウ（別デスクトップにいるだけのものは含めない）。
+   */
   minimizedWindowIds?: string[];
 }
 
 export interface WorkspaceConfig {
   groups: WorkspaceGroupConfig[];
-  /** Also show the workspaces to KDE's Pager as virtual desktops. */
+  /**
+   * Also show the workspaces to KDE's Pager as virtual desktops. Leaving it
+   * out removes the desktops again.
+   * ワークスペースを KDE の Pager に仮想デスクトップとしても公開します。
+   * 省略するとデスクトップは削除されます。
+   */
   virtualDesktops?: VirtualDesktopConfig;
 }
 
@@ -1630,11 +1654,17 @@ export type WorkspaceConfigureFactory = () => WorkspaceConfig;
 export interface WorkspaceActivateEvent {
   groupId?: string;
   workspaceId: string;
-  /**
-   * Set when a client (KDE's Pager or taskbar) asks to move this window to
-   * the workspace, rather than to switch to the workspace.
-   */
-  windowId?: string;
+}
+
+/**
+ * A client (KDE's Pager or taskbar) asked to move a window to a workspace.
+ * クライアント（KDE の Pager やタスクバー）がウィンドウをワークスペースへ
+ * 移動するよう要求したイベント。
+ */
+export interface WorkspaceMoveWindowEvent {
+  /** A `virtualDesktops` desktop id. / `virtualDesktops` のデスクトップ id。 */
+  workspaceId: string;
+  windowId: string;
 }
 
 export interface WorkspaceController {
@@ -1658,6 +1688,13 @@ export interface WorkspaceController {
      * 呼ばれます。
      */
     onActivate(listener: (event: WorkspaceActivateEvent) => void): () => void;
+    /**
+     * Called when a client such as KDE's Pager asks to move a window to a
+     * workspace (only with `virtualDesktops` configured).
+     * KDE の Pager などのクライアントがウィンドウをワークスペースへ移動するよう
+     * 要求したときに呼ばれます（`virtualDesktops` 設定時のみ）。
+     */
+    onMoveWindow(listener: (event: WorkspaceMoveWindowEvent) => void): () => void;
   };
 }
 

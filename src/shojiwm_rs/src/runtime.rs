@@ -23,7 +23,10 @@ use shojiwm_lib::{
     runtime_input::{RuntimeInputConfig, RuntimeInputDeviceSnapshot},
     runtime_key_binding::RuntimeKeyBindingEntry,
     runtime_process::{RuntimeProcessAction, RuntimeProcessEntry},
-    runtime_workspace::{RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate},
+    runtime_workspace::{
+        RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate,
+        RuntimeWorkspaceMoveWindowEvent,
+    },
     ssd::{
         GestureSwipeEventSnapshot, ManagedWindowState, PointerMoveEventSnapshot,
         RuntimeWindowAction, SurfacePolicy, WaylandLayerSnapshot, WaylandOutputSnapshot,
@@ -82,6 +85,7 @@ pub(crate) struct Listeners {
     pub update_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub destroy_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub workspace_activate: Vec<RefListener<RuntimeWorkspaceActivateRequestSnapshot>>,
+    pub workspace_move_window: Vec<RefListener<RuntimeWorkspaceMoveWindowEvent>>,
 }
 
 pub(crate) type EffectFn<S> = Rc<dyn Fn(&S) -> SurfaceEffects>;

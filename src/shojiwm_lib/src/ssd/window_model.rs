@@ -49,7 +49,7 @@ pub struct WaylandWindowSnapshot {
     pub plasma: Option<crate::protocols::plasma_shell::PlasmaSurfaceSnapshot>,
     /// The window's taskbar entry in global logical coordinates, from KDE's
     /// `org_kde_plasma_window.set_minimized_geometry`; `None` when no taskbar
-    /// set one. The Magic Lamp minimize animation flies the window there.
+    /// set one. A config's minimize animation can fly the window there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized_geometry: Option<WindowPositionSnapshot>,
 }

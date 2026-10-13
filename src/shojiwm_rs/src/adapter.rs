@@ -11,6 +11,7 @@ use std::{
 };
 
 use shojiwm_lib::{
+    runtime_workspace::RuntimeWorkspaceMoveWindowEvent,
     runtime_api::{
         ConfigRuntime, DecorationRequest, EffectRequest, HostMessage, InputRequest, LaunchContext,
         ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply,
@@ -1053,7 +1054,16 @@ impl ConfigRuntime for ReactiveRuntime {
                     }
                 },
                 RuntimeRequest::Workspace(WorkspaceRequest::Activate(event)) => {
-                    let invoked = batch(|| emit(|listeners| listeners.workspace_activate.clone(), |listener| listener(event)));
+                    let invoked = match &event.window_id {
+                        Some(window_id) => {
+                            let event = RuntimeWorkspaceMoveWindowEvent {
+                                workspace_id: event.workspace_id.clone(),
+                                window_id: window_id.clone(),
+                            };
+                            batch(|| emit(|listeners| listeners.workspace_move_window.clone(), |listener| listener(&event)))
+                        }
+                        None => batch(|| emit(|listeners| listeners.workspace_activate.clone(), |listener| listener(event))),
+                    };
                     RuntimeReply::Handler(Box::new(handler_invocation(invoked)))
                 }
             })

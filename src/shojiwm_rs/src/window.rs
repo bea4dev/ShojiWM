@@ -3,6 +3,7 @@
 
 use std::{any::TypeId, fmt, rc::Rc};
 
+use shojiwm_lib::protocols::plasma_shell::PlasmaSurfaceSnapshot;
 use shojiwm_lib::ssd::{
     DecorationInteractionSnapshot, ManagedWindowAnimationMode, ManagedWindowAnimationSnapshot,
     ManagedWindowPointAnimationSnapshot, ManagedWindowPointSnapshot,
@@ -34,6 +35,8 @@ pub(crate) struct WindowSignals {
     pub is_resizable: Signal<bool>,
     pub is_transient: Signal<bool>,
     pub parent_id: Signal<Option<String>>,
+    pub plasma: Signal<Option<PlasmaSurfaceSnapshot>>,
+    pub minimized_geometry: Signal<Option<Rect>>,
     pub icon: Signal<Option<WindowIconSnapshot>>,
     pub interaction: Signal<DecorationInteractionSnapshot>,
     pub decoration: Signal<WindowDecorationStateSnapshot>,
@@ -56,6 +59,8 @@ impl WindowSignals {
             is_resizable: scope.signal(snapshot.is_resizable),
             is_transient: scope.signal(snapshot.is_transient),
             parent_id: scope.signal(snapshot.parent_id.clone()),
+            plasma: scope.signal(snapshot.plasma.clone()),
+            minimized_geometry: scope.signal(snapshot.minimized_geometry.map(Into::into)),
             icon: scope.signal(snapshot.icon.clone()),
             interaction: scope.signal(snapshot.interaction.clone()),
             decoration: scope.signal(snapshot.decoration),
@@ -78,6 +83,8 @@ impl WindowSignals {
         self.is_resizable.set(snapshot.is_resizable);
         self.is_transient.set(snapshot.is_transient);
         self.parent_id.set(snapshot.parent_id.clone());
+        self.plasma.set(snapshot.plasma.clone());
+        self.minimized_geometry.set(snapshot.minimized_geometry.map(Into::into));
         self.icon.set(snapshot.icon.clone());
         self.interaction.set(snapshot.interaction.clone());
         self.decoration.set(snapshot.decoration);
@@ -129,6 +136,13 @@ window_signals! {
     is_resizable: bool,
     is_transient: bool,
     parent_id: Option<String>,
+    /// What plasmashell asked for this window (KDE `org_kde_plasma_surface`:
+    /// role, position); `None` for every other window.
+    plasma: Option<PlasmaSurfaceSnapshot>,
+    /// Where a KDE taskbar shows this window, in global logical coordinates
+    /// (`org_kde_plasma_window.set_minimized_geometry`); `None` when no
+    /// taskbar set one.
+    minimized_geometry: Option<Rect>,
     icon: Option<WindowIconSnapshot>,
     interaction: DecorationInteractionSnapshot,
     decoration: WindowDecorationStateSnapshot,

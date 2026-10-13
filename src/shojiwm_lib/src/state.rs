@@ -3962,9 +3962,8 @@ impl ShojiWM {
             let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
             self.ext_workspace_manager_state
                 .sync::<Self>(update, &self.display_handle, &outputs);
-            if let Some(virtual_desktops) = virtual_desktops {
-                self.consume_runtime_virtual_desktop_config(virtual_desktops);
-            }
+            // Every update carries the whole model: no desktops means none.
+            self.consume_runtime_virtual_desktop_config(virtual_desktops);
         }
     }
 

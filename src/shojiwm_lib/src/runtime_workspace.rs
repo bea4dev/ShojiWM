@@ -68,7 +68,16 @@ pub struct RuntimeWorkspaceActivateRequestSnapshot {
     pub workspace_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    /// Move this window to the workspace instead of switching to it.
+    /// Move this window to the workspace instead of switching to it. The
+    /// runtimes deliver such a request to `onMoveWindow`, not `onActivate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
+}
+
+/// A client (KDE's Pager or taskbar) asked to move a window to a workspace
+/// (`workspace.event.onMoveWindow`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWorkspaceMoveWindowEvent {
+    pub workspace_id: String,
+    pub window_id: String,
 }

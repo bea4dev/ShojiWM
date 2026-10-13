@@ -98,7 +98,7 @@ struct PlasmaWindowInner {
     resources: Vec<WaylandWeak<OrgKdePlasmaWindow>>,
     /// The window's taskbar entry (`set_minimized_geometry`), relative to the
     /// panel surface that holds it. One per panel; the last one set wins.
-    /// The minimize animation flies the window there.
+    /// The config reads it as `window.minimizedGeometry`.
     minimized_geometries: Vec<(WaylandWeak<WlSurface>, Rect)>,
 }
 
@@ -727,7 +727,7 @@ impl Dispatch<OrgKdePlasmaWindow, PlasmaWindowHandle> for ShojiWM {
             // No icon bytes: dropping the fd closes it, so the client reads
             // an empty icon and falls back to the app's .desktop icon.
             Request::GetIcon { fd } => drop(fd),
-            // The taskbar entry, for the Magic Lamp minimize animation.
+            // The taskbar entry (`window.minimizedGeometry` in the config).
             Request::SetMinimizedGeometry { panel, x, y, width, height } => {
                 let rect = (x as i32, y as i32, width as i32, height as i32);
                 if handle.set_minimized_geometry(&panel, Some(rect)) {

@@ -34,7 +34,10 @@ use shojiwm_lib::{
         RuntimeProcessAction, RuntimeProcessEntry, RuntimeProcessLaunch,
         RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
     },
-    runtime_workspace::{RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate},
+    runtime_workspace::{
+        RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate,
+        RuntimeWorkspaceMoveWindowEvent,
+    },
     ssd::{
         GestureSwipeEventSnapshot,
         window_model::{LayerEdgeSnapshot, LayerExclusiveZoneSnapshot},
@@ -949,6 +952,12 @@ impl WorkspaceController {
     /// A bar asked to activate a workspace.
     pub fn on_activate(&self, listener: impl Fn(&RuntimeWorkspaceActivateRequestSnapshot) + 'static) {
         with_registry(|registry| registry.listeners.workspace_activate.push(Rc::new(listener)));
+    }
+
+    /// A client (KDE's Pager or taskbar) asked to move a window to a
+    /// workspace. The workspace ids are the `virtual_desktops` ids.
+    pub fn on_move_window(&self, listener: impl Fn(&RuntimeWorkspaceMoveWindowEvent) + 'static) {
+        with_registry(|registry| registry.listeners.workspace_move_window.push(Rc::new(listener)));
     }
 }
 
