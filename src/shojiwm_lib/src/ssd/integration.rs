@@ -380,6 +380,22 @@ fn apply_cached_tree_update(
                         value,
                         ..
                     } => {
+                        // A paint / overlay shader's uniform, on any node kind. These arrive
+                        // next to node patches when a turn changed both.
+                        if let Some(slot) = paint_slot_for_stage(stage_index) {
+                            validate_paint_uniform(&target.style, slot, &node_id, &name, &value)?;
+                            let shader = paint_shader_mut(&mut target.style, slot)
+                                .expect("paint uniform was validated");
+                            let current = shader
+                                .uniforms
+                                .get_mut(&name)
+                                .expect("paint uniform was validated");
+                            if *current != value {
+                                *current = value;
+                                changed = true;
+                            }
+                            continue;
+                        }
                         let super::DecorationNodeKind::ShaderEffect(effect) = &mut target.kind
                         else {
                             return Err(DecorationEvaluationError::RuntimeProtocol(format!(
@@ -9001,6 +9017,63 @@ mod tests {
         assert_eq!(
             stage.uniforms.get("phase_01"),
             Some(&crate::ssd::ShaderUniformValue::Float(0.5))
+        );
+    }
+
+    #[test]
+    fn cached_tree_patch_updates_paint_uniform_next_to_node_patches() {
+        let mut uniforms = std::collections::BTreeMap::new();
+        uniforms.insert("hover".into(), crate::ssd::ShaderUniformValue::Float(0.0));
+        let mut button = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }));
+        button.stable_id = Some("root.Button[0]".into());
+        button.style.paint = Some(crate::ssd::PaintShader {
+            shader: crate::ssd::ShaderModule {
+                path: "button.frag".into(),
+            },
+            uniforms,
+            outsets: Default::default(),
+        });
+        let mut label = DecorationNode::new(DecorationNodeKind::Label(super::super::LabelNode {
+            text: "before".into(),
+        }));
+        label.stable_id = Some("root.Label[1]".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }))
+        .with_children(vec![button, label]);
+        root.stable_id = Some("root".into());
+        let mut tree = DecorationTree::new(root);
+
+        let mut replacement =
+            DecorationNode::new(DecorationNodeKind::Label(super::super::LabelNode {
+                text: "after".into(),
+            }));
+        replacement.stable_id = Some("root.Label[1]".into());
+        let update = apply_cached_tree_update(
+            &mut tree,
+            None,
+            vec![
+                CompositionPatch::ReplaceNode {
+                    node_id: "root.Label[1]".into(),
+                    node: replacement,
+                },
+                CompositionPatch::ShaderUniform {
+                    node_id: "root.Button[0]".into(),
+                    stage_index: PAINT_STAGE_INDEX,
+                    name: "hover".into(),
+                    value: crate::ssd::ShaderUniformValue::Float(1.0),
+                },
+            ],
+        )
+        .expect("a paint uniform patch should apply next to node patches");
+
+        assert!(update.changed);
+        let paint = tree.root.children[0].style.paint.as_ref().expect("paint kept");
+        assert_eq!(
+            paint.uniforms.get("hover"),
+            Some(&crate::ssd::ShaderUniformValue::Float(1.0))
         );
     }
 
