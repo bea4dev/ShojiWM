@@ -490,6 +490,10 @@ pub struct ShojiWM {
     pub runtime_pointer_move_async_enabled: bool,
     pub runtime_gesture_swipe_enabled: bool,
     pub runtime_gesture_swipe_async_enabled: bool,
+    /// The config listens to drag and drop (`COMPOSITOR.dnd.event.onStart`).
+    pub runtime_dnd_enabled: bool,
+    /// The drag in progress and the drag views the config shows.
+    pub dnd: crate::dnd::DndState,
     pub runtime_gesture_swipe: Option<RuntimeGestureSwipeState>,
     /// The config's input grab (`COMPOSITOR.input.grab`), if one is held.
     pub runtime_input_grab: Option<crate::runtime_input_grab::RuntimeInputGrabState>,
@@ -641,6 +645,9 @@ pub struct ShojiWM {
     pub pending_pointer_input: Option<PendingPointerInput>,
     pub cursor_status: CursorImageStatus,
     pub cursor_override: Option<CursorIcon>,
+    /// `COMPOSITOR.cursor.overrideKind`: wins over the compositor's own
+    /// overrides and the clients' cursors.
+    pub config_cursor_override: Option<crate::cursor::CursorOverride>,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
     pub current_pointer_image: Option<Image>,
@@ -1703,6 +1710,7 @@ impl ShojiWM {
                     }
                     if should_redraw {
                         state.async_asset_dirty = true;
+                        state.dnd.assets_dirty = true;
                         state.schedule_redraw();
                     }
                 }
@@ -1861,6 +1869,8 @@ impl ShojiWM {
             runtime_pointer_move_async_enabled: false,
             runtime_gesture_swipe_enabled: false,
             runtime_gesture_swipe_async_enabled: false,
+            runtime_dnd_enabled: false,
+            dnd: Default::default(),
             runtime_gesture_swipe: None,
             runtime_input_grab: None,
             pending_input_grab_key_event: None,
@@ -1933,6 +1943,7 @@ impl ShojiWM {
             pending_pointer_input: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_override: None,
+            config_cursor_override: None,
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
             current_pointer_image: None,
@@ -3018,6 +3029,13 @@ impl ShojiWM {
                 }
                 HostMessage::InputGrab(update) => self.apply_runtime_input_grab_update(update),
                 HostMessage::CursorPosition(target) => self.set_cursor_position(target),
+                HostMessage::CursorOverride(kind) => {
+                    if self.config_cursor_override != kind {
+                        self.config_cursor_override = kind;
+                        self.schedule_redraw();
+                    }
+                }
+                HostMessage::DragView(command) => self.apply_drag_view_command(command),
                 HostMessage::BackgroundEffect(config) => {
                     if self.configured_background_effect != config {
                         self.configured_background_effect = config;
@@ -3215,8 +3233,14 @@ impl ShojiWM {
         // leaving the textures to the watchdog deadline.
         self.finalize_all_closing_snapshots("config-hot-reload");
 
-        // The reloaded config knows nothing about a grab the old one held.
+        // The reloaded config knows nothing about a grab the old one held,
+        // nor about its drag views and cursor override.
         self.end_runtime_input_grab(None);
+        self.dnd.reset_views(Instant::now());
+        self.config_cursor_override = None;
+        // The new config reports the hooks it listens to only when it has
+        // any: start from none, so the old config's do not stay on.
+        self.apply_runtime_event_config_update(RuntimeEventConfigUpdate::default());
         self.sync_runtime_display_state();
         let reload_result = self.config_runtime.reload();
         self.drain_runtime_host_messages();
@@ -3946,6 +3970,7 @@ impl ShojiWM {
     }
 
     pub fn apply_runtime_event_config_update(&mut self, update: RuntimeEventConfigUpdate) {
+        self.runtime_dnd_enabled = update.dnd;
         self.runtime_pointer_move_enabled = update.pointer_move;
         self.runtime_pointer_move_async_enabled = update.pointer_move_async;
         self.runtime_gesture_swipe_enabled = update.gesture_swipe;

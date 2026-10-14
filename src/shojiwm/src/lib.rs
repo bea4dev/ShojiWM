@@ -169,6 +169,9 @@ impl ConfigRuntime for TypeScriptRuntime {
                 InputRequest::InputGrab { grab_id, event } => {
                     RuntimeReply::PointerHook(evaluator.input_grab_event(grab_id, event, now)?)
                 }
+                InputRequest::Dnd(event) => {
+                    RuntimeReply::PointerHook(evaluator.dnd_event(event, now)?)
+                }
             },
             RuntimeRequest::Effect(request) => match request {
                 EffectRequest::Background => {
@@ -559,6 +562,195 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             ]
         );
         assert_eq!(ignored, Some(true));
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// `COMPOSITOR.dnd` and `COMPOSITOR.cursor.overrideKind`: a drag reaches
+    /// the config, its view and content reach the compositor, the content
+    /// follows the drag's signals, and the view goes when the config disposes
+    /// of it.
+    #[test]
+    fn typescript_runtime_draws_drag_views() {
+        use shojiwm_lib::cursor::CursorOverride;
+        use shojiwm_lib::dnd::{
+            DndEventSnapshot, DragAction, DragActions, DragDevice, DragEndKind,
+            DragIconSnapshot, DragPoint, DragSnapshot, DragViewAnchor, DragViewCommand,
+        };
+        use shojiwm_lib::ssd::{DecorationNode, DecorationNodeKind};
+
+        fn find(node: &DecorationNode, matches: &dyn Fn(&DecorationNode) -> bool) -> bool {
+            matches(node) || node.children.iter().any(|child| find(child, matches))
+        }
+        fn label(node: &DecorationNode, text: &str) -> bool {
+            find(node, &|node| {
+                matches!(&node.kind, DecorationNodeKind::Label(label) if label.text == text)
+            })
+        }
+        fn slot(node: &DecorationNode) -> bool {
+            find(node, &|node| matches!(node.kind, DecorationNodeKind::WindowSlot))
+        }
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-drag-view-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Box, DragIcon, Label, animationVariable } from "shoji_wm";
+const fade = animationVariable("fade");
+COMPOSITOR.cursor.overrideKind("grabbing");
+COMPOSITOR.dnd.event.onStart((drag) => {
+  const view = drag.show({
+    x: 4,
+    opacity: drag.animation.variable(fade)((value) => 1 - value),
+    content: () => (
+      <Box style={{ padding: 2 }}>
+        <DragIcon><Label text="no icon" /></DragIcon>
+        {drag.action.value === "copy" ? <Label text={`copy ${drag.mimeTypes[0]}`} /> : null}
+      </Box>
+    ),
+  });
+  drag.onEnd((end) => {
+    COMPOSITOR.cursor.overrideKind(null);
+    if (!end.accepted) view.dispose();
+  });
+});
+COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
+"#,
+        )
+        .expect("test config should be written");
+        let args = CommonArgs::parse(
+            &[
+                "--dev".to_string(),
+                "--config".to_string(),
+                config_path.display().to_string(),
+                "--runtime-dir".to_string(),
+                repository_root.display().to_string(),
+            ],
+            TypeScriptLauncher.extra_args(),
+        );
+        let host = RuntimeHost::detached();
+        let mut runtime =
+            shojiwm_lib::runtime_api::RuntimeBoot::new(Box::new(TypeScriptLauncher), &args)
+                .launch(host.clone());
+        runtime.preload().expect("config should preload");
+        runtime.enable().expect("config should enable");
+
+        let mut listens = None;
+        let mut overrides = Vec::new();
+        while let Some(message) = host.pop() {
+            match message {
+                HostMessage::EventFilter(update) => listens = Some(update.dnd),
+                HostMessage::CursorOverride(kind) => overrides.push(kind),
+                _ => {}
+            }
+        }
+        assert_eq!(listens, Some(true), "the config listens to drags");
+        assert_eq!(
+            overrides,
+            vec![Some(CursorOverride::parse("grabbing").unwrap())]
+        );
+
+        let commands = |host: &RuntimeHost| {
+            std::iter::from_fn(|| host.pop())
+                .filter_map(|message| match message {
+                    HostMessage::DragView(command) => Some(command),
+                    HostMessage::CursorOverride(kind) => {
+                        assert_eq!(kind, None, "the override is lifted at the end");
+                        None
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let start = DndEventSnapshot::Start {
+            drag: DragSnapshot {
+                id: 9,
+                mime_types: vec!["text/uri-list".into()],
+                actions: DragActions {
+                    copy: true,
+                    move_: true,
+                    ask: false,
+                },
+                action: DragAction::None,
+                source_window_id: None,
+                target_window_id: None,
+                device: DragDevice::Pointer,
+                origin: DragPoint { x: 1.0, y: 2.0 },
+                icon: Some(DragIconSnapshot {
+                    width: 10,
+                    height: 10,
+                    offset_x: -5,
+                    offset_y: -5,
+                }),
+            },
+        };
+        assert!(runtime.dnd_event(&start, 1).expect("start should be delivered").invoked);
+        let shown = commands(&host);
+        let view_id = match shown.first() {
+            Some(DragViewCommand::Show { view_id, drag_id: 9, max_linger_ms: Some(5000) }) => *view_id,
+            other => panic!("expected the view to be shown first: {other:?}"),
+        };
+        assert!(shown.iter().any(|command| matches!(
+            command,
+            DragViewCommand::Props { view_id: id, props }
+                if *id == view_id
+                    && props.anchor == DragViewAnchor::Pointer
+                    && props.x == 4.0
+                    && props.opacity == 1.0
+        )));
+        let content = shown
+            .iter()
+            .find_map(|command| match command {
+                DragViewCommand::Content { content: Some(node), .. } => Some(node.clone()),
+                _ => None,
+            })
+            .expect("the content should be sent");
+        assert!(slot(&content), "the icon goes in a window slot");
+        assert!(!label(&content, "no icon"), "the fallback is not drawn with an icon");
+
+        let update = DndEventSnapshot::Update {
+            drag_id: 9,
+            action: DragAction::Copy,
+            target_window_id: None,
+            icon: Some(DragIconSnapshot {
+                width: 10,
+                height: 10,
+                offset_x: -5,
+                offset_y: -5,
+            }),
+        };
+        runtime.dnd_event(&update, 2).expect("update should be delivered");
+        let updated = commands(&host);
+        assert!(updated.iter().any(|command| matches!(
+            command,
+            DragViewCommand::Content { content: Some(node), .. } if label(node, "copy text/uri-list")
+        )), "{updated:?}");
+
+        let end = DndEventSnapshot::End {
+            drag_id: 9,
+            kind: DragEndKind::Dropped,
+            accepted: false,
+            target_window_id: None,
+            position: DragPoint { x: 3.0, y: 4.0 },
+        };
+        runtime.dnd_event(&end, 3).expect("end should be delivered");
+        let ended = commands(&host);
+        assert!(
+            ended
+                .iter()
+                .any(|command| matches!(command, DragViewCommand::Dispose { view_id: id } if *id == view_id)),
+            "{ended:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }

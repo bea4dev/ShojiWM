@@ -112,6 +112,15 @@ export const CURSOR_CONTROLLER: CursorController = {
   bindAppLockIgnoreModifier(modifier) {
     bindAppLockIgnoreModifier(modifier);
   },
+  overrideKind(kind) {
+    if (kind !== null && typeof kind !== "string") {
+      throw new Error("cursor overrideKind: kind must be a cursor name or null");
+    }
+    const native = (
+      globalThis as { __SHOJI_CURSOR_OVERRIDE__?: (kind: string | null) => void }
+    ).__SHOJI_CURSOR_OVERRIDE__;
+    native?.(kind);
+  },
 };
 
 export function takePendingCursorConfig():

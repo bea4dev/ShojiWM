@@ -78,6 +78,10 @@ pub enum HostMessage {
     BackgroundEffect(Option<crate::ssd::BackgroundEffectConfig>),
     /// Move the cursor (`COMPOSITOR.cursor.setPosition`).
     CursorPosition(crate::cursor::RuntimeCursorPositionTarget),
+    /// Show one cursor everywhere, or stop (`COMPOSITOR.cursor.overrideKind`).
+    CursorOverride(Option<crate::cursor::CursorOverride>),
+    /// Show, move, restyle or dispose of a drag view (`drag.show()`).
+    DragView(crate::dnd::DragViewCommand),
 }
 
 /// When a runtime that keeps a clock per output (see `SchedulerTickRequest`)

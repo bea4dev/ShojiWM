@@ -530,7 +530,7 @@ pub fn icon_elements_for_decoration(
         .collect()
 }
 
-fn memory_icon_element(
+pub(crate) fn memory_icon_element(
     renderer: &mut GlesRenderer,
     icon: &CachedDecorationIcon,
     root_rect: LogicalRect,

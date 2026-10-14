@@ -350,6 +350,9 @@ pub struct RuntimeEventConfigUpdate {
     pub gesture_swipe: bool,
     #[serde(default)]
     pub gesture_swipe_async: bool,
+    /// Drag and drop events (`InputRequest::Dnd`).
+    #[serde(default)]
+    pub dnd: bool,
 }
 
 #[derive(Debug, Clone, Default)]

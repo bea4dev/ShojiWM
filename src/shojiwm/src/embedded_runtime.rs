@@ -236,6 +236,17 @@ pub enum NativeInteractionRequest {
         #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
         input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     },
+    Dnd {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        event: shojiwm_lib::dnd::DndEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState", skip_serializing_if = "Option::is_none")]
+        display_state: Option<std::collections::BTreeMap<String, WaylandOutputSnapshot>>,
+        #[serde(rename = "inputState", skip_serializing_if = "Option::is_none")]
+        input_state: Option<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>,
+    },
     WindowMove {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -435,6 +446,7 @@ pub enum NativeInteractionKind {
     GestureSwipeAsync,
     PointerRegion,
     InputGrab,
+    Dnd,
     WindowMove,
     WindowResize,
 }
@@ -448,6 +460,7 @@ impl NativeInteractionKind {
             Self::GestureSwipeAsync => "gestureSwipeAsync",
             Self::PointerRegion => "pointerRegion",
             Self::InputGrab => "inputGrab",
+            Self::Dnd => "dnd",
             Self::WindowMove => "windowMove",
             Self::WindowResize => "windowResize",
         }
@@ -2302,6 +2315,7 @@ fn native_interaction_kind(value: &str) -> Result<NativeInteractionKind, std::io
         "gestureSwipeAsync" => Ok(NativeInteractionKind::GestureSwipeAsync),
         "pointerRegion" => Ok(NativeInteractionKind::PointerRegion),
         "inputGrab" => Ok(NativeInteractionKind::InputGrab),
+        "dnd" => Ok(NativeInteractionKind::Dnd),
         "windowMove" => Ok(NativeInteractionKind::WindowMove),
         "windowResize" => Ok(NativeInteractionKind::WindowResize),
         _ => Err(std::io::Error::new(
@@ -2463,6 +2477,84 @@ fn op_shoji_cursor_position(
     isolate_host(state)?.cursor_position()
 }
 
+/// `COMPOSITOR.cursor.overrideKind`: a CSS cursor name, `none` to hide the
+/// cursor, or `null` to give the cursor back to the clients.
+#[op2]
+fn op_shoji_cursor_override(
+    state: &mut OpState,
+    #[string] kind: Option<String>,
+) -> Result<(), std::io::Error> {
+    let kind = kind
+        .as_deref()
+        .map(shojiwm_lib::cursor::CursorOverride::parse)
+        .transpose()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    if let Some(host) = isolate_host(state) {
+        host.send(shojiwm_lib::runtime_api::HostMessage::CursorOverride(kind));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum WireDragViewCommand {
+    #[serde(rename_all = "camelCase")]
+    Show {
+        view_id: u64,
+        drag_id: u64,
+        max_linger_ms: Option<f64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Props {
+        view_id: u64,
+        props: shojiwm_lib::dnd::DragViewProps,
+    },
+    #[serde(rename_all = "camelCase")]
+    Content {
+        view_id: u64,
+        tree: Option<WireDecorationNode>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Dispose { view_id: u64 },
+}
+
+/// `drag.show()` and its view's updates.
+#[op2]
+fn op_shoji_dnd_view(
+    state: &mut OpState,
+    #[serde] command: WireDragViewCommand,
+) -> Result<(), std::io::Error> {
+    use shojiwm_lib::dnd::DragViewCommand;
+    let command = match command {
+        WireDragViewCommand::Show {
+            view_id,
+            drag_id,
+            max_linger_ms,
+        } => DragViewCommand::Show {
+            view_id,
+            drag_id,
+            max_linger_ms: max_linger_ms
+                .filter(|ms| ms.is_finite())
+                .map(|ms| ms.max(0.0) as u64),
+        },
+        WireDragViewCommand::Props { view_id, props } => DragViewCommand::Props { view_id, props },
+        WireDragViewCommand::Content { view_id, tree } => DragViewCommand::Content {
+            view_id,
+            content: tree
+                .map(shojiwm_lib::ssd::DecorationNode::try_from)
+                .transpose()
+                .map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+                })?,
+        },
+        WireDragViewCommand::Dispose { view_id } => DragViewCommand::Dispose { view_id },
+    };
+    if let Some(host) = isolate_host(state) {
+        host.send(shojiwm_lib::runtime_api::HostMessage::DragView(command));
+    }
+    Ok(())
+}
+
 extension!(
     shoji_runtime_bridge,
     ops = [
@@ -2477,6 +2569,8 @@ extension!(
         op_shoji_input_grab,
         op_shoji_cursor_set_position,
         op_shoji_cursor_position,
+        op_shoji_cursor_override,
+        op_shoji_dnd_view,
     ],
     objects = [
         ShojiRuntimeBridge,

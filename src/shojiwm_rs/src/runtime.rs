@@ -438,6 +438,7 @@ pub(crate) fn publish_pending() {
                 pointer_move_async: !listeners.pointer_move_async.is_empty(),
                 gesture_swipe: !listeners.gesture_swipe.is_empty(),
                 gesture_swipe_async: !listeners.gesture_swipe_async.is_empty(),
+                dnd: false,
             }));
         }
         if pending.processes {

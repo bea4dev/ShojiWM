@@ -189,6 +189,12 @@ impl ShojiWM {
     /// dispatch sets `needs_redraw`, which supersedes the fast path there.
     fn request_redraw_for_pointer_motion(&mut self) {
         self.last_pointer_motion_at = Some(std::time::Instant::now());
+        self.sync_drag_state();
+        // A drag view following the pointer is drawn with the scene, not on
+        // the cursor plane: moving it takes a full frame.
+        if self.dnd.has_pointer_anchored_views() {
+            self.schedule_redraw();
+        }
         if crate::backend::tty::cursor_fast_path_enabled()
             && self.tty_session_active
             && !self.tty_backends.is_empty()

@@ -443,6 +443,14 @@ impl RuntimeHandle {
         self.pointer_hook_reply("pointer region", now_ms, InputRequest::PointerRegion(event))
     }
 
+    pub fn dnd_event(
+        &mut self,
+        event: &crate::dnd::DndEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, RuntimeError> {
+        self.pointer_hook_reply("drag and drop", now_ms, InputRequest::Dnd(event))
+    }
+
     pub fn input_grab_event(
         &mut self,
         grab_id: u64,

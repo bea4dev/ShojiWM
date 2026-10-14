@@ -37,6 +37,33 @@ pub enum RuntimeCursorPositionTarget {
     Global { x: f64, y: f64 },
 }
 
+/// `COMPOSITOR.cursor.overrideKind`: the cursor shown everywhere, whatever
+/// the client under the pointer asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorOverride {
+    Named(CursorIcon),
+    Hidden,
+}
+
+impl CursorOverride {
+    /// A CSS cursor name, or `none` to hide the cursor.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        if name == "none" {
+            return Ok(Self::Hidden);
+        }
+        name.parse::<CursorIcon>()
+            .map(Self::Named)
+            .map_err(|_| format!("unknown cursor kind: {name:?}"))
+    }
+
+    pub fn status(self) -> smithay::input::pointer::CursorImageStatus {
+        match self {
+            Self::Named(icon) => smithay::input::pointer::CursorImageStatus::Named(icon),
+            Self::Hidden => smithay::input::pointer::CursorImageStatus::Hidden,
+        }
+    }
+}
+
 fn center_anchor() -> crate::runtime_pointer_region::PointerRegionAnchor {
     crate::runtime_pointer_region::PointerRegionAnchor::Center
 }

@@ -6676,9 +6676,92 @@ fn build_icon_buffers(
         order_map,
         &node_geometry,
         raster_scale,
-        snapshot,
+        snapshot.into(),
         rasterizer,
     )
+}
+
+/// Where `<AppIcon>` takes its picture from.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct IconSource<'a> {
+    pub icon: Option<&'a super::WindowIconSnapshot>,
+    pub app_id: Option<&'a str>,
+}
+
+impl<'a> From<&'a WaylandWindowSnapshot> for IconSource<'a> {
+    fn from(snapshot: &'a WaylandWindowSnapshot) -> Self {
+        Self {
+            icon: snapshot.icon.as_ref(),
+            app_id: snapshot.app_id.as_deref(),
+        }
+    }
+}
+
+/// A decoration tree drawn for no window (a drag view, see `crate::dnd`),
+/// laid out at one scale, with the buffers to draw it.
+#[derive(Debug)]
+pub(crate) struct StandaloneDecoration {
+    pub layout: ComputedDecorationTree,
+    pub buffers: Vec<CachedDecorationBuffer>,
+    /// `<ShaderEffect>` nodes.
+    pub shader_buffers: Vec<CachedShaderEffect>,
+    pub shader_cache:
+        std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
+    pub text_buffers: Vec<CachedDecorationLabel>,
+    pub icon_buffers: Vec<CachedDecorationIcon>,
+    pub paint_cache: std::collections::HashMap<String, PaintElementState>,
+}
+
+impl StandaloneDecoration {
+    /// Lay `tree` out at `scale` and rasterize its labels and images.
+    /// `previous` lends its paint element states (stable element ids, so an
+    /// unchanged paint item is not redrawn) and its labels (shown until a new
+    /// label is rasterized).
+    pub(crate) fn build(
+        tree: &DecorationTree,
+        slot_size: Option<(i32, i32)>,
+        scale: f64,
+        source: IconSource<'_>,
+        text_rasterizer: &mut crate::backend::text::TextRasterizer,
+        icon_rasterizer: &mut crate::backend::icon::IconRasterizer,
+        previous: Option<Self>,
+    ) -> Result<Self, super::DecorationLayoutError> {
+        let layout = tree.layout_standalone(slot_size, scale)?;
+        let order_map = build_render_order_map(&layout);
+        let buffers = build_cached_buffers(&layout, &order_map);
+        let shader_buffers = build_shader_buffers(&layout, &order_map);
+        let text_buffers = build_text_buffers_with_fallback(
+            &layout,
+            &order_map,
+            scale,
+            text_rasterizer,
+            previous
+                .as_ref()
+                .map(|previous| previous.text_buffers.as_slice())
+                .unwrap_or_default(),
+        );
+        let node_geometry = build_node_geometry_map(&layout);
+        let icon_buffers = build_icon_buffers_with_node_geometry(
+            &layout,
+            &order_map,
+            &node_geometry,
+            scale,
+            source,
+            icon_rasterizer,
+        );
+        let (paint_cache, shader_cache) = previous
+            .map(|previous| (previous.paint_cache, previous.shader_cache))
+            .unwrap_or_default();
+        Ok(Self {
+            layout,
+            buffers,
+            shader_buffers,
+            shader_cache,
+            text_buffers,
+            icon_buffers,
+            paint_cache,
+        })
+    }
 }
 
 fn build_icon_buffers_with_node_geometry(
@@ -6686,7 +6769,7 @@ fn build_icon_buffers_with_node_geometry(
     order_map: &std::collections::HashMap<String, usize>,
     node_geometry: &impl NodeGeometryLookup,
     raster_scale: f64,
-    snapshot: &WaylandWindowSnapshot,
+    source: IconSource<'_>,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
 ) -> Vec<CachedDecorationIcon> {
     let mut buffers = Vec::new();
@@ -6697,7 +6780,7 @@ fn build_icon_buffers_with_node_geometry(
         None,
         node_geometry,
         raster_scale,
-        snapshot,
+        source,
         rasterizer,
         &mut buffers,
     );
@@ -6972,7 +7055,7 @@ fn rebuild_partial_icon_buffers(
         Some(&dirty_node_ids),
         &node_geometry,
         raster_scale,
-        snapshot,
+        snapshot.into(),
         rasterizer,
         &mut buffers,
     );
@@ -7606,7 +7689,7 @@ fn collect_icon_buffers(
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
     node_geometry: &impl NodeGeometryLookup,
     raster_scale: f64,
-    snapshot: &WaylandWindowSnapshot,
+    source: IconSource<'_>,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
     buffers: &mut Vec<CachedDecorationIcon>,
 ) {
@@ -7622,7 +7705,7 @@ fn collect_icon_buffers(
             dirty_node_ids,
             node_geometry,
             raster_scale,
-            snapshot,
+            source,
             rasterizer,
             buffers,
         );
@@ -7654,8 +7737,8 @@ fn collect_icon_buffers(
                 .map(|geometry| geometry.rect_precise)
                 .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
         ),
-        icon: snapshot.icon.clone(),
-        app_id: snapshot.app_id.clone(),
+        icon: source.icon.cloned(),
+        app_id: source.app_id.map(str::to_owned),
         asset_path,
         image_fit,
         raster_scale,

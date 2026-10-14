@@ -7,6 +7,7 @@ pub mod composition_presentation_tests;
 pub mod damage;
 pub mod damage_blink;
 pub mod decoration;
+pub mod dnd;
 pub mod fps_counter;
 pub mod hdr_cursor;
 pub mod hdr_pipeline;

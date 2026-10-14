@@ -398,6 +398,7 @@ impl CompositorHandler for ShojiWM {
             Vec<crate::ssd::LogicalRect>,
         )> = None;
         let mut cursor_surface_committed = false;
+        let mut dnd_icon_committed = false;
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -520,6 +521,26 @@ impl CompositorHandler for ShojiWM {
                             }
                         }
                     });
+                }
+            }
+            if mapped_window.is_none()
+                && let Some(icon) = self.dnd.icon_for_surface_mut(&root)
+            {
+                // A drag icon updated. Like the cursor, the surface's buffer
+                // offset moves it relative to the pointer.
+                dnd_icon_committed = true;
+                if surface == &root {
+                    let buffer_delta = with_states(surface, |states| {
+                        states
+                            .cached_state
+                            .get::<SurfaceAttributes>()
+                            .current()
+                            .buffer_delta
+                            .take()
+                    });
+                    if let Some(buffer_delta) = buffer_delta {
+                        icon.offset += buffer_delta;
+                    }
                 }
             }
             if x11_browser_cpu_debug_enabled()
@@ -726,7 +747,10 @@ impl CompositorHandler for ShojiWM {
             self.refresh_idle_inhibit_state();
         }
 
-        if cursor_surface_committed || self.is_session_lock_surface_tree_surface(surface) {
+        if cursor_surface_committed
+            || dnd_icon_committed
+            || self.is_session_lock_surface_tree_surface(surface)
+        {
             self.schedule_redraw();
         }
     }

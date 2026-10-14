@@ -7,9 +7,9 @@ mod xwayland;
 // Wl Seat
 //
 
-use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
+use smithay::input::dnd::{DndGrabHandler, DndTarget, GrabType, Source};
 use smithay::input::keyboard::LedState;
-use smithay::input::pointer::{Focus, PointerHandle};
+use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::desktop::{PopupKind, WindowSurfaceType, find_popup_root_surface, layer_map_for_output};
@@ -1011,30 +1011,32 @@ impl DataDeviceHandler for ShojiWM {
     }
 }
 
-impl DndGrabHandler for ShojiWM {}
+impl DndGrabHandler for ShojiWM {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        validated: bool,
+        _seat: Seat<Self>,
+        location: smithay::utils::Point<f64, Logical>,
+    ) {
+        self.queue_end_drag(crate::dnd::DragEndKind::Dropped, validated, location);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, location: smithay::utils::Point<f64, Logical>) {
+        self.queue_end_drag(crate::dnd::DragEndKind::Cancelled, false, location);
+    }
+}
+
 impl WaylandDndGrabHandler for ShojiWM {
     fn dnd_requested<S: Source>(
         &mut self,
         source: S,
-        _icon: Option<WlSurface>,
+        icon: Option<WlSurface>,
         seat: Seat<Self>,
         serial: Serial,
         type_: GrabType,
     ) {
-        match type_ {
-            GrabType::Pointer => {
-                let ptr = seat.get_pointer().unwrap();
-                let start_data = ptr.grab_start_data().unwrap();
-
-                // create a dnd grab to start the operation
-                let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
-                ptr.set_grab(self, grab, serial, Focus::Keep);
-            }
-            GrabType::Touch => {
-                // smallvil lacks touch handling
-                source.cancel();
-            }
-        }
+        self.start_drag(source, icon, seat, serial, type_);
     }
 }
 

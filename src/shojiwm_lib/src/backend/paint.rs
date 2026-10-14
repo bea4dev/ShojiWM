@@ -288,8 +288,15 @@ pub(crate) struct LayoutToOutput {
 
 impl LayoutToOutput {
     pub(crate) fn new(decoration: &WindowDecorationState, output_scale: Scale<f64>) -> Self {
-        let frame = decoration.layout.root.frame;
-        let root = decoration.layout.root.rect;
+        Self::for_layout(&decoration.layout, output_scale)
+    }
+
+    pub(crate) fn for_layout(
+        layout: &crate::ssd::ComputedDecorationTree,
+        output_scale: Scale<f64>,
+    ) -> Self {
+        let frame = layout.root.frame;
+        let root = layout.root.rect;
         let output_scale = output_scale.x.abs().max(0.0001);
         let ratio = output_scale / frame.scale.max(0.0001);
         Self {

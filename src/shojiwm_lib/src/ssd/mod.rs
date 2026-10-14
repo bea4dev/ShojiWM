@@ -43,6 +43,7 @@ pub use integration::{
 };
 #[cfg(test)]
 pub(crate) use integration::paint_buffers_for_layout;
+pub(crate) use integration::{IconSource, StandaloneDecoration};
 pub use interaction::DecorationInteractionSnapshot;
 pub(crate) use popup_input::PopupInputState;
 pub use popup::{
@@ -126,6 +127,73 @@ impl DecorationTree {
 
         Ok(ComputedDecorationTree { root })
     }
+
+    /// Lay out a tree that belongs to no window (a drag view): the root takes
+    /// its own size (`width`/`height`, else its content), at the origin. The
+    /// window slot is optional and, when present, is `slot_size` large.
+    pub(crate) fn layout_standalone(
+        &self,
+        slot_size: Option<(i32, i32)>,
+        scale: f64,
+    ) -> Result<ComputedDecorationTree, DecorationLayoutError> {
+        let mut stats = ValidationStats::default();
+        validate_node(&self.root, &mut stats)?;
+        if stats.window_slot_count > 1 {
+            return Err(DecorationValidationError::MultipleWindowSlots {
+                count: stats.window_slot_count,
+            }
+            .into());
+        }
+
+        let scale = sanitize_layout_scale(scale);
+        let snap = |value: f64| ResolvedLayoutValue::from_logical(value, scale);
+        let style = &self.root.style;
+        let auto_size = self.root.auto_size_resolved(slot_size, scale);
+        let clamp = |value: ResolvedLayoutValue, min: Option<f64>, max: Option<f64>| {
+            let value = max.map(snap).map_or(value, |max| value.min(max));
+            min.map(snap).map_or(value, |min| value.max(min))
+        };
+        let width = clamp(
+            style
+                .width
+                .map(snap)
+                .or(auto_size.map(|(width, _)| width))
+                .unwrap_or(ResolvedLayoutValue::ZERO),
+            style.min_width,
+            style.max_width,
+        )
+        .raw()
+        .max(0);
+        let height = clamp(
+            style
+                .height
+                .map(snap)
+                .or(auto_size.map(|(_, height)| height))
+                .unwrap_or(ResolvedLayoutValue::ZERO),
+            style.min_height,
+            style.max_height,
+        )
+        .raw()
+        .max(0);
+        // The largest logical size that does not exceed the physical size;
+        // the rest goes in as extra physical pixels, so the root keeps the
+        // exact size its content measured.
+        let logical = |px: i32| (px as f64 / scale).floor().max(0.0) as i32;
+        let (logical_width, logical_height) = (logical(width), logical(height));
+        let extra = (
+            width - round_half_up(logical_width as f64 * scale),
+            height - round_half_up(logical_height as f64 * scale),
+        );
+        let mut root = layout_node_with_scale(
+            &self.root,
+            LogicalRect::new(0, 0, logical_width, logical_height),
+            slot_size,
+            scale,
+            extra,
+        )?;
+        root.sync_root_bounds();
+        Ok(ComputedDecorationTree { root })
+    }
 }
 
 /// Minimal validation output for later phases to build on.
@@ -166,6 +234,19 @@ impl ComputedDecorationTree {
 
     pub fn bounds_rect(&self) -> LogicalRect {
         self.root.bounds_rect()
+    }
+
+    /// The window slot's top-left corner in physical pixels at the layout
+    /// scale, relative to the root rect's origin like every decoration
+    /// element (see `backend::paint::LayoutToOutput`); `None` without a slot.
+    pub(crate) fn window_slot_origin_px(&self) -> Option<(i32, i32)> {
+        let slot = self.root.resolved_window_slot_rect()?;
+        let frame = self.root.frame;
+        let root = self.root.rect;
+        Some((
+            slot.x.raw() + round_half_up((frame.origin_x - root.x as f64) * frame.scale),
+            slot.y.raw() + round_half_up((frame.origin_y - root.y as f64) * frame.scale),
+        ))
     }
 
     /// Lower the computed layout tree into minimal render primitives.

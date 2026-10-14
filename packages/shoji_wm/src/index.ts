@@ -213,6 +213,7 @@ import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 import { CURSOR_CONTROLLER, takePendingCursorConfig } from "./cursor";
+import { DND_CONTROLLER } from "./dnd";
 import {
   WINDOW_DECORATION_CONTROLLER,
   resolveWindowDecorationDecision,
@@ -463,6 +464,25 @@ export {
   takePendingInputConfig,
   updateInputState,
 } from "./input";
+export {
+  DND_CONTROLLER,
+  DragIcon,
+  dispatchDndEvent,
+  installDndWindowResolver,
+  type DndController,
+  type DndEvent,
+  type DndEventController,
+  type DragAction,
+  type DragActions,
+  type DragEnd,
+  type DragIconInfo,
+  type DragIconProps,
+  type DragPoint,
+  type DragSession,
+  type DragStartListener,
+  type DragView,
+  type DragViewOptions,
+} from "./dnd";
 export {
   dispatchInputGrabEvent,
   resetInputGrab,
@@ -758,6 +778,7 @@ export type {
   PointerRegionOptions,
   CursorPosition,
   CursorPositionTarget,
+  CursorKind,
   HotCorner,
   HotCornerOptions,
   InputAccelProfile,
@@ -1135,6 +1156,7 @@ function createCompositorDefinition(): CompositorDefinition {
     pointer: POINTER_CONTROLLER,
     input: INPUT_CONTROLLER,
     cursor: CURSOR_CONTROLLER,
+    dnd: DND_CONTROLLER,
     runtime: RUNTIME_CONTROLLER,
     window: WINDOW_CONTROLLER,
     layer: LAYER_CONTROLLER,

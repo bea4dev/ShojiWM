@@ -558,7 +558,8 @@ export type CompositionNodeType =
   | "Window"
   | "WindowBorder"
   | "Popup"
-  | "Fragment";
+  | "Fragment"
+  | "DragIcon";
 
 /**
  * Base props inherited by all composition components.
@@ -2362,7 +2363,74 @@ export interface CursorController {
    * ```
    */
   bindAppLockIgnoreModifier(modifier: string): void;
+
+  /**
+   * Show `kind` everywhere, whatever the window under the pointer asks for,
+   * until called again; `"none"` hides the cursor, `null` gives it back to the
+   * windows. Takes precedence over the resize cursors of window borders too.
+   * Not shown in a nested (windowed) session, where the host draws the cursor.
+   * ポインターの下のウィンドウの指定に関係なく `kind` のカーソルを表示します（再度
+   * 呼ぶまで）。`"none"` で非表示、`null` でウィンドウ側の指定に戻します。ウィンドウ枠の
+   * リサイズカーソルより優先されます。ネスト（ウィンドウ内）実行ではホストが
+   * カーソルを描くため反映されません。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.dnd.event.onStart((drag) => {
+   *   const stop = effect(() => {
+   *     COMPOSITOR.cursor.overrideKind(drag.action.value === "none" ? "no-drop" : null);
+   *   });
+   *   drag.onEnd(() => {
+   *     stop();
+   *     COMPOSITOR.cursor.overrideKind(null);
+   *   });
+   * });
+   * ```
+   */
+  overrideKind(kind: CursorKind | "none" | null): void;
 }
+
+/**
+ * Cursor shapes, named like CSS `cursor` values.
+ * カーソルの形（CSS の `cursor` と同じ名前）。
+ */
+export type CursorKind =
+  | "default"
+  | "context-menu"
+  | "help"
+  | "pointer"
+  | "progress"
+  | "wait"
+  | "cell"
+  | "crosshair"
+  | "text"
+  | "vertical-text"
+  | "alias"
+  | "copy"
+  | "move"
+  | "no-drop"
+  | "not-allowed"
+  | "grab"
+  | "grabbing"
+  | "e-resize"
+  | "n-resize"
+  | "ne-resize"
+  | "nw-resize"
+  | "s-resize"
+  | "se-resize"
+  | "sw-resize"
+  | "w-resize"
+  | "ew-resize"
+  | "ns-resize"
+  | "nesw-resize"
+  | "nwse-resize"
+  | "col-resize"
+  | "row-resize"
+  | "all-scroll"
+  | "zoom-in"
+  | "zoom-out"
+  | "dnd-ask"
+  | "all-resize";
 
 export type CursorPositionTarget =
   | { x: number; y: number }
@@ -3117,6 +3185,46 @@ export interface CompositorDefinition {
    * ```
    */
   cursor: CursorController;
+  /**
+   * Drag and drop: what is drawn while the user drags data between windows.
+   * ドラッグアンドドロップ：ウィンドウ間でデータをドラッグ中に描くもの。
+   *
+   * @example Fade the icon in, shrink it away on a drop, fly it back on a cancel
+   * / アイコンをフェードイン、ドロップで縮めて消し、キャンセルで元の位置へ戻す
+   * ```tsx
+   * const appear = animationVariable("drag-appear");
+   * const finish = animationVariable("drag-finish");
+   *
+   * COMPOSITOR.dnd.event.onStart((drag) => {
+   *   const a = drag.animation.variable(appear);
+   *   const f = drag.animation.variable(finish);
+   *   drag.animation.start(appear, { from: 0, to: 1, duration: 120 });
+   *   const [end, setEnd] = signal<DragEnd | null>(null);
+   *   const view = drag.show({
+   *     anchor: computed(() => (end.value ? "global" : "pointer")),
+   *     x: computed(() => {
+   *       const e = end.value;
+   *       if (!e) return 0;
+   *       return e.accepted ? e.position.x : e.position.x + (drag.origin.x - e.position.x) * f.value;
+   *     }),
+   *     y: computed(() => {
+   *       const e = end.value;
+   *       if (!e) return 0;
+   *       return e.accepted ? e.position.y : e.position.y + (drag.origin.y - e.position.y) * f.value;
+   *     }),
+   *     opacity: computed(() => a.value * (end.value?.accepted ? 1 - f.value : 1)),
+   *     scale: computed(() => 0.9 + 0.1 * a.value),
+   *   });
+   *   drag.onEnd((e) => {
+   *     setEnd(e);
+   *     drag.animation
+   *       .start(finish, { from: 0, to: 1, duration: e.accepted ? 150 : 250 })
+   *       .then(() => view.dispose());
+   *   });
+   * });
+   * ```
+   */
+  dnd: import("./dnd").DndController;
   /**
    * Environment variable controller for child processes spawned by the compositor.
    * コンポジターが起動する子プロセスが継承する環境変数を管理します。

@@ -364,6 +364,9 @@ import {
   type PointerRegionEvent,
   type GestureSwipeEvent,
   dispatchInputGrabEvent,
+  dispatchDndEvent,
+  installDndWindowResolver,
+  type DndEvent,
   type RuntimeEventConfig,
   type RuntimePersistedState,
   updateOutputState,
@@ -673,6 +676,15 @@ interface PointerRegionRequest {
   inputState?: Record<string, InputDeviceInfo>;
 }
 
+interface DndRequest {
+  requestId: number;
+  kind: "dnd";
+  event: DndEvent;
+  nowMs: number;
+  displayState?: Record<string, OutputStateSnapshot>;
+  inputState?: Record<string, InputDeviceInfo>;
+}
+
 interface InputGrabRequest {
   requestId: number;
   kind: "inputGrab";
@@ -759,6 +771,7 @@ type RuntimeRequest =
   | GestureSwipeRequest
   | PointerRegionRequest
   | InputGrabRequest
+  | DndRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest
   | EvaluatePopupEffectsRequest
@@ -1064,6 +1077,7 @@ interface NativeInteractionSuccess {
     | "gestureSwipeAsync"
     | "pointerRegion"
     | "inputGrab"
+    | "dnd"
     | "windowMove"
     | "windowResize";
   invoked: boolean;
@@ -1273,6 +1287,7 @@ const decorationPolicyWindowById = new Map<
   DecorationPolicyWindowEntry
 >();
 const openedWindowIds = new Set<string>();
+installDndWindowResolver((id) => cacheByWindowId.get(id)?.cache.window ?? null);
 const initialConfiguredWindowIds = new Set<string>();
 const firstCommittedWindowIds = new Set<string>();
 const animationEntriesByWindowId = new Map<string, Map<symbol, unknown>>();
@@ -1652,6 +1667,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           case "workspaceActivate":
           case "pointerRegion":
           case "inputGrab":
+          case "dnd":
             break;
         }
       }
@@ -2344,6 +2360,30 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           } else if (request.kind === "pointerRegion") {
             const result = interactionMutationResult(
               events.emitPointerRegion(request.event),
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const inputConfig = pendingInputConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeInteractionEventResponse(embeddedBridge, {
+              requestId: request.requestId,
+              ok: true,
+              kind: request.kind,
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              inputConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "dnd") {
+            const result = interactionMutationResult(
+              dispatchDndEvent(request.event),
             );
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();

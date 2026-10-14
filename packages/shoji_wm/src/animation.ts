@@ -89,8 +89,21 @@ export interface AnimationController {
    *   })
    * })
    * ```
+   *
+   * The returned promise resolves with `true` when the animation reaches its
+   * target, or `false` when `start`, `stop` or `set` cuts it short (a
+   * repeating animation only ends that way).
+   * 返る Promise は目標値に達すると `true`、`start`・`stop`・`set` で中断されると
+   * `false` で解決します（繰り返しアニメーションは中断でのみ終わります）。
+   *
+   * @example
+   * ```ts
+   * drag.animation.start(fade, { to: 0, duration: 150 }).then((done) => {
+   *   if (done) view.dispose();
+   * });
+   * ```
    */
-  start(variable: AnimationVariable, options: AnimationStartOptions): void;
+  start(variable: AnimationVariable, options: AnimationStartOptions): Promise<boolean>;
 
   /**
    * Stops the scheduled task for the given variable, preserving the current
@@ -115,6 +128,8 @@ export type WindowAnimationController = AnimationController;
 interface AnimationEntry {
   progress: Signal<number>;
   timeline?: AnimationTimeline;
+  /** Resolves the promise `start()` returned for the current timeline. */
+  settle?: (completed: boolean) => void;
   /** The output whose clock drives this entry; see {@link AnimationClock}. */
   output?: () => string | undefined;
 }
@@ -246,7 +261,11 @@ export function createAnimationControllerWithStore(
       const from = options.from ?? entry.progress.peek();
       const to = options.to ?? 1;
 
+      settleEntry(entry, false);
       entry.progress.value = from;
+      const finished = new Promise<boolean>((resolve) => {
+        entry.settle = resolve;
+      });
       entry.timeline = {
         startedAtMs: animationStartTimeMs(entry),
         durationMs: duration,
@@ -257,12 +276,14 @@ export function createAnimationControllerWithStore(
       };
       activeAnimationEntries.add(entry);
       markDirty();
+      return finished;
     },
     stop(variable) {
       const entry = entries.get(variable.id);
       if (entry) {
         const wasRunning = entry.timeline !== undefined;
         entry.timeline = undefined;
+        settleEntry(entry, false);
         activeAnimationEntries.delete(entry);
         if (wasRunning) {
           markDirty();
@@ -273,6 +294,7 @@ export function createAnimationControllerWithStore(
       const entry = ensureEntry(variable);
       const changed = !Object.is(entry.progress.peek(), value);
       entry.timeline = undefined;
+      settleEntry(entry, false);
       activeAnimationEntries.delete(entry);
       entry.progress.value = value;
       if (changed) {
@@ -342,6 +364,7 @@ export function advanceAnimations(
       entry.progress.value = timeline.to;
       entry.timeline = undefined;
       activeAnimationEntries.delete(entry);
+      settleEntry(entry, true);
       continue;
     }
 
@@ -351,10 +374,17 @@ export function advanceAnimations(
       entry.progress.value = timeline.to;
       entry.timeline = undefined;
       activeAnimationEntries.delete(entry);
+      settleEntry(entry, true);
     }
   }
 
   return activeAnimationEntries.size > 0;
+}
+
+function settleEntry(entry: AnimationEntry, completed: boolean): void {
+  const settle = entry.settle;
+  entry.settle = undefined;
+  settle?.(completed);
 }
 
 export function hasActiveAnimations(): boolean {

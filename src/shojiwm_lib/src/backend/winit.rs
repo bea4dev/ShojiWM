@@ -1050,6 +1050,7 @@ pub fn init_winit(
                             warn!(error = ?err, "failed to refresh window decorations for winit");
                         }
                     }
+                    state.refresh_drag_views();
                     let decorations_refresh_elapsed_ms =
                         decorations_refresh_started_at.elapsed().as_secs_f64() * 1000.0;
                     crate::backend::tty::report_pending_effect_errors(state);
@@ -1234,6 +1235,33 @@ pub fn init_winit(
                             state.output_overlays.render(renderer, &output,
                                 (output_geo.size.w, output_geo.size.h), scale, &mut content_elements,
                                 overlay_below_layers, WinitRenderElements::Snapshot);
+                            // Drag views: above everything (the host draws the cursor).
+                            let pointer = state
+                                .seat
+                                .get_pointer()
+                                .map(|pointer| pointer.current_location())
+                                .unwrap_or_default();
+                            let drag_elements = crate::backend::dnd::drag_elements(
+                                renderer,
+                                &mut state.dnd,
+                                &output,
+                                output_geo,
+                                scale,
+                                pointer,
+                            );
+                            content_elements.splice(
+                                0..0,
+                                drag_elements
+                                    .into_iter()
+                                    .map(|element| match element {
+                                        crate::backend::dnd::DragElement::Texture(element) => {
+                                            WinitRenderElements::TransformedSnapshot(element)
+                                        }
+                                        crate::backend::dnd::DragElement::Backdrop(element) => {
+                                            WinitRenderElements::TransformedDecoration(element)
+                                        }
+                                    }),
+                            );
                         }
 
                         let mut elements: Vec<WinitRenderElements> = Vec::new();

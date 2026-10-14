@@ -1587,6 +1587,37 @@ impl EmbeddedDecorationEvaluator {
         Ok(interaction_invocation_from_response(&self.host, response))
     }
 
+    pub fn dnd_event(
+        &self,
+        event: &shojiwm_lib::dnd::DndEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationPointerMoveAsyncInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let (display_state, input_state, runtime_state_generation) =
+            self.interaction_state_payload(runtime.last_sent_runtime_state_generation);
+
+        runtime.write_interaction_request(NativeInteractionRequest::Dnd {
+            request_id,
+            event: event.clone(),
+            now_ms,
+            display_state,
+            input_state,
+        })?;
+        runtime.last_sent_runtime_state_generation = runtime_state_generation;
+        let response = if let Some(response) = runtime.read_interaction_response()? {
+            response
+        } else {
+            return Err(runtime_failed_error(runtime));
+        };
+        validate_interaction_response(&response, request_id, "dnd")?;
+        Ok(interaction_invocation_from_response(&self.host, response))
+    }
+
     pub fn input_grab_event(
         &self,
         grab_id: u64,

@@ -1041,6 +1041,8 @@ impl ConfigRuntime for ReactiveRuntime {
                         let invoked = batch(|| crate::input_grab::dispatch(grab_id, event));
                         RuntimeReply::PointerHook(pointer_hook(invoked))
                     }
+                    // Not part of the Rust SDK yet; the event filter never asks for it.
+                    InputRequest::Dnd(_) => RuntimeReply::Unhandled,
                 },
                 RuntimeRequest::Effect(request) => match request {
                     EffectRequest::Background => {

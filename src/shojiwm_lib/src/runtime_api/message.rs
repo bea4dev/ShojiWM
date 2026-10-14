@@ -134,6 +134,9 @@ pub enum InputRequest<'a> {
         grab_id: u64,
         event: &'a crate::runtime_input_grab::InputGrabEventSnapshot,
     },
+    /// A drag started, changed or ended. Sent only while the runtime asks
+    /// for it (`RuntimeEventConfigUpdate::dnd`). Answered like a pointer hook.
+    Dnd(&'a crate::dnd::DndEventSnapshot),
 }
 
 #[derive(Debug, Clone, Copy)]

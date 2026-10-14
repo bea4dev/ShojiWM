@@ -51,6 +51,7 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid } from "./window-grid";
+import { installDragAndDrop } from "./drag-and-drop";
 import type { TitlebarButton } from "./window-switcher";
 
 COMPOSITOR.env.apply({
@@ -97,6 +98,10 @@ const WINDOW_SWITCHER = (
   // The grid's selected card: its title bar buttons work.
   titlebarButtonAt,
 });
+
+// Drag and drop: the dragged image on a card with the action and the kind of
+// data, flying back when a drop is refused (./drag-and-drop.tsx).
+installDragAndDrop();
 COMPOSITOR.rendering.composition = (output) =>
   WINDOW_SWITCHER.compose(output) ?? <DefaultComposition />;
 

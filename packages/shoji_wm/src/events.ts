@@ -1,3 +1,4 @@
+import { hasDndStartListeners, takeDndListenersChanged } from "./dnd";
 import type {
   InputDeviceInfo,
   OutputInfo,
@@ -303,6 +304,7 @@ export interface RuntimeEventConfig {
   pointerMoveAsync: boolean;
   gestureSwipe: boolean;
   gestureSwipeAsync: boolean;
+  dnd: boolean;
 }
 
 /**
@@ -979,7 +981,8 @@ export function createCompositorEventController(): CompositorEventController {
       return next;
     },
     takePendingEventConfig() {
-      if (!pendingEventConfig) {
+      const dndChanged = takeDndListenersChanged();
+      if (!pendingEventConfig && !dndChanged) {
         return undefined;
       }
       pendingEventConfig = false;
@@ -988,6 +991,7 @@ export function createCompositorEventController(): CompositorEventController {
         pointerMoveAsync: pointerMoveAsyncListeners.size > 0,
         gestureSwipe: gestureSwipeListeners.size > 0,
         gestureSwipeAsync: gestureSwipeAsyncListeners.size > 0,
+        dnd: hasDndStartListeners(),
       };
     },
   };

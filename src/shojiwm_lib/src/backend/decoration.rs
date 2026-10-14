@@ -356,6 +356,26 @@ fn shader_effect_spec(
     scale: Scale<f64>,
     alpha: f32,
 ) -> Option<ShaderEffectSpec> {
+    shader_effect_spec_in_root(
+        decoration.layout.root.rect,
+        decoration.root_subpixel_offset,
+        cached,
+        output_geo,
+        scale,
+        alpha,
+    )
+}
+
+/// The spec of a decoration's `<ShaderEffect>` with its geometry relative to
+/// the root's physical origin, like every decoration element.
+pub(crate) fn shader_effect_spec_in_root(
+    root_rect: LogicalRect,
+    root_subpixel_offset: crate::backend::visual::RootSubpixelEdges,
+    cached: &crate::backend::shader_effect::CachedShaderEffect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Option<ShaderEffectSpec> {
     if gap_show_border_shell_only_enabled()
         || intersect_logical_rect(cached.rect, output_geo).is_none()
     {
@@ -364,8 +384,8 @@ fn shader_effect_spec(
 
     let local_rect = Rectangle::new(
         Point::from((
-            cached.rect.x - decoration.layout.root.rect.x,
-            cached.rect.y - decoration.layout.root.rect.y,
+            cached.rect.x - root_rect.x,
+            cached.rect.y - root_rect.y,
         )),
         (cached.rect.width, cached.rect.height).into(),
     );
@@ -374,8 +394,8 @@ fn shader_effect_spec(
         .map(|rect| {
             relative_physical_rect_from_root_precise(
                 rect,
-                decoration.layout.root.rect,
-                decoration.root_subpixel_offset,
+                root_rect,
+                root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -383,8 +403,8 @@ fn shader_effect_spec(
         .unwrap_or_else(|| {
             relative_physical_rect_from_root_snapped_edges(
                 cached.rect,
-                decoration.layout.root.rect,
-                decoration.root_subpixel_offset,
+                root_rect,
+                root_subpixel_offset,
                 output_geo,
                 scale,
             )
@@ -428,8 +448,8 @@ fn shader_effect_spec(
                         rect_precise,
                         local_rect.size.w,
                         local_rect.size.h,
-                        decoration.layout.root.rect,
-                        decoration.root_subpixel_offset,
+                        root_rect,
+                        root_subpixel_offset,
                         output_geo,
                         scale,
                     )

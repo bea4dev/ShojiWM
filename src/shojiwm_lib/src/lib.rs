@@ -39,6 +39,7 @@ pub mod config;
 pub mod config_error;
 pub mod control_socket;
 pub mod cursor;
+pub mod dnd;
 pub mod frame_pacing;
 pub mod drawing;
 pub mod foreign_toplevel;

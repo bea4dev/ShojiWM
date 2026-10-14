@@ -721,6 +721,9 @@ impl ShojiWM {
         if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
             send_frames_surface_tree(surface, output, time, throttle, &should_send);
         }
+        if let Some(surface) = self.dnd.active_icon_surface() {
+            send_frames_surface_tree(surface, output, time, throttle, &should_send);
+        }
 
         if debug {
             info!(
@@ -818,6 +821,11 @@ impl ShojiWM {
         // these, set_cursor calls following the first one stall and the cursor type stops
         // updating.
         if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
+            send_frames_surface_tree(surface, output, time, throttle, &should_send);
+        }
+        // The drag icon is a client surface like the cursor: a client waiting
+        // for its frame callback would stop updating it.
+        if let Some(surface) = self.dnd.active_icon_surface() {
             send_frames_surface_tree(surface, output, time, throttle, &should_send);
         }
 
@@ -1156,9 +1164,12 @@ impl ShojiWM {
         // these notifications it never learns that the cursor moved to a different-scale
         // output and renders cursors at the wrong size (most visibly: huge near monitor edges
         // and after crossing scale boundaries).
-        if let smithay::input::pointer::CursorImageStatus::Surface(cursor_surface) =
-            &self.cursor_status
-        {
+        let cursor_surface = match &self.cursor_status {
+            smithay::input::pointer::CursorImageStatus::Surface(surface) => Some(surface),
+            _ => None,
+        };
+        // The drag icon too: a client sizes it for the scale it is shown at.
+        for cursor_surface in cursor_surface.into_iter().chain(self.dnd.active_icon_surface()) {
             with_surfaces_surface_tree(cursor_surface, |surface, states| {
                 let primary_scanout_output = surface_primary_scanout_output(surface, states);
                 if let Some(scanout) = primary_scanout_output.as_ref() {

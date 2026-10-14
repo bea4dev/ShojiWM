@@ -2447,6 +2447,7 @@ fn collect_client_buffers_for_hold(
     // The same test `render_surface` uses before drawing a client cursor; nothing is dispatched
     // between this and the render, so the pointer cannot move in between.
     let cursor_drawn_here = state.cursor_override.is_none()
+        && state.config_cursor_override.is_none()
         && state.space.output_geometry(output).is_some_and(|output_geo| {
             state.seat.get_pointer().is_some_and(|pointer| {
                 output_geo.to_f64().contains(pointer.current_location())
@@ -2459,7 +2460,8 @@ fn collect_client_buffers_for_hold(
         .chain(match &state.cursor_status {
             CursorImageStatus::Surface(surface) if cursor_drawn_here => Some(surface.clone()),
             _ => None,
-        });
+        })
+        .chain(state.dnd.active_icon_surface().cloned());
     for root in roots {
         with_surface_tree_downward(
             &root,
@@ -4289,6 +4291,7 @@ fn render_surface(
             report_tty_config_error(state, err);
         }
     }
+    state.refresh_drag_views();
     state.animation_frame_time_ms = None;
     // Output configuration is reactive. Evaluating the TypeScript runtime above can unmap this
     // output (for example, disabling the internal panel when a dock output appears). Do not carry
@@ -4509,6 +4512,7 @@ fn render_surface(
             start_time,
             cursor_status,
             cursor_override,
+            config_cursor_override,
             cursor_theme,
             pointer_images,
             current_pointer_image,
@@ -4621,8 +4625,9 @@ fn render_surface(
                     *cursor_status = CursorImageStatus::default_named();
                 }
 
-                let effective_cursor_status = cursor_override
-                    .map(CursorImageStatus::Named)
+                let effective_cursor_status = config_cursor_override
+                    .map(crate::cursor::CursorOverride::status)
+                    .or_else(|| cursor_override.map(CursorImageStatus::Named))
                     .unwrap_or_else(|| cursor_status.clone());
 
                 let hotspot = if let CursorImageStatus::Surface(surface) = &effective_cursor_status
@@ -4888,8 +4893,9 @@ fn render_surface(
         overlay_below_layers += content_elements.len();
         content_elements.extend(scene_elements);
 
-        let cursor_status_for_log = cursor_override
-            .map(CursorImageStatus::Named)
+        let cursor_status_for_log = config_cursor_override
+            .map(crate::cursor::CursorOverride::status)
+            .or_else(|| cursor_override.map(CursorImageStatus::Named))
             .unwrap_or_else(|| cursor_status.clone());
         // Capture paths receive content_for_capture (everything but cursor)
         // and cursor_elements separately so they can honour the client's
@@ -4919,6 +4925,28 @@ fn render_surface(
             state.output_overlays.render(&mut *renderer, &output,
                 (output_geo.size.w, output_geo.size.h), scale, &mut content_for_capture,
                 overlay_below_layers, TtyRenderElements::Snapshot);
+            // Drag views: above everything but the cursor.
+            let drag_elements = crate::backend::dnd::drag_elements(
+                &mut *renderer,
+                &mut state.dnd,
+                &output,
+                output_geo,
+                scale,
+                pointer_pos,
+            );
+            content_for_capture.splice(
+                0..0,
+                drag_elements
+                    .into_iter()
+                    .map(|element| match element {
+                        crate::backend::dnd::DragElement::Texture(element) => {
+                            TtyRenderElements::TransformedSnapshot(element)
+                        }
+                        crate::backend::dnd::DragElement::Backdrop(element) => {
+                            TtyRenderElements::TransformedDecoration(element)
+                        }
+                    }),
+            );
         }
         // The element count for diagnostics — final elements is built below
         // after capture has run against the by-reference slices.
