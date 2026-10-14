@@ -950,17 +950,30 @@ export const Label = defineIntrinsicComponent<LabelProps>("Label");
  */
 export const Button = defineIntrinsicComponent<ButtonProps>("Button");
 
+const AppIconIntrinsic = defineIntrinsicComponent<AppIconProps>("AppIcon");
+
 /**
- * Renders a window's application icon. Pass `window.icon` for reactive updates.
+ * Renders a window's application icon. Pass `window.icon` for reactive updates,
+ * and `fallback` (a path relative to the config package root) for windows
+ * whose icon cannot be found.
  * ウィンドウのアプリケーションアイコンを描画します。
- * `window.icon` を渡すとリアクティブに更新されます。
+ * `window.icon` を渡すとリアクティブに更新されます。`fallback` には、
+ * アイコンが見つからないときに描く画像を設定パッケージルートからの相対パスで
+ * 渡します。
  *
  * @example
  * ```tsx
- * <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+ * <AppIcon icon={window.icon} fallback="assets/app.svg"
+ *   style={{ width: 16, height: 16 }} />
  * ```
  */
-export const AppIcon = defineIntrinsicComponent<AppIconProps>("AppIcon");
+export function AppIcon(props: AppIconProps) {
+  return AppIconIntrinsic(
+    props.fallback === undefined
+      ? props
+      : { ...props, fallback: resolveAssetPath(props.fallback) },
+  );
+}
 
 const ImageIntrinsic = defineIntrinsicComponent<ImageProps>("Image");
 

@@ -893,8 +893,12 @@ impl ShojiWM {
                             "commit timer barrier signaled for window surface"
                         );
                     }
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    // A client that just disconnected can still have surfaces in the
+                    // window/layer lists until its windows are torn down; there is
+                    // nobody left to wake.
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         });
@@ -908,8 +912,9 @@ impl ShojiWM {
                     .map(|commit_timer| commit_timer.lock().unwrap())
                     && commit_timer_state.signal_until(frame_target)
                 {
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         }
@@ -1071,8 +1076,9 @@ impl ShojiWM {
                             );
                         }
                         fifo_barrier.signal();
-                        let client = surface.client().unwrap();
-                        clients.insert(client.id(), client);
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
                     } else if debug_fifo {
                         info!(
                             surface = ?surface.id(),
@@ -1116,8 +1122,9 @@ impl ShojiWM {
                     .take();
                 if let Some(fifo_barrier) = fifo_barrier {
                     fifo_barrier.signal();
-                    let client = surface.client().unwrap();
-                    clients.insert(client.id(), client);
+                    if let Some(client) = surface.client() {
+                        clients.insert(client.id(), client);
+                    }
                 }
             });
         }

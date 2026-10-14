@@ -363,6 +363,7 @@ impl Style {
             }),
             font_family: read(&self.font_family),
             text_align: read(&self.text_align),
+            text_overflow: None,
             line_height: read(&self.line_height),
             box_shadow: read(&self.box_shadow).unwrap_or_default(),
             paint: None,

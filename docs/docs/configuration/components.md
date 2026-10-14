@@ -103,6 +103,7 @@ Renders a window's application icon.
 | Prop | Type | Meaning |
 | --- | --- | --- |
 | `icon` | `WindowIcon \| undefined` (or signal) | Pass `window.icon` for reactive updates |
+| `fallback` | `string` | Image file drawn when the icon cannot be found (resolved like `<Image src>`) |
 | `style` | `SSDStyle` | Sizing |
 
 ```tsx
@@ -152,11 +153,15 @@ the border and provides interactive resize hit areas.
 | `interaction` | `WindowBorderInteraction` | Resize hit areas |
 
 `interaction.resizeHitArea` is either a single number, or
-`{edgePx?, cornerPx?}`. The resize grab covers the visible border plus
+`{edgePx?, cornerPx?, insetPx?}`. The resize grab covers the visible border plus
 `edgePx` outside the frame, so it never covers client content near the edge.
 `cornerPx` is how far the diagonal corner grab reaches along each edge, measured
-from the outer corner of that band. Without `resizeHitArea`, only the border
-itself resizes.
+from the outer corner of that band. `insetPx` extends the grab that far inside
+the border, for a frame drawn by the border's children (a thick title bar and
+side borders, as on Windows) that should resize from its outer edge; keep it
+narrower than that frame so the client keeps its pointer. Without
+`resizeHitArea`, only the border itself resizes; with it, a `<WindowBorder>`
+without a border resizes too.
 
 ```tsx
 <WindowBorder
@@ -365,7 +370,8 @@ Colors are `#RGB`, `#RGBA`, `#RRGGBB` or `#RRGGBBAA`.
 
 `fontSize`, `fontWeight` (`"normal" | "medium" | "semibold" | "bold"` or a
 number), `fontFamily` (string or string array of fallbacks), `textAlign`
-(`"start" | "center" | "end"`), `lineHeight`.
+(`"start" | "center" | "end"`), `textOverflow` (`"clip"`, the default, or
+`"ellipsis"` to end a label too long for its box in "…"), `lineHeight`.
 
 ```tsx
 const style: SSDStyle = {

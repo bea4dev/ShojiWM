@@ -195,6 +195,7 @@ fn emit_label(
         font_weight: None,
         font_family: None,
         text_align: None,
+        text_overflow: None,
         line_height: Some(rect.height as f32),
         raster_scale: scale.x.abs().max(1.0),
     };

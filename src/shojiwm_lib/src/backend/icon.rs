@@ -63,6 +63,9 @@ pub struct IconSpec {
     /// instead of performing app-icon theme lookup. Used by the `Image` node.
     pub asset_path: Option<String>,
     pub image_fit: Option<ImageFit>,
+    /// An `<AppIcon>`'s `fallback`: the image file drawn when the window's
+    /// icon is not found by theme lookup.
+    pub fallback_asset_path: Option<String>,
     /// Exact rasterization scale (the layout scale), so the buffer maps
     /// one-to-one onto the node's physical pixels.
     pub raster_scale: f64,
@@ -147,49 +150,23 @@ impl IconRasterizer {
         let (key, target_width, target_height, _) = icon_cache_key_for_spec(spec)?;
 
         let rgba = if let Some(asset_path) = spec.asset_path.as_deref() {
-            let extension = std::path::Path::new(asset_path)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase());
-            let Some(bytes) = fs::read(asset_path).ok() else {
-                self.cache.insert(key, None);
-                return None;
-            };
             let fit = spec.image_fit.unwrap_or(ImageFit::Contain);
-            let Some(rgba) = decode_image_asset(
-                &bytes,
-                extension.as_deref(),
-                target_width,
-                target_height,
-                fit,
-            ) else {
+            let Some(rgba) = load_image_asset(asset_path, target_width, target_height, fit) else {
                 self.cache.insert(key, None);
                 return None;
             };
             rgba
-        } else if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
-            decode_png_and_scale(bytes, target_width, target_height)?
+        } else if let Some(rgba) = self
+            .themed_icon_rgba(spec, target_width, target_height)
+            .or_else(|| {
+                let fallback = spec.fallback_asset_path.as_deref()?;
+                load_image_asset(fallback, target_width, target_height, ImageFit::Contain)
+            })
+        {
+            rgba
         } else {
-            let names = icon_candidate_names(spec);
-            let Some(path) = self.find_icon_path_cached(&names, target_width, target_height) else {
-                self.cache.insert(key, None);
-                return None;
-            };
-            let extension = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase());
-            let Some(bytes) = fs::read(&path).ok() else {
-                self.cache.insert(key, None);
-                return None;
-            };
-            let Some(rgba) =
-                decode_icon_and_scale(&bytes, extension.as_deref(), target_width, target_height)
-            else {
-                self.cache.insert(key, None);
-                return None;
-            };
-            rgba
+            self.cache.insert(key, None);
+            return None;
         };
 
         let pixels = rgba_to_argb8888(&rgba);
@@ -208,6 +185,29 @@ impl IconRasterizer {
             height: target_height,
             pixels,
         })
+    }
+
+    /// The window's own icon: embedded bytes, or a theme icon by name / app id.
+    fn themed_icon_rgba(
+        &mut self,
+        spec: &IconSpec,
+        target_width: i32,
+        target_height: i32,
+    ) -> Option<Vec<u8>> {
+        if let Some(bytes) = spec.icon.as_ref().and_then(|icon| icon.bytes.as_ref()) {
+            return decode_png_and_scale(bytes, target_width, target_height);
+        }
+        let names = icon_candidate_names(spec);
+        if names.is_empty() {
+            return None;
+        }
+        let path = self.find_icon_path_cached(&names, target_width, target_height)?;
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+        let bytes = fs::read(&path).ok()?;
+        decode_icon_and_scale(&bytes, extension.as_deref(), target_width, target_height)
     }
 
     fn render_icon_sync_cached(&mut self, spec: &IconSpec) -> Option<CachedDecorationIcon> {
@@ -314,6 +314,7 @@ pub fn hash_icon_spec(spec: &IconSpec) -> u64 {
     spec.raster_scale.to_bits().hash(&mut hasher);
     spec.app_id.hash(&mut hasher);
     spec.asset_path.hash(&mut hasher);
+    spec.fallback_asset_path.hash(&mut hasher);
     match spec.image_fit {
         Some(ImageFit::Contain) => 1u8.hash(&mut hasher),
         Some(ImageFit::Cover) => 2u8.hash(&mut hasher),
@@ -630,6 +631,17 @@ fn icon_source_key(spec: &IconSpec) -> Option<String> {
             image_fit_cache_key(spec.image_fit)
         ));
     }
+    let themed = theme_icon_source_key(spec);
+    match spec.fallback_asset_path.as_ref() {
+        Some(fallback) => Some(format!(
+            "{}|fallback:{fallback}",
+            themed.unwrap_or_default()
+        )),
+        None => themed,
+    }
+}
+
+fn theme_icon_source_key(spec: &IconSpec) -> Option<String> {
     if let Some(icon) = spec.icon.as_ref() {
         if let Some(name) = icon.name.as_ref() {
             return Some(format!("name:{name}"));
@@ -965,6 +977,21 @@ fn bilinear_resample(
     out
 }
 
+/// Read and rasterize an image file (PNG, SVG, ...) to `target` pixels.
+fn load_image_asset(
+    path: &str,
+    target_width: i32,
+    target_height: i32,
+    fit: ImageFit,
+) -> Option<Vec<u8>> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    let bytes = fs::read(path).ok()?;
+    decode_image_asset(&bytes, extension.as_deref(), target_width, target_height, fit)
+}
+
 fn decode_image_asset(
     bytes: &[u8],
     extension: Option<&str>,
@@ -1128,12 +1155,52 @@ mod tests {
             app_id: None,
             asset_path: Some("/tmp/icon.svg".into()),
             image_fit: Some(ImageFit::Contain),
+            fallback_asset_path: None,
             raster_scale: 1.0,
         };
         let mut cover = base.clone();
         cover.image_fit = Some(ImageFit::Cover);
 
         assert_ne!(icon_source_key(&base), icon_source_key(&cover));
+    }
+
+    #[test]
+    fn app_icon_falls_back_to_its_image_when_the_icon_is_not_found() {
+        let path = std::env::temp_dir().join(format!(
+            "shoji-wm-app-icon-fallback-test-{}.svg",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#fff"/></svg>"##,
+        )
+        .expect("test svg should be writable");
+
+        let mut rasterizer = IconRasterizer::new(None);
+        let spec = IconSpec {
+            rect: LogicalRect::new(0, 0, 16, 16),
+            rect_precise: None,
+            icon: None,
+            app_id: Some("shoji-wm-test-app-without-any-icon".into()),
+            asset_path: None,
+            image_fit: None,
+            fallback_asset_path: Some(path.to_string_lossy().into_owned()),
+            raster_scale: 1.0,
+        };
+        let without_fallback = IconSpec {
+            fallback_asset_path: None,
+            ..spec.clone()
+        };
+
+        let rendered = rasterizer.render_icon_pixels(&spec);
+        let missing = rasterizer.render_icon_pixels(&without_fallback);
+        let _ = std::fs::remove_file(path);
+
+        let rendered = rendered.expect("the fallback image should be drawn");
+        assert_eq!((rendered.width, rendered.height), (16, 16));
+        assert!(rendered.pixels.chunks(4).all(|pixel| pixel[3] == 255));
+        assert!(missing.is_none());
+        assert_ne!(icon_source_key(&spec), icon_source_key(&without_fallback));
     }
 
     #[test]
@@ -1167,6 +1234,7 @@ mod tests {
             app_id: None,
             asset_path: Some(path.to_string_lossy().into_owned()),
             image_fit: Some(ImageFit::Contain),
+            fallback_asset_path: None,
             raster_scale: 2.0,
         };
 

@@ -273,7 +273,7 @@ impl ComputedDecorationTree {
     /// rect. Input routing must offer points in that band to this window.
     pub fn resize_hit_outset(&self) -> f64 {
         if self.root.resolved_window_slot_rect().is_none()
-            || self.root.window_border_style().is_none()
+            || self.root.window_border_resize_width().is_none()
         {
             return 0.0;
         }
@@ -299,15 +299,21 @@ impl ComputedDecorationTree {
         }
 
         if let Some(slot_rect) = self.root.resolved_window_slot_rect() {
-            if let Some(border) = self.root.window_border_style() {
+            if let Some(border_width) = self.root.window_border_resize_width() {
                 let scale = self.root.frame.scale;
                 let hit_area = self
                     .root
                     .window_border_resize_hit_area()
                     .unwrap_or_default();
                 // The grab band is the visible border plus `edge_width` outside
-                // the frame, so it never covers client content near the edge.
-                let inset = ResolvedLayoutValue::border_width(border.width, scale);
+                // the frame, so it never covers client content near the edge,
+                // plus `inset_width` inside it for frames that decorate past
+                // their border.
+                let inset = ResolvedLayoutValue::border_width(border_width, scale)
+                    + hit_area
+                        .inset_width
+                        .map(|width| ResolvedLayoutValue::from_logical(width.max(0) as f64, scale))
+                        .unwrap_or(ResolvedLayoutValue::ZERO);
                 let outset = hit_area
                     .edge_width
                     .map(|width| ResolvedLayoutValue::from_logical(width as f64, scale))
@@ -465,6 +471,16 @@ impl ComputedDecorationNode {
         }
 
         self.children.iter().find_map(Self::window_border_style)
+    }
+
+    /// The width of the `<WindowBorder>`'s border when it resizes the window:
+    /// it has a border, or a resize hit area of its own (a borderless frame,
+    /// drawn by its children, resizes through `edge_width` / `inset_width`).
+    fn window_border_resize_width(&self) -> Option<f64> {
+        match self.window_border_style() {
+            Some(border) => Some(border.width),
+            None => self.window_border_resize_hit_area().map(|_| 0.0),
+        }
     }
 
     fn window_border_resize_hit_area(&self) -> Option<WindowResizeHitArea> {
@@ -753,8 +769,13 @@ pub struct WindowBorderInteraction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WindowResizeHitArea {
+    /// Grab band outside the frame (logical px).
     pub edge_width: Option<i32>,
     pub corner_width: Option<i32>,
+    /// Grab band inside the frame, past the visible border (logical px): for
+    /// frames whose decoration is wider than their border, such as a title
+    /// bar and side borders drawn by children of the `<WindowBorder>`.
+    pub inset_width: Option<i32>,
 }
 
 impl WindowResizeHitArea {
@@ -762,6 +783,7 @@ impl WindowResizeHitArea {
         Self {
             edge_width: Some(width),
             corner_width: Some(width),
+            inset_width: None,
         }
     }
 }
@@ -885,7 +907,7 @@ pub enum DecorationNodeKind {
     Box(BoxNode),
     Label(LabelNode),
     Button(ButtonNode),
-    AppIcon,
+    AppIcon(AppIconNode),
     Image(ImageNode),
     ShaderEffect(ShaderEffectNode),
     WindowBorder,
@@ -905,6 +927,12 @@ pub enum ImageFit {
     Fill,
 }
 
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppIconNode {
+    /// Image file drawn when the window's icon cannot be found.
+    pub fallback: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageNode {
@@ -1465,6 +1493,9 @@ pub struct DecorationStyle {
     pub font_weight: Option<serde_json::Value>,
     pub font_family: Option<Vec<String>>,
     pub text_align: Option<String>,
+    /// `"ellipsis"`: a label too long for its box ends in "…" instead of
+    /// being cut off.
+    pub text_overflow: Option<String>,
     pub line_height: Option<f64>,
     /// CSS-like shadows; the first entry is painted on top.
     pub box_shadow: Vec<BoxShadow>,
@@ -2384,7 +2415,7 @@ fn layout_box_children(
                 DecorationNodeKind::Box(_) => "box",
                 DecorationNodeKind::Label(_) => "label",
                 DecorationNodeKind::Button(_) => "button",
-                DecorationNodeKind::AppIcon => "app-icon",
+                DecorationNodeKind::AppIcon(_) => "app-icon",
                 DecorationNodeKind::Image(_) => "image",
                 DecorationNodeKind::ShaderEffect(_) => "shader-effect",
                 DecorationNodeKind::WindowBorder => "window-border",
@@ -2725,6 +2756,7 @@ impl DecorationNode {
                     font_weight: self.style.font_weight.clone(),
                     font_family: self.style.font_family.clone(),
                     text_align: self.style.text_align.clone(),
+                    text_overflow: None,
                     line_height: Some(line_height),
                     raster_scale: 1.0,
                 };
@@ -2996,7 +3028,7 @@ fn kind_layout_equivalent(left: &DecorationNodeKind, right: &DecorationNodeKind)
             left.text == right.text
         }
         (DecorationNodeKind::Button(_), DecorationNodeKind::Button(_)) => true,
-        (DecorationNodeKind::AppIcon, DecorationNodeKind::AppIcon) => true,
+        (DecorationNodeKind::AppIcon(left), DecorationNodeKind::AppIcon(right)) => left == right,
         (DecorationNodeKind::Image(left), DecorationNodeKind::Image(right)) => {
             left.src == right.src && left.fit == right.fit
         }
@@ -3175,7 +3207,7 @@ fn collect_render_primitives(
                 .unwrap_or(Color::WHITE)
                 .with_opacity(node.style.opacity),
         }),
-        DecorationNodeKind::AppIcon => {
+        DecorationNodeKind::AppIcon(_) => {
             primitives.push(DecorationRenderPrimitive::AppIcon { rect: node.rect })
         }
         DecorationNodeKind::Image(image) => primitives.push(DecorationRenderPrimitive::Image {
@@ -4763,6 +4795,7 @@ mod tests {
             })
             .with_window_border_interaction(WindowBorderInteraction {
                 resize_hit_area: Some(WindowResizeHitArea {
+                    inset_width: None,
                     edge_width: Some(8),
                     corner_width: Some(14),
                 }),
@@ -4804,6 +4837,60 @@ mod tests {
         );
         assert_eq!(
             layout.hit_test(LogicalPoint::new(105, 65)),
+            DecorationHitTestResult::Resize(ResizeEdges::BOTTOM_RIGHT)
+        );
+    }
+
+    #[test]
+    fn hit_test_resize_band_reaches_inside_the_frame() {
+        // A borderless frame whose title bar and side borders are children:
+        // `inset_width` makes their outer 8px resize, the rest moves.
+        let root = DecorationNode::new(DecorationNodeKind::WindowBorder)
+            .with_window_border_interaction(WindowBorderInteraction {
+                resize_hit_area: Some(WindowResizeHitArea {
+                    edge_width: Some(4),
+                    corner_width: Some(16),
+                    inset_width: Some(8),
+                }),
+            })
+            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                direction: LayoutDirection::Column,
+            }))
+            .with_children(vec![
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                    direction: LayoutDirection::Row,
+                }))
+                .with_style(DecorationStyle {
+                    height: Some(30.0),
+                    ..Default::default()
+                }),
+                DecorationNode::new(DecorationNodeKind::WindowSlot),
+            ])]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 200, 100))
+            .expect("layout should succeed");
+
+        assert_eq!(layout.resize_hit_outset(), 4.0);
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(-4, 50)),
+            DecorationHitTestResult::Resize(ResizeEdges::LEFT)
+        );
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(7, 50)),
+            DecorationHitTestResult::Resize(ResizeEdges::LEFT)
+        );
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(100, 7)),
+            DecorationHitTestResult::Resize(ResizeEdges::TOP)
+        );
+        // Below the band, the title bar moves the window.
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(100, 8)),
+            DecorationHitTestResult::Move
+        );
+        assert_eq!(
+            layout.hit_test(LogicalPoint::new(196, 96)),
             DecorationHitTestResult::Resize(ResizeEdges::BOTTOM_RIGHT)
         );
     }
@@ -4852,7 +4939,7 @@ mod tests {
                             height: Some(20.0),
                             ..Default::default()
                         }),
-                    DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+                    DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
                         width: Some(11.0),
                         height: Some(20.0),
                         ..Default::default()
@@ -4993,7 +5080,7 @@ mod tests {
                     color: Some(Color::WHITE),
                     ..Default::default()
                 }),
-            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
                 width: Some(11.0),
                 height: Some(20.0),
                 ..Default::default()
@@ -5017,7 +5104,7 @@ mod tests {
                     color: Some(Color::BLACK),
                     ..Default::default()
                 }),
-            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
                 width: Some(11.0),
                 height: Some(20.0),
                 ..Default::default()
@@ -5166,7 +5253,7 @@ mod tests {
             ..Default::default()
         })
         .with_children(vec![
-            DecorationNode::new(DecorationNodeKind::AppIcon).with_style(DecorationStyle {
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
                 width: Some(16.0),
                 height: Some(16.0),
                 ..Default::default()

@@ -1491,6 +1491,20 @@ pub fn init_winit(
                             presented,
                         );
                     }
+                    // wlr-screencopy frames (hyprpicker, grim's older protocol),
+                    // rendered after the submit for the same reason.
+                    {
+                        timescope::scope!("winit screencopy output");
+                        crate::backend::screencopy_render::process_screencopy_queue_for_output(
+                            &mut state.screencopy_state,
+                            &state.loop_handle,
+                            backend.renderer(),
+                            &output,
+                            &capture_elements,
+                            &[],
+                            None,
+                        );
+                    }
                     let submit_elapsed_ms =
                         submit_started_at.elapsed().as_secs_f64() * 1000.0;
 

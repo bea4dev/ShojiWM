@@ -3010,6 +3010,21 @@ impl ShojiWM {
                         .transpose()?
                         .unwrap_or(client_rect)
                 };
+                // The probe above ran against the cached tree, managed rect and
+                // scale. Once it agrees with the cached rect and no Rust-side
+                // animation is moving the window, the cache is coherent again;
+                // otherwise a window whose animation ended without a relayout
+                // (an opacity fade, a rect animation landing on the cached
+                // rect) would run the probe loop on every redraw for good.
+                if let Some(cached) = self.window_decorations.get_mut(&window) {
+                    if client_rect_probe_restores_coherence(
+                        cached,
+                        layout_scale,
+                        cached_effective_client_rect,
+                    ) {
+                        cached.client_rect_potentially_stale = false;
+                    }
+                }
                 let had_cached_decoration = {
                     timescope::scope!("ssd window cache lookup");
                     self.window_decorations.contains_key(&window)
@@ -3562,6 +3577,30 @@ impl ShojiWM {
                         }
                         pre_advance_actions.extend(std::mem::take(&mut evaluation.actions));
                         if evaluation.managed_window_only {
+                            if force_async_asset_refresh {
+                                // Text and icons rasterize asynchronously, and the
+                                // refresh after they arrive is the only one that picks
+                                // them up. A managed-window-only update (a window
+                                // animating open, say) must not skip it, or the labels
+                                // and icons stay blank until something relayouts the
+                                // window.
+                                let order_map = build_render_order_map(&cached.layout);
+                                let previous_text_buffers = cached.text_buffers.clone();
+                                cached.text_buffers = build_text_buffers_with_fallback(
+                                    &cached.layout,
+                                    &order_map,
+                                    window_raster_scale,
+                                    &mut self.text_rasterizer,
+                                    &previous_text_buffers,
+                                );
+                                cached.icon_buffers = build_icon_buffers(
+                                    &cached.layout,
+                                    &order_map,
+                                    window_raster_scale,
+                                    &cached.snapshot,
+                                    &mut self.icon_rasterizer,
+                                );
+                            }
                             if runtime_dirty_debug_enabled() {
                                 info!(
                                     window_id = %snapshot_id,
@@ -6082,6 +6121,40 @@ fn managed_client_rect_for_state(
     managed_client_rect_for_root(tree, desired_root, scale)
 }
 
+/// Whether a probe of `managed_client_rect_for_state` that just ran against
+/// the cached tree, managed rect and scale lets the refresh trust
+/// `cached.client_rect` again (see `client_rect_potentially_stale`).
+fn client_rect_probe_restores_coherence(
+    cached: &WindowDecorationState,
+    layout_scale: f64,
+    probed_client_rect: LogicalRect,
+) -> bool {
+    client_rect_probe_agrees(
+        cached.client_rect_potentially_stale,
+        cached.managed_window_animation_active,
+        cached.layout_scale,
+        layout_scale,
+        cached.client_rect,
+        probed_client_rect,
+    )
+}
+
+fn client_rect_probe_agrees(
+    stale: bool,
+    animation_active: bool,
+    cached_scale: f64,
+    layout_scale: f64,
+    cached_client_rect: LogicalRect,
+    probed_client_rect: LogicalRect,
+) -> bool {
+    // A running animation moves the managed rect again before the next
+    // refresh; a scale change relayouts first.
+    stale
+        && !animation_active
+        && cached_scale == layout_scale
+        && cached_client_rect == probed_client_rect
+}
+
 /// Whether `managed_client_rect_for_state` derives the rect from the
 /// managed rect alone, without reading its fallback client rect.
 fn managed_client_rect_ignores_fallback(managed: &super::ManagedWindowState) -> bool {
@@ -6919,7 +6992,7 @@ fn collect_retargeted_icon_buffers(
 
     if !matches!(
         node.kind,
-        super::DecorationNodeKind::AppIcon | super::DecorationNodeKind::Image(_)
+        super::DecorationNodeKind::AppIcon(_) | super::DecorationNodeKind::Image(_)
     ) {
         return;
     }
@@ -6956,7 +7029,7 @@ fn collect_retargeted_icon_buffers(
     buffer.clip_rect_precise = clip_rect_precise;
     buffer.clip_radius_precise = clip_radius_precise;
 
-    if matches!(node.kind, super::DecorationNodeKind::AppIcon)
+    if matches!(&node.kind, super::DecorationNodeKind::AppIcon(icon) if icon.fallback.is_none())
         && snapshot.icon.is_none()
         && snapshot.app_id.is_none()
     {
@@ -7266,7 +7339,7 @@ fn collect_render_orders(
 
     match &node.kind {
         super::DecorationNodeKind::Label(_) => push("label".into(), order),
-        super::DecorationNodeKind::AppIcon | super::DecorationNodeKind::Image(_) => {
+        super::DecorationNodeKind::AppIcon(_) | super::DecorationNodeKind::Image(_) => {
             push("icon".into(), order)
         }
         _ => {}
@@ -7481,6 +7554,7 @@ fn collect_text_buffers(
         font_weight: node.style.font_weight.clone(),
         font_family: node.style.font_family.clone(),
         text_align: node.style.text_align.clone(),
+        text_overflow: node.style.text_overflow.clone(),
         line_height: node.style.line_height.map(|value| value as f32),
         raster_scale,
     };
@@ -7720,9 +7794,11 @@ fn collect_icon_buffers(
         return;
     }
 
-    let (asset_path, image_fit) = match &node.kind {
-        super::DecorationNodeKind::AppIcon => (None, None),
-        super::DecorationNodeKind::Image(image) => (Some(image.src.clone()), Some(image.fit)),
+    let (asset_path, image_fit, fallback_asset_path) = match &node.kind {
+        super::DecorationNodeKind::AppIcon(icon) => (None, None, icon.fallback.clone()),
+        super::DecorationNodeKind::Image(image) => {
+            (Some(image.src.clone()), Some(image.fit), None)
+        }
         _ => return,
     };
     let shared_geometry = node
@@ -7741,6 +7817,7 @@ fn collect_icon_buffers(
         app_id: source.app_id.map(str::to_owned),
         asset_path,
         image_fit,
+        fallback_asset_path,
         raster_scale,
     };
 
@@ -7776,7 +7853,7 @@ fn node_kind_name(kind: &super::DecorationNodeKind) -> &'static str {
         super::DecorationNodeKind::Box(_) => "box",
         super::DecorationNodeKind::Label(_) => "label",
         super::DecorationNodeKind::Button(_) => "button",
-        super::DecorationNodeKind::AppIcon => "app-icon",
+        super::DecorationNodeKind::AppIcon(_) => "app-icon",
         super::DecorationNodeKind::Image(_) => "image",
         super::DecorationNodeKind::ShaderEffect(_) => "shader-effect",
         super::DecorationNodeKind::WindowBorder => "window-border",
@@ -9111,6 +9188,21 @@ mod tests {
             false,
             false,
         ));
+    }
+
+    #[test]
+    fn client_rect_probe_clears_staleness_once_animations_are_done() {
+        let rect = LogicalRect::new(10, 40, 640, 480);
+        let moved = LogicalRect::new(12, 40, 640, 480);
+        // An opacity fade ended without a relayout: the probe agrees with the
+        // cached rect, so the next refreshes can skip it.
+        assert!(client_rect_probe_agrees(true, false, 1.5, 1.5, rect, rect));
+        // Still animating, rescaled, or the rect really moved: keep probing.
+        assert!(!client_rect_probe_agrees(true, true, 1.5, 1.5, rect, rect));
+        assert!(!client_rect_probe_agrees(true, false, 1.0, 1.5, rect, rect));
+        assert!(!client_rect_probe_agrees(true, false, 1.5, 1.5, rect, moved));
+        // Nothing to restore.
+        assert!(!client_rect_probe_agrees(false, false, 1.5, 1.5, rect, rect));
     }
 
     #[test]

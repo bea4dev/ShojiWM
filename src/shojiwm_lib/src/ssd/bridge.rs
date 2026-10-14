@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
+    AlignItems, AppIconNode, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
     BoxShadow, PaintShader,
     ButtonNode, Color, CompiledEffect, DecorationInteractionHandlers, DecorationNode,
     DecorationNodeKind, DecorationStateChangeHandler, DecorationStyle, Edges, EffectAlphaMode,
@@ -46,6 +46,8 @@ pub struct WireProps {
     pub overlay: Option<WirePaintShader>,
     pub src: Option<String>,
     pub fit: Option<String>,
+    // <AppIcon>
+    pub fallback: Option<String>,
     pub id: Option<String>,
     pub style: WireStyle,
     pub on_click: Option<WireOnClick>,
@@ -85,6 +87,7 @@ pub enum WireResizeHitArea {
 pub struct WireResizeHitAreaFields {
     pub edge_px: Option<i32>,
     pub corner_px: Option<i32>,
+    pub inset_px: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -391,6 +394,7 @@ pub struct WireStyle {
     pub font_weight: Option<serde_json::Value>,
     pub font_family: Option<WireFontFamily>,
     pub text_align: Option<String>,
+    pub text_overflow: Option<String>,
     pub line_height: Option<f64>,
     pub box_shadow: Option<WireBoxShadowValue>,
 }
@@ -506,7 +510,9 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .unwrap_or(WireOnClick::Action(WireWindowAction::Close))
                     .try_into()?,
             }),
-            "AppIcon" => DecorationNodeKind::AppIcon,
+            "AppIcon" => DecorationNodeKind::AppIcon(AppIconNode {
+                fallback: value.props.fallback.clone().filter(|path| !path.is_empty()),
+            }),
             "Image" => DecorationNodeKind::Image(ImageNode {
                 src: value.props.src.clone().unwrap_or_default(),
                 fit: parse_image_fit(value.props.fit.as_deref())?,
@@ -605,6 +611,7 @@ impl WireResizeHitArea {
             WireResizeHitArea::Detailed(fields) => WindowResizeHitArea {
                 edge_width: fields.edge_px,
                 corner_width: fields.corner_px,
+                inset_width: fields.inset_px,
             },
         }
     }
@@ -1314,6 +1321,7 @@ impl TryFrom<WireStyle> for DecorationStyle {
                 WireFontFamily::Multiple(names) => names,
             }),
             text_align: value.text_align,
+            text_overflow: value.text_overflow,
             line_height: value.line_height,
             box_shadow: match value.box_shadow {
                 None => Vec::new(),
@@ -1727,6 +1735,7 @@ mod tests {
             WindowResizeHitArea {
                 edge_width: Some(8),
                 corner_width: Some(14),
+                inset_width: None,
             }
         );
         assert!(matches!(

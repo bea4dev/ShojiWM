@@ -102,6 +102,7 @@ const [hover, setHover] = useState(false);
 | Prop | 型 | 意味 |
 | --- | --- | --- |
 | `icon` | `WindowIcon \| undefined`（またはシグナル） | `window.icon` を渡すとリアクティブに更新 |
+| `fallback` | `string` | アイコンが見つからないときに描く画像ファイル（`<Image src>` と同じく解決） |
 | `style` | `SSDStyle` | サイズ指定 |
 
 ```tsx
@@ -150,11 +151,15 @@ const [hover, setHover] = useState(false);
 | `style` | `SSDStyle` | `border`・`borderRadius`・`background` などでボーダーを指定 |
 | `interaction` | `WindowBorderInteraction` | リサイズの当たり判定 |
 
-`interaction.resizeHitArea` は単一の数値か、`{edgePx?, cornerPx?}` です。
+`interaction.resizeHitArea` は単一の数値か、`{edgePx?, cornerPx?, insetPx?}` です。
 リサイズのつかみ領域は、見えているボーダーにフレームの外側 `edgePx` を加えた範囲です。
 そのため、縁の近くのクライアント内容には被りません。`cornerPx` は斜めリサイズになる
 コーナー部分が各辺に沿ってどこまで伸びるかで、つかみ領域の外側の角から測ります。
-`resizeHitArea` を指定しない場合は、ボーダー自体だけがリサイズ領域になります。
+`insetPx` はつかみ領域をボーダーの内側へその分だけ広げます。ボーダーの子要素で描いた
+枠（Windows のような太いタイトルバーや左右の枠）を外縁からリサイズしたいときに使い、
+クライアントがポインターを受け取れるよう枠の幅より狭くしてください。
+`resizeHitArea` を指定しない場合は、ボーダー自体だけがリサイズ領域になります。指定した
+場合は、ボーダーのない `<WindowBorder>` もリサイズできます。
 
 ```tsx
 <WindowBorder
@@ -356,7 +361,8 @@ Button::new().child(
 
 `fontSize`・`fontWeight`（`"normal" | "medium" | "semibold" | "bold"` または数値）・
 `fontFamily`（文字列、またはフォールバックの文字列配列）・`textAlign`
-（`"start" | "center" | "end"`）・`lineHeight`。
+（`"start" | "center" | "end"`）・`textOverflow`（既定の `"clip"`、または枠に
+収まらないラベルの末尾を「…」にする `"ellipsis"`）・`lineHeight`。
 
 ```tsx
 const style: SSDStyle = {

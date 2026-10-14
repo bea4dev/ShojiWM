@@ -2398,10 +2398,11 @@ mod implicit_sync_tests {
 /// Surfaces that use `linux-drm-syncobj-v1` are always held: their release point is signalled
 /// from the CPU when the buffer drops, and nothing orders it after our GPU read. Other buffers
 /// are held unless `ShojiWM::implicit_sync_trusted`: when every GPU runs Mesa, an implicit-sync
-/// dma-buf carries our read as a fence the client waits on before rendering into it again, and
-/// an shm buffer is copied during the render, so holding those only delays their release. The
+/// dma-buf carries our read as a fence the client waits on before rendering into it again. The
 /// NVIDIA proprietary driver takes no part in implicit sync, neither as the GPU we render with
-/// nor as the one a client renders with (PRIME offload), so with one present everything is held.
+/// nor as the one a client renders with (PRIME offload), so with one present every dma-buf is
+/// held. An shm buffer is never held: it is copied during the render, so holding it would only
+/// delay its release.
 fn collect_client_buffers_for_hold(
     state: &ShojiWM,
     output: &Output,
@@ -2435,6 +2436,16 @@ fn collect_client_buffers_for_hold(
             .get::<RendererSurfaceStateUserData>()
             .and_then(|renderer_state| renderer_state.lock().ok()?.buffer().cloned())
         {
+            // An shm buffer is copied into a texture during the render, so the GPU never
+            // reads it: holding it only delays its release past the frame callback. A client
+            // that renders on the callback into whichever buffer is free (hyprpicker,
+            // double-buffered) then finds both busy, skips the frame and never draws again.
+            if matches!(
+                smithay::backend::renderer::buffer_type(&buffer),
+                Some(smithay::backend::renderer::BufferType::Shm)
+            ) {
+                return;
+            }
             held.push(buffer);
         }
     };

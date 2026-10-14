@@ -2655,11 +2655,17 @@ function evaluateCached(
       dirtyUniformBindingKeys,
     );
     if (uniformPatches !== null && uniformPatches.length > 0) {
+      // Snapshot the managed window like the other paths do. A managed-window
+      // write (a transform the config animates, say) that lands with the
+      // uniform writes is not "managed-only", and the scheduler tick drops
+      // its mark for a window that is dirty anyway; reusing the cached
+      // transform here would lose it for good once the uniforms settle.
+      const managed = entry.cache.reevaluateManagedWindow();
       return {
         treeUpdate: "uniforms",
         uniformPatches,
-        transform: entry.cache.lastTransform,
-        managedWindow: entry.cache.lastManagedWindow,
+        transform: managed.transform,
+        managedWindow: managed.managedWindow,
         windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
         dirtyNodeIds: Array.from(
           new Set(uniformPatches.map((patch) => patch.nodeId)),

@@ -20,7 +20,6 @@ use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::shm;
 
-use crate::backend::tty::TtyRenderElements;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
 use crate::state::ShojiWM;
 
@@ -37,13 +36,13 @@ use crate::state::ShojiWM;
 /// content only when the client requested `overlay_cursor=1`. That gives us
 /// HIDDEN vs EMBEDDED cursor modes for output captures, since our compositor's
 /// normal render path always includes the cursor.
-pub fn process_screencopy_queue_for_output(
+pub fn process_screencopy_queue_for_output<E: RenderElement<GlesRenderer>>(
     screencopy_state: &mut ScreencopyManagerState,
     loop_handle: &LoopHandle<'_, ShojiWM>,
     renderer: &mut GlesRenderer,
     output: &Output,
-    content_elements: &[TtyRenderElements],
-    cursor_elements: &[TtyRenderElements],
+    content_elements: &[E],
+    cursor_elements: &[E],
     present_at: Option<std::time::Duration>,
 ) {
     timescope::scope!("screencopy queue output");
@@ -98,10 +97,10 @@ pub fn process_screencopy_queue_for_output(
                 ScreencopyBuffer::Shm(_) => "shm",
             };
             let render_started_at = std::time::Instant::now();
-            // Compose a per-frame element list by reference (TtyRenderElements
-            // isn't Clone-able as a whole). Cursor is included only when the
+            // Compose a per-frame element list by reference (render elements
+            // aren't Clone-able as a whole). Cursor is included only when the
             // client requested overlay_cursor (= EMBEDDED in portal terms).
-            let composed_refs: Vec<&TtyRenderElements> = if front.overlay_cursor() {
+            let composed_refs: Vec<&E> = if front.overlay_cursor() {
                 cursor_elements
                     .iter()
                     .chain(content_elements.iter())
@@ -209,10 +208,10 @@ type ScreencopyRenderResult = Result<
     Box<dyn std::error::Error>,
 >;
 
-fn render_for_screencopy(
+fn render_for_screencopy<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     output: &Output,
-    elements: &[&TtyRenderElements],
+    elements: &[&E],
     damage_tracker: &mut OutputDamageTracker,
     screencopy: &Screencopy,
 ) -> ScreencopyRenderResult
@@ -240,8 +239,7 @@ fn render_for_screencopy(
     let relocated_elements = elements
         .iter()
         .map(|element| {
-            // `element` is `&&TtyRenderElements`; deref once so the wrapped
-            // type stays `&TtyRenderElements`.
+            // `element` is `&&E`; deref once so the wrapped type stays `&E`.
             RelocateRenderElement::from_element(
                 *element,
                 region_loc.upscale(-1),

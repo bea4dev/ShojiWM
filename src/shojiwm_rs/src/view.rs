@@ -377,6 +377,7 @@ impl Element {
             interaction.resize_hit_area = Some(WindowResizeHitArea {
                 edge_width: Some(edge_px),
                 corner_width: Some(corner_px),
+                inset_width: None,
             });
         }
         self
@@ -1104,7 +1105,7 @@ impl MountedNode {
                         None => WindowAction::RuntimeHandler(format!("{id}#none")),
                     },
                 }),
-                ElementKind::AppIcon => DecorationNodeKind::AppIcon,
+                ElementKind::AppIcon => DecorationNodeKind::AppIcon(Default::default()),
                 ElementKind::Image { src, fit } => DecorationNodeKind::Image(ImageNode {
                     src: src.get(),
                     fit: *fit,

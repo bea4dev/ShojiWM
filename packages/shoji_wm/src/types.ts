@@ -2477,6 +2477,13 @@ export interface WindowResizeHitArea {
   edgePx?: MaybeSignal<number>;
   /** Corner grab length along each edge, from the band's outer corner. / つかみ領域の外側の角から各辺に沿ったコーナー判定の長さ。 */
   cornerPx?: MaybeSignal<number>;
+  /**
+   * Grab band inside the frame, past the visible border: for frames drawn by
+   * the border's children (a title bar, side borders) that should resize from
+   * their outer edge. / ボーダーの内側に広がるつかみ幅。子要素で描いた枠
+   * （タイトルバーや左右の枠）の外縁でリサイズするためのものです。
+   */
+  insetPx?: MaybeSignal<number>;
 }
 
 export interface WindowBorderInteraction {
@@ -2552,6 +2559,12 @@ export interface SSDStyle {
   fontWeight?: MaybeSignal<FontWeight>;
   fontFamily?: MaybeSignal<FontFamily>;
   textAlign?: MaybeSignal<"start" | "center" | "end">;
+  /**
+   * `"ellipsis"`: a label too long for its box ends in "…" (default
+   * `"clip"`: it is cut off). / `"ellipsis"` で、枠に収まらないラベルの末尾を
+   * 「…」にします（既定の `"clip"` は切り落とし）。
+   */
+  textOverflow?: MaybeSignal<"clip" | "ellipsis">;
   lineHeight?: MaybeSignal<number>;
 }
 
@@ -2774,6 +2787,13 @@ export interface AppIconProps extends ComponentProps {
    * URL 文字列または `{ name?, bytes? }` を受け付けます。
    */
   icon?: MaybeSignal<WindowIcon | undefined>;
+  /**
+   * Image file drawn when the icon cannot be found (an app id without a
+   * theme icon, or no icon at all). Resolved like `<Image src>`.
+   * アイコンが見つからないとき（テーマにないアプリ ID やアイコンなし）に
+   * 描く画像ファイル。`<Image src>` と同じく解決されます。
+   */
+  fallback?: string;
   style?: SSDStyle;
   id?: string;
 }
