@@ -102,6 +102,9 @@ fn pointer_button_debug_enabled() -> bool {
 }
 
 const POINTER_TRAILING_EDGE_INSET: f64 = 0.5;
+/// A key that looks held for longer than this (ms) lost its release, and no
+/// longer blocks a modifier tap.
+const TAP_STALE_KEY_MS: u32 = 5000;
 
 /// Projects a logical pointer position onto the union of all output rectangles.
 ///
@@ -1080,10 +1083,16 @@ impl ShojiWM {
                             let tap_class = handle
                                 .raw_latin_sym_or_raw_current_sym()
                                 .and_then(|sym| modifier_class_of_keysym(sym.raw()));
+                            let key = handle.raw_code().raw();
                             match key_phase {
                                 crate::runtime_key_binding::RuntimeKeyBindingPhase::Press => {
-                                    let was_idle = data.tap_pressed_keys == 0;
-                                    data.tap_pressed_keys += 1;
+                                    // A key "down" for this long lost its release.
+                                    data.tap_pressed_keys.retain(|_, pressed_at| {
+                                        time.wrapping_sub(*pressed_at) <= TAP_STALE_KEY_MS
+                                    });
+                                    let was_idle =
+                                        data.tap_pressed_keys.keys().all(|&down| down == key);
+                                    data.tap_pressed_keys.insert(key, time);
                                     match tap_class {
                                         Some(class) if was_idle => {
                                             data.tap_armed_modifier = Some(class);
@@ -1115,9 +1124,8 @@ impl ShojiWM {
                                             }
                                         }
                                     }
-                                    data.tap_pressed_keys =
-                                        data.tap_pressed_keys.saturating_sub(1);
-                                    if data.tap_pressed_keys == 0 {
+                                    data.tap_pressed_keys.remove(&key);
+                                    if data.tap_pressed_keys.is_empty() {
                                         data.tap_armed_modifier = None;
                                         data.tap_interrupted = false;
                                     }

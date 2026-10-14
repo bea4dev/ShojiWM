@@ -530,7 +530,10 @@ pub struct ShojiWM {
     pub current_keyboard_modifiers: ModifiersState,
     // Modifier-only tap detection (e.g. "Super"). If no other input occurs
     // between press and release, the release is treated as a tap.
-    pub tap_pressed_keys: u32,
+    /// The keys down now, with the event time (ms) of their press. A set and
+    /// not a count: a release that never comes (a KVM switch, a keyboard
+    /// unplugged with a key down) must not block every later tap.
+    pub tap_pressed_keys: std::collections::HashMap<u32, u32>,
     pub tap_armed_modifier: Option<crate::runtime_key_binding::ModifierClass>,
     pub tap_interrupted: bool,
     /// Event time (ms) the tap modifier was pressed, for `within`.
@@ -1914,7 +1917,7 @@ impl ShojiWM {
             runtime_input_grab: None,
             pending_input_grab_key_event: None,
             current_keyboard_modifiers: ModifiersState::default(),
-            tap_pressed_keys: 0,
+            tap_pressed_keys: std::collections::HashMap::new(),
             tap_armed_modifier: None,
             tap_interrupted: false,
             tap_armed_at: 0,
