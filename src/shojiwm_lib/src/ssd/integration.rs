@@ -1238,6 +1238,7 @@ impl ShojiWM {
             self.mark_runtime_dirty_windows(
                 invocation.dirty_window_ids,
                 invocation.dirty_managed_window_ids,
+                &invocation.dirty_window_node_ids,
             );
             self.request_tty_maintenance("runtime-window-resize-dirty");
             self.schedule_redraw();
@@ -1281,6 +1282,7 @@ impl ShojiWM {
             self.mark_runtime_dirty_windows(
                 invocation.dirty_window_ids,
                 invocation.dirty_managed_window_ids,
+                &invocation.dirty_window_node_ids,
             );
             self.request_tty_maintenance("runtime-window-move-dirty");
             self.schedule_redraw();
@@ -1407,6 +1409,7 @@ impl ShojiWM {
             self.mark_runtime_dirty_windows(
                 invocation.dirty_window_ids,
                 invocation.dirty_managed_window_ids,
+                &invocation.dirty_window_node_ids,
             );
             self.request_tty_maintenance(reason);
             self.schedule_redraw();
@@ -1606,6 +1609,7 @@ impl ShojiWM {
         self.mark_runtime_dirty_windows(
             invocation.dirty_window_ids,
             invocation.dirty_managed_window_ids,
+            &invocation.dirty_window_node_ids,
         );
         self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
         self.apply_runtime_window_actions(invocation.actions);
@@ -3000,6 +3004,9 @@ impl ShojiWM {
                             {
                                 return Ok(cached.client_rect);
                             }
+                            if let Some(rect) = managed_client_rect_for_move(cached) {
+                                return Ok(rect);
+                            }
                             managed_client_rect_for_state(
                                 &cached.tree,
                                 &cached.managed_window,
@@ -3046,8 +3053,12 @@ impl ShojiWM {
                     (runtime_state_changed, snapshot_changed)
                 };
 
+                // Not `force_output_animation_reevaluate`: a runtime animation steps
+                // through signals, so the scheduler tick reports the windows it moves.
+                // Forcing every window of the output too re-evaluated all of them on
+                // each frame of any one window's animation (a focus fade), and kept
+                // moving windows off the translate fast path below.
                 let runtime_dirty = force_runtime_reevaluate
-                    || force_output_animation_reevaluate
                     || runtime_state_changed
                     || window_was_runtime_dirty;
                 let force_full_cached_reevaluation = force_runtime_reevaluate
@@ -6163,6 +6174,22 @@ fn managed_client_rect_ignores_fallback(managed: &super::ManagedWindowState) -> 
         && managed.rect.is_some_and(|rect| {
             let rect = managed_rect_snapshot_to_logical_rect(rect);
             rect.width > 0 && rect.height > 0
+        })
+}
+
+/// `managed_client_rect_for_state` for a managed rect that only moved: at the size the
+/// cached layout was computed for, the probe lands on that layout's insets, so they are
+/// taken from it instead of probing. A Rust rect animation moving every tile of a
+/// scrolled workspace otherwise ran the probe loop for each of them on every frame.
+fn managed_client_rect_for_move(cached: &WindowDecorationState) -> Option<LogicalRect> {
+    if !managed_client_rect_ignores_fallback(&cached.managed_window) {
+        return None;
+    }
+    let desired_root = managed_rect_snapshot_to_logical_rect(cached.managed_window.rect?);
+    let current_root = cached.layout.root.rect;
+    (desired_root.width == current_root.width && desired_root.height == current_root.height)
+        .then(|| {
+            managed_client_rect_from_current_insets(current_root, cached.client_rect, desired_root)
         })
 }
 

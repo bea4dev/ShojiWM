@@ -889,7 +889,11 @@ impl ShojiWM {
 
                 if !dirty_window_ids.is_empty() || !dirty_managed_window_ids.is_empty() {
                     self.runtime_poll_dirty = true;
-                    self.mark_runtime_dirty_windows(dirty_window_ids, dirty_managed_window_ids);
+                    self.mark_runtime_dirty_windows(
+                        dirty_window_ids,
+                        dirty_managed_window_ids,
+                        &invocation.dirty_window_node_ids,
+                    );
                     self.request_tty_maintenance("workspace-manager-activate-dirty");
                     self.schedule_redraw();
                 }

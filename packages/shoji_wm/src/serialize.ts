@@ -314,15 +314,21 @@ function serializeShaderUniformContainer(
       nested as Record<string, unknown>,
     )) {
       const bindingKey = shaderUniformBindingKey(nodeId, stageIndex, name);
-      context?.registerShaderUniformBinding({
-        key: bindingKey,
-        nodeId,
-        stageIndex,
-        name,
-        read: () => readNumericShaderUniform(uniform),
-      });
+      // Registering reads the uniform's first value. For a computed that read
+      // runs its body, so it must happen in the uniform's scope too: in the
+      // node's, the signals the computed reads (a window rect, say) became node
+      // dependencies, and every change of them re-patched the node instead of
+      // patching the uniform — a full rebuild while a layout animation
+      // suppresses SSD rebuilds.
       enterWindowShaderUniformDependencyScope(bindingKey, nodeId);
       try {
+        context?.registerShaderUniformBinding({
+          key: bindingKey,
+          nodeId,
+          stageIndex,
+          name,
+          read: () => readNumericShaderUniform(uniform),
+        });
         uniforms[name] = serializeValue(uniform);
       } finally {
         leaveWindowShaderUniformDependencyScope();

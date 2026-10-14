@@ -2834,14 +2834,11 @@ impl ShojiWM {
                 // not force layer/popup effect evaluation every frame.
                 self.layer_effect_evaluation_cache.clear();
             }
-            let node_only_window_ids = tick
-                .dirty_window_node_ids
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            self.mark_runtime_dirty_windows(tick.dirty_window_ids, tick.dirty_managed_window_ids);
-            self.runtime_node_only_window_ids
-                .extend(node_only_window_ids);
+            self.mark_runtime_dirty_windows(
+                tick.dirty_window_ids,
+                tick.dirty_managed_window_ids,
+                &tick.dirty_window_node_ids,
+            );
             self.request_tty_maintenance("runtime-scheduler-dirty");
             self.schedule_redraw();
         }
@@ -4021,31 +4018,46 @@ impl ShojiWM {
         self.schedule_redraw();
     }
 
+    /// Mark the windows a runtime turn left dirty. `dirty_window_node_ids` lists the ones
+    /// whose change stayed inside nodes (node props, shader uniforms): those keep the cached
+    /// patch / uniform paths instead of a full re-evaluation. Every turn reports it — a key
+    /// binding, a gesture or a pointer hook as much as a scheduler tick — and dropping it
+    /// re-evaluated every window a turn touched in full: a tiled workspace scrolled by a
+    /// key or a swipe re-evaluated all its tiles on each step.
     pub fn mark_runtime_dirty_windows(
         &mut self,
         dirty_window_ids: impl IntoIterator<Item = String>,
         dirty_managed_window_ids: impl IntoIterator<Item = String>,
+        dirty_window_node_ids: &HashMap<String, Vec<String>>,
     ) {
         let managed_only = dirty_managed_window_ids
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
         for window_id in dirty_window_ids {
+            let node_only = dirty_window_node_ids.contains_key(&window_id);
             if runtime_dirty_debug_enabled() {
                 info!(
                     window_id = %window_id,
                     managed_only = managed_only.contains(&window_id),
+                    node_only,
                     "runtime dirty debug: mark window dirty"
                 );
             }
-            if managed_only.contains(&window_id)
-                && !self.runtime_dirty_window_ids.contains(&window_id)
-            {
+            let already_dirty = self.runtime_dirty_window_ids.contains(&window_id);
+            if managed_only.contains(&window_id) && !already_dirty {
                 self.runtime_managed_only_window_ids
                     .insert(window_id.clone());
             } else {
                 self.runtime_managed_only_window_ids.remove(&window_id);
             }
-            self.runtime_node_only_window_ids.remove(&window_id);
+            // A window already waiting for a full re-evaluation stays that way.
+            if node_only
+                && (!already_dirty || self.runtime_node_only_window_ids.contains(&window_id))
+            {
+                self.runtime_node_only_window_ids.insert(window_id.clone());
+            } else {
+                self.runtime_node_only_window_ids.remove(&window_id);
+            }
             self.runtime_dirty_window_ids.insert(window_id);
         }
     }
@@ -4077,6 +4089,7 @@ impl ShojiWM {
             self.mark_runtime_dirty_windows(
                 invocation.dirty_window_ids,
                 invocation.dirty_managed_window_ids,
+                &invocation.dirty_window_node_ids,
             );
             self.request_tty_maintenance(match dispatch_mode {
                 "sync" => "runtime-pointer-move-dirty",
