@@ -255,6 +255,7 @@ pub(crate) fn publish() {
     publish_background(&mut messages);
     publish_frame_pacing(&mut messages);
     crate::overlay::sync();
+    crate::dnd::sync();
     // Last: evaluating compositions can start polls the schedule must see.
     let schedule = crate::animation::schedule();
     STATE.with(|state| {

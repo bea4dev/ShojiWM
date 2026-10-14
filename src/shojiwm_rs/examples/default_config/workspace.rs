@@ -341,7 +341,8 @@ impl Workspace {
                     && !get(*current, &WINDOW_STATE_MINIMIZED)
                     && (!self.is_tiled || !self.should_tile(*current))
             })
-            .max_by_key(|current| z_index_of(*current));
+            // On a tie the first window wins (`max_by_key` would take the last).
+            .reduce(|top, current| if z_index_of(current) > z_index_of(top) { current } else { top });
         if topmost.is_some() || !self.is_tiled {
             return topmost;
         }

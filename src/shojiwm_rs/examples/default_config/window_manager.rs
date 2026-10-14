@@ -1031,8 +1031,9 @@ impl HybridWindowManager {
             let ws = self.workspace_by_id(id).expect("live");
             if ws.is_tiled && ws.should_tile(window) {
                 self.on_tile_window_move(window, event, id);
-                let current = self.find_workspace_for_window(window);
-                self.apply_workspace_stack_policy(current);
+                // The workspace the drag started on, even if the tile moved
+                // to another one.
+                self.apply_workspace_stack_policy(Some(id));
                 return;
             }
             self.on_floating_window_move(window, event, id);
@@ -2069,8 +2070,8 @@ impl HybridWindowManager {
             return;
         }
         self.workspace_scroll_gesture_speed = None;
-        self.kinetic_frame_context
-            .insert(id, (event.position.or(self.last_pointer_position), monitor));
+        // Without a position of its own, the glide follows the pointer.
+        self.kinetic_frame_context.insert(id, (event.position, monitor));
         let velocity = -event.velocity_x * self.gesture_speed.workspace_scroll_kinetic_factor;
         let snap_max = self.gesture_speed.workspace_scroll_snap_max_velocity;
         let moved = self.ws(id).start_kinetic_scroll(velocity, snap_max);
@@ -2091,6 +2092,7 @@ impl HybridWindowManager {
 
     fn kinetic_on_frame(&mut self, id: u64) {
         if let Some((position, monitor)) = self.kinetic_frame_context.get(&id).cloned() {
+            let position = position.or(self.last_pointer_position);
             self.focus_window_at_pointer_position(position, Some(&monitor));
         }
         self.apply_workspace_stack_policy(Some(id));

@@ -32,7 +32,7 @@
 //! it, which keeps the session's `RefCell`s from being borrowed twice.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::{Rc, Weak},
 };
@@ -242,6 +242,8 @@ struct Inner {
     selected_window_id: Signal<Option<String>>,
     blur_fade: RefCell<Option<TimerHandle>>,
     titlebar_button_at: RefCell<Option<Rc<TitlebarButtonAt>>>,
+    /// The close/open listeners of `card_actions` are registered.
+    listening: Cell<bool>,
 }
 
 /// A window switcher, whatever its layout. Cheap to clone.
@@ -265,26 +267,8 @@ impl WindowSwitcher {
             selected_window_id: signal(None),
             blur_fade: RefCell::new(None),
             titlebar_button_at: RefCell::new(None),
+            listening: Cell::new(false),
         });
-        if inner.layout.card_actions() {
-            // Listeners cannot be removed, so they live as long as the
-            // switcher and act on whichever session is open.
-            let on = |f: fn(&Self, &SessionRef, Window)| {
-                let weak: Weak<Inner> = Rc::downgrade(&inner);
-                move |window: Window| {
-                    let Some(inner) = weak.upgrade() else {
-                        return;
-                    };
-                    let this = Self(inner);
-                    if let Some(session) = this.current() {
-                        f(&this, &session, window);
-                    }
-                }
-            };
-            COMPOSITOR.event.on_start_close(on(Self::remove_card));
-            COMPOSITOR.event.on_close(on(Self::remove_card));
-            COMPOSITOR.event.on_open(on(Self::window_opened));
-        }
         Self(inner)
     }
 
@@ -522,6 +506,35 @@ impl WindowSwitcher {
         })
     }
 
+    /// Listen to windows closing and opening, for layouts with
+    /// `card_actions`. Registered when a switcher first opens, as TypeScript
+    /// does on every open, so they run after the window manager's own
+    /// listeners (which, for instance, focus a "save changes?" dialog that
+    /// the switcher then hands over to its owner). Listeners cannot be
+    /// removed, so they then live as long as the switcher and act on
+    /// whichever session is open.
+    fn listen_to_windows(&self) {
+        let inner = &self.0;
+        if !inner.layout.card_actions() || inner.listening.replace(true) {
+            return;
+        }
+        let on = |f: fn(&Self, &SessionRef, Window)| {
+            let weak: Weak<Inner> = Rc::downgrade(inner);
+            move |window: Window| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let this = Self(inner);
+                if let Some(session) = this.current() {
+                    f(&this, &session, window);
+                }
+            }
+        };
+        COMPOSITOR.event.on_start_close(on(Self::remove_card));
+        COMPOSITOR.event.on_close(on(Self::remove_card));
+        COMPOSITOR.event.on_open(on(Self::window_opened));
+    }
+
     /// Open the switcher on `output_name` (no-op while open).
     pub fn open(&self, output_name: &str) {
         if self.current().is_some() {
@@ -534,6 +547,7 @@ impl WindowSwitcher {
         if windows.is_empty() {
             return;
         }
+        self.listen_to_windows();
         let ranks = self.rank_map(&windows);
         let start_poses = windows
             .iter()

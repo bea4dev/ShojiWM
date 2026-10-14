@@ -447,3 +447,150 @@ fn workspace_requests_with_a_window_go_to_on_move_window() {
     assert_eq!(*moved.borrow(), [("desk-2".to_string(), "w1".to_string())]);
     assert_eq!(*activated.borrow(), ["desk-1".to_string()]);
 }
+
+#[test]
+fn drag_views_follow_the_drag_and_go_with_their_animation() {
+    use shojiwm_rs::dnd::{DragDevice, DragEndKind, DragPoint};
+    use shojiwm_lib::dnd::{DndEventSnapshot, DragSnapshot, DragViewCommand};
+
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new(|| {
+            COMPOSITOR.dnd.on_start(|drag| {
+                let fade = Animation::new(1.0);
+                let ended = drag.ended();
+                let view = drag.show(
+                    DragViewOptions::new()
+                        .anchor(derive(move || {
+                            if ended.get().is_some() { DragViewAnchor::Global } else { DragViewAnchor::Pointer }
+                        }))
+                        .opacity(fade)
+                        .content({
+                            let drag = drag.clone();
+                            move || {
+                                let text = match drag.action().get() {
+                                    DragAction::Copy => "copy",
+                                    _ => "none",
+                                };
+                                Flex::column()
+                                    .child(drag.icon_slot(Label::new("no icon")))
+                                    .child(Label::new(text))
+                            }
+                        }),
+                );
+                drag.on_end(move |_| {
+                    let view = view.clone();
+                    fade.start_then(AnimationOptions::to(0.0, 100.0), move |done| {
+                        assert!(done);
+                        view.dispose();
+                    });
+                });
+            });
+        })),
+        &args,
+    )
+    .launch(host.clone());
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+    let drain = || std::iter::from_fn(|| host.pop()).collect::<Vec<_>>();
+    let filter = drain()
+        .into_iter()
+        .find_map(|message| match message {
+            HostMessage::EventFilter(filter) => Some(filter),
+            _ => None,
+        })
+        .expect("event filter");
+    assert!(filter.dnd, "a listener asks for drag events");
+
+    let views = |messages: Vec<HostMessage>| -> Vec<DragViewCommand> {
+        messages
+            .into_iter()
+            .filter_map(|message| match message {
+                HostMessage::DragView(command) => Some(command),
+                _ => None,
+            })
+            .collect()
+    };
+    let texts = |command: &DragViewCommand| match command {
+        DragViewCommand::Content { content: Some(tree), .. } => {
+            let mut texts = Vec::new();
+            fn walk(node: &DecorationNode, texts: &mut Vec<String>) {
+                if let DecorationNodeKind::Label(label) = &node.kind {
+                    texts.push(label.text.clone());
+                }
+                if matches!(node.kind, DecorationNodeKind::WindowSlot) {
+                    texts.push("<icon>".into());
+                }
+                node.children.iter().for_each(|child| walk(child, texts));
+            }
+            walk(tree, &mut texts);
+            Some(texts)
+        }
+        _ => None,
+    };
+
+    let start = DndEventSnapshot::Start {
+        drag: DragSnapshot {
+            id: 7,
+            mime_types: vec!["text/plain".into()],
+            actions: Default::default(),
+            action: DragAction::None,
+            source_window_id: None,
+            target_window_id: None,
+            device: DragDevice::Pointer,
+            origin: DragPoint { x: 10.0, y: 20.0 },
+            icon: None,
+        },
+    };
+    assert!(runtime.dnd_event(&start, 1000).unwrap().invoked);
+    let commands = views(drain());
+    assert!(matches!(commands[0], DragViewCommand::Show { drag_id: 7, .. }));
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        DragViewCommand::Props { props, .. } if props.opacity == 1.0 && props.anchor == DragViewAnchor::Pointer
+    )));
+    let content: Vec<_> = commands.iter().filter_map(texts).collect();
+    assert_eq!(content, [vec!["no icon".to_string(), "none".to_string()]]);
+
+    // The target settles on copy and the application sets an icon: the
+    // content is rebuilt with the icon slot.
+    let update = DndEventSnapshot::Update {
+        drag_id: 7,
+        action: DragAction::Copy,
+        target_window_id: None,
+        icon: Some(shojiwm_rs::dnd::DragIconInfo {
+            width: 32,
+            height: 32,
+            offset_x: -16,
+            offset_y: -16,
+        }),
+    };
+    runtime.dnd_event(&update, 1010).unwrap();
+    let content: Vec<_> = views(drain()).iter().filter_map(texts).collect();
+    assert_eq!(content, [vec!["<icon>".to_string(), "copy".to_string()]]);
+
+    // The drop: the view is pinned, fades out, and is disposed of once the
+    // fade is over.
+    let end = DndEventSnapshot::End {
+        drag_id: 7,
+        kind: DragEndKind::Dropped,
+        accepted: false,
+        target_window_id: None,
+        position: DragPoint { x: 50.0, y: 60.0 },
+    };
+    runtime.dnd_event(&end, 1020).unwrap();
+    let commands = views(drain());
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        DragViewCommand::Props { props, .. } if props.anchor == DragViewAnchor::Global
+    )));
+    runtime.scheduler_tick(1070.0).unwrap();
+    let commands = views(drain());
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        DragViewCommand::Props { props, .. } if (props.opacity - 0.5).abs() < 1e-6
+    )));
+    runtime.scheduler_tick(1120.0).unwrap();
+    assert!(views(drain()).iter().any(|command| matches!(command, DragViewCommand::Dispose { .. })));
+}

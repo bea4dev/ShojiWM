@@ -68,6 +68,7 @@ pub mod adapter;
 pub mod animation;
 pub mod assets;
 pub mod compositor;
+pub mod dnd;
 pub mod effect;
 pub mod input_grab;
 pub mod ipc;
@@ -99,6 +100,10 @@ pub mod prelude {
             InputChangeEvent, OutputChangeEvent, OutputConfig, OutputContext, OutputPower,
             OutputPowerOptions, PointerRegion, PointerRegionAnchor, PointerRegionEventSnapshot,
             PointerRegionOffset, PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,
+        },
+        dnd::{
+            DragAction, DragActions, DragDevice, DragEnd, DragEndKind, DragIconInfo, DragPoint,
+            DragSession, DragView, DragViewAnchor, DragViewOptions,
         },
         effect::{
             Effect, Include, Invalidate, PaintShader, ShaderStage, Source, Stage, StateTexture,

@@ -138,8 +138,8 @@ impl LayoutSession for FlipSession {
 
     fn on_scroll(&mut self, event: &InputGrabScrollEvent, selected: i64) -> SwitcherAction {
         if event.source == "wheel" {
-            let clicks = event.discrete_y.unwrap_or(event.delta_y.signum() * 120.0) / 120.0;
-            return flip(selected, clicks.signum() as i64 * clicks.abs().round().max(1.0) as i64);
+            let clicks = event.discrete_y.unwrap_or(sign(event.delta_y) * 120.0) / 120.0;
+            return flip(selected, sign(clicks) as i64 * clicks.abs().round().max(1.0) as i64);
         }
         self.scroll_remainder += event.delta_y;
         let steps = (self.scroll_remainder / SCROLL_STEP_PX).trunc();
@@ -196,4 +196,9 @@ fn slot_pose(slot: f64, count: usize, rect: Rect, width: f64, height: f64) -> Po
 
 fn slot_of(index: usize, scroll: f64, count: usize) -> f64 {
     (index as f64 - scroll + 0.5).rem_euclid(count as f64) - 0.5
+}
+
+/// `Math.sign`: unlike `f64::signum`, zero for zero (a sideways wheel click).
+fn sign(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value.signum() }
 }

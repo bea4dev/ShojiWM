@@ -902,7 +902,7 @@ impl ShojiWM {
             };
             content
                 .layouts
-                .retain(|layout| scales.iter().any(|scale| *scale == layout.scale));
+                .retain(|layout| scales.contains(&layout.scale));
             for &scale in &scales {
                 let index = content.layouts.iter().position(|layout| layout.scale == scale);
                 let current = index.map(|index| &content.layouts[index]);

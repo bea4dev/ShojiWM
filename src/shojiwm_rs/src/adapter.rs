@@ -112,6 +112,7 @@ impl ReactiveRuntime {
         crate::published::reset();
         crate::overlay::reset();
         crate::input_grab::reset();
+        crate::dnd::reset();
         runtime::reset();
         LAYER_OBSERVERS.with(|observers| observers.borrow_mut().clear());
         animation::reset_clock();
@@ -1041,8 +1042,10 @@ impl ConfigRuntime for ReactiveRuntime {
                         let invoked = batch(|| crate::input_grab::dispatch(grab_id, event));
                         RuntimeReply::PointerHook(pointer_hook(invoked))
                     }
-                    // Not part of the Rust SDK yet; the event filter never asks for it.
-                    InputRequest::Dnd(_) => RuntimeReply::Unhandled,
+                    InputRequest::Dnd(event) => {
+                        let invoked = crate::dnd::dispatch(event);
+                        RuntimeReply::PointerHook(pointer_hook(invoked))
+                    }
                 },
                 RuntimeRequest::Effect(request) => match request {
                     EffectRequest::Background => {
@@ -1117,5 +1120,6 @@ impl ConfigRuntime for ReactiveRuntime {
         runtime::publish_pending();
         crate::overlay::reset();
         crate::input_grab::reset();
+        crate::dnd::reset();
     }
 }

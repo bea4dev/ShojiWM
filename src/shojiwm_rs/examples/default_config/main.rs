@@ -9,6 +9,7 @@
 //! Shaders and icons are shared with the TypeScript config: relative asset
 //! paths resolve against `packages/config`.
 
+mod drag_and_drop;
 mod flip_3d;
 mod island_glass;
 mod window_animation;
@@ -37,6 +38,7 @@ use shojiwm_rs::{
 };
 
 use crate::{
+    drag_and_drop::install_drag_and_drop,
     flip_3d::create_flip_3d,
     island_glass::island_glass,
     window_grid::create_window_grid,
@@ -151,6 +153,9 @@ fn setup() {
     };
     // The grid's selected card: its title bar buttons work.
     switcher.set_titlebar_button_at(titlebar_button_at);
+    // Drag and drop: the dragged image on a card with the action and the
+    // kind of data, flying back when a drop is refused (drag_and_drop.rs).
+    install_drag_and_drop();
     {
         let switcher = switcher.clone();
         COMPOSITOR
@@ -317,7 +322,11 @@ fn setup_ipc(wm: &WindowManager) -> Ipc {
         {
             let ipc = ipc.clone();
             server.handle("workspaces.activate", move |params| {
-                if let (Some(monitor), Some(index)) = (params["monitor"].as_str(), params["index"].as_u64()) {
+                // Any JSON number, as in TypeScript (`2.0` too); workspaces
+                // are numbered by whole numbers, though.
+                let index = params["index"].as_f64().filter(|index| *index >= 0.0 && index.fract() == 0.0);
+                let monitor = params["monitor"].as_str().filter(|monitor| !monitor.is_empty());
+                if let (Some(monitor), Some(index)) = (monitor, index) {
                     ipc.wm.with(|wm| wm.activate(monitor, index as u32));
                     ipc.schedule_workspace_broadcast();
                 }
@@ -469,7 +478,7 @@ fn setup_key_bindings(wm: &WindowManager, ipc: &Ipc, switcher: &WindowSwitcher) 
     bind("toggle-tiling-mode", "Super+S", true, |wm| wm.toggle_current_workspace_tiling());
     {
         let (wm, switcher) = (wm.clone(), switcher.clone());
-        COMPOSITOR.key.bind("switcher-3d", "Super+Tab", move || {
+        COMPOSITOR.key.bind("window-switcher", "Super+Tab", move || {
             let monitor = wm.with(|wm| wm.current_monitor_name());
             switcher.open(&monitor);
         });
@@ -1365,4 +1374,121 @@ mod tests {
         let cached = runtime.evaluate_cached_window("w1", None, 1600, false).unwrap();
         assert!(!opened(&cached));
     }
+
+    /// The drag card: the badge follows the action, and a refused drop flies
+    /// back to the origin, fades out and is disposed of.
+    #[test]
+    fn drag_card_flies_back_after_a_refused_drop() {
+        use shojiwm_rs::{
+            HostMessage,
+            dnd::{DragDevice, DragEndKind, DragPoint},
+            ssd::{DecorationNode, DecorationNodeKind},
+        };
+        use shojiwm_lib::dnd::{DndEventSnapshot, DragSnapshot, DragViewCommand};
+
+        let host = RuntimeHost::detached();
+        let args = CommonArgs::parse(&[], &[]);
+        let launcher = ConfigBuilder::new(|| crate::drag_and_drop::install_drag_and_drop())
+            .asset_root(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/config"));
+        let mut runtime = RuntimeBoot::new(Box::new(launcher), &args).launch(host.clone());
+        runtime.preload().unwrap();
+        runtime.enable().unwrap();
+        let commands = || -> Vec<DragViewCommand> {
+            std::iter::from_fn(|| host.pop())
+                .filter_map(|message| match message {
+                    HostMessage::DragView(command) => Some(command),
+                    _ => None,
+                })
+                .collect()
+        };
+        fn labels(node: &DecorationNode, out: &mut Vec<String>) {
+            if let DecorationNodeKind::Label(label) = &node.kind {
+                out.push(label.text.clone());
+            }
+            node.children.iter().for_each(|child| labels(child, out));
+        }
+        let content_labels = |commands: &[DragViewCommand]| {
+            commands.iter().rev().find_map(|command| match command {
+                DragViewCommand::Content { content: Some(tree), .. } => {
+                    let mut out = Vec::new();
+                    labels(tree, &mut out);
+                    Some(out)
+                }
+                _ => None,
+            })
+        };
+        let last_props = |commands: &[DragViewCommand]| {
+            commands.iter().rev().find_map(|command| match command {
+                DragViewCommand::Props { props, .. } => Some(*props),
+                _ => None,
+            })
+        };
+
+        commands();
+        let start = DndEventSnapshot::Start {
+            drag: DragSnapshot {
+                id: 1,
+                mime_types: vec!["text/uri-list".into()],
+                actions: Default::default(),
+                action: DragAction::None,
+                source_window_id: None,
+                target_window_id: None,
+                device: DragDevice::Pointer,
+                origin: DragPoint { x: 100.0, y: 200.0 },
+                icon: None,
+            },
+        };
+        runtime.dnd_event(&start, 1000).unwrap();
+        let sent = commands();
+        assert_eq!(content_labels(&sent), Some(vec!["File".to_string()]));
+        let props = last_props(&sent).unwrap();
+        assert_eq!(props.anchor, DragViewAnchor::Pointer);
+        assert!((props.scale - 0.85).abs() < 1e-6 && props.opacity == 0.0, "{props:?}");
+
+        let mut now = 1000.0;
+        for _ in 0..20 {
+            now += 16.0;
+            runtime.scheduler_tick(now).unwrap();
+        }
+        let props = last_props(&commands()).unwrap();
+        assert!(props.opacity == 1.0 && props.scale == 1.0, "popped in: {props:?}");
+
+        let update = DndEventSnapshot::Update {
+            drag_id: 1,
+            action: DragAction::Copy,
+            target_window_id: None,
+            icon: None,
+        };
+        runtime.dnd_event(&update, now as u64).unwrap();
+        assert_eq!(content_labels(&commands()), Some(vec!["+".to_string(), "File".to_string()]));
+
+        let end = DndEventSnapshot::End {
+            drag_id: 1,
+            kind: DragEndKind::Dropped,
+            accepted: false,
+            target_window_id: None,
+            position: DragPoint { x: 500.0, y: 600.0 },
+        };
+        runtime.dnd_event(&end, now as u64).unwrap();
+        let props = last_props(&commands()).unwrap();
+        assert_eq!((props.anchor, props.x, props.y), (DragViewAnchor::Global, 500.0, 600.0));
+        let mut disposed = false;
+        let mut last = props;
+        for _ in 0..40 {
+            now += 16.0;
+            runtime.scheduler_tick(now).unwrap();
+            let sent = commands();
+            if let Some(props) = last_props(&sent) {
+                last = props;
+            }
+            if sent.iter().any(|command| matches!(command, DragViewCommand::Dispose { .. })) {
+                disposed = true;
+                break;
+            }
+        }
+        assert!(disposed, "the view goes once it flew back");
+        assert!((last.x - 100.0).abs() < 1.0 && (last.y - 200.0).abs() < 1.0, "back at the origin: {last:?}");
+        assert!(last.opacity < 0.01, "faded out: {last:?}");
+    }
+
 }

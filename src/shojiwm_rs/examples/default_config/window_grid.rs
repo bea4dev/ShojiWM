@@ -173,8 +173,8 @@ impl LayoutSession for GridSession {
         if event.source != "wheel" {
             return SwitcherAction::None;
         }
-        let clicks = event.discrete_y.unwrap_or(event.delta_y.signum() * 120.0) / 120.0;
-        let steps = clicks.signum() as i64 * clicks.abs().round().max(1.0) as i64;
+        let clicks = event.discrete_y.unwrap_or(sign(event.delta_y) * 120.0) / 120.0;
+        let steps = sign(clicks) as i64 * clicks.abs().round().max(1.0) as i64;
         self.select(selected + steps)
     }
 
@@ -271,6 +271,11 @@ fn layout_grid(sizes: &[(f64, f64)], area: Rect) -> Vec<Cell> {
         top += row_heights[row_index] + GAP;
     }
     cells
+}
+
+/// `Math.sign`: unlike `f64::signum`, zero for zero (a sideways wheel click).
+fn sign(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value.signum() }
 }
 
 #[cfg(test)]

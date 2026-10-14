@@ -176,6 +176,9 @@ struct Timeline {
     to: f64,
     easing: Easing,
     repeat: Option<Repeat>,
+    /// `start_then`'s callback: `true` once `to` is reached, `false` when
+    /// cut short.
+    finished: Option<Box<dyn FnOnce(bool)>>,
 }
 
 struct AnimationEntry {
@@ -502,13 +505,28 @@ fn advance_entry(entry: &Rc<RefCell<AnimationEntry>>, now_ms: f64) {
         let next = timeline.from + (timeline.to - timeline.from) * eased;
         if timeline.repeat.is_none() && (raw >= 1.0 || (next - timeline.to).abs() <= 1e-4) {
             let to = timeline.to;
-            entry.timeline = None;
-            (entry.value, to)
+            let finished = entry.timeline.take().and_then(|timeline| timeline.finished);
+            (entry.value, to, finished)
         } else {
-            (entry.value, next)
+            (entry.value, next, None)
         }
     };
     update.0.set(update.1);
+    if let Some(finished) = update.2 {
+        finished(true);
+    }
+}
+
+/// Clear `entry`'s timeline, telling its `start_then` callback it was cut short.
+fn interrupt(entry: &AnimationRef) {
+    let finished = entry
+        .borrow_mut()
+        .timeline
+        .take()
+        .and_then(|timeline| timeline.finished);
+    if let Some(finished) = finished {
+        finished(false);
+    }
 }
 
 /// A number animated over time; reading it is tracked like a signal.
@@ -594,9 +612,35 @@ impl Animation {
     }
 
     pub fn start(&self, options: AnimationOptions) {
+        self.start_with(options, None);
+    }
+
+    /// [`start`](Self::start), then run `f` with `true` once the value
+    /// reaches its target, or with `false` if `start`, `stop` or `set` cut it
+    /// short (a repeating animation only ends that way). Like awaiting the
+    /// promise TypeScript's `start` returns.
+    ///
+    /// ```no_run
+    /// # use shojiwm_rs::prelude::*;
+    /// # let fade = Animation::new(1.0);
+    /// fade.start_then(AnimationOptions::to(0.0, 150.0), |done| {
+    ///     if done {
+    ///         // dispose of what faded out
+    ///     }
+    /// });
+    /// ```
+    pub fn start_then(&self, options: AnimationOptions, f: impl FnOnce(bool) + 'static) {
+        self.start_with(options, Some(Box::new(f)));
+    }
+
+    fn start_with(&self, options: AnimationOptions, finished: Option<Box<dyn FnOnce(bool)>>) {
         let Some(entry) = self.entry() else {
+            if let Some(finished) = finished {
+                finished(false);
+            }
             return;
         };
+        interrupt(&entry);
         let from = options.from.unwrap_or_else(|| self.get_untracked());
         let output = entry.borrow().output.clone();
         let started_at_ms = match output {
@@ -613,13 +657,14 @@ impl Animation {
             to: options.to,
             easing: options.easing,
             repeat: options.repeat,
+            finished,
         });
         self.value.set(from);
     }
 
     pub fn stop(&self) {
         if let Some(entry) = self.entry() {
-            entry.borrow_mut().timeline = None;
+            interrupt(&entry);
         }
     }
 

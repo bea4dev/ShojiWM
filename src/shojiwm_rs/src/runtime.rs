@@ -86,6 +86,7 @@ pub(crate) struct Listeners {
     pub destroy_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub workspace_activate: Vec<RefListener<RuntimeWorkspaceActivateRequestSnapshot>>,
     pub workspace_move_window: Vec<RefListener<RuntimeWorkspaceMoveWindowEvent>>,
+    pub dnd_start: Vec<Listener<crate::dnd::DragSession>>,
 }
 
 pub(crate) type EffectFn<S> = Rc<dyn Fn(&S) -> SurfaceEffects>;
@@ -438,7 +439,7 @@ pub(crate) fn publish_pending() {
                 pointer_move_async: !listeners.pointer_move_async.is_empty(),
                 gesture_swipe: !listeners.gesture_swipe.is_empty(),
                 gesture_swipe_async: !listeners.gesture_swipe_async.is_empty(),
-                dnd: false,
+                dnd: !listeners.dnd_start.is_empty(),
             }));
         }
         if pending.processes {

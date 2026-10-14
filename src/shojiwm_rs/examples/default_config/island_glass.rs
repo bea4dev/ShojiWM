@@ -27,13 +27,13 @@ struct IslandGlassOptions {
 
 const OPTIONS: IslandGlassOptions = IslandGlassOptions {
     surface_opacity: 0.20,
-    rim_width: 50.0,
-    refraction: 50.0,
-    chromatic_shift: 0.90,
-    highlight: 0.4,
+    rim_width: 80.0,
+    refraction: 80.0,
+    chromatic_shift: 1.90,
+    highlight: 0.6,
     highlight_width: 2.0,
     blur_radius: 2,
-    blur_passes: 2,
+    blur_passes: 1,
     blur_mix: 1.0,
     normal_smoothing: 3.0,
     edge_softness: 2.0,

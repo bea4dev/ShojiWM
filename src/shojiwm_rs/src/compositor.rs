@@ -87,6 +87,7 @@ pub struct Compositor {
     pub rendering: RenderingController,
     pub event: EventController,
     pub debug: DebugController,
+    pub dnd: crate::dnd::DndController,
 }
 
 /// The one compositor. Use it like the TypeScript global.
@@ -105,6 +106,7 @@ pub const COMPOSITOR: Compositor = Compositor {
     rendering: RenderingController,
     event: EventController,
     debug: DebugController,
+    dnd: crate::dnd::DndController,
 };
 
 /// Passed to [`Compositor::on_enable`] listeners.
@@ -280,6 +282,29 @@ impl CursorController {
             registry.app_lock_ignored = ignored;
             registry.pending.pointer = true;
         });
+    }
+
+    /// Show the cursor named `kind` (a CSS `cursor` value such as
+    /// `"no-drop"` or `"grabbing"`) everywhere, whatever the window under
+    /// the pointer asks for, until called again; `"none"` hides the cursor
+    /// and `None` gives it back to the windows. Wins over the resize cursors
+    /// of window borders too. Not shown in a nested (windowed) session,
+    /// where the host draws the cursor.
+    ///
+    /// ```no_run
+    /// use shojiwm_rs::prelude::*;
+    ///
+    /// COMPOSITOR.dnd.on_start(|drag| {
+    ///     effect(move || {
+    ///         let refused = drag.action().get() == DragAction::None && drag.target().get().is_some();
+    ///         let _ = COMPOSITOR.cursor.override_kind(refused.then_some("no-drop"));
+    ///     });
+    /// });
+    /// ```
+    pub fn override_kind(&self, kind: Option<&str>) -> Result<(), String> {
+        let kind = kind.map(shojiwm_lib::cursor::CursorOverride::parse).transpose()?;
+        runtime::send(HostMessage::CursorOverride(kind));
+        Ok(())
     }
 
     /// Ignore client pointer locks while `modifier` (e.g. `"Super"`) is held.
