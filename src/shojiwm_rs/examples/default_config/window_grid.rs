@@ -182,36 +182,20 @@ fn grid_area(viewport: &Viewport) -> Rect {
     )
 }
 
-/// Rows of windows in order, each row centred, the rows centred together. The
-/// column count is the one that shows the windows largest overall.
+/// Rows of windows in order, each row centred, the rows centred together:
+/// ceil(sqrt(n)) columns and as many rows as needed, so the windows fill the
+/// screen as a balanced grid (2: side by side, 3: 2 + 1, 4: 2 x 2, 5: 3 + 2).
+/// Each window keeps its shape and fits its cell.
 fn layout_grid(sizes: &[(f64, f64)], area: Rect) -> Vec<Cell> {
     let count = sizes.len();
-    let mut best: Option<(usize, Vec<f64>, f64)> = None;
-    for columns in 1..=count {
-        let rows = count.div_ceil(columns);
-        let cell_width = (area.width - (columns - 1) as f64 * GAP) / columns as f64;
-        let cell_height = (area.height - (rows - 1) as f64 * GAP) / rows as f64;
-        if cell_width <= 0.0 || cell_height <= 0.0 {
-            continue;
-        }
-        let scales: Vec<f64> = sizes
-            .iter()
-            .map(|(width, height)| {
-                MAX_SCALE
-                    .min(cell_width / width.max(1.0))
-                    .min(cell_height / height.max(1.0))
-            })
-            .collect();
-        let score: f64 = sizes
-            .iter()
-            .zip(&scales)
-            .map(|((width, height), scale)| width * height * scale * scale)
-            .sum();
-        if best.as_ref().is_none_or(|(_, _, best_score)| score >= *best_score) {
-            best = Some((columns, scales, score));
-        }
+    if count == 0 {
+        return Vec::new();
     }
-    let Some((columns, scales, _)) = best else {
+    let columns = (count as f64).sqrt().ceil() as usize;
+    let row_count = count.div_ceil(columns);
+    let cell_width = (area.width - (columns - 1) as f64 * GAP) / columns as f64;
+    let cell_height = (area.height - (row_count - 1) as f64 * GAP) / row_count as f64;
+    if cell_width <= 0.0 || cell_height <= 0.0 {
         let centre = Cell {
             center_x: area.x + area.width / 2.0,
             center_y: area.y + area.height / 2.0,
@@ -219,7 +203,15 @@ fn layout_grid(sizes: &[(f64, f64)], area: Rect) -> Vec<Cell> {
             row: 0,
         };
         return vec![centre; count];
-    };
+    }
+    let scales: Vec<f64> = sizes
+        .iter()
+        .map(|(width, height)| {
+            MAX_SCALE
+                .min(cell_width / width.max(1.0))
+                .min(cell_height / height.max(1.0))
+        })
+        .collect();
     let rows: Vec<Vec<usize>> = (0..count)
         .collect::<Vec<_>>()
         .chunks(columns)
@@ -272,5 +264,19 @@ mod tests {
         assert!(cells.iter().all(|cell| cell.scale == 1.0));
         assert_eq!(cells[2].center_x, 500.0);
         assert_eq!(cells[0].center_x + cells[1].center_x, 1000.0);
+    }
+
+    #[test]
+    fn grid_uses_ceil_sqrt_columns() {
+        let area = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        let rows = |count: usize| {
+            layout_grid(&vec![(100.0, 100.0); count], area)
+                .iter()
+                .map(|cell| cell.row)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rows(2), [0, 0]);
+        assert_eq!(rows(4), [0, 0, 1, 1]);
+        assert_eq!(rows(5), [0, 0, 0, 1, 1]);
     }
 }

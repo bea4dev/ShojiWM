@@ -51,6 +51,7 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid } from "./window-grid";
+import type { TitlebarButton } from "./window-switcher";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -93,6 +94,8 @@ const WINDOW_SWITCHER = (
     window.state[WINDOW_STATE_FULLSCREEN]()
       ? FULLSCREEN_Z_INDEX
       : windowZIndex(window),
+  // The grid's selected card: its title bar buttons work.
+  titlebarButtonAt,
 });
 COMPOSITOR.rendering.composition = (output) =>
   WINDOW_SWITCHER.compose(output) ?? <DefaultComposition />;
@@ -1104,6 +1107,40 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     </ManagedWindow>
   );
 };
+
+/** A title bar button's size, and the title bar's padding and gap (see `titlebarStyle`). */
+const TITLEBAR_BUTTON_SIZE = 16;
+const TITLEBAR_PADDING_X = 8;
+const TITLEBAR_GAP = 8;
+
+/**
+ * The title bar button at `(x, y)`, logical px from the top-left corner of
+ * `window.rect` (the frame: border, then the title bar). From the right:
+ * close, maximize, minimize. Each button takes the whole title bar height
+ * and half the gap on both sides, so a scaled-down card still has a usable
+ * target.
+ */
+function titlebarButtonAt(window: WaylandWindow, x: number, y: number): TitlebarButton | null {
+  if (
+    window.state[WINDOW_STATE_FULLSCREEN].peek() ||
+    usesClientDecoration(window.decoration.peek())
+  ) {
+    return null;
+  }
+  if (y < WINDOW_BORDER_PX || y > WINDOW_BORDER_PX + TITLEBAR_HEIGHT) {
+    return null;
+  }
+  const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
+  const pitch = TITLEBAR_BUTTON_SIZE + TITLEBAR_GAP;
+  const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
+  for (let i = 0; i < buttons.length; i++) {
+    const center = right - TITLEBAR_BUTTON_SIZE / 2 - i * pitch;
+    if (Math.abs(x - center) <= pitch / 2) {
+      return buttons[i];
+    }
+  }
+  return null;
+}
 
 const CloseButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
