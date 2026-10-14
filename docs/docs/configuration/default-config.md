@@ -216,6 +216,14 @@ See [Effects](./effects.md) for how these are built, and
 [Blurring specific windows or layers](./effects.md#blurring-specific-windows-or-layers)
 for choosing which apps and bars get them.
 
+## Drag and drop
+
+While you drag text, files or links between windows, the dragged picture
+sits on a frosted card with a badge for what a drop would do (**+** copy,
+**→** move, **?** ask, **×** refused) and a label naming what is dragged. A
+drop nobody accepts flies back to where the drag started. See
+[Drag and drop](./drag-and-drop.md) to change it.
+
 ## Startup programs & environment
 
 On launch the default config:

@@ -6,7 +6,8 @@ sidebar_position: 4.5
 
 `COMPOSITOR.cursor` configures the XCursor theme used by ShojiWM's
 compositor-owned named cursors, including the default pointer and SSD resize
-cursors. It also [moves the cursor](#moving-the-cursor) and lets you
+cursors. It also [moves the cursor](#moving-the-cursor),
+[overrides its shape](#overriding-the-cursor-shape) and lets you
 [ignore app pointer locks](#ignoring-app-pointer-locks).
 
 ```ts
@@ -94,6 +95,27 @@ COMPOSITOR.key.bind('cursor-next-output', 'Super+Ctrl+Right', () => {
 
 Only your config can move the cursor. Wayland clients have no way to do so,
 and this API is not exposed to them.
+
+## Overriding the cursor shape
+
+`overrideKind(kind)` shows the named cursor everywhere, whatever the window
+under the pointer asks for, until it is called again. `"none"` hides the
+cursor, and `null` gives the cursor back to the windows.
+
+```ts
+COMPOSITOR.cursor.overrideKind('no-drop'); // show the "no drop" cursor
+COMPOSITOR.cursor.overrideKind('none');    // hide the cursor
+COMPOSITOR.cursor.overrideKind(null);      // back to normal
+```
+
+Names are CSS `cursor` values (`"default"`, `"pointer"`, `"text"`,
+`"grabbing"`, `"copy"`, `"not-allowed"`, `"ew-resize"`, ...) and are looked
+up in the configured theme. The override also wins over the resize cursors of
+window borders.
+
+A typical use is [during a drag](./drag-and-drop.md#changing-the-cursor-during-a-drag).
+In a nested (windowed) session the host draws the cursor, so the override
+has no visible effect there.
 
 ## Ignoring app pointer locks
 

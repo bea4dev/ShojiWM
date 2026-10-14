@@ -6,7 +6,8 @@ sidebar_position: 4.5
 
 `COMPOSITOR.cursor` は、デフォルトポインターやSSDのリサイズカーソルなど、
 ShojiWMが所有するnamed cursorのXCursorテーマを設定します。
-[カーソルの移動](#カーソルの移動)や
+[カーソルの移動](#カーソルの移動)、
+[カーソルの形の上書き](#カーソルの形を上書きする)、
 [アプリのポインターロックの無視](#アプリのポインターロックを無視する)もここで行います。
 
 ```ts
@@ -95,6 +96,25 @@ COMPOSITOR.key.bind('cursor-next-output', 'Super+Ctrl+Right', () => {
 
 カーソルを動かせるのはあなたの設定だけです。Wayland のクライアントには
 カーソルを動かす手段がなく、この API もクライアントには公開されません。
+
+## カーソルの形を上書きする
+
+`overrideKind(kind)` は、ポインターの下のウィンドウの指定に関係なく、指定した名前の
+カーソルをどこでも表示します（再度呼ぶまで有効）。`"none"` でカーソルを隠し、`null` で
+ウィンドウ側の指定に戻します。
+
+```ts
+COMPOSITOR.cursor.overrideKind('no-drop'); // 「ドロップ不可」カーソルを表示
+COMPOSITOR.cursor.overrideKind('none');    // カーソルを隠す
+COMPOSITOR.cursor.overrideKind(null);      // 元に戻す
+```
+
+名前は CSS の `cursor` の値（`"default"`、`"pointer"`、`"text"`、`"grabbing"`、`"copy"`、
+`"not-allowed"`、`"ew-resize"` など）で、設定中のテーマから探します。ウィンドウ枠の
+リサイズカーソルよりも優先されます。
+
+典型的な使い方は[ドラッグ中のカーソル変更](./drag-and-drop.md#ドラッグ中にカーソルを変える)です。
+ネスト（ウィンドウ内）実行ではホストがカーソルを描くため、上書きは見た目に反映されません。
 
 ## アプリのポインターロックを無視する
 

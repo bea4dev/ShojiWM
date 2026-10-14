@@ -75,6 +75,16 @@ millisecond number.
 Omitting `from` makes direction changes and retargeting smooth — the animation
 continues from wherever the value currently is.
 
+`start` returns a `Promise<boolean>`: `true` once the value reaches `to`,
+`false` if `start`, `stop` or `set` cut it short (a repeating animation only
+ends that way). Use it to clean up after an animation:
+
+```ts
+drag.animation.start(fade, {to: 0, duration: 150}).then((done) => {
+  if (done) view.dispose();
+});
+```
+
 ### Reading a variable in composition
 
 `variable(v)` returns a signal you can map into a style. Reading it inside

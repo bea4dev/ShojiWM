@@ -75,6 +75,16 @@ COMPOSITOR.event.onFocus((window, focused) => {
 `from` を省略すると方向転換や再ターゲットがなめらかになります――アニメーションは現在の
 値から続きます。
 
+`start` は `Promise<boolean>` を返します。値が `to` に達すると `true`、`start`・`stop`・`set`
+で中断されると `false` で解決します（繰り返しアニメーションは中断でのみ終わります）。
+アニメーション後の後片付けに使えます。
+
+```ts
+drag.animation.start(fade, {to: 0, duration: 150}).then((done) => {
+  if (done) view.dispose();
+});
+```
+
 ### 合成内で変数を読む
 
 `variable(v)` は、スタイルにマップできるシグナルを返します。合成内で読むと、
