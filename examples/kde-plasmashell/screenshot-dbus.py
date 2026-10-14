@@ -150,15 +150,15 @@ def focused_window_id() -> str | None:
     return None
 
 
-def grim_capture(grim_args: list[str], include_cursor: bool) -> tuple[int, int, bytes]:
-    """Run grim and return (width, height, RGBX pixels)."""
+def run_grim(grim_args: list[str]) -> bytes:
+    """Run grim with `grim_args` and return the PPM it writes."""
     grim, env = find_grim()
-    command = [grim, "-t", "ppm"]
-    if include_cursor:
-        command.append("-c")
-    command += grim_args + ["-"]
-    ppm = subprocess.run(command, env=env, capture_output=True, check=True).stdout
-    # PPM (P6) header: "P6", width, height, max value, then RGB bytes.
+    command = [grim, "-t", "ppm"] + grim_args + ["-"]
+    return subprocess.run(command, env=env, capture_output=True, check=True).stdout
+
+
+def parse_ppm(ppm: bytes) -> tuple[int, int, int]:
+    """Return (width, height, offset of the pixel data) of a P6 PPM."""
     fields = []
     position = 0
     while len(fields) < 4:
@@ -172,14 +172,32 @@ def grim_capture(grim_args: list[str], include_cursor: bool) -> tuple[int, int, 
             end += 1
         fields.append(ppm[position:end])
         position = end
-    width, height = int(fields[1]), int(fields[2])
-    rgb = ppm[position + 1 : position + 1 + width * height * 3]
+    return int(fields[1]), int(fields[2]), position + 1
+
+
+def grim_capture(grim_args: list[str], include_cursor: bool) -> tuple[int, int, bytes]:
+    """Run grim and return (width, height, RGBX pixels)."""
+    ppm = run_grim((["-c"] if include_cursor else []) + grim_args)
+    # PPM (P6) header: "P6", width, height, max value, then RGB bytes.
+    width, height, offset = parse_ppm(ppm)
+    rgb = ppm[offset : offset + width * height * 3]
     # RGB to RGBX: copy each channel into every fourth byte.
     rgbx = bytearray(b"\xff" * (width * height * 4))
     rgbx[0::4] = rgb[0::3]
     rgbx[1::4] = rgb[1::3]
     rgbx[2::4] = rgb[2::3]
     return width, height, bytes(rgbx)
+
+
+def logical_width(grim_args: list[str]) -> int:
+    """The width of the captured region in logical px.
+
+    grim renders at the greatest output scale, so on a fractional scale the
+    image is wider than the region. `-s 1` asks grim for logical px instead;
+    only the header of that second image is read.
+    """
+    width, _height, _offset = parse_ppm(run_grim(["-s", "1"] + grim_args))
+    return width
 
 
 def write_pipe(fd: int, data: bytes) -> None:
@@ -191,15 +209,16 @@ def write_pipe(fd: int, data: bytes) -> None:
         print(f"screenshot-dbus: pipe write failed: {error}", file=sys.stderr)
 
 
-def capture(method: str, args: tuple, options: dict) -> tuple[list[str], dict]:
-    """Map a ScreenShot2 call to grim arguments and extra result keys."""
+def capture(method: str, args: tuple, options: dict) -> tuple[list[str], dict, int | None]:
+    """Map a ScreenShot2 call to grim arguments, extra result keys and the
+    region's logical width when the call already says it."""
     if method == "CaptureWorkspace":
-        return [], {}
+        return [], {}, None
     if method == "CaptureArea":
         x, y, width, height = args[:4]
-        return ["-g", f"{x},{y} {width}x{height}"], {}
+        return ["-g", f"{x},{y} {width}x{height}"], {}, width
     if method == "CaptureScreen":
-        return ["-o", args[0]], {"screen": GLib.Variant("s", args[0])}
+        return ["-o", args[0]], {"screen": GLib.Variant("s", args[0])}, None
     if method in ("CaptureWindow", "CaptureActiveWindow") or (
         method == "CaptureInteractive" and args[0] == 0
     ):
@@ -208,13 +227,14 @@ def capture(method: str, args: tuple, options: dict) -> tuple[list[str], dict]:
         window_id = args[0] if method == "CaptureWindow" else focused_window_id()
         rect = ask_config("windows.rect", {"windowId": window_id}) if window_id else None
         if isinstance(rect, dict):
-            geometry = f"{round(rect['x'])},{round(rect['y'])} {round(rect['width'])}x{round(rect['height'])}"
-            return ["-g", geometry], {"windowId": GLib.Variant("s", window_id)}
+            width = round(rect["width"])
+            geometry = f"{round(rect['x'])},{round(rect['y'])} {width}x{round(rect['height'])}"
+            return ["-g", geometry], {"windowId": GLib.Variant("s", window_id)}, width
     # Active screen, interactive screen pick, or a window we could not find.
     monitor = current_monitor()
     if monitor:
-        return ["-o", monitor], {"screen": GLib.Variant("s", monitor)}
-    return [], {}
+        return ["-o", monitor], {"screen": GLib.Variant("s", monitor)}, None
+    return [], {}, None
 
 
 def on_method_call(connection, _sender, _path, _interface, method, parameters, invocation):
@@ -223,11 +243,21 @@ def on_method_call(connection, _sender, _path, _interface, method, parameters, i
     fd_list = invocation.get_message().get_unix_fd_list()
     pipe_index = args[-1]
     options = args[-2]
+    fd = None
     try:
         fd = fd_list.get(pipe_index)
-        grim_args, extra = capture(method, args[:-2], options)
+        grim_args, extra, region_width = capture(method, args[:-2], options)
         width, height, pixels = grim_capture(grim_args, bool(options.get("include-cursor", False)))
+        # The image's device pixel ratio, as KWin reports it: Spectacle maps
+        # logical coordinates (its region selection) onto the image with it.
+        scale = width / (region_width or logical_width(grim_args) or width)
+        # Logical sizes are whole px, so the ratio is a little off; output
+        # scales are multiples of 1/120 (wp_fractional_scale_v1).
+        scale = round(scale * 120) / 120
     except Exception as error:  # noqa: BLE001 - any failure goes back to Spectacle
+        if fd is not None:
+            # Close our copy of the pipe so Spectacle's read ends.
+            os.close(fd)
         invocation.return_dbus_error("org.kde.KWin.ScreenShot2.Error.Cancelled", str(error))
         return
     results = {
@@ -236,7 +266,7 @@ def on_method_call(connection, _sender, _path, _interface, method, parameters, i
         "height": GLib.Variant("u", height),
         "stride": GLib.Variant("u", width * 4),
         "format": GLib.Variant("u", QIMAGE_FORMAT_RGBX8888),
-        "scale": GLib.Variant("d", 1.0),
+        "scale": GLib.Variant("d", scale),
         **extra,
     }
     invocation.return_value(GLib.Variant("(a{sv})", (results,)))

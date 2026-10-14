@@ -157,7 +157,9 @@ ShojiWM はこのプロトコルを話さないので、必要なら `WindowBord
 `COMPOSITOR.workspace.configure` は省略可能な `virtualDesktops` を受け取ります。
 各デスクトップの `id` はワークスペースの id です。Pager のクリックは
 `workspace.event.onActivate` に届きます。Pager やタスクバーがウィンドウを別の
-デスクトップへ移すときは、イベントに `windowId` も入ります。
+デスクトップへ移すときは、代わりに `workspace.event.onMoveWindow` にウィンドウの
+id とデスクトップの id が届きます。以降のモデルで `virtualDesktops` を省略すると、
+デスクトップは削除されます。
 
 ```ts
 COMPOSITOR.workspace.configure(() => ({
@@ -175,11 +177,11 @@ COMPOSITOR.workspace.configure(() => ({
 }));
 
 COMPOSITOR.workspace.event.onActivate((event) => {
-  if (event.windowId) {
-    moveWindowToWorkspace(event.windowId, event.workspaceId);
-  } else {
-    activateWorkspace(event.workspaceId);
-  }
+  activateWorkspace(event.workspaceId);
+});
+
+COMPOSITOR.workspace.event.onMoveWindow((event) => {
+  moveWindowToWorkspace(event.windowId, event.workspaceId);
 });
 ```
 
@@ -196,6 +198,8 @@ KDE の Pager はデスクトップが1つしかないと自分を隠します�
 
 plasmashell の D-Bus 呼び出し `activateLauncherMenu` は KWin の下でしか動きません。
 代わりに kglobalaccel で Kickoff 自身のグローバルショートカットを呼びます。
+下の例は `Super` の短押しで開く
+[タップバインド](./keybindings-and-pointer.md#タップバインドon-release)です。
 
 ```ts
 const KICKOFF_ID = 'panels().forEach(function (p) { p.widgets("org.kde.plasma.kickoff").forEach(function (w) { print(w.id + "\\n"); }); });';
@@ -210,7 +214,7 @@ function toggleKickoff() {
   });
 }
 
-// A quick Super tap (see "Tap bindings").
+// A quick Super tap.
 COMPOSITOR.key.bind('launcher-tap', 'Super', toggleKickoff, {on: 'release', within: 300});
 ```
 
@@ -226,6 +230,12 @@ KDE のいくつかの機能は D-Bus で KWin を呼びます。そのバス名
 | --- | --- | --- | --- |
 | `window-view-dbus.py` | `org.kde.KWin.Effect.WindowView1` | グループ化されたタスクバーアイコンのクリックで、テキスト一覧ではなくウィンドウを並べて表示します。 | `{ windowIds }` 付きの `windowView.activate` |
 | `screenshot-dbus.py` | `org.kde.KWin.ScreenShot2` | Spectacle（Print Screen）。`grim` で撮影します。 | `workspaces.get` と `windows.rect` |
+
+`screenshot-dbus.py` があると、セッションバス上のどのプログラムも確認なしで
+スクリーンショットを撮れます。KWin は許可されたアプリにしか `ScreenShot2` を
+使わせませんが、この代替サービスは何も確認しません。サンドボックス外のプログラムは
+もともと `grim` で画面を撮れますし、Flatpak アプリは通常この名前に届きませんが、
+Spectacle を使う場合だけ起動してください。
 
 ```ts
 for (const name of ['window-view-dbus', 'screenshot-dbus']) {
@@ -243,4 +253,6 @@ for (const name of ['window-view-dbus', 'screenshot-dbus']) {
   ボタンは何もしません。代わりに `shoji_wm --quit` をキーに割り当ててください。
 - Spectacle の「カーソル下のウィンドウ」モードはアクティブなウィンドウを撮影し、
   KWin 経由の画面録画は動きません。
+- ウィンドウの撮影は画面上のウィンドウの矩形を撮るので、ウィンドウに重なっている
+  ものも写ります。
 - Plasma 6 でのみテストしています。

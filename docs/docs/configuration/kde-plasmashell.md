@@ -156,7 +156,9 @@ if you want one.
 `COMPOSITOR.workspace.configure` takes an optional `virtualDesktops`. Each
 desktop's `id` is a workspace id. A click in the Pager arrives in
 `workspace.event.onActivate`. When the Pager or the taskbar moves a window to
-another desktop, the event also has `windowId`.
+another desktop, `workspace.event.onMoveWindow` gets the window's id and the
+desktop's id instead. Leaving `virtualDesktops` out of a later model removes
+the desktops again.
 
 ```ts
 COMPOSITOR.workspace.configure(() => ({
@@ -174,11 +176,11 @@ COMPOSITOR.workspace.configure(() => ({
 }));
 
 COMPOSITOR.workspace.event.onActivate((event) => {
-  if (event.windowId) {
-    moveWindowToWorkspace(event.windowId, event.workspaceId);
-  } else {
-    activateWorkspace(event.workspaceId);
-  }
+  activateWorkspace(event.workspaceId);
+});
+
+COMPOSITOR.workspace.event.onMoveWindow((event) => {
+  moveWindowToWorkspace(event.windowId, event.workspaceId);
 });
 ```
 
@@ -194,7 +196,9 @@ can fly the window into its taskbar icon.
 ## Kickoff on the Super key
 
 plasmashell's `activateLauncherMenu` D-Bus call only works under KWin. Fire
-Kickoff's own global shortcut in kglobalaccel instead:
+Kickoff's own global shortcut in kglobalaccel instead. The binding below is a
+[tap binding](./keybindings-and-pointer.md#tap-bindings-on-release): a quick
+`Super` tap opens Kickoff.
 
 ```ts
 const KICKOFF_ID = 'panels().forEach(function (p) { p.widgets("org.kde.plasma.kickoff").forEach(function (w) { print(w.id + "\\n"); }); });';
@@ -209,7 +213,7 @@ function toggleKickoff() {
   });
 }
 
-// A quick Super tap (see "Tap bindings").
+// A quick Super tap.
 COMPOSITOR.key.bind('launcher-tap', 'Super', toggleKickoff, {on: 'release', within: 300});
 ```
 
@@ -225,6 +229,12 @@ own these names and talk to your config over its IPC socket
 | --- | --- | --- | --- |
 | `window-view-dbus.py` | `org.kde.KWin.Effect.WindowView1` | A click on a grouped taskbar icon shows the windows side by side, not a text list. | `windowView.activate` with `{ windowIds }` |
 | `screenshot-dbus.py` | `org.kde.KWin.ScreenShot2` | Spectacle (Print Screen). It captures with `grim`. | `workspaces.get` and `windows.rect` |
+
+`screenshot-dbus.py` lets any program on the session bus take a screenshot
+without asking: KWin only lets authorised apps call `ScreenShot2`, this
+stand-in checks nothing. Programs outside a sandbox can already capture the
+screen with `grim`, and Flatpak apps cannot reach the name by default, but
+only run it if you want Spectacle.
 
 ```ts
 for (const name of ['window-view-dbus', 'screenshot-dbus']) {
@@ -242,4 +252,6 @@ for (const name of ['window-view-dbus', 'screenshot-dbus']) {
   button does nothing. Bind a key to `shoji_wm --quit` instead.
 - Spectacle's "window under cursor" mode captures the active window, and
   screen recording through KWin does not work.
+- A window capture grabs the window's rectangle on screen, so whatever
+  overlaps the window is in the picture too.
 - Only tested with Plasma 6.
