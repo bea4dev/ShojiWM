@@ -857,6 +857,14 @@ function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
   };
 }
 
+/**
+ * The title bar's button size, padding and gap. `titlebarButtonAt` finds the
+ * buttons with the same numbers, so change them here.
+ */
+const TITLEBAR_BUTTON_SIZE = 16;
+const TITLEBAR_PADDING_X = 8;
+const TITLEBAR_GAP = 8;
+
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const useClientDecoration = usesClientDecoration(window.decoration());
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
@@ -907,8 +915,8 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
   const titlebarStyle: SSDStyle = {
     height: TITLEBAR_HEIGHT,
-    paddingX: 8,
-    gap: 8,
+    paddingX: TITLEBAR_PADDING_X,
+    gap: TITLEBAR_GAP,
     alignItems: "center",
     background: titlebarBackground,
   };
@@ -1108,11 +1116,6 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   );
 };
 
-/** A title bar button's size, and the title bar's padding and gap (see `titlebarStyle`). */
-const TITLEBAR_BUTTON_SIZE = 16;
-const TITLEBAR_PADDING_X = 8;
-const TITLEBAR_GAP = 8;
-
 /**
  * The title bar button at `(x, y)`, logical px from the top-left corner of
  * `window.rect` (the frame: border, then the title bar). From the right:
@@ -1153,8 +1156,8 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => {
       <Image
         src="./assets/x.svg"
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           position: "absolute",
           zIndex: 1,
           pointerEvents: "none",
@@ -1168,8 +1171,8 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => {
       <Button
         onHoverChange={setHover}
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           borderRadius: 8,
           background: "#FFFFFF20",
           border: { px: 1, color: borderColor },
@@ -1244,8 +1247,8 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
       <Image
         src={src}
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           position: "absolute",
           zIndex: 1,
           pointerEvents: "none",
@@ -1259,8 +1262,8 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
       <Button
         onHoverChange={setHover}
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           borderRadius: 8,
           background: "#FFFFFF20",
           border: { px: 1, color: borderColor },
@@ -1300,8 +1303,8 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
       <Image
         src="./assets/minus.svg"
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           position: "absolute",
           zIndex: 1,
           pointerEvents: "none",
@@ -1315,8 +1318,8 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
       <Button
         onHoverChange={setHover}
         style={{
-          width: 16,
-          height: 16,
+          width: TITLEBAR_BUTTON_SIZE,
+          height: TITLEBAR_BUTTON_SIZE,
           borderRadius: 8,
           background: "#FFFFFF20",
           border: { px: 1, color: borderColor },

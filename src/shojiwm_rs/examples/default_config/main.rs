@@ -40,7 +40,7 @@ use crate::{
     flip_3d::create_flip_3d,
     island_glass::island_glass,
     window_grid::create_window_grid,
-    window_switcher::WindowSwitcher,
+    window_switcher::{TitlebarButton, WindowSwitcher},
     window_manager::{
         TITLEBAR_HEIGHT, WINDOW_BORDER_PX, WINDOW_STATE_FULLSCREEN, WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
         WINDOW_STATE_MINIMIZED, WINDOW_STATE_RECT, WINDOW_STATE_TILE_DRAGGING, WINDOW_STATE_TILE_REORDERING,
@@ -145,6 +145,8 @@ fn setup() {
             WindowSwitcherStyle::Grid => create_window_grid(wm.clone(), stack_order),
         }
     };
+    // The grid's selected card: its title bar buttons work.
+    switcher.set_titlebar_button_at(titlebar_button_at);
     {
         let switcher = switcher.clone();
         COMPOSITOR
@@ -871,6 +873,40 @@ fn setup_composition(wm: &WindowManager, switcher: &WindowSwitcher) {
     });
 }
 
+/// The title bar's button size, padding and gap. `titlebar_button_at` finds
+/// the buttons with the same numbers, so change them here.
+const TITLEBAR_BUTTON_SIZE: f64 = 16.0;
+const TITLEBAR_PADDING_X: f64 = 8.0;
+const TITLEBAR_GAP: f64 = 8.0;
+
+/// The title bar button at `(x, y)`, logical px from the top-left corner of
+/// `window.rect()` (the frame: border, then the title bar). From the right:
+/// close, maximize, minimize. Each button takes the whole title bar height
+/// and half the gap on both sides, so a scaled-down card still has a usable
+/// target.
+fn titlebar_button_at(window: Window, x: f64, y: f64) -> Option<TitlebarButton> {
+    if window.state(&WINDOW_STATE_FULLSCREEN).get_untracked()
+        || uses_client_decoration(&window.decoration().get_untracked())
+    {
+        return None;
+    }
+    titlebar_button_in(window.rect().width, x, y)
+}
+
+/// [`titlebar_button_at`] for a server-decorated frame `frame_width` wide.
+fn titlebar_button_in(frame_width: f64, x: f64, y: f64) -> Option<TitlebarButton> {
+    if !(WINDOW_BORDER_PX..=WINDOW_BORDER_PX + TITLEBAR_HEIGHT).contains(&y) {
+        return None;
+    }
+    let buttons = [TitlebarButton::Close, TitlebarButton::Maximize, TitlebarButton::Minimize];
+    let pitch = TITLEBAR_BUTTON_SIZE + TITLEBAR_GAP;
+    let right = frame_width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
+    buttons.into_iter().enumerate().find_map(|(index, button)| {
+        let center = right - TITLEBAR_BUTTON_SIZE / 2.0 - index as f64 * pitch;
+        ((x - center).abs() <= pitch / 2.0).then_some(button)
+    })
+}
+
 /// Titlebar and client area of a server-side decorated window. Without
 /// `blur` (the window switcher is open) there are no backdrop effects.
 fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&WindowSwitcher>) -> Element {
@@ -882,8 +918,8 @@ fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&WindowSwi
         .map(|focused| if *focused { hex("#f5f7fa") } else { hex("#c9d1d9") });
     let titlebar_style = Style::new()
         .height(TITLEBAR_HEIGHT)
-        .padding_x(8.0)
-        .gap(8.0)
+        .padding_x(TITLEBAR_PADDING_X)
+        .gap(TITLEBAR_GAP)
         .align_items(AlignItems::Center)
         .background(titlebar_background);
 
@@ -992,7 +1028,7 @@ fn title_button(
                 .on_click(on_click)
                 .style(
                     Style::new()
-                        .size(16.0, 16.0)
+                        .size(TITLEBAR_BUTTON_SIZE, TITLEBAR_BUTTON_SIZE)
                         .border_radius(8.0)
                         .background(hex("#FFFFFF20"))
                         .border(1.0, hover_border),
@@ -1005,7 +1041,7 @@ fn title_button(
 fn button_icon(src: impl Into<Prop<String>>) -> Element {
     Image::new(src).style(
         Style::new()
-            .size(16.0, 16.0)
+            .size(TITLEBAR_BUTTON_SIZE, TITLEBAR_BUTTON_SIZE)
             .absolute()
             .z_index(1)
             .pointer_events_none(),
@@ -1250,6 +1286,20 @@ mod tests {
         let border = |node: &shojiwm_rs::ssd::DecorationNode| node.style.border.unwrap().color;
         assert_eq!(border(&focused.node), hex("#d7ba7d"));
         assert_eq!(border(&unfocused.node), hex("#4f5666"));
+    }
+
+    #[test]
+    fn titlebar_buttons_are_found_from_the_right() {
+        let width = 800.0;
+        let y = WINDOW_BORDER_PX + TITLEBAR_HEIGHT / 2.0;
+        let right = width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
+        let center = |index: f64| right - TITLEBAR_BUTTON_SIZE / 2.0 - index * (TITLEBAR_BUTTON_SIZE + TITLEBAR_GAP);
+        assert_eq!(titlebar_button_in(width, center(0.0), y), Some(TitlebarButton::Close));
+        assert_eq!(titlebar_button_in(width, center(1.0), y), Some(TitlebarButton::Maximize));
+        assert_eq!(titlebar_button_in(width, center(2.0), y), Some(TitlebarButton::Minimize));
+        // The title, and the client area below the title bar, are no buttons.
+        assert_eq!(titlebar_button_in(width, center(4.0), y), None);
+        assert_eq!(titlebar_button_in(width, center(0.0), WINDOW_BORDER_PX + TITLEBAR_HEIGHT + 1.0), None);
     }
 
     #[test]

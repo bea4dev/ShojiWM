@@ -18,7 +18,8 @@
  * A layout with `cardActions` (the grid) also acts on the windows: the
  * title bar buttons of the selected card minimize, maximize or close its
  * window, a middle click closes it, and the other cards make room when one
- * closes.
+ * closes. A window that asks before closing ("save changes?") ends the
+ * switcher on it, so its dialog is not hidden behind the cards.
  *
  * Backdrop blur cannot work inside a texture that holds one window (nothing
  * lies under the window there), so window blur is switched off while the
@@ -232,7 +233,9 @@ interface Session<State> {
   departing: DepartingCard[];
   /** Each card's opacity factor (a minimized card is dimmed). */
   cardAlpha: Map<string, number>;
-  /** Stops listening for windows that close. */
+  /** Windows asked to close from a card that have not closed yet, oldest first. */
+  closeRequested: string[];
+  /** Stops listening for windows that open and close. */
   unlisten: (() => void) | null;
 }
 
@@ -453,6 +456,7 @@ export function createWindowSwitcher<State>(
       moveProgress: 1,
       departing: [],
       cardAlpha: new Map(),
+      closeRequested: [],
       unlisten: null,
     };
     for (const window of windows) {
@@ -461,9 +465,11 @@ export function createWindowSwitcher<State>(
     if (layout.cardActions && layout.windowsChanged) {
       const stopStart = COMPOSITOR.event.onStartClose((window) => removeCard(session, window));
       const stopClose = COMPOSITOR.event.onClose((window) => removeCard(session, window));
+      const stopOpen = COMPOSITOR.event.onOpen((window) => windowOpened(session, window));
       session.unlisten = () => {
         stopStart();
         stopClose();
+        stopOpen();
       };
     }
     session.controls = {
@@ -519,7 +525,7 @@ export function createWindowSwitcher<State>(
         if (event.buttonName === "middle") {
           // KWin: a middle click closes the window.
           if (hit && layout.cardActions) {
-            hit.window.close();
+            requestClose(session, hit.window);
           }
           return;
         }
@@ -558,7 +564,7 @@ export function createWindowSwitcher<State>(
     switch (button) {
       case "close":
         // The card leaves once the window really closes (it may ask first).
-        window.close();
+        requestClose(session, window);
         return;
       case "maximize":
         if (!window.isResizable.peek()) {
@@ -581,6 +587,31 @@ export function createWindowSwitcher<State>(
     }
   }
 
+  /** Ask a card's window to close; its card leaves when it really closes. */
+  function requestClose(session: Session<State>, window: WaylandWindow) {
+    if (!session.closeRequested.includes(window.id)) {
+      session.closeRequested.push(window.id);
+    }
+    window.close();
+  }
+
+  /**
+   * A window opened while a card's window was asked to close: most likely
+   * its "save changes?" dialog, which the switcher would cover. Switch to
+   * the window that asks, so the dialog shows.
+   */
+  function windowOpened(session: Session<State>, opened: WaylandWindow) {
+    if (session.closeRequested.length === 0) {
+      return;
+    }
+    const parentId = opened.parentId.peek();
+    const ownerId =
+      parentId !== undefined && session.closeRequested.includes(parentId)
+        ? parentId
+        : session.closeRequested[session.closeRequested.length - 1];
+    close(session, session.windows.find((window) => window.id === ownerId) ?? null);
+  }
+
   /** A window closed: its card fades out and the others make room. */
   function removeCard(session: Session<State>, window: WaylandWindow) {
     const index = session.windows.findIndex((entry) => entry.id === window.id);
@@ -598,6 +629,7 @@ export function createWindowSwitcher<State>(
     }
     session.windows.splice(index, 1);
     session.cardAlpha.delete(window.id);
+    session.closeRequested = session.closeRequested.filter((id) => id !== window.id);
     session.hasSelection = false;
     setSelectedWindowId(null);
     layout.windowsChanged?.(session.state, session.controls);

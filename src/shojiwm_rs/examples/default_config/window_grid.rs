@@ -12,6 +12,8 @@
 //! - like Alt+Tab, holding `Super` and pressing `Tab` (or an arrow key) switches
 //!   when `Super` goes up; a quick `Super+Tab` just opens the grid
 //! - `Escape` returns to the desktop unchanged
+//! - the selected card's title bar buttons minimize, maximize or close its
+//!   window, and a middle click closes a window; the other cards make room
 
 use std::cell::RefCell;
 
@@ -58,7 +60,20 @@ impl SwitcherLayout for WindowGrid {
             navigated_with_super: false,
         })
     }
+
+    // The selected card's title bar buttons work; a minimized window stays
+    // as a dimmed card.
+    fn card_actions(&self) -> bool {
+        true
+    }
+
+    fn minimized_opacity(&self) -> f64 {
+        0.5
+    }
 }
+
+/// What the grid was laid out for: the area and every window's size.
+type CellsKey = (Rect, Vec<(f64, f64)>);
 
 /// A window's place in the grid (logical px from the output's top-left corner).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,8 +86,8 @@ struct Cell {
 
 struct GridSession {
     windows: Vec<Window>,
-    /// The grid for the last area it was laid out in.
-    cells: RefCell<(Option<Rect>, Vec<Cell>)>,
+    /// The grid for the last area and window sizes it was laid out for.
+    cells: RefCell<(Option<CellsKey>, Vec<Cell>)>,
     /// `Tab` or an arrow key went down while `Super` was held.
     navigated_with_super: bool,
 }
@@ -80,17 +95,20 @@ struct GridSession {
 impl GridSession {
     fn cell(&self, index: usize, viewport: &Viewport) -> Cell {
         let area = grid_area(viewport);
+        // Windows can change size while shown (a tile making room): lay out again.
+        let sizes: Vec<(f64, f64)> = self
+            .windows
+            .iter()
+            .map(|window| {
+                let rect = window.rect();
+                (rect.width, rect.height)
+            })
+            .collect();
+        let key = (area, sizes);
         let mut cells = self.cells.borrow_mut();
-        if cells.0 != Some(area) {
-            let sizes: Vec<(f64, f64)> = self
-                .windows
-                .iter()
-                .map(|window| {
-                    let rect = window.rect();
-                    (rect.width, rect.height)
-                })
-                .collect();
-            *cells = (Some(area), layout_grid(&sizes, area));
+        if cells.0.as_ref() != Some(&key) {
+            let grid = layout_grid(&key.1, area);
+            *cells = (Some(key), grid);
         }
         cells.1[index]
     }
@@ -162,6 +180,11 @@ impl LayoutSession for GridSession {
 
     fn on_click_outside(&mut self) -> SwitcherAction {
         SwitcherAction::Cancel
+    }
+
+    fn windows_changed(&mut self, windows: &[Window]) {
+        self.windows = windows.to_vec();
+        *self.cells.get_mut() = (None, Vec::new());
     }
 }
 

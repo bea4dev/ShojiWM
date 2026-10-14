@@ -15,6 +15,12 @@
 //! the window manager's easing; the layout starts and ends exactly on the
 //! windows' real positions, so the desktop morphs into it and back.
 //!
+//! A layout with `card_actions` (the grid) also acts on the windows: the
+//! title bar buttons of the selected card minimize, maximize or close its
+//! window, a middle click closes it, and the other cards make room when one
+//! closes. A window that asks before closing ("save changes?") ends the
+//! switcher on it, so its dialog is not hidden behind the cards.
+//!
 //! Backdrop blur cannot work inside a texture that holds one window (nothing
 //! lies under the window there), so window blur is switched off while the
 //! switcher is open (`blur_suspended`) and faded back in afterwards
@@ -28,7 +34,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use shojiwm_rs::{
@@ -36,7 +42,7 @@ use shojiwm_rs::{
     ssd::{GestureSwipeEventSnapshot, WaylandOutputSnapshot},
 };
 
-use crate::window_manager::{WINDOW_MANAGEMENT_EASING, WindowManager};
+use crate::window_manager::{WINDOW_MANAGEMENT_EASING, WINDOW_STATE_MINIMIZED, WindowManager};
 
 /// Opening and closing, in ms.
 const TRANSITION_MS: f64 = 450.0;
@@ -53,6 +59,10 @@ const HANDOFF_EPSILON_PX: f64 = 0.75;
 const STACK_DEPTH_STEP: f64 = 2.0;
 /// The camera's vertical field of view: narrow, for Vista's long-lens look.
 const CAMERA_FOV_DEGREES: f64 = 12.0;
+/// Cards making room after one closes, and the closed card fading out (ms).
+const RELAYOUT_MS: f64 = 300.0;
+/// A card fading to or from its minimized look (ms).
+const CARD_FADE_MS: f64 = 200.0;
 
 /// A window's placement in the scene (world units; z = 0 is the screen, 1:1).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,6 +105,15 @@ pub trait SwitcherLayout {
     fn initial_selection(&self, count: usize) -> i64;
     /// Fresh per-session state for `windows`.
     fn begin(&self, windows: &[Window]) -> Box<dyn LayoutSession>;
+    /// The windows act on clicks (title bar buttons, middle click) and stay
+    /// in the layout when minimized.
+    fn card_actions(&self) -> bool {
+        false
+    }
+    /// How opaque a minimized window's card is.
+    fn minimized_opacity(&self) -> f64 {
+        1.0
+    }
 }
 
 /// A layout's state for one opening of the switcher. `selected` is the
@@ -129,6 +148,26 @@ pub trait LayoutSession {
     fn on_click_outside(&mut self) -> SwitcherAction {
         SwitcherAction::None
     }
+    /// A window left the switcher (it closed): lay out `windows` again.
+    fn windows_changed(&mut self, _windows: &[Window]) {}
+}
+
+/// A title bar button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlebarButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// The title bar button at `(x, y)`: logical px from `window.rect()`'s top-left corner.
+pub type TitlebarButtonAt = dyn Fn(Window, f64, f64) -> Option<TitlebarButton>;
+
+/// A card whose window closed, fading out where it was.
+struct Departing {
+    window: Window,
+    rect: Rect,
+    from: Pose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,10 +194,20 @@ struct Session {
     phase_start_ms: Option<f64>,
     /// The selected window's index, unbounded (taken modulo the window count).
     selected: i64,
+    /// False after the selected card closed, until something selects a window.
+    has_selection: bool,
     last_tick_ms: Option<f64>,
     grab: Option<InputGrab>,
     poll: Option<TimerHandle>,
     layout: Box<dyn LayoutSession>,
+    /// Where each card moves from while the cards make room; progress 0..1.
+    move_from: HashMap<Window, Pose>,
+    move_progress: f64,
+    departing: Vec<Departing>,
+    /// Each card's opacity factor (a minimized card is dimmed).
+    card_alpha: HashMap<Window, f64>,
+    /// Windows asked to close from a card that have not closed yet, oldest first.
+    close_requested: Vec<Window>,
 }
 
 type SessionRef = Rc<RefCell<Session>>;
@@ -192,6 +241,7 @@ struct Inner {
     backdrop_strength: Signal<f64>,
     selected_window_id: Signal<Option<String>>,
     blur_fade: RefCell<Option<TimerHandle>>,
+    titlebar_button_at: RefCell<Option<Rc<TitlebarButtonAt>>>,
 }
 
 /// A window switcher, whatever its layout. Cheap to clone.
@@ -204,7 +254,7 @@ impl WindowSwitcher {
         wm: WindowManager,
         stack_order: impl Fn(Window) -> i32 + 'static,
     ) -> Self {
-        Self(Rc::new(Inner {
+        let inner = Rc::new(Inner {
             wm,
             layout: Box::new(layout),
             stack_order: Box::new(stack_order),
@@ -214,7 +264,33 @@ impl WindowSwitcher {
             backdrop_strength: signal(1.0),
             selected_window_id: signal(None),
             blur_fade: RefCell::new(None),
-        }))
+            titlebar_button_at: RefCell::new(None),
+        });
+        if inner.layout.card_actions() {
+            // Listeners cannot be removed, so they live as long as the
+            // switcher and act on whichever session is open.
+            let on = |f: fn(&Self, &SessionRef, Window)| {
+                let weak: Weak<Inner> = Rc::downgrade(&inner);
+                move |window: Window| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let this = Self(inner);
+                    if let Some(session) = this.current() {
+                        f(&this, &session, window);
+                    }
+                }
+            };
+            COMPOSITOR.event.on_start_close(on(Self::remove_card));
+            COMPOSITOR.event.on_close(on(Self::remove_card));
+            COMPOSITOR.event.on_open(on(Self::window_opened));
+        }
+        Self(inner)
+    }
+
+    /// Where a card's title bar buttons are (layouts with `card_actions`).
+    pub fn set_titlebar_button_at(&self, f: impl Fn(Window, f64, f64) -> Option<TitlebarButton> + 'static) {
+        *self.0.titlebar_button_at.borrow_mut() = Some(Rc::new(f));
     }
 
     /// True while window backdrop effects should be off.
@@ -267,6 +343,7 @@ impl WindowSwitcher {
     /// Every window's pose for this frame.
     fn poses(&self, session: &Session, viewport: &Viewport) -> Vec<Placed> {
         let eased = WINDOW_MANAGEMENT_EASING.apply(session.progress);
+        let moved = WINDOW_MANAGEMENT_EASING.apply(session.move_progress);
         let height = viewport.height;
         session
             .windows
@@ -293,19 +370,46 @@ impl WindowSwitcher {
                         opacity: 0.0,
                         ..shown
                     });
-                    if session.phase == Phase::Entering {
-                        lerp_pose(from, shown, eased)
-                    } else {
-                        shown
+                    match (session.phase, session.move_from.get(window)) {
+                        (Phase::Entering, _) => lerp_pose(from, shown, eased),
+                        (Phase::Shown, Some(moving_from)) => lerp_pose(*moving_from, shown, moved),
+                        _ => shown,
                     }
                 };
+                let alpha = session.card_alpha.get(window).copied().unwrap_or(1.0);
                 Placed {
                     window: *window,
                     rect,
-                    pose,
+                    pose: Pose {
+                        opacity: pose.opacity * alpha,
+                        ..pose
+                    },
                 }
             })
             .collect()
+    }
+
+    /// How opaque a card wants to be: dim when minimized.
+    fn card_alpha_target(&self, window: Window) -> f64 {
+        if window.state(&WINDOW_STATE_MINIMIZED).get_untracked() {
+            self.0.layout.minimized_opacity()
+        } else {
+            1.0
+        }
+    }
+
+    /// Move the cards' opacities towards their targets; true while one moves.
+    fn step_card_alphas(&self, session: &mut Session, dt_ms: f64) -> bool {
+        let mut moving = false;
+        for window in session.windows.clone() {
+            let target = self.card_alpha_target(window);
+            let now = session.card_alpha.get(&window).copied().unwrap_or(target);
+            let step = dt_ms / CARD_FADE_MS;
+            let next = if now < target { (now + step).min(target) } else { (now - step).max(target) };
+            session.card_alpha.insert(window, next);
+            moving |= next != target;
+        }
+        moving
     }
 
     fn dim_alpha(&self, session: &Session) -> f64 {
@@ -342,17 +446,33 @@ impl WindowSwitcher {
             self.stop_ticking(session);
             return;
         }
-        let (hand_off, moving) = {
+        let (relaid_out, dt) = {
             let mut s = session.borrow_mut();
             let dt = s.last_tick_ms.map_or(0.0, |last| now_ms - last);
             s.last_tick_ms = Some(now_ms);
-
+            let mut relaid_out = false;
+            if s.move_progress < 1.0 {
+                s.move_progress = (s.move_progress + dt / RELAYOUT_MS).min(1.0);
+                relaid_out = s.move_progress >= 1.0;
+            }
+            (relaid_out, dt)
+        };
+        if relaid_out {
+            self.relayout_done(session);
+            if !self.is_current(session) {
+                return;
+            }
+        }
+        let (hand_off, moving) = {
+            let mut s = session.borrow_mut();
             if s.phase != Phase::Shown {
                 let start = *s.phase_start_ms.get_or_insert(now_ms);
                 s.progress = ((now_ms - start) / TRANSITION_MS).min(1.0);
             }
             let selected = s.selected;
-            let moving = s.layout.tick(selected, dt);
+            let mut moving = s.layout.tick(selected, dt);
+            moving |= s.move_progress < 1.0 || relaid_out;
+            moving |= self.step_card_alphas(&mut s, dt);
 
             if s.phase == Phase::Entering && s.progress >= 1.0 {
                 s.phase = Phase::Shown;
@@ -424,10 +544,20 @@ impl WindowSwitcher {
                 (*window, pose)
             })
             .collect();
+        let card_alpha = windows
+            .iter()
+            .map(|window| (*window, self.card_alpha_target(*window)))
+            .collect();
         let session = Rc::new(RefCell::new(Session {
             output: output_name.to_owned(),
             selected: self.0.layout.initial_selection(windows.len()),
+            has_selection: true,
             layout: self.0.layout.begin(&windows),
+            move_from: HashMap::new(),
+            move_progress: 1.0,
+            departing: Vec::new(),
+            card_alpha,
+            close_requested: Vec::new(),
             windows,
             start_poses,
             ranks_after: ranks,
@@ -514,10 +644,37 @@ impl WindowSwitcher {
     }
 
     fn on_pointer_button(&self, session: &SessionRef, event: &InputGrabPointerButtonEvent) {
-        if event.state != InputGrabState::Pressed || event.button_name.as_deref() != Some("left") {
+        if event.state != InputGrabState::Pressed {
             return;
         }
-        if let Some(window) = self.window_at(session, event.position.x, event.position.y) {
+        let card_actions = self.0.layout.card_actions();
+        let hit = self.card_at(session, event.position.x, event.position.y);
+        match event.button_name.as_deref() {
+            // KWin: a middle click closes the window.
+            Some("middle") => {
+                if let (Some((window, _, _)), true) = (hit, card_actions) {
+                    self.request_close(session, window);
+                }
+                return;
+            }
+            Some("left") => {}
+            _ => return,
+        }
+        // Only the selected card's title bar buttons work.
+        if let Some((window, x, y)) = hit {
+            let selected = {
+                let s = session.borrow();
+                s.phase == Phase::Shown && selected_window(&s) == Some(window)
+            };
+            let titlebar_button_at = self.0.titlebar_button_at.borrow().clone();
+            if card_actions && selected {
+                if let Some(button) = titlebar_button_at.and_then(|at| at(window, x, y)) {
+                    self.press_card_button(session, window, button);
+                    return;
+                }
+            }
+        }
+        if let Some((window, _, _)) = hit {
             self.close(session, Some(window));
         } else {
             let action = session.borrow_mut().layout.on_click_outside();
@@ -552,16 +709,138 @@ impl WindowSwitcher {
         }
     }
 
+    /// A title bar button of a card.
+    fn press_card_button(&self, session: &SessionRef, window: Window, button: TitlebarButton) {
+        match button {
+            // The card leaves once the window really closes (it may ask first).
+            TitlebarButton::Close => self.request_close(session, window),
+            TitlebarButton::Maximize => {
+                if !window.is_resizable().get_untracked() {
+                    return;
+                }
+                self.close(session, Some(window));
+                if window.is_maximized().get_untracked() {
+                    window.unmaximize();
+                } else {
+                    window.maximize();
+                }
+            }
+            // The card stays (dimmed with `minimized_opacity`); a click restores it.
+            TitlebarButton::Minimize => {
+                if !window.state(&WINDOW_STATE_MINIMIZED).get_untracked() {
+                    window.minimize();
+                    self.ensure_ticking(session);
+                }
+            }
+        }
+    }
+
+    /// Ask a card's window to close; its card leaves when it really closes.
+    fn request_close(&self, session: &SessionRef, window: Window) {
+        {
+            let mut s = session.borrow_mut();
+            if !s.close_requested.contains(&window) {
+                s.close_requested.push(window);
+            }
+        }
+        window.close();
+    }
+
+    /// A window opened while a card's window was asked to close: most likely
+    /// its "save changes?" dialog, which the switcher would cover. Switch to
+    /// the window that asks, so the dialog shows.
+    fn window_opened(&self, session: &SessionRef, opened: Window) {
+        let target = {
+            let s = session.borrow();
+            let Some(last) = s.close_requested.last().copied() else {
+                return;
+            };
+            let parent = opened.parent_id().get_untracked();
+            let owner = s
+                .close_requested
+                .iter()
+                .copied()
+                .find(|window| parent.as_deref() == Some(window.id().as_str()))
+                .unwrap_or(last);
+            s.windows.contains(&owner).then_some(owner)
+        };
+        self.close(session, target);
+    }
+
+    /// A window closed: its card fades out and the others make room.
+    fn remove_card(&self, session: &SessionRef, window: Window) {
+        let output = session.borrow().output.clone();
+        let Some(viewport) = viewport_of(&output) else {
+            return;
+        };
+        {
+            let mut s = session.borrow_mut();
+            let Some(index) = s.windows.iter().position(|other| *other == window) else {
+                return;
+            };
+            let poses = self.poses(&s, &viewport);
+            s.move_from.clear();
+            for placed in poses {
+                if placed.window == window {
+                    s.departing.push(Departing {
+                        window,
+                        rect: placed.rect,
+                        from: placed.pose,
+                    });
+                } else {
+                    s.move_from.insert(placed.window, placed.pose);
+                }
+            }
+            s.windows.remove(index);
+            s.card_alpha.remove(&window);
+            s.close_requested.retain(|other| *other != window);
+            s.has_selection = false;
+            let windows = s.windows.clone();
+            s.layout.windows_changed(&windows);
+            s.move_progress = 0.0;
+        }
+        self.0.selected_window_id.set(None);
+        self.ensure_ticking(session);
+        self.touch();
+    }
+
+    /// The cards are in their new places: select the one under the pointer.
+    fn relayout_done(&self, session: &SessionRef) {
+        let (empty, has_selection) = {
+            let mut s = session.borrow_mut();
+            s.move_from.clear();
+            s.departing.clear();
+            (s.windows.is_empty(), s.has_selection)
+        };
+        if empty {
+            self.close(session, None);
+            return;
+        }
+        if has_selection {
+            return; // A key or the pointer picked the next window already.
+        }
+        let Some(cursor) = COMPOSITOR.cursor.get_position() else {
+            return;
+        };
+        if let Some(window) = self.window_at(session, cursor.x, cursor.y) {
+            let index = session.borrow().windows.iter().position(|other| *other == window);
+            if let Some(index) = index {
+                self.select(session, index as i64);
+            }
+        }
+    }
+
     fn select(&self, session: &SessionRef, index: i64) {
         if !self.is_current(session) {
             return;
         }
         let selected = {
             let mut s = session.borrow_mut();
-            if s.phase == Phase::Leaving || s.selected == index {
+            if s.phase == Phase::Leaving || (s.has_selection && s.selected == index) {
                 return;
             }
             s.selected = index;
+            s.has_selection = true;
             selected_window(&s).map(|window| window.id())
         };
         self.0.selected_window_id.set(selected);
@@ -682,23 +961,68 @@ impl WindowSwitcher {
         Some(placed[hit].window)
     }
 
+    /// The card under a global point, with the point in its window's own
+    /// logical px (from the top-left corner of `window.rect()`, unscaled).
+    fn card_at(&self, session: &SessionRef, global_x: f64, global_y: f64) -> Option<(Window, f64, f64)> {
+        let window = self.window_at(session, global_x, global_y)?;
+        let session = session.borrow();
+        let viewport = viewport_of(&session.output)?;
+        let placed = self
+            .visible_planes(&session, &viewport)
+            .into_iter()
+            .find(|plane| plane.window == window)?;
+        let camera = switcher_camera(viewport.width, viewport.height);
+        let matrix = placed.transform.matrix;
+        // The plane's corners on screen: top-left, top-right, bottom-left.
+        let corner = |x: f64, y: f64| {
+            let world = [
+                matrix[0] * x + matrix[4] * y + matrix[12],
+                matrix[1] * x + matrix[5] * y + matrix[13],
+                matrix[2] * x + matrix[6] * y + matrix[14],
+            ];
+            project_point(&camera, (viewport.width, viewport.height), world)
+        };
+        let (half_width, half_height) = (placed.width / 2.0, placed.height / 2.0);
+        let origin = corner(-half_width, half_height)?;
+        let right = corner(half_width, half_height)?;
+        let down = corner(-half_width, -half_height)?;
+        // Solve point = origin + u * (right - origin) + v * (down - origin).
+        let (ax, ay) = (right.x - origin.x, right.y - origin.y);
+        let (bx, by) = (down.x - origin.x, down.y - origin.y);
+        let px = global_x - viewport.output.position.x as f64 - origin.x;
+        let py = global_y - viewport.output.position.y as f64 - origin.y;
+        let det = ax * by - ay * bx;
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        let u = (px * by - py * bx) / det;
+        let v = (ax * py - ay * px) / det;
+        Some((window, u * placed.width - MARGIN, v * placed.height - MARGIN))
+    }
+
+    /// Cards whose window closed, fading out where they were.
+    fn departing_planes(&self, session: &Session) -> Vec<PlacedPlane> {
+        let eased = WINDOW_MANAGEMENT_EASING.apply(session.move_progress);
+        session
+            .departing
+            .iter()
+            .map(|departing| {
+                let to = Pose {
+                    scale: departing.from.scale * 0.85,
+                    opacity: 0.0,
+                    ..departing.from
+                };
+                plane_for(departing.window, departing.rect, lerp_pose(departing.from, to, eased))
+            })
+            .collect()
+    }
+
     fn visible_planes(&self, session: &Session, viewport: &Viewport) -> Vec<PlacedPlane> {
         let alive: HashSet<Window> = self.0.wm.read(|wm| wm.list_windows()).into_iter().collect();
         self.poses(session, viewport)
             .into_iter()
             .filter(|placed| alive.contains(&placed.window) && placed.pose.opacity > 0.001)
-            .map(|Placed { window, rect, pose }| PlacedPlane {
-                window,
-                rect,
-                pose,
-                width: rect.width + MARGIN * 2.0,
-                height: rect.height + MARGIN * 2.0,
-                transform: transform3d()
-                    .translate(pose.x, pose.y, pose.z)
-                    .rotate_x(pose.rotate_x)
-                    .rotate_y(pose.rotate_y)
-                    .scale(pose.scale),
-            })
+            .map(|Placed { window, rect, pose }| plane_for(window, rect, pose))
             .collect()
     }
 
@@ -716,7 +1040,8 @@ impl WindowSwitcher {
             width,
             height,
         };
-        let planes = self.visible_planes(&session, &viewport);
+        let mut planes = self.departing_planes(&session);
+        planes.extend(self.visible_planes(&session, &viewport));
         let name = self.0.layout.name();
         let scene = Scene3D::new(switcher_camera(width, height)).planes(planes.iter().map(|plane| {
             Plane::new(&window_texture(name, plane.window, plane.rect, output), plane.width, plane.height)
@@ -734,9 +1059,24 @@ impl WindowSwitcher {
     }
 }
 
+fn plane_for(window: Window, rect: Rect, pose: Pose) -> PlacedPlane {
+    PlacedPlane {
+        window,
+        rect,
+        pose,
+        width: rect.width + MARGIN * 2.0,
+        height: rect.height + MARGIN * 2.0,
+        transform: transform3d()
+            .translate(pose.x, pose.y, pose.z)
+            .rotate_x(pose.rotate_x)
+            .rotate_y(pose.rotate_y)
+            .scale(pose.scale),
+    }
+}
+
 fn selected_window(session: &Session) -> Option<Window> {
     let count = session.windows.len() as i64;
-    if count == 0 {
+    if count == 0 || !session.has_selection {
         return None;
     }
     session.windows.get(session.selected.rem_euclid(count) as usize).copied()
