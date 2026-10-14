@@ -843,7 +843,9 @@ function usesClientDecoration(decoration: WindowDecorationState): boolean {
 
 // Must match the frame the composition below draws: a client-decorated window
 // gets only the border, so counting the title bar would size its client 30px
-// past what the layout meant (and past the client's own maximum).
+// past what the layout meant (and past the client's own maximum). The border
+// is drawn for both, so it is counted for both; a config that drops the
+// border for client-decorated windows must drop WINDOW_BORDER_PX here too.
 function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
   const client = window.position;
   const titlebar = usesClientDecoration(window.decoration.peek())

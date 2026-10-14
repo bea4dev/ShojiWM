@@ -78,16 +78,20 @@ fn main() -> std::process::ExitCode {
         .run()
 }
 
-/// The client geometry plus the frame the decoration adds around it.
+/// Whether the client draws its own title bar.
 fn uses_client_decoration(decoration: &WindowDecorationStateSnapshot) -> bool {
     decoration.mode == WindowDecorationModeSnapshot::Client
         && !(decoration.client_preference == Some(WindowDecorationModeSnapshot::Server)
             && decoration.configured_mode == WindowDecorationModeSnapshot::Server)
 }
 
-// Must match the frame the composition draws: a client-decorated window gets
-// only the border, so counting the title bar would size its client past what
-// the layout meant (and past the client's own maximum).
+/// The client geometry plus the frame the decoration adds around it.
+///
+/// Must match the frame the composition draws: a client-decorated window gets
+/// only the border, so counting the title bar would size its client past what
+/// the layout meant (and past the client's own maximum). The border is drawn
+/// for both, so it is counted for both; a config that drops the border for
+/// client-decorated windows must drop `WINDOW_BORDER_PX` here too.
 fn natural_root_rect(window: Window) -> Rect {
     let client = window.position().get_untracked();
     let titlebar = if uses_client_decoration(&window.decoration().get_untracked()) {
