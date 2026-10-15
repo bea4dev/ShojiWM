@@ -229,15 +229,10 @@ export function createCompositionEvaluationCache(
     enterWindowPatchDependencyScope(currentSnapshot.id, dirtyNodeIds);
     try {
       const dirtyNodeIdSet = new Set(dirtyNodeIds);
+      // A patch serializes the dirty nodes again, not their children (see
+      // `patchSerializedCompositionTree`): only their own bindings go.
       for (const [key, binding] of shaderUniformBindings) {
-        if (
-          dirtyNodeIds.some(
-            (nodeId) =>
-              binding.nodeId === nodeId ||
-              binding.nodeId.startsWith(`${nodeId}.`) ||
-              binding.nodeId.startsWith(`${nodeId}[`),
-          )
-        ) {
+        if (dirtyNodeIdSet.has(binding.nodeId)) {
           shaderUniformBindings.delete(key);
         }
       }

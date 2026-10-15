@@ -374,6 +374,16 @@ fn apply_cached_tree_update(
                         *target = node;
                         changed = true;
                     }
+                    CompositionPatch::ReplaceProps { node, .. } => {
+                        // Compared and swapped without the children, which stay.
+                        let children = std::mem::take(&mut target.children);
+                        if *target != node {
+                            layout_equivalent &= target.layout_equivalent(&node);
+                            *target = node;
+                            changed = true;
+                        }
+                        target.children = children;
+                    }
                     CompositionPatch::ShaderUniform {
                         stage_index,
                         name,

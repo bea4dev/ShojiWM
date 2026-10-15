@@ -579,6 +579,9 @@ struct WireNativeSurfacePolicy {
 struct WireNativeCompositionPatch {
     node_id: String,
     node: WireDecorationNode,
+    /// `node` is sent without children; the compositor's node keeps its own.
+    #[serde(default)]
+    keep_children: bool,
 }
 
 #[op2]
@@ -1615,9 +1618,16 @@ impl ShojiRuntimeBridge {
                                 ),
                             ));
                         }
-                        Ok(NativeCompositionPatch::ReplaceNode {
-                            node_id: patch.node_id,
-                            node,
+                        Ok(if patch.keep_children {
+                            NativeCompositionPatch::ReplaceProps {
+                                node_id: patch.node_id,
+                                node,
+                            }
+                        } else {
+                            NativeCompositionPatch::ReplaceNode {
+                                node_id: patch.node_id,
+                                node,
+                            }
                         })
                     })
                     .collect::<Result<Vec<_>, std::io::Error>>()?;

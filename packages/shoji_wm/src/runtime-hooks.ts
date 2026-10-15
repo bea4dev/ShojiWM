@@ -62,6 +62,12 @@ const dirtyManagedWindowIds = new Set<string>();
 // so the structural intent always wins.
 const windowsWithStructuralWrite = new Set<string>();
 const layersWithStructuralWrite = new Set<string>();
+// Signals read by runtime watchers (an output's composition, the background
+// effect): code outside every window and layer scope that tracks its own
+// signals and re-runs itself when one changes.
+let activeRuntimeWatchScope: string | null = null;
+const runtimeWatchSignalDependencies = new WeakMap<object, Set<string>>();
+const runtimeWatchDependencies = new Map<string, Set<object>>();
 
 /**
  * Composition-scoped ComputedSignal ownership.
@@ -491,6 +497,56 @@ export function withSnapshotSync<T>(fn: () => T): T {
   }
 }
 
+/**
+ * Run `fn` as runtime watcher `watchId` (e.g. an output's composition): the
+ * signals it reads become that watcher's, replacing what it read last time.
+ * The watcher tracks those signals itself and re-runs when one changes, so a
+ * write that only it depends on does not take the unknown-signal fallback.
+ * Before, every frame of an animated composition (a window switcher stepping
+ * a signal per frame) re-evaluated every window in full.
+ */
+export function withRuntimeWatchDependencyScope<T>(
+  watchId: string,
+  fn: () => T,
+): T {
+  clearRuntimeWatchDependencies(watchId);
+  const previous = activeRuntimeWatchScope;
+  activeRuntimeWatchScope = watchId;
+  try {
+    return fn();
+  } finally {
+    activeRuntimeWatchScope = previous;
+  }
+}
+
+/** Forget what runtime watcher `watchId` read (it was disposed). */
+export function clearRuntimeWatchDependencies(watchId: string): void {
+  const dependencies = runtimeWatchDependencies.get(watchId);
+  if (!dependencies) {
+    return;
+  }
+  runtimeWatchDependencies.delete(watchId);
+  for (const signal of dependencies) {
+    runtimeWatchSignalDependencies.get(signal)?.delete(watchId);
+  }
+}
+
+function trackRuntimeWatchRead(watchId: string, signal: object): void {
+  let watchers = runtimeWatchSignalDependencies.get(signal);
+  if (!watchers) {
+    watchers = new Set<string>();
+    runtimeWatchSignalDependencies.set(signal, watchers);
+  }
+  watchers.add(watchId);
+
+  let dependencies = runtimeWatchDependencies.get(watchId);
+  if (!dependencies) {
+    dependencies = new Set<object>();
+    runtimeWatchDependencies.set(watchId, dependencies);
+  }
+  dependencies.add(signal);
+}
+
 export function installRuntimeHooks(nextHooks: RuntimeHooks | null): void {
   hooks = nextHooks;
 }
@@ -524,11 +580,17 @@ export function enterWindowDependencyScope(windowId: string): void {
   activeLayerNodeDependencyScope = null;
 }
 
+/**
+ * Patch `nodeIds` of a window's serialized tree. Only those nodes' own
+ * dependencies are dropped: a patch re-serializes a dirty node's props and
+ * keeps its children, which hold on to theirs (see
+ * `patchSerializedCompositionTree`).
+ */
 export function enterWindowPatchDependencyScope(
   windowId: string,
   nodeIds: readonly string[],
 ): void {
-  clearWindowNodeDependencies(windowId, new Set(nodeIds));
+  clearWindowNodeDependencies(windowId, new Set(nodeIds), false);
   activeCompositionOwner = ownerKeyForWindow(windowId);
   activeWindowDependencyScope = windowId;
   activeWindowEffectDependencyScope = null;
@@ -884,6 +946,9 @@ export function trackSignalRead(signal: object): void {
 
   const layerId = activeLayerDependencyScope;
   if (!layerId) {
+    if (activeRuntimeWatchScope) {
+      trackRuntimeWatchRead(activeRuntimeWatchScope, signal);
+    }
     return;
   }
 
@@ -971,6 +1036,10 @@ export function trackSignalWrite(signal: object): void {
     !hasLayerNodeDeps
   ) {
     if (snapshotSyncDepth > 0) {
+      return;
+    }
+    // Only runtime watchers read it, and they re-run by themselves.
+    if ((runtimeWatchSignalDependencies.get(signal)?.size ?? 0) > 0) {
       return;
     }
     if (suppression?.allowManagedWindowOnly) {
@@ -1209,14 +1278,27 @@ function clearWindowDependencies(windowId: string): void {
   windowShaderUniformNodeIds.delete(windowId);
 }
 
+/**
+ * Drop what the patch scope's window recorded for `nodeId` and everything
+ * below it, for a patch that serializes that whole subtree again.
+ */
+export function clearWindowNodeSubtreeDependencies(nodeId: string): void {
+  if (activeWindowDependencyScope) {
+    clearWindowNodeDependencies(activeWindowDependencyScope, new Set([nodeId]), true);
+  }
+}
+
 function clearWindowNodeDependencies(
   windowId: string,
   nodeIds: ReadonlySet<string>,
+  subtrees: boolean,
 ): void {
+  const affected = (nodeId: string) =>
+    subtrees ? isNodeWithinDirtySet(nodeId, nodeIds) : nodeIds.has(nodeId);
   const nodeDependenciesByWindow = windowNodeDependencies.get(windowId);
   if (nodeDependenciesByWindow) {
     for (const nodeId of Array.from(nodeDependenciesByWindow.keys())) {
-      if (!isNodeWithinDirtySet(nodeId, nodeIds)) {
+      if (!affected(nodeId)) {
         continue;
       }
       const nodeDependencies = nodeDependenciesByWindow.get(nodeId);
@@ -1244,7 +1326,7 @@ function clearWindowNodeDependencies(
     return;
   }
   for (const [bindingKey, nodeId] of Array.from(bindingNodeIds)) {
-    if (!isNodeWithinDirtySet(nodeId, nodeIds)) {
+    if (!affected(nodeId)) {
       continue;
     }
     const dependencies = uniformDependenciesByBinding.get(bindingKey);

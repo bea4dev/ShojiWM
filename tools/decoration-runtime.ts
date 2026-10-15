@@ -145,7 +145,7 @@ type NativeCompositionUpdate =
   | {
       kind: "patches";
       windowId: string;
-      patches: Array<{ nodeId: string; node: unknown }>;
+      patches: Array<{ nodeId: string; node: unknown; keepChildren?: boolean }>;
     };
 
 type NativeEffectUpdate =
@@ -391,7 +391,11 @@ import {
   type ManagedWindowState,
   type WindowTransform,
 } from "../packages/shoji_wm/src/index.ts";
-import { peekDirtyWindowNodeIds } from "../packages/shoji_wm/src/runtime-hooks.ts";
+import {
+  clearRuntimeWatchDependencies,
+  peekDirtyWindowNodeIds,
+  withRuntimeWatchDependencyScope,
+} from "../packages/shoji_wm/src/runtime-hooks.ts";
 import { currentOutputList } from "../packages/shoji_wm/src/output.ts";
 import {
   serializeOutputComposition,
@@ -2869,6 +2873,19 @@ function writeCachedCompositionUpdate(
         `dirty composition node ${nodeId} is missing from ${windowId}`,
       );
     }
+    // Children the serializer kept (the same objects as last sent) stay in
+    // the compositor's tree: send the node alone. Converting the subtree is
+    // most of a patch's cost, and a root prop would send the whole window.
+    if (
+      previous !== undefined &&
+      haveSameChildren(findSerializedNode(previous, nodeId), node)
+    ) {
+      return {
+        nodeId,
+        node: { ...(node as Record<string, unknown>), children: [] },
+        keepChildren: true,
+      };
+    }
     return { nodeId, node };
   });
   bridge.writeCompositionUpdate(requestId, {
@@ -3158,6 +3175,17 @@ function topLevelDirtyNodeIds(nodeIds: readonly string[]): string[] {
     selected.push(nodeId);
   }
   return selected;
+}
+
+function haveSameChildren(previous: unknown, next: unknown): boolean {
+  const previousChildren = (previous as { children?: unknown } | undefined)?.children;
+  const nextChildren = (next as { children?: unknown } | undefined)?.children;
+  return (
+    Array.isArray(previousChildren) &&
+    Array.isArray(nextChildren) &&
+    previousChildren.length === nextChildren.length &&
+    previousChildren.every((child, index) => child === nextChildren[index])
+  );
 }
 
 function findSerializedNode(tree: unknown, nodeId: string): unknown {
@@ -4198,7 +4226,9 @@ function evaluateOutputComposition(
     }
     first = false;
     try {
-      slot.plan = serializeOutputComposition(compose(output));
+      slot.plan = withRuntimeWatchDependencyScope(compositionWatchId(output.name), () =>
+        serializeOutputComposition(compose(output)),
+      );
     } catch (error) {
       console.error(`COMPOSITOR.rendering.composition failed for ${output.name}`, error);
       slot.plan = null;
@@ -4208,11 +4238,22 @@ function evaluateOutputComposition(
   outputCompositionVersion++;
 }
 
+function compositionWatchId(outputName: string): string {
+  return `composition:${outputName}`;
+}
+
+function disposeOutputCompositionSlot(name: string, slot: OutputCompositionSlot): void {
+  slot.dispose?.();
+  slot.dispose = null;
+  clearRuntimeWatchDependencies(compositionWatchId(name));
+}
+
 // `COMPOSITOR.effect.background_effect` as last sent to the compositor, and
 // whether one of the signals it read has changed since.
 let backgroundEffectWatch: (() => void) | undefined;
 let backgroundEffectConfig: RuntimeEffectConfig | undefined;
 let backgroundEffectDirty = false;
+const BACKGROUND_EFFECT_WATCH_ID = "background-effect";
 
 /**
  * Resolve the background effect's signals and watch them: the compositor reads
@@ -4234,7 +4275,10 @@ function resolveBackgroundEffect(
       return;
     }
     first = false;
-    resolved = (resolveSignals(config.background_effect) as CompiledEffectHandle | null) ?? null;
+    resolved = withRuntimeWatchDependencyScope(
+      BACKGROUND_EFFECT_WATCH_ID,
+      () => (resolveSignals(config.background_effect) as CompiledEffectHandle | null) ?? null,
+    );
   });
   return resolved;
 }
@@ -4250,8 +4294,8 @@ function publishBackgroundEffectIfChanged(publisher: EmbeddedRuntimeBridge): voi
 function publishOutputCompositionsIfChanged(publisher: EmbeddedRuntimeBridge): void {
   const config = COMPOSITOR.rendering?.composition;
   if (config !== outputCompositionConfig) {
-    for (const slot of outputCompositionSlots.values()) {
-      slot.dispose?.();
+    for (const [name, slot] of outputCompositionSlots) {
+      disposeOutputCompositionSlot(name, slot);
     }
     outputCompositionSlots.clear();
     outputCompositionConfig = config;
@@ -4267,7 +4311,9 @@ function publishOutputCompositionsIfChanged(publisher: EmbeddedRuntimeBridge): v
       const outputKey = JSON.stringify(output);
       let slot = outputCompositionSlots.get(output.name);
       if (!slot || slot.outputKey !== outputKey) {
-        slot?.dispose?.();
+        if (slot) {
+          disposeOutputCompositionSlot(output.name, slot);
+        }
         slot = { outputKey, dispose: null, dirty: true, plan: null };
         outputCompositionSlots.set(output.name, slot);
       }
@@ -4277,7 +4323,7 @@ function publishOutputCompositionsIfChanged(publisher: EmbeddedRuntimeBridge): v
     }
     for (const [name, slot] of outputCompositionSlots) {
       if (!seen.has(name)) {
-        slot.dispose?.();
+        disposeOutputCompositionSlot(name, slot);
         outputCompositionSlots.delete(name);
         outputCompositionVersion++;
       }

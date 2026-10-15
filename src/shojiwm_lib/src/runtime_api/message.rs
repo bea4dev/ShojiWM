@@ -209,6 +209,13 @@ pub enum CompositionPatch {
         node_id: String,
         node: DecorationNode,
     },
+    /// A node whose own props changed: `node` comes without children, and the
+    /// node keeps the ones it has. A root prop (a window's shadow) then does
+    /// not send the whole tree across the bridge again.
+    ReplaceProps {
+        node_id: String,
+        node: DecorationNode,
+    },
     /// The steady animation fast path. Mutate one uniform in the compositor's
     /// persistent tree without decoding or rebuilding the shader pipeline.
     ShaderUniform {
@@ -228,13 +235,16 @@ pub const OVERLAY_STAGE_INDEX: usize = u32::MAX as usize - 2;
 impl CompositionPatch {
     pub fn node_id(&self) -> &str {
         match self {
-            Self::ReplaceNode { node_id, .. } | Self::ShaderUniform { node_id, .. } => node_id,
+            Self::ReplaceNode { node_id, .. }
+            | Self::ReplaceProps { node_id, .. }
+            | Self::ShaderUniform { node_id, .. } => node_id,
         }
     }
 
+    /// The node a patch puts in place; without children for `ReplaceProps`.
     pub fn replacement_node(&self) -> Option<&DecorationNode> {
         match self {
-            Self::ReplaceNode { node, .. } => Some(node),
+            Self::ReplaceNode { node, .. } | Self::ReplaceProps { node, .. } => Some(node),
             Self::ShaderUniform { .. } => None,
         }
     }

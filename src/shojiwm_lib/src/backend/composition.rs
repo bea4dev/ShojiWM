@@ -921,6 +921,7 @@ impl<'p> Builder<'p> {
                     } else {
                         ctx
                     };
+                    timescope::scope!("composition windows");
                     elements.extend(scene.windows(window_ctx, selection, &below)?);
                 }
                 CompositionNode::TextureView { .. }
@@ -1044,7 +1045,10 @@ impl<'p> Builder<'p> {
                     _ => super::scene3d::Scene3dTarget::new(),
                 };
                 let target = targets.scenes.entry(key.clone()).or_insert(target);
-                target.render(scene.renderer(), spec, &inputs, geometry.size)?;
+                {
+                    timescope::scope!("composition scene3d render");
+                    target.render(scene.renderer(), spec, &inputs, geometry.size)?;
+                }
                 let (Some(element), Some(texture)) = (
                     target.element(scene.renderer(), geometry, ctx.scale),
                     target.texture().cloned(),
@@ -1103,6 +1107,7 @@ impl<'p> Builder<'p> {
         if self.rendered.contains_key(&index) || !self.building.insert(index) {
             return Ok(());
         }
+        timescope::scope!("composition render texture");
         let plan = self.plan;
         let spec = &plan.textures[index];
         let output_size = ctx.output_geo.size;
@@ -1139,14 +1144,17 @@ impl<'p> Builder<'p> {
         };
         elements.splice(0..0, scene.offscreen_damage(&child));
         let existing = targets.textures.remove(&spec.key);
-        let result = TextureTarget::render(
-            scene.renderer(),
-            existing,
-            physical,
-            scale,
-            &elements,
-            spec.clear_color,
-        );
+        let result = {
+            timescope::scope!("composition texture target render");
+            TextureTarget::render(
+                scene.renderer(),
+                existing,
+                physical,
+                scale,
+                &elements,
+                spec.clear_color,
+            )
+        };
         drop(elements);
         scene.leave_scope(&child.scope);
         self.building.remove(&index);
