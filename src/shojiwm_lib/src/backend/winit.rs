@@ -1379,6 +1379,7 @@ pub fn init_winit(
                             };
                             timing.render_elapsed_ms =
                                 render_started_at.elapsed().as_secs_f64() * 1000.0;
+                            debug_dump_presented_frame(size);
                             if let Ok(render_output_result) = render_output_result {
                                 let output_states = &render_output_result.states;
                                 let composition_states = if state.session_lock_active {
@@ -6145,4 +6146,52 @@ fn winit_window_stack_elements(
 
         }
     }
+}
+
+/// `SHOJI_FRAME_DUMP=dir`: while `dir/on` exists, writes each presented frame
+/// as raw RGBA (bottom row first) to `dir/NNNNN.rgba`, its size in `dir/size`,
+/// keeping every `SHOJI_FRAME_DUMP_STEP`th pixel (default 2). Unlike screencopy,
+/// which renders the scene again with its own damage tracker, this is what the
+/// window shows, so it catches glitches of the damage tracking itself.
+///
+/// It reads with raw GL on the context the render left current: going through
+/// the renderer would make the context current without the window surface,
+/// and the next swap fails.
+fn debug_dump_presented_frame(size: smithay::utils::Size<i32, smithay::utils::Physical>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FRAME: AtomicUsize = AtomicUsize::new(0);
+    let Some(dir) = std::env::var_os("SHOJI_FRAME_DUMP") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    if !dir.join("on").exists() {
+        return;
+    }
+    type ReadPixels = unsafe extern "C" fn(i32, i32, i32, i32, u32, u32, *mut std::ffi::c_void);
+    type BindFramebuffer = unsafe extern "C" fn(u32, u32);
+    type GetIntegerv = unsafe extern "C" fn(u32, *mut i32);
+    let (w, h) = (size.w as usize, size.h as usize);
+    let mut pixels = vec![0u8; w * h * 4];
+    unsafe {
+        let read: ReadPixels = std::mem::transmute(smithay::backend::egl::get_proc_address("glReadPixels"));
+        let bind: BindFramebuffer = std::mem::transmute(smithay::backend::egl::get_proc_address("glBindFramebuffer"));
+        let get: GetIntegerv = std::mem::transmute(smithay::backend::egl::get_proc_address("glGetIntegerv"));
+        const READ_FRAMEBUFFER: u32 = 0x8CA8;
+        const READ_FRAMEBUFFER_BINDING: u32 = 0x8CAA;
+        let mut previous = 0;
+        get(READ_FRAMEBUFFER_BINDING, &mut previous);
+        bind(READ_FRAMEBUFFER, 0);
+        read(0, 0, size.w, size.h, 0x1908, 0x1401, pixels.as_mut_ptr().cast());
+        bind(READ_FRAMEBUFFER, previous as u32);
+    }
+    let step = std::env::var("SHOJI_FRAME_DUMP_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(2usize).max(1);
+    let (sw, sh) = (w / step, h / step);
+    let mut out = vec![0u8; sw * sh * 4];
+    for y in 0..sh {
+        for x in 0..sw {
+            let src = ((y * step) * w + x * step) * 4;
+            out[(y * sw + x) * 4..(y * sw + x) * 4 + 4].copy_from_slice(&pixels[src..src + 4]);
+        }
+    }
+    let n = FRAME.fetch_add(1, Ordering::Relaxed);
+    let _ = std::fs::write(dir.join("size"), format!("{sw} {sh}"));
+    let _ = std::fs::write(dir.join(format!("{n:05}.rgba")), out);
 }
