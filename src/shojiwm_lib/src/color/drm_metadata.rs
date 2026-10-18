@@ -56,6 +56,7 @@ const PROP_HDR_OUTPUT_METADATA: &str = "HDR_OUTPUT_METADATA";
 const PROP_MAX_BPC: &str = "max bpc";
 const PROP_BROADCAST_RGB: &str = "Broadcast RGB";
 const PROP_CONTENT_TYPE: &str = "content type";
+const PROP_COLOR_RANGE: &str = "COLOR_RANGE";
 /// CRTC colour-pipeline blobs ShojiWM never programs; 0 means bypass.
 const CRTC_COLOR_BLOBS: [&str; 3] = ["DEGAMMA_LUT", "CTM", "GAMMA_LUT"];
 
@@ -687,6 +688,9 @@ fn enum_entry_value(info: &property::Info, entry: &str) -> Option<property::RawV
 /// `Broadcast RGB` and `content type` likewise go back to the kernel defaults
 /// (Automatic, No Data) instead of whatever the last master chose, e.g. a KWin
 /// session that used Full range or the Graphics content type.
+///
+/// On NVIDIA the CRTC's planes also get COLOR_RANGE set to full range (see
+/// `reset_nvidia_plane_color_range`).
 pub fn reset_inherited_color_state(
     device: &impl ControlDevice,
     crtc: crtc::Handle,
@@ -760,6 +764,9 @@ pub fn reset_inherited_color_state(
             ),
         }
     }
+    if is_nvidia_device(device) {
+        reset_nvidia_plane_color_range(device, crtc, &output, &mut reset);
+    }
     if reset.is_empty() {
         info!(
             %output,
@@ -773,6 +780,66 @@ pub fn reset_inherited_color_state(
             ?reset,
             "reset inherited colour state"
         );
+    }
+}
+
+fn is_nvidia_device(device: &impl ControlDevice) -> bool {
+    device.get_driver().is_ok_and(|driver| {
+        driver.name().to_string_lossy().to_lowercase().contains("nvidia")
+            || driver.description().to_string_lossy().to_lowercase().contains("nvidia")
+    })
+}
+
+/// NVIDIA treats RGB planes as limited range (16-235) unless COLOR_RANGE says
+/// otherwise, which washes the desktop out
+/// (https://github.com/NVIDIA/open-gpu-kernel-modules/discussions/1105).
+/// KWin and aquamarine set it to full range on every NVIDIA RGB plane; smithay's
+/// commits never touch it, so setting it once here keeps it for every plane
+/// this CRTC can scan out from. Only RGB buffers reach these planes.
+fn reset_nvidia_plane_color_range(
+    device: &impl ControlDevice,
+    crtc: crtc::Handle,
+    output: &str,
+    reset: &mut Vec<&'static str>,
+) {
+    let Ok(resources) = device.resource_handles() else {
+        return;
+    };
+    let Ok(planes) = device.plane_handles() else {
+        return;
+    };
+    let mut changed = false;
+    for plane in planes {
+        let Ok(info) = device.get_plane(plane) else {
+            continue;
+        };
+        if !resources.filter_crtcs(info.possible_crtcs()).contains(&crtc) {
+            continue;
+        }
+        let Some((property, current)) = find_object_property(device, plane, PROP_COLOR_RANGE) else {
+            continue;
+        };
+        let Some(full) = enum_entry_value(&property, "YCbCr full range") else {
+            continue;
+        };
+        if current == full {
+            continue;
+        }
+        match device.set_property(plane, property.handle(), full) {
+            Ok(()) => {
+                debug!(%output, ?plane, previous = current, "set NVIDIA plane COLOR_RANGE to full");
+                changed = true;
+            }
+            Err(error) => warn!(
+                %output,
+                ?plane,
+                ?error,
+                "failed to set NVIDIA plane COLOR_RANGE to full"
+            ),
+        }
+    }
+    if changed {
+        reset.push(PROP_COLOR_RANGE);
     }
 }
 
