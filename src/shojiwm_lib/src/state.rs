@@ -1763,7 +1763,9 @@ impl ShojiWM {
             idle_inhibited_surfaces: Vec::new(),
             active_idle_inhibit_labels: Vec::new(),
             session_lock_state,
-            session_lock_active: false,
+            // Started locked (a login screen made of the lock screen): only
+            // lock surfaces are drawn until a locker locks and unlocks.
+            session_lock_active: runtime.start_locked(),
             session_lock_surfaces: HashMap::new(),
             image_copy_capture_sessions: std::collections::HashMap::new(),
             image_copy_capture_pending: Vec::new(),
