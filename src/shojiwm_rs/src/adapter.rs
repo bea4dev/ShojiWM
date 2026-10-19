@@ -246,6 +246,7 @@ fn create_window(snapshot: &WaylandWindowSnapshot) -> Rc<WindowEntry> {
             let id = id.clone();
             Rc::new(move || runtime::mark_window_dirty(&id))
         },
+        ui_scale: Rc::new(Cell::new(1.0)),
     };
     let effects_observer = scope.run(|| {
         let context = context.clone();

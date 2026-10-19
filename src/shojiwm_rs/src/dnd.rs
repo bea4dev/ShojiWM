@@ -245,6 +245,7 @@ impl DragView {
                     let dirty = state.content_dirty.clone();
                     Rc::new(move || dirty.set(true))
                 },
+                ui_scale: Rc::new(Cell::new(1.0)),
             };
             let tree = scope.run(|| {
                 state.content_observer.track(|| {

@@ -173,6 +173,21 @@ impl Window {
         }
     }
 
+    /// Draw this window's decoration at `scale` times its authored size:
+    /// every length in its view (sizes, offsets, spacing, borders, radii,
+    /// shadows, fonts, popup offsets) is multiplied, so text stays sharp and
+    /// hit testing follows. Shader uniforms are not touched. The default is
+    /// 1; a change rebuilds the whole view.
+    pub fn set_ui_scale(&self, scale: f64) {
+        let Some(entry) = self.entry() else {
+            return;
+        };
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        if entry.context.ui_scale.replace(scale) != scale {
+            entry.context.mark_full();
+        }
+    }
+
     /// Whether the window still exists.
     pub fn is_alive(&self) -> bool {
         self.entry().is_some()

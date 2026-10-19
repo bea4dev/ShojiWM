@@ -1672,6 +1672,65 @@ impl Color {
 }
 
 impl DecorationStyle {
+    /// Multiply every length (sizes, offsets, spacing, borders, radii,
+    /// shadows, translation and text metrics) by `factor`: a decoration
+    /// authored in UI points drawn at a UI scale. Ratios such as flex
+    /// factors, opacity and the transform's scale are unchanged, and so is
+    /// paint shader geometry, which the layout resolves.
+    pub fn scale_lengths(&mut self, factor: f64) {
+        let scale = |value: &mut Option<f64>| {
+            if let Some(value) = value {
+                *value *= factor;
+            }
+        };
+        for value in [
+            &mut self.width,
+            &mut self.height,
+            &mut self.min_width,
+            &mut self.min_height,
+            &mut self.max_width,
+            &mut self.max_height,
+            &mut self.gap,
+            &mut self.inset.top,
+            &mut self.inset.right,
+            &mut self.inset.bottom,
+            &mut self.inset.left,
+            &mut self.border_radius,
+            &mut self.font_size,
+            &mut self.line_height,
+        ] {
+            scale(value);
+        }
+        for edges in [&mut self.padding, &mut self.margin] {
+            edges.top *= factor;
+            edges.right *= factor;
+            edges.bottom *= factor;
+            edges.left *= factor;
+        }
+        for border in [
+            &mut self.border,
+            &mut self.border_top,
+            &mut self.border_right,
+            &mut self.border_bottom,
+            &mut self.border_left,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            border.width *= factor;
+        }
+        for shadow in &mut self.box_shadow {
+            shadow.offset_x *= factor;
+            shadow.offset_y *= factor;
+            shadow.blur *= factor;
+            shadow.spread *= factor;
+        }
+        if let Some(transform) = &mut self.transform {
+            transform.translate_x *= factor as f32;
+            transform.translate_y *= factor as f32;
+        }
+    }
+
     fn is_absolute_positioned(&self) -> bool {
         matches!(self.position, Some(StylePosition::Absolute))
     }
@@ -4268,6 +4327,52 @@ mod tests {
         );
 
         assert!(!left.layout_equivalent(&right));
+    }
+
+    #[test]
+    fn scale_lengths_scales_lengths_and_keeps_ratios() {
+        let mut style = DecorationStyle {
+            width: Some(100.0),
+            min_height: Some(10.0),
+            flex_grow: Some(1.0),
+            padding: Edges { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 },
+            gap: Some(6.0),
+            inset: PositionOffsets { top: Some(8.0), left: Some(-2.0), ..Default::default() },
+            opacity: Some(0.5),
+            border: Some(BorderStyle { width: 1.0, color: Color::rgba(0, 0, 0, 255) }),
+            border_radius: Some(12.0),
+            font_size: Some(13.0),
+            line_height: Some(17.0),
+            box_shadow: vec![BoxShadow {
+                offset_x: 0.0,
+                offset_y: 2.0,
+                blur: 8.0,
+                spread: -1.0,
+                color: Color::rgba(0, 0, 0, 64),
+                inset: false,
+            }],
+            transform: Some(NodeTransform { translate_x: 4.0, translate_y: 0.0, scale_x: 0.5, scale_y: 0.5 }),
+            ..Default::default()
+        };
+        style.scale_lengths(1.5);
+        assert_eq!(style.width, Some(150.0));
+        assert_eq!(style.min_height, Some(15.0));
+        assert_eq!(style.height, None);
+        assert_eq!(style.flex_grow, Some(1.0));
+        assert_eq!(style.padding, Edges { top: 1.5, right: 3.0, bottom: 4.5, left: 6.0 });
+        assert_eq!(style.gap, Some(9.0));
+        assert_eq!(style.inset.top, Some(12.0));
+        assert_eq!(style.inset.left, Some(-3.0));
+        assert_eq!(style.inset.right, None);
+        assert_eq!(style.opacity, Some(0.5));
+        assert_eq!(style.border.unwrap().width, 1.5);
+        assert_eq!(style.border_radius, Some(18.0));
+        assert_eq!(style.font_size, Some(19.5));
+        assert_eq!(style.line_height, Some(25.5));
+        let shadow = style.box_shadow[0];
+        assert_eq!((shadow.offset_y, shadow.blur, shadow.spread), (3.0, 12.0, -1.5));
+        let transform = style.transform.unwrap();
+        assert_eq!((transform.translate_x, transform.scale_x), (6.0, 0.5));
     }
 
     #[test]
