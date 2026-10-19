@@ -909,8 +909,14 @@ impl ShojiWM {
         // user asked for this window" from "an application asked for itself".
         // Saved and restored rather than cleared so the flag survives nesting.
         let previous = std::mem::replace(&mut self.user_input_in_flight, true);
+        let keyboard = matches!(event, InputEvent::Keyboard { .. });
         self.process_input_event_inner(event);
         self.user_input_in_flight = previous;
+        // Caps Lock and Num Lock reach the config at once (the layout
+        // snapshot carries them), not at the next scheduler tick.
+        if keyboard {
+            self.sync_keyboard_layout();
+        }
         if !previous {
             self.input_woke_outputs = false;
         }
