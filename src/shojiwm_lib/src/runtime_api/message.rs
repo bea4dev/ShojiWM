@@ -195,6 +195,8 @@ pub enum RuntimeEvent {
     PointerMove(PointerMoveEventSnapshot),
     /// Asynchronous gesture hook, same delivery as [`Self::PointerMove`].
     GestureSwipe(GestureSwipeEventSnapshot),
+    /// Touchpad pinches, delivered without waiting for a result.
+    GesturePinch(crate::ssd::GesturePinchEventSnapshot),
 }
 
 /// One change to a decoration tree the compositor already holds, returned by

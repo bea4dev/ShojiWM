@@ -2,7 +2,7 @@ use smithay::{
     backend::{
         input::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
-            GestureEndEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
+            GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
             KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
         },
         session::Session,
@@ -899,6 +899,27 @@ impl ShojiWM {
         if self.runtime_gesture_swipe_async_enabled {
             self.config_runtime.gesture_swipe_async(event, now_ms);
         }
+    }
+
+    fn dispatch_gesture_pinch(&mut self, phase: GestureSwipePhaseSnapshot, timestamp: u64, scale: f64, rotation: f64, delta_x: f64, delta_y: f64) {
+        if !self.runtime_gesture_pinch_async_enabled {
+            return;
+        }
+        let pointer_position = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let output_name = pointer_position.and_then(|position| self.output_at_point(position)).map(|output| output.name());
+        let event = crate::ssd::GesturePinchEventSnapshot {
+            phase,
+            fingers: self.runtime_gesture_pinch_fingers,
+            scale,
+            rotation,
+            delta_x,
+            delta_y,
+            position: pointer_position.map(|position| PointerMovePointSnapshot { x: position.x, y: position.y }),
+            output_name,
+            timestamp,
+        };
+        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+        self.config_runtime.gesture_pinch_async(event, now_ms);
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -2361,6 +2382,26 @@ impl ShojiWM {
                     device,
                     timestamp,
                 }, grabbed);
+            }
+            // Pinches go to the config only (no client takes them).
+            InputEvent::GesturePinchBegin { event, .. } => {
+                self.runtime_gesture_pinch_fingers = event.fingers();
+                self.dispatch_gesture_pinch(GestureSwipePhaseSnapshot::Begin, u64::from(event.time_msec()), 1.0, 0.0, 0.0, 0.0);
+            }
+            InputEvent::GesturePinchUpdate { event, .. } => {
+                self.dispatch_gesture_pinch(
+                    GestureSwipePhaseSnapshot::Update,
+                    u64::from(event.time_msec()),
+                    event.scale(),
+                    event.rotation(),
+                    event.delta_x(),
+                    event.delta_y(),
+                );
+            }
+            InputEvent::GesturePinchEnd { event, .. } => {
+                let phase = if event.cancelled() { GestureSwipePhaseSnapshot::Cancel } else { GestureSwipePhaseSnapshot::End };
+                self.dispatch_gesture_pinch(phase, u64::from(event.time_msec()), 1.0, 0.0, 0.0, 0.0);
+                self.runtime_gesture_pinch_fingers = 0;
             }
             _ => {}
         }

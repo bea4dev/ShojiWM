@@ -435,6 +435,10 @@ impl RuntimeHandle {
         self.post(now_ms as f64, RuntimeEvent::GestureSwipe(event));
     }
 
+    pub fn gesture_pinch_async(&mut self, event: crate::ssd::GesturePinchEventSnapshot, now_ms: u64) {
+        self.post(now_ms as f64, RuntimeEvent::GesturePinch(event));
+    }
+
     pub fn pointer_region(
         &mut self,
         event: &crate::runtime_pointer_region::PointerRegionEventSnapshot,

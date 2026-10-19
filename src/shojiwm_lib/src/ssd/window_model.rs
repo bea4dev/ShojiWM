@@ -237,6 +237,23 @@ pub struct GestureSwipeEventSnapshot {
     pub timestamp: u64,
 }
 
+/// A touchpad pinch: `scale` is the fingers' spread relative to the start
+/// (1 at the start, above 1 spreading), `rotation` the change in angle since
+/// the last update in degrees, clockwise positive.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GesturePinchEventSnapshot {
+    pub phase: GestureSwipePhaseSnapshot,
+    pub fingers: u32,
+    pub scale: f64,
+    pub rotation: f64,
+    pub delta_x: f64,
+    pub delta_y: f64,
+    pub position: Option<PointerMovePointSnapshot>,
+    pub output_name: Option<String>,
+    pub timestamp: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GestureSwipePhaseSnapshot {
