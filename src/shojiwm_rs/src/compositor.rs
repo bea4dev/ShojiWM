@@ -749,6 +749,11 @@ impl InputController {
         reconfigure_input(true);
     }
 
+    /// Re-run the configure factory (its settings changed).
+    pub fn reconfigure(&self) {
+        reconfigure_input(false);
+    }
+
     /// Connected input devices, by key.
     pub fn devices(&self) -> ReadSignal<BTreeMap<String, RuntimeInputDeviceSnapshot>> {
         runtime::global().inputs.read_only()
