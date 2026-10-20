@@ -7673,15 +7673,40 @@ fn collect_text_buffers(
     {
         // Text rasterization is asynchronous. Keep the previous texture visible until the new
         // spec is ready, otherwise changing a title/label produces a one-frame blank flash.
+        // The texture keeps the size it was rasterized at: a label sized by its text (a
+        // window title) changes size together with the text, and drawing the old texture
+        // into the new rect would stretch the old text for the frames until the new one
+        // is ready.
+        let (rect, rect_precise) = fallback_label_rect(
+            &buffer,
+            spec.rect,
+            current_rect_precise,
+            spec.text_align.as_deref(),
+        );
         buffer.owner_node_id = node.stable_id.clone();
         buffer.stable_key = stable_key;
         buffer.order = order;
-        buffer.rect = spec.rect;
-        buffer.rect_precise = Some(current_rect_precise);
+        buffer.rect = rect;
+        buffer.rect_precise = Some(rect_precise);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
         buffer.clip_rect_precise = current_clip_rect_precise;
         buffer.clip_radius_precise = current_clip_radius_precise;
+        if rect_precise.width > current_rect_precise.width + 0.01
+            || rect_precise.height > current_rect_precise.height + 0.01
+        {
+            // An old texture larger than the new label stays inside the label's box.
+            let clip = intersect_precise_rect(
+                current_clip_rect_precise.unwrap_or(current_rect_precise),
+                current_rect_precise,
+            );
+            buffer.clip_rect = None;
+            buffer.clip_rect_precise = Some(clip);
+            if current_clip_rect_precise.is_none() {
+                buffer.clip_radius = 0;
+                buffer.clip_radius_precise = None;
+            }
+        }
         buffer.color = spec.color;
         if label_debug_enabled() {
             info!(
@@ -7707,6 +7732,53 @@ fn collect_text_buffers(
             previous_count = previous.len(),
             "label debug: label buffer unavailable"
         );
+    }
+}
+
+/// Where a previous label texture is drawn while the label's new text rasterizes: at its own
+/// (old) size, placed in the new rect the way the text is aligned in it.
+fn fallback_label_rect(
+    previous: &CachedDecorationLabel,
+    rect: LogicalRect,
+    rect_precise: PreciseLogicalRect,
+    text_align: Option<&str>,
+) -> (LogicalRect, PreciseLogicalRect) {
+    let old = previous
+        .rect_precise
+        .unwrap_or_else(|| precise_rect_from_logical(previous.rect));
+    let free_x = rect_precise.width - old.width;
+    let dx = match text_align {
+        Some("center") => free_x * 0.5,
+        Some("end") => free_x,
+        _ => 0.0,
+    };
+    // Text is centered vertically in its texture.
+    let dy = (rect_precise.height - old.height) * 0.5;
+    let placed = PreciseLogicalRect {
+        x: rect_precise.x + dx,
+        y: rect_precise.y + dy,
+        width: old.width,
+        height: old.height,
+    };
+    let placed_logical = LogicalRect::new(
+        rect.x + dx.round() as i32,
+        rect.y + dy.round() as i32,
+        previous.rect.width,
+        previous.rect.height,
+    );
+    (placed_logical, placed)
+}
+
+fn intersect_precise_rect(a: PreciseLogicalRect, b: PreciseLogicalRect) -> PreciseLogicalRect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    PreciseLogicalRect {
+        x,
+        y,
+        width: (right - x).max(0.0),
+        height: (bottom - y).max(0.0),
     }
 }
 
