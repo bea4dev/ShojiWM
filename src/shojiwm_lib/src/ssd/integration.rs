@@ -1590,6 +1590,8 @@ impl ShojiWM {
         if !invocation.invoked {
             self.live_window_snapshots
                 .insert(window_id.to_string(), live_snapshot);
+            // Other windows' changes came with it.
+            self.apply_runtime_handler_mutation(invocation);
             return Ok(false);
         }
         self.live_window_snapshot_trackers.remove(window_id);

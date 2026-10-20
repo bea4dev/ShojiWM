@@ -1883,18 +1883,9 @@ impl ShojiWM {
                                 ) {
                                     self.drain_runtime_host_messages();
                                     self.apply_runtime_handler_invocation(&window, &invocation);
-
-                                    if invocation.invoked {
-                                        self.mark_runtime_dirty_windows(
-                                            invocation.dirty_window_ids,
-                                            invocation.dirty_managed_window_ids,
-                                            &invocation.dirty_window_node_ids,
-                                        );
-                                        self.runtime_scheduler_enabled =
-                                            invocation.next_poll_in_ms.is_some();
-                                        self.apply_runtime_window_actions(invocation.actions);
-                                        self.schedule_redraw();
-                                    }
+                                    // Applied whether or not the handler ran: see
+                                    // apply_runtime_handler_mutation.
+                                    self.apply_runtime_handler_mutation(invocation);
                                 }
                             }
                             DecorationHitTestResult::Move => {
@@ -3336,18 +3327,26 @@ impl ShojiWM {
         self.apply_runtime_handler_invocation(window, &invocation);
 
         let invoked = invocation.invoked;
-        if invoked {
-            self.mark_runtime_dirty_windows(
-                invocation.dirty_window_ids,
-                invocation.dirty_managed_window_ids,
-                &invocation.dirty_window_node_ids,
-            );
-            self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
-            self.apply_runtime_window_actions(invocation.actions);
-            self.schedule_redraw();
-        }
-
+        self.apply_runtime_handler_mutation(invocation);
         invoked
+    }
+
+    /// The windows changed and the actions queued that a handler invocation
+    /// carries, applied whether or not the handler ran. The runtime hands
+    /// over every window changed since its last reply with each invocation
+    /// and takes them off its own dirty list: dropping them because this
+    /// handler no longer exists (a hover or press for a node just rebuilt)
+    /// leaves those changes unrefreshed, and the runtime only announces a
+    /// window again once its dirty set is empty, so it never does.
+    pub(crate) fn apply_runtime_handler_mutation(&mut self, invocation: crate::ssd::DecorationHandlerInvocation) {
+        self.mark_runtime_dirty_windows(
+            invocation.dirty_window_ids,
+            invocation.dirty_managed_window_ids,
+            &invocation.dirty_window_node_ids,
+        );
+        self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+        self.apply_runtime_window_actions(invocation.actions);
+        self.schedule_redraw();
     }
 
     pub(crate) fn update_decoration_cursor_icon(
