@@ -180,6 +180,13 @@ export interface WindowSwitcher {
   compose(output: OutputInfo): CompositionRenderable | null;
   /** True while window backdrop effects should be off. */
   readonly blurSuspended: ReadonlySignal<boolean>;
+  /**
+   * True while the windows are shown as cards: from opening until the
+   * hand-off back to the real desktop. A decoration can dress windows as
+   * cards only here (a shadow or glow fits in the cards' margin); one that
+   * changes the frame's size would resize the client instead.
+   */
+  readonly shown: ReadonlySignal<boolean>;
   /** Scale for window backdrop effects (0..1); fades them back in after closing. */
   readonly backdropStrength: ReadonlySignal<number>;
   /** The selected window while the switcher is open, else `null`. */
@@ -915,6 +922,7 @@ export function createWindowSwitcher<State>(
     open,
     compose,
     blurSuspended,
+    shown: blurSuspended,
     backdropStrength,
     selectedWindowId,
   };

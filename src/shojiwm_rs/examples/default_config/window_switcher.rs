@@ -282,6 +282,16 @@ impl WindowSwitcher {
         self.0.blur_suspended.read_only()
     }
 
+    /// True while the windows are shown as cards: from opening until the
+    /// hand-off back to the real desktop. A decoration can dress windows as
+    /// cards only here (a shadow or glow fits in the cards' margin); one that
+    /// changes the frame's size would resize the client instead. Not used by
+    /// this config, whose frame looks the same in and out of the switcher.
+    #[allow(dead_code)]
+    pub fn shown(&self) -> ReadSignal<bool> {
+        self.0.blur_suspended.read_only()
+    }
+
     /// Scale for window backdrop effects (0..1); fades them back in after closing.
     pub fn backdrop_strength(&self) -> ReadSignal<f64> {
         self.0.backdrop_strength.read_only()
