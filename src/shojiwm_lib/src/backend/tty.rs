@@ -11598,6 +11598,7 @@ fn capture_live_snapshot_for_window(
         .into_iter()
         .map(TtyRenderElements::Window)
         .collect::<Vec<_>>();
+    let content = snapshot::content_commits(window);
 
     let existing = live_window_snapshots.remove(&snapshot_id);
     let live_tracker = live_window_snapshot_trackers
@@ -11619,6 +11620,9 @@ fn capture_live_snapshot_for_window(
         scale,
         &elements,
     )? {
+        let mut snapshot = snapshot;
+        snapshot.content = content;
+        snapshot.captured_at = Some(Instant::now());
         live_window_snapshots.insert(snapshot_id.clone(), snapshot);
     }
 
@@ -16569,13 +16573,12 @@ fn tty_window_stack_elements(
                 && window_decorations
                 .get(window)
                 .map(|decoration| {
-                    live_window_snapshots
-                        .get(&decoration.snapshot.id)
-                        .map(|snapshot| {
-                            snapshot.rect.width != decoration.client_rect.width
-                                || snapshot.rect.height != decoration.client_rect.height
-                        })
-                        .unwrap_or(true)
+                    snapshot::live_snapshot_stale(
+                        live_window_snapshots.get(&decoration.snapshot.id),
+                        decoration.client_rect,
+                        &snapshot::content_commits(window),
+                        Instant::now(),
+                    )
                 })
                 .unwrap_or(false);
             if should_seed_close_snapshot {

@@ -8,14 +8,20 @@ use smithay::{
             element::texture::TextureRenderElement,
             element::{RenderElement, RenderElementStates},
             gles::{GlesError, GlesRenderer, GlesTexture},
-            utils::DamageBag,
+            utils::{CommitCounter, DamageBag, RendererSurfaceStateUserData},
         },
     },
+    desktop::Window,
     output::OutputModeSource,
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
+    wayland::{
+        compositor::{TraversalAction, with_surface_tree_downward},
+        seat::WaylandFocus,
+    },
 };
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::{
     backend::visual::window_visual_state,
@@ -32,6 +38,61 @@ pub struct LiveWindowSnapshot {
     pub scene_signature: u64,
     pub render_states: RenderElementStates,
     pub damage: Arc<Mutex<DamageBag<i32, Buffer>>>,
+    /// For a window's close snapshot: the commit position of each surface in
+    /// its tree when it was captured, and when ([`live_snapshot_stale`]).
+    pub content: Vec<CommitCounter>,
+    pub captured_at: Option<Instant>,
+}
+
+/// How often, at most, a window's close snapshot follows its content.
+/// Capturing redraws the whole window, so a window playing video is not
+/// captured every frame; at worst the closing window shows what it showed
+/// this long before.
+pub const LIVE_SNAPSHOT_REFRESH: Duration = Duration::from_millis(200);
+
+/// The commit position of each surface in `window`'s tree: it moves on when
+/// any of them shows something new.
+pub fn content_commits(window: &Window) -> Vec<CommitCounter> {
+    let mut commits = Vec::new();
+    if let Some(surface) = window.wl_surface() {
+        with_surface_tree_downward(
+            &surface,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            // From the `SurfaceData` the traversal holds: taking the
+            // surface's lock again here would deadlock.
+            |_, states, _| {
+                if let Some(state) = states.data_map.get::<RendererSurfaceStateUserData>() {
+                    commits.push(state.lock().unwrap().current_commit());
+                }
+            },
+            |_, _, _| true,
+        );
+    }
+    commits
+}
+
+/// Whether a window's close snapshot should be captured again: there is
+/// none, its size changed, or the window shows something new and the last
+/// capture is [`LIVE_SNAPSHOT_REFRESH`] old. Seeding it only at first map
+/// and on resizes left a closing window animating its first frame (a
+/// terminal's empty background), since clients that unmap before they are
+/// destroyed leave nothing to capture at the close itself.
+pub fn live_snapshot_stale(
+    snapshot: Option<&LiveWindowSnapshot>,
+    client_rect: LogicalRect,
+    content: &[CommitCounter],
+    now: Instant,
+) -> bool {
+    let Some(snapshot) = snapshot else {
+        return true;
+    };
+    snapshot.rect.width != client_rect.width
+        || snapshot.rect.height != client_rect.height
+        || (snapshot.content.as_slice() != content
+            && snapshot
+                .captured_at
+                .is_none_or(|at| now.duration_since(at) >= LIVE_SNAPSHOT_REFRESH))
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +164,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             texture,
             scene_signature,
             damage,
+            content,
+            captured_at,
             ..
         } = existing;
         if texture.size().w == physical.size.w && texture.size().h == physical.size.h {
@@ -115,6 +178,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 scene_signature,
                 render_states: RenderElementStates::default(),
                 damage,
+                content,
+                captured_at,
             }
         } else {
             LiveWindowSnapshot {
@@ -130,6 +195,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
                 scene_signature,
                 render_states: RenderElementStates::default(),
                 damage, // preserve existing DamageBag so commit counter advances past stored value
+                content,
+                captured_at,
             }
         }
     } else {
@@ -146,6 +213,8 @@ pub fn capture_snapshot<E: RenderElement<GlesRenderer>>(
             scene_signature: 0,
             render_states: RenderElementStates::default(),
             damage: Arc::new(Mutex::new(DamageBag::new(4))),
+            content: Vec::new(),
+            captured_at: None,
         }
     };
 
@@ -247,6 +316,8 @@ pub fn duplicate_snapshot(
         scene_signature: source.scene_signature,
         render_states: source.render_states.clone(),
         damage: Arc::new(Mutex::new(DamageBag::new(4))),
+        content: source.content.clone(),
+        captured_at: source.captured_at,
     };
 
     let element = TextureRenderElement::from_static_texture(
