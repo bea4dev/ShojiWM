@@ -1317,7 +1317,12 @@ pub fn init_winit(
                                 .map(WinitRenderElements::Window),
                             );
                         }
-                        elements.extend(content_elements);
+                        // While locked only the lock surface is shown: if the
+                        // locker dies, the screen stays blank rather than
+                        // revealing the session (ext-session-lock-v1).
+                        if !state.session_lock_active {
+                            elements.extend(content_elements);
+                        }
 
                         trace!(
                             output = %output.name(),

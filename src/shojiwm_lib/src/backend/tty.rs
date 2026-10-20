@@ -4931,7 +4931,12 @@ fn render_surface(
             );
         }
         overlay_below_layers += content_for_capture.len();
-        content_for_capture.extend(content_elements);
+        // While locked only the lock surface is shown: if the locker dies,
+        // the screen stays blank rather than revealing the session
+        // (ext-session-lock-v1).
+        if !state.session_lock_active {
+            content_for_capture.extend(content_elements);
+        }
         if !state.session_lock_active {
             state.output_overlays.render(&mut *renderer, &output,
                 (output_geo.size.w, output_geo.size.h), scale, &mut content_for_capture,
