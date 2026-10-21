@@ -383,6 +383,17 @@ pub struct ShojiWM {
     /// winit renderer. There are no tty backends to try it on there.
     pub winit_dmabuf_import:
         Option<Box<dyn FnMut(&smithay::backend::allocator::dmabuf::Dmabuf) -> bool>>,
+    /// The nested (winit) session's renderer, for close snapshots taken between redraws
+    /// (`backend::capture_live_snapshot_for_close`).
+    pub winit_backend: Option<
+        std::rc::Rc<
+            std::cell::RefCell<
+                smithay::backend::winit::WinitGraphicsBackend<
+                    smithay::backend::renderer::gles::GlesRenderer,
+                >,
+            >,
+        >,
+    >,
     /// `linux-drm-syncobj-v1` (explicit sync). `None` when the primary GPU cannot wait on
     /// syncobj timelines. Without this, drivers that provide no implicit dma-buf fences (the
     /// NVIDIA proprietary driver) let the compositor sample a client buffer before the client
@@ -1808,6 +1819,7 @@ impl ShojiWM {
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
             winit_dmabuf_import: None,
+            winit_backend: None,
             drm_syncobj_state: None,
             implicit_sync_trusted: false,
             background_effect_state,

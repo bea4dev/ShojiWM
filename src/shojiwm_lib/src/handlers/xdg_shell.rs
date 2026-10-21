@@ -221,7 +221,7 @@ impl XdgShellHandler for ShojiWM {
         // finalize handshake reports the close; if it did not, nobody else will.
         let mut promoted = false;
         if let Some(decoration) = decoration.as_ref() {
-            if let Err(error) = crate::backend::tty::capture_live_snapshot_for_close(self, &window)
+            if let Err(error) = crate::backend::capture_live_snapshot_for_close(self, &window)
             {
                 warn!(
                     window_id,

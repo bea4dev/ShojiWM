@@ -977,6 +977,7 @@ pub fn init_winit(
     init_winit_dmabuf(&mut backend, state);
     // Shared with the dmabuf import check, which runs between redraws.
     let backend = Rc::new(RefCell::new(backend));
+    state.winit_backend = Some(backend.clone());
     state.winit_dmabuf_import = Some(Box::new({
         let backend = backend.clone();
         move |dmabuf| match backend.try_borrow_mut() {
@@ -4787,6 +4788,47 @@ fn window_scene_elements_for_capture(
     elements
 }
 
+/// Takes a window's close snapshot from its current content, between redraws: the winit
+/// counterpart of `tty::capture_live_snapshot_for_close`.
+pub(crate) fn capture_live_snapshot_for_close(
+    state: &mut ShojiWM,
+    window: &smithay::desktop::Window,
+) -> Result<bool, smithay::backend::renderer::gles::GlesError> {
+    let Some(backend) = state.winit_backend.clone() else {
+        return Ok(false);
+    };
+    // Captures run from client dispatch and input, never inside a redraw; if one did, the
+    // close keeps the snapshot it already has.
+    let Ok(mut backend) = backend.try_borrow_mut() else {
+        return Ok(false);
+    };
+    let Some(window_location) = state.space.element_location(window) else {
+        return Ok(false);
+    };
+    let Some(snapshot_id) = state
+        .window_decorations
+        .get(window)
+        .map(|decoration| decoration.snapshot.id.clone())
+    else {
+        return Ok(false);
+    };
+    let Some(output) = state.space.outputs().next().cloned() else {
+        return Ok(false);
+    };
+    let scale = smithay::utils::Scale::from(output.current_scale().fractional_scale());
+    capture_live_snapshot_for_window(
+        backend.renderer(),
+        state,
+        &output,
+        window,
+        window_location,
+        scale,
+        0,
+    )?;
+
+    Ok(state.live_window_snapshots.contains_key(&snapshot_id))
+}
+
 fn capture_live_snapshot_for_window(
     renderer: &mut GlesRenderer,
     state: &mut ShojiWM,
@@ -4820,7 +4862,6 @@ fn capture_live_snapshot_for_window(
             .into_iter()
             .map(WinitRenderElements::Window),
     );
-    let content = snapshot::content_commits(window);
 
     let existing = state.live_window_snapshots.remove(&snapshot_id);
     let live_tracker = state
@@ -4843,9 +4884,6 @@ fn capture_live_snapshot_for_window(
         scale,
         &elements,
     )? {
-        let mut snapshot = snapshot;
-        snapshot.content = content;
-        snapshot.captured_at = Some(std::time::Instant::now());
         state
             .live_window_snapshots
             .insert(snapshot_id.clone(), snapshot);
@@ -6114,12 +6152,15 @@ fn winit_window_stack_elements(
                 .window_decorations
                 .get(window)
                 .map(|decoration| {
-                    snapshot::live_snapshot_stale(
-                        state.live_window_snapshots.get(&decoration.snapshot.id),
-                        decoration.client_rect,
-                        &snapshot::content_commits(window),
-                        std::time::Instant::now(),
-                    )
+                    state
+                        .live_window_snapshots
+                        .get(&decoration.snapshot.id)
+                        .map(|snapshot| {
+                            snapshot.rect.width != decoration.client_rect.width
+                                || snapshot.rect.height
+                                    != decoration.client_rect.height
+                        })
+                        .unwrap_or(true)
                 })
                 .unwrap_or(false);
             if should_refresh_snapshot

@@ -33,7 +33,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::Duration,
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 fn commit_rate_debug_enabled() -> bool {
     crate::env_flag!("SHOJI_COMMIT_RATE_DEBUG")
@@ -135,6 +135,65 @@ fn viewport_destination_for_fractional_source(
         )),
         None => Size::from(((src.size.w.ceil() as i32).max(1), (src.size.h.ceil() as i32).max(1))),
     })
+}
+
+/// Pre-commit: a toplevel about to unmap (a null buffer) still shows its last content, so
+/// take its close snapshot now. A client that unmaps a toplevel before, or instead of,
+/// destroying it leaves nothing to capture later, and the snapshot otherwise holds whatever
+/// the window showed when it first appeared or was last resized.
+fn capture_close_snapshot_before_unmap(state: &mut ShojiWM, surface: &WlSurface) {
+    let unmapping = with_states(surface, |states| {
+        matches!(
+            states.cached_state.get::<SurfaceAttributes>().pending().buffer,
+            Some(BufferAssignment::Removed)
+        )
+    });
+    if !unmapping {
+        return;
+    }
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        })
+        .cloned()
+    else {
+        return;
+    };
+    if let Err(error) = crate::backend::capture_live_snapshot_for_close(state, &window) {
+        warn!(?error, "failed to capture unmapping toplevel for its closing animation");
+    }
+}
+
+/// A surface of a toplevel's tree is being destroyed. This runs before smithay takes the
+/// surface out of its tree and drops its buffer, so the window still shows everything. A
+/// client that exits without closing its window first (most do: kitty, zenity) has its
+/// objects destroyed in creation order, the root `wl_surface` ahead of its `xdg_toplevel`,
+/// so by `toplevel_destroyed` there is nothing left to capture. A subsurface the client
+/// destroys ahead of the window is likewise still part of it here.
+fn capture_close_snapshot_before_destroy(state: &mut ShojiWM, surface: &WlSurface) {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+        })
+        .cloned()
+    else {
+        return;
+    };
+    if let Err(error) = crate::backend::capture_live_snapshot_for_close(state, &window) {
+        warn!(?error, "failed to capture destroyed toplevel for its closing animation");
+    }
 }
 
 /// The destination `supply_viewport_destination` invented for a surface, kept so the next
@@ -755,7 +814,8 @@ impl CompositorHandler for ShojiWM {
         }
     }
 
-    fn destroyed(&mut self, _surface: &WlSurface) {
+    fn destroyed(&mut self, surface: &WlSurface) {
+        capture_close_snapshot_before_destroy(self, surface);
         self.refresh_idle_inhibit_state();
     }
 
@@ -768,6 +828,7 @@ impl CompositorHandler for ShojiWM {
         // to signal when a commit occurs (by blocking the commit until then).
         add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
             supply_viewport_destination(surface);
+            capture_close_snapshot_before_unmap(state, surface);
 
             let (maybe_dmabuf, acquire_point) = with_states(surface, |data| {
                 let dmabuf = data

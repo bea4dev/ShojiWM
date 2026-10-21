@@ -120,7 +120,7 @@ impl XwmHandler for ShojiWM {
             let decoration = self.window_decorations.get(&elem).cloned();
             // The runtime id, not the decoration entry's: see toplevel_destroyed.
             let window_id = self.snapshot_window(&elem).id;
-            if let Err(error) = crate::backend::tty::capture_live_snapshot_for_close(self, &elem) {
+            if let Err(error) = crate::backend::capture_live_snapshot_for_close(self, &elem) {
                 warn!(
                     ?error,
                     "failed to capture unmapped X11 window before closing animation"

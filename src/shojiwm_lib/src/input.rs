@@ -1798,7 +1798,7 @@ impl ShojiWM {
                                     },
                                 );
                                 if let Err(error) =
-                                    crate::backend::tty::capture_live_snapshot_for_close(
+                                    crate::backend::capture_live_snapshot_for_close(
                                         self, &window,
                                     )
                                 {
@@ -2433,7 +2433,7 @@ impl ShojiWM {
             match runtime_action.action {
                 crate::ssd::WaylandWindowAction::Close => {
                     if let Err(error) =
-                        crate::backend::tty::capture_live_snapshot_for_close(self, &window)
+                        crate::backend::capture_live_snapshot_for_close(self, &window)
                     {
                         warn!(
                             window_id = runtime_action.window_id,

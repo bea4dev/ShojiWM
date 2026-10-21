@@ -73,6 +73,20 @@ impl ShojiWMBackend {
     }
 }
 
+/// Takes a window's close snapshot from what it shows now, with whichever backend is
+/// running. Called right before a close can take that content away: a close request, the
+/// client's unmap (a null buffer commit) and the toplevel's destruction.
+pub(crate) fn capture_live_snapshot_for_close(
+    state: &mut ShojiWM,
+    window: &smithay::desktop::Window,
+) -> Result<bool, smithay::backend::renderer::gles::GlesError> {
+    if state.winit_backend.is_some() {
+        winit::capture_live_snapshot_for_close(state, window)
+    } else {
+        tty::capture_live_snapshot_for_close(state, window)
+    }
+}
+
 fn tty_maintenance_debug_enabled() -> bool {
     std::env::var_os("SHOJI_TTY_MAINTENANCE_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())

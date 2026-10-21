@@ -11598,7 +11598,6 @@ fn capture_live_snapshot_for_window(
         .into_iter()
         .map(TtyRenderElements::Window)
         .collect::<Vec<_>>();
-    let content = snapshot::content_commits(window);
 
     let existing = live_window_snapshots.remove(&snapshot_id);
     let live_tracker = live_window_snapshot_trackers
@@ -11620,9 +11619,6 @@ fn capture_live_snapshot_for_window(
         scale,
         &elements,
     )? {
-        let mut snapshot = snapshot;
-        snapshot.content = content;
-        snapshot.captured_at = Some(Instant::now());
         live_window_snapshots.insert(snapshot_id.clone(), snapshot);
     }
 
@@ -16573,12 +16569,13 @@ fn tty_window_stack_elements(
                 && window_decorations
                 .get(window)
                 .map(|decoration| {
-                    snapshot::live_snapshot_stale(
-                        live_window_snapshots.get(&decoration.snapshot.id),
-                        decoration.client_rect,
-                        &snapshot::content_commits(window),
-                        Instant::now(),
-                    )
+                    live_window_snapshots
+                        .get(&decoration.snapshot.id)
+                        .map(|snapshot| {
+                            snapshot.rect.width != decoration.client_rect.width
+                                || snapshot.rect.height != decoration.client_rect.height
+                        })
+                        .unwrap_or(true)
                 })
                 .unwrap_or(false);
             if should_seed_close_snapshot {
@@ -16605,7 +16602,9 @@ fn tty_window_stack_elements(
 
             // Content dirtiness is consumed by the transform-snapshot path above. The close
             // backup is seeded only when missing or resized, so client commits and workspace
-            // movement do not maintain a second full client texture.
+            // movement do not maintain a second full client texture. It is brought up to date
+            // right before the content can go away instead: on a close request, an unmap and
+            // the destruction of the window's surfaces (`backend::capture_live_snapshot_for_close`).
             if let Some(snapshot_id) = snapshot_id.as_ref() {
                 snapshot_dirty_window_ids.remove(snapshot_id);
             }
