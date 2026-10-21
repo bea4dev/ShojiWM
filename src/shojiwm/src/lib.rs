@@ -206,6 +206,8 @@ impl ConfigRuntime for TypeScriptRuntime {
             RuntimeEvent::KeyboardLayout(layout) => {
                 self.evaluator.set_keyboard_layout(layout);
             }
+            // The TypeScript API has no lock key state.
+            RuntimeEvent::KeyboardLocks(_) => {}
             RuntimeEvent::PointerMove(event) => self.evaluator.pointer_move_async(event, now),
             RuntimeEvent::GestureSwipe(event) => self.evaluator.gesture_swipe_async(event, now),
             // The TypeScript API has no pinch hook.

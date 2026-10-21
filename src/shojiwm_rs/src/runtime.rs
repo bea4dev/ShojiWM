@@ -17,7 +17,7 @@ use shojiwm_lib::{
     frame_pacing::FramePacing,
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
-    keyboard_layout::KeyboardLayoutSnapshot,
+    keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_api::{HostMessage, RuntimeHost},
     runtime_debug::RuntimeDebugConfigUpdate,
     runtime_input::{RuntimeInputConfig, RuntimeInputDeviceSnapshot},
@@ -75,6 +75,7 @@ pub(crate) struct Listeners {
     pub output_change: Vec<RefListener<OutputChangeEvent>>,
     pub input_change: Vec<RefListener<InputChangeEvent>>,
     pub keyboard_layout: Vec<RefListener<KeyboardLayoutSnapshot>>,
+    pub keyboard_locks: Vec<RefListener<KeyboardLocksSnapshot>>,
     pub pointer_move: Vec<RefListener<PointerMoveEventSnapshot>>,
     pub pointer_move_async: Vec<RefListener<PointerMoveEventSnapshot>>,
     pub gesture_swipe: Vec<RefListener<GestureSwipeEventSnapshot>>,
@@ -178,6 +179,7 @@ pub(crate) struct GlobalSignals {
     pub inputs: Signal<BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     pub layers: Signal<BTreeMap<String, WaylandLayerSnapshot>>,
     pub keyboard_layout: Signal<Option<KeyboardLayoutSnapshot>>,
+    pub keyboard_locks: Signal<Option<KeyboardLocksSnapshot>>,
 }
 
 pub(crate) fn global() -> GlobalSignals {
@@ -190,6 +192,7 @@ pub(crate) fn global() -> GlobalSignals {
                 inputs: scope.signal(BTreeMap::new()),
                 layers: scope.signal(BTreeMap::new()),
                 keyboard_layout: scope.signal(None),
+                keyboard_locks: scope.signal(None),
             }
         })
     })

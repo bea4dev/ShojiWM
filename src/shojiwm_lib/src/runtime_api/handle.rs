@@ -12,7 +12,7 @@ use super::{
     WorkspaceRequest,
 };
 use crate::{
-    keyboard_layout::KeyboardLayoutSnapshot,
+    keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
@@ -40,6 +40,7 @@ pub struct RuntimeHandle {
     display_state: Option<BTreeMap<String, WaylandOutputSnapshot>>,
     input_state: Option<BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     keyboard_layout: Option<KeyboardLayoutSnapshot>,
+    keyboard_locks: Option<KeyboardLocksSnapshot>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -69,6 +70,7 @@ impl RuntimeHandle {
             display_state: None,
             input_state: None,
             keyboard_layout: None,
+            keyboard_locks: None,
         }
     }
 
@@ -138,12 +140,23 @@ impl RuntimeHandle {
         true
     }
 
+    /// Returns whether the lock keys differ from the last state sent.
+    pub fn sync_keyboard_locks(&mut self, locks: KeyboardLocksSnapshot) -> bool {
+        if self.keyboard_locks == Some(locks) {
+            return false;
+        }
+        self.keyboard_locks = Some(locks);
+        self.post(0.0, RuntimeEvent::KeyboardLocks(locks));
+        true
+    }
+
     /// Forget what was sent, so the next sync re-sends everything. Used after
     /// a reload, whose fresh config has not seen any state yet.
     pub fn reset_synced_state(&mut self) {
         self.display_state = None;
         self.input_state = None;
         self.keyboard_layout = None;
+        self.keyboard_locks = None;
     }
 
     pub fn evaluate_window(

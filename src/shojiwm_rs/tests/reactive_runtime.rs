@@ -3,7 +3,9 @@
 //! updates the compositor expects.
 
 use shojiwm_rs::{
-    HostMessage, RuntimeBoot, RuntimeHandle, RuntimeHost, cli::CommonArgs, prelude::*,
+    HostMessage, RuntimeBoot, RuntimeHandle, RuntimeHost, cli::CommonArgs,
+    keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
+    prelude::*,
     runtime_api::CompositionPatch,
     ssd::{
         DecorationNode, DecorationNodeKind, PopupNode, WaylandWindowAction, WaylandWindowSnapshot,
@@ -593,4 +595,39 @@ fn drag_views_follow_the_drag_and_go_with_their_animation() {
     )));
     runtime.scheduler_tick(1120.0).unwrap();
     assert!(views(drain()).iter().any(|command| matches!(command, DragViewCommand::Dispose { .. })));
+}
+
+thread_local! {
+    static LAYOUT_EVENTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static LOCK_EVENTS: std::cell::RefCell<Vec<KeyboardLocksSnapshot>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn count_keyboard_events() {
+    COMPOSITOR.event.on_keyboard_layout_change(|_| LAYOUT_EVENTS.with(|count| count.set(count.get() + 1)));
+    COMPOSITOR.event.on_keyboard_locks_change(|locks| LOCK_EVENTS.with(|events| events.borrow_mut().push(*locks)));
+}
+
+#[test]
+fn lock_keys_are_reported_apart_from_the_layout() {
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime =
+        RuntimeBoot::new(Box::new(ConfigBuilder::new(count_keyboard_events)), &args).launch(host.clone());
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+
+    let layout = || KeyboardLayoutSnapshot { index: 0, name: "English (US)".into() };
+    let caps = |caps_lock| KeyboardLocksSnapshot { caps_lock, num_lock: true };
+    assert!(runtime.sync_keyboard_layout(layout()));
+    assert!(runtime.sync_keyboard_locks(caps(false)));
+    // Toggling Caps Lock is a lock change only, and only once per change.
+    assert!(runtime.sync_keyboard_locks(caps(true)));
+    assert!(!runtime.sync_keyboard_locks(caps(true)));
+    assert!(!runtime.sync_keyboard_layout(layout()));
+    assert!(runtime.sync_keyboard_locks(caps(false)));
+
+    assert_eq!(LAYOUT_EVENTS.with(|count| count.get()), 1);
+    assert_eq!(LOCK_EVENTS.with(|events| events.borrow().clone()), [caps(false), caps(true), caps(false)]);
+    assert_eq!(untrack(|| COMPOSITOR.input.keyboard_locks().get()), Some(caps(false)));
 }

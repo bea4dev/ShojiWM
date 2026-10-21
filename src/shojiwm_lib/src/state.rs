@@ -2775,7 +2775,7 @@ impl ShojiWM {
     /// `None` for a wall-clock timer tick.
     fn tick_runtime_scheduler_at(&mut self, force: bool, frame: Option<(&str, f64)>) -> u64 {
         let frame_time_ms = frame.map(|(_, time)| time);
-        self.sync_keyboard_layout();
+        self.sync_keyboard_state();
         self.refresh_runtime_processes();
         let managed_window_animation_active = !self.managed_window_animations.is_empty();
         if !force

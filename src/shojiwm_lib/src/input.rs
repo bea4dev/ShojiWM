@@ -933,10 +933,10 @@ impl ShojiWM {
         let keyboard = matches!(event, InputEvent::Keyboard { .. });
         self.process_input_event_inner(event);
         self.user_input_in_flight = previous;
-        // Caps Lock and Num Lock reach the config at once (the layout
-        // snapshot carries them), not at the next scheduler tick.
+        // Caps Lock and Num Lock reach the config at once, not at the next
+        // scheduler tick.
         if keyboard {
-            self.sync_keyboard_layout();
+            self.sync_keyboard_state();
         }
         if !previous {
             self.input_woke_outputs = false;

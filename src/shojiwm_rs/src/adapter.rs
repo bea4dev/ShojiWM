@@ -1090,6 +1090,12 @@ impl ConfigRuntime for ReactiveRuntime {
                         emit(|listeners| listeners.keyboard_layout.clone(), |listener| listener(&layout));
                     });
                 }
+                RuntimeEvent::KeyboardLocks(locks) => {
+                    batch(|| {
+                        runtime::global().keyboard_locks.set(Some(locks));
+                        emit(|listeners| listeners.keyboard_locks.clone(), |listener| listener(&locks));
+                    });
+                }
                 RuntimeEvent::PointerMove(event) => {
                     let invoked = batch(|| emit(|listeners| listeners.pointer_move_async.clone(), |listener| listener(&event)));
                     runtime::send(HostMessage::PointerHookResult(pointer_hook(invoked)));

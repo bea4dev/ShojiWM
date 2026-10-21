@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    keyboard_layout::KeyboardLayoutSnapshot,
+    keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
@@ -190,6 +190,8 @@ pub enum RuntimeEvent {
     /// Input devices changed.
     InputState(BTreeMap<String, RuntimeInputDeviceSnapshot>),
     KeyboardLayout(KeyboardLayoutSnapshot),
+    /// Caps Lock or Num Lock changed.
+    KeyboardLocks(KeyboardLocksSnapshot),
     /// Pointer hook the config asked to receive asynchronously. A result, if
     /// any, comes back as `HostMessage::PointerHookResult`.
     PointerMove(PointerMoveEventSnapshot),

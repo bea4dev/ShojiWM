@@ -25,7 +25,7 @@ use shojiwm_lib::{
     activation_environment::RuntimeEnvOperation,
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
-    keyboard_layout::KeyboardLayoutSnapshot,
+    keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     output_power::RuntimeOutputPowerRequest,
     runtime_api::HostMessage,
     runtime_input::{RuntimeInputConfig, RuntimeInputDeviceSnapshot},
@@ -763,6 +763,11 @@ impl InputController {
         runtime::global().keyboard_layout.read_only()
     }
 
+    /// Caps Lock and Num Lock (`None` until the compositor reports them).
+    pub fn keyboard_locks(&self) -> ReadSignal<Option<KeyboardLocksSnapshot>> {
+        runtime::global().keyboard_locks.read_only()
+    }
+
     /// Take all keyboard, pointer button, scroll and swipe input until
     /// [`InputGrab::release`]; see [`crate::input_grab`]. A new grab
     /// replaces (and cancels) the current one.
@@ -1230,6 +1235,8 @@ listeners! {
     on_output_change => output_change: &OutputChangeEvent;
     on_input_device_change => input_change: &InputChangeEvent;
     on_keyboard_layout_change => keyboard_layout: &KeyboardLayoutSnapshot;
+    /// Caps Lock or Num Lock was switched on or off.
+    on_keyboard_locks_change => keyboard_locks: &KeyboardLocksSnapshot;
     on_create_layer => create_layer: &WaylandLayerSnapshot;
     on_update_layer => update_layer: &WaylandLayerSnapshot;
     on_destroy_layer => destroy_layer: &WaylandLayerSnapshot;
