@@ -1251,6 +1251,12 @@ impl EventController {
     pub fn on_gesture_swipe_async(&self, listener: impl Fn(&GestureSwipeEventSnapshot) + 'static) {
         add_filtered(|listeners| listeners.gesture_swipe_async.push(Rc::new(listener)));
     }
+
+    /// Touchpad pinches (begin, update, end or cancel), after the fact.
+    /// Nothing else receives pinches.
+    pub fn on_gesture_pinch_async(&self, listener: impl Fn(&shojiwm_lib::ssd::GesturePinchEventSnapshot) + 'static) {
+        add_filtered(|listeners| listeners.gesture_pinch_async.push(Rc::new(listener)));
+    }
 }
 
 /// Register a listener the compositor has to be told to deliver.

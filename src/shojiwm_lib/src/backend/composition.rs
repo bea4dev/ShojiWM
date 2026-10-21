@@ -570,6 +570,21 @@ pub struct SceneContext {
 
 impl SceneContext {
     /// `rect` in physical pixels of this composition, clipped to it.
+    /// `rect` in physical pixels, reaching past the output if it does (the
+    /// renderer clips): a texture view drawn larger than the output, e.g. a
+    /// zoom.
+    fn physical_rect_unclamped(&self, rect: Option<&RectF>) -> Rectangle<i32, Physical> {
+        let (size_w, size_h) = (self.output_geo.size.w as f64, self.output_geo.size.h as f64);
+        let (x, y) = rect.map_or((0.0, 0.0), |rect| (rect.x, rect.y));
+        let width = rect.and_then(|rect| rect.width).unwrap_or(size_w - x);
+        let height = rect.and_then(|rect| rect.height).unwrap_or(size_h - y);
+        let left = (x * self.scale.x).round() as i32;
+        let top = (y * self.scale.y).round() as i32;
+        let right = ((x + width) * self.scale.x).round() as i32;
+        let bottom = ((y + height) * self.scale.y).round() as i32;
+        Rectangle::new((left, top).into(), ((right - left).max(0), (bottom - top).max(0)).into())
+    }
+
     fn physical_rect(&self, rect: Option<&RectF>) -> Rectangle<i32, Physical> {
         let (size_w, size_h) = (self.output_geo.size.w as f64, self.output_geo.size.h as f64);
         let (x, y) = rect.map_or((0.0, 0.0), |rect| (rect.x, rect.y));
@@ -965,7 +980,9 @@ impl<'p> Builder<'p> {
                 self.render_texture(scene, targets, ctx, *texture)?;
                 let plan = self.plan;
                 let spec = &plan.textures[*texture];
-                let geometry = ctx.physical_rect(rect.as_ref());
+                // The whole texture is stretched over the rect, which may
+                // reach past the output.
+                let geometry = ctx.physical_rect_unclamped(rect.as_ref());
                 let Some(target) = targets.textures.get(&spec.key) else {
                     return Ok(None);
                 };

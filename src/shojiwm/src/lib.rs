@@ -208,6 +208,8 @@ impl ConfigRuntime for TypeScriptRuntime {
             }
             RuntimeEvent::PointerMove(event) => self.evaluator.pointer_move_async(event, now),
             RuntimeEvent::GestureSwipe(event) => self.evaluator.gesture_swipe_async(event, now),
+            // The TypeScript API has no pinch hook.
+            RuntimeEvent::GesturePinch(_) => {}
         }
     }
 

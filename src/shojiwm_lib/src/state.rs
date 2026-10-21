@@ -501,6 +501,10 @@ pub struct ShojiWM {
     pub runtime_pointer_move_async_enabled: bool,
     pub runtime_gesture_swipe_enabled: bool,
     pub runtime_gesture_swipe_async_enabled: bool,
+    /// The config listens to touchpad pinches; the fingers of the one in
+    /// progress.
+    pub runtime_gesture_pinch_async_enabled: bool,
+    pub runtime_gesture_pinch_fingers: u32,
     /// The config listens to drag and drop (`COMPOSITOR.dnd.event.onStart`).
     pub runtime_dnd_enabled: bool,
     /// The drag in progress and the drag views the config shows.
@@ -1881,6 +1885,8 @@ impl ShojiWM {
             runtime_pointer_move_async_enabled: false,
             runtime_gesture_swipe_enabled: false,
             runtime_gesture_swipe_async_enabled: false,
+            runtime_gesture_pinch_async_enabled: false,
+            runtime_gesture_pinch_fingers: 0,
             runtime_dnd_enabled: false,
             dnd: Default::default(),
             runtime_gesture_swipe: None,
@@ -3984,6 +3990,7 @@ impl ShojiWM {
         self.runtime_pointer_move_async_enabled = update.pointer_move_async;
         self.runtime_gesture_swipe_enabled = update.gesture_swipe;
         self.runtime_gesture_swipe_async_enabled = update.gesture_swipe_async;
+        self.runtime_gesture_pinch_async_enabled = update.gesture_pinch_async;
     }
 
     pub fn consume_runtime_event_config(&mut self, update: Option<RuntimeEventConfigUpdate>) {
