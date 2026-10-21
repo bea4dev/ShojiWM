@@ -812,6 +812,10 @@ pub(crate) struct ViewContext {
     pub handlers: Rc<RefCell<HandlerMap>>,
     /// Called on the first mark after the set was drained.
     pub on_dirty: Rc<dyn Fn()>,
+    /// Lengths in this view are multiplied by this ([`Window::set_ui_scale`]).
+    ///
+    /// [`Window::set_ui_scale`]: crate::window::Window::set_ui_scale
+    pub ui_scale: Rc<Cell<f64>>,
 }
 
 impl ViewContext {
@@ -1085,6 +1089,10 @@ impl MountedNode {
                 }
             };
             let mut style = element.style.resolve();
+            let ui_scale = context.ui_scale.get();
+            if ui_scale != 1.0 {
+                style.scale_lengths(ui_scale);
+            }
             style.paint = element
                 .paint
                 .as_ref()
@@ -1121,6 +1129,7 @@ impl MountedNode {
                 ElementKind::WindowSlot => DecorationNodeKind::WindowSlot,
                 ElementKind::Popup { open, popup, .. } => DecorationNodeKind::Popup(PopupNode {
                     open: open.get(),
+                    offset: popup.offset * ui_scale,
                     ..*popup
                 }),
             };
@@ -1404,4 +1413,52 @@ fn replace_uniform(
 /// The style a node would get, for tests and debugging.
 pub fn resolve_style(style: &Style) -> DecorationStyle {
     style.resolve()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reactive::Scope;
+    use shojiwm_lib::ssd::{DecorationHitTestResult, DecorationTree, LogicalPoint, LogicalRect};
+
+    /// A 100×60 view with a 20×20 close button at (10, 10), built at `scale`.
+    fn build_at(scale: f64) -> DecorationNode {
+        Scope::root().run(|| {
+            let context = ViewContext {
+                dirty: Default::default(),
+                handlers: Default::default(),
+                on_dirty: Rc::new(|| {}),
+                ui_scale: Rc::new(Cell::new(scale)),
+            };
+            let element = Flex::row()
+                .style(Style::new().size(100.0, 60.0))
+                .child(
+                    Flex::row()
+                        .style(Style::new().absolute().inset(0.0).pointer_events_none())
+                        .child(ClientWindow::new()),
+                )
+                .child(
+                    Button::new()
+                        .on_click_action(WindowAction::Close)
+                        .style(Style::new().absolute().left(10.0).top(10.0).size(20.0, 20.0)),
+                );
+            MountedNode::mount(element, "root".into(), &context).build(&context)
+        })
+    }
+
+    #[test]
+    fn ui_scale_multiplies_layout_and_hit_testing() {
+        let at = |scale: f64, x: i32, y: i32| {
+            let layout = DecorationTree::new(build_at(scale))
+                .layout(LogicalRect::new(0, 0, 400, 400))
+                .expect("layout should succeed");
+            layout.hit_test(LogicalPoint::new(x, y)) == DecorationHitTestResult::Action(WindowAction::Close)
+        };
+        // Unscaled: the button covers 10..30.
+        assert!(at(1.0, 12, 12) && at(1.0, 28, 28) && !at(1.0, 35, 35));
+        // At 2: 20..60, so (12, 12) misses and (55, 55) hits.
+        assert!(!at(2.0, 12, 12) && at(2.0, 22, 22) && at(2.0, 55, 55) && !at(2.0, 65, 65));
+        // At 1.5: 15..45.
+        assert!(!at(1.5, 12, 12) && at(1.5, 17, 17) && at(1.5, 43, 43) && !at(1.5, 48, 48));
+    }
 }
