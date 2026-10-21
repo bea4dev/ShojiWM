@@ -1033,6 +1033,8 @@ pub fn init_winit(
                         None,
                         None,
                     );
+                    // A locked session's surfaces take the new size too.
+                    state.configure_session_lock_surfaces();
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
