@@ -7603,7 +7603,7 @@ fn collect_text_buffers(
         ),
         text: label.text.clone(),
         color: color.with_opacity(node.style.opacity),
-        font_size: node.style.font_size.unwrap_or(13.0) as f32,
+        font_size: node.style.font_size.unwrap_or(crate::ssd::DEFAULT_LABEL_FONT_SIZE) as f32,
         font_weight: node.style.font_weight.clone(),
         font_family: node.style.font_family.clone(),
         text_align: node.style.text_align.clone(),

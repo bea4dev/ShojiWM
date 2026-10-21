@@ -176,8 +176,11 @@ impl Window {
     /// Draw this window's decoration at `scale` times its authored size:
     /// every length in its view (sizes, offsets, spacing, borders, radii,
     /// shadows, fonts, popup offsets) is multiplied, so text stays sharp and
-    /// hit testing follows. Shader uniforms are not touched. The default is
-    /// 1; a change rebuilds the whole view.
+    /// hit testing follows. A label without a font size or line height gets
+    /// the defaults' scaled values. Shader uniforms are not touched, nor is
+    /// the window's rect: a config that reserves room for its decoration
+    /// (a titlebar height in the managed rect) scales that itself. The
+    /// default is 1; a change rebuilds the whole view.
     pub fn set_ui_scale(&self, scale: f64) {
         let Some(entry) = self.entry() else {
             return;

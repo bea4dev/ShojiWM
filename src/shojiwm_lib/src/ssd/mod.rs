@@ -1671,7 +1671,21 @@ impl Color {
     }
 }
 
+/// A label's font size when its style sets none.
+pub const DEFAULT_LABEL_FONT_SIZE: f64 = 13.0;
+/// A label's line height, when its style sets none, is its font size plus this.
+pub const DEFAULT_LABEL_LINE_GAP: f64 = 4.0;
+
 impl DecorationStyle {
+    /// Spell out the text metrics a label falls back to when its style sets
+    /// none ([`DEFAULT_LABEL_FONT_SIZE`], [`DEFAULT_LABEL_LINE_GAP`]), so that
+    /// [`Self::scale_lengths`] scales them too.
+    pub fn fill_label_text_defaults(&mut self) {
+        let font_size = *self.font_size.get_or_insert(DEFAULT_LABEL_FONT_SIZE);
+        self.line_height
+            .get_or_insert(font_size.max(1.0) + DEFAULT_LABEL_LINE_GAP);
+    }
+
     /// Multiply every length (sizes, offsets, spacing, borders, radii,
     /// shadows, translation and text metrics) by `factor`: a decoration
     /// authored in UI points drawn at a UI scale. Ratios such as flex
@@ -2795,12 +2809,13 @@ impl DecorationNode {
     ) -> Option<(ResolvedLayoutValue, ResolvedLayoutValue)> {
         match &self.kind {
             DecorationNodeKind::Label(label) => {
-                let font_size = self.style.font_size.unwrap_or(13.0).max(1.0) as f32;
+                let font_size =
+                    self.style.font_size.unwrap_or(DEFAULT_LABEL_FONT_SIZE).max(1.0) as f32;
                 let line_height = self
                     .style
                     .line_height
                     .map(|value| value as f32)
-                    .unwrap_or(font_size + 4.0)
+                    .unwrap_or(font_size + DEFAULT_LABEL_LINE_GAP as f32)
                     .max(font_size);
                 let spec = LabelSpec {
                     rect: LogicalRect::new(0, 0, 0, 0),

@@ -202,7 +202,8 @@ impl TextRasterizer {
         let target_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
         let font_size = spec.font_size.max(1.0) * raster_scale as f32;
         let line_height =
-            spec.line_height.unwrap_or(spec.font_size.max(1.0) + 4.0) * raster_scale as f32;
+            spec.line_height.unwrap_or(spec.font_size.max(1.0) + crate::ssd::DEFAULT_LABEL_LINE_GAP as f32)
+                * raster_scale as f32;
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
@@ -314,7 +315,9 @@ impl LabelMeasurer {
         }
 
         let font_size = spec.font_size.max(1.0);
-        let line_height = spec.line_height.unwrap_or(font_size.ceil() + 4.0);
+        let line_height = spec
+            .line_height
+            .unwrap_or(font_size.ceil() + crate::ssd::DEFAULT_LABEL_LINE_GAP as f32);
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
         let attrs = attrs_for_spec(spec);

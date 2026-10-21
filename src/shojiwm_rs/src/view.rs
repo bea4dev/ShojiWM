@@ -1091,6 +1091,11 @@ impl MountedNode {
             let mut style = element.style.resolve();
             let ui_scale = context.ui_scale.get();
             if ui_scale != 1.0 {
+                // A label's text defaults are filled in by the layout, not the
+                // style; spell them out so they scale with everything else.
+                if matches!(element.kind, ElementKind::Label { .. }) {
+                    style.fill_label_text_defaults();
+                }
                 style.scale_lengths(ui_scale);
             }
             style.paint = element
@@ -1444,6 +1449,49 @@ mod tests {
                 );
             MountedNode::mount(element, "root".into(), &context).build(&context)
         })
+    }
+
+    /// The laid-out size of a label with `style`, built at `scale`: its width
+    /// beside the client in a row, its height above it in a column (the
+    /// other axis is stretched).
+    fn label_size_at(scale: f64, style: Style) -> (i32, i32) {
+        (
+            label_rect_at(scale, style.clone(), Flex::row()).width,
+            label_rect_at(scale, style, Flex::column()).height,
+        )
+    }
+
+    fn label_rect_at(scale: f64, style: Style, parent: Element) -> LogicalRect {
+        let node = Scope::root().run(|| {
+            let context = ViewContext {
+                dirty: Default::default(),
+                handlers: Default::default(),
+                on_dirty: Rc::new(|| {}),
+                ui_scale: Rc::new(Cell::new(scale)),
+            };
+            let element = parent
+                .child(Label::new("Hello World").style(style))
+                .child(ClientWindow::new());
+            MountedNode::mount(element, "root".into(), &context).build(&context)
+        });
+        let layout = DecorationTree::new(node)
+            .layout(LogicalRect::new(0, 0, 800, 400))
+            .expect("layout should succeed");
+        layout.root.children[0].rect
+    }
+
+    #[test]
+    fn ui_scale_scales_label_text_defaults() {
+        // A label that sets no font size or line height grows like one that
+        // spells the defaults out.
+        let explicit = Style::new().font_size(13.0).line_height(17.0);
+        for scale in [1.5, 2.0] {
+            assert_eq!(label_size_at(scale, Style::new()), label_size_at(scale, explicit.clone()));
+        }
+        let (width, height) = label_size_at(1.0, Style::new());
+        let (scaled_width, scaled_height) = label_size_at(2.0, Style::new());
+        assert!((scaled_width - 2 * width).abs() <= 2, "{width} -> {scaled_width}");
+        assert_eq!(scaled_height, 2 * height);
     }
 
     #[test]
