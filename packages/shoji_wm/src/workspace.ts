@@ -4,8 +4,15 @@ import type {
   WorkspaceConfig,
   WorkspaceConfigureFactory,
   WorkspaceController,
+  WorkspaceCreateEvent,
   WorkspaceMoveWindowEvent,
 } from "./types";
+
+/**
+ * The workspace model sent to the compositor: `canCreate` tells it to
+ * advertise ext-workspace's `create_workspace`.
+ */
+export type WorkspaceConfigPayload = WorkspaceConfig & { canCreate: boolean };
 
 let desiredWorkspaceConfig: WorkspaceConfig = { groups: [] };
 let pendingWorkspaceConfig = false;
@@ -13,6 +20,7 @@ let configureFactory: WorkspaceConfigureFactory | null = null;
 let stagedConfigureFactory: WorkspaceConfigureFactory | null | undefined;
 const activateListeners = new Set<(event: WorkspaceActivateEvent) => void>();
 const moveWindowListeners = new Set<(event: WorkspaceMoveWindowEvent) => void>();
+const createListeners = new Set<(event: WorkspaceCreateEvent) => void>();
 
 function cloneVirtualDesktops(
   config: VirtualDesktopConfig | undefined,
@@ -128,22 +136,44 @@ export function commitWorkspaceConfigurationRegistration(): void {
   evaluateConfigureFactory(true);
 }
 
-export function takePendingWorkspaceConfig(): WorkspaceConfig | undefined {
+export function takePendingWorkspaceConfig(): WorkspaceConfigPayload | undefined {
   if (!pendingWorkspaceConfig) {
     return undefined;
   }
   pendingWorkspaceConfig = false;
-  return cloneWorkspaceConfig(desiredWorkspaceConfig);
+  return {
+    ...cloneWorkspaceConfig(desiredWorkspaceConfig),
+    canCreate: createListeners.size > 0,
+  };
+}
+
+/** Resend the model when `onCreate` gains its first or loses its last listener. */
+function markCreateCapabilityChanged(hadListeners: boolean): void {
+  if (hadListeners !== createListeners.size > 0) {
+    pendingWorkspaceConfig = true;
+  }
 }
 
 /**
  * Deliver a workspace request from a client: with `windowId` it moves that
- * window (`onMoveWindow`), otherwise it activates the workspace (`onActivate`).
+ * window (`onMoveWindow`), with `createName` it creates a workspace
+ * (`onCreate`), otherwise it activates the workspace (`onActivate`).
  */
 export function emitWorkspaceActivate(
-  event: WorkspaceActivateEvent & { windowId?: string },
+  event: WorkspaceActivateEvent & { windowId?: string; createName?: string },
 ): boolean {
   let invoked = false;
+  if (event.createName !== undefined) {
+    const createEvent: WorkspaceCreateEvent = {
+      groupId: event.groupId,
+      name: event.createName,
+    };
+    for (const listener of Array.from(createListeners)) {
+      listener(createEvent);
+      invoked = true;
+    }
+    return invoked;
+  }
   if (event.windowId !== undefined) {
     const moveEvent: WorkspaceMoveWindowEvent = {
       workspaceId: event.workspaceId,
@@ -181,6 +211,17 @@ export const WORKSPACE_CONTROLLER: WorkspaceController = {
     onMoveWindow(listener) {
       moveWindowListeners.add(listener);
       return () => moveWindowListeners.delete(listener);
+    },
+    onCreate(listener) {
+      const hadListeners = createListeners.size > 0;
+      createListeners.add(listener);
+      markCreateCapabilityChanged(hadListeners);
+      return () => {
+        const hadListeners = createListeners.size > 0;
+        const removed = createListeners.delete(listener);
+        markCreateCapabilityChanged(hadListeners);
+        return removed;
+      };
     },
   },
 };

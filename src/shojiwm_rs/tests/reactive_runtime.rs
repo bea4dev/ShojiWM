@@ -443,11 +443,63 @@ fn workspace_requests_with_a_window_go_to_on_move_window() {
         workspace_id: workspace_id.into(),
         group_id: None,
         window_id: window_id.map(Into::into),
+        create_name: None,
     };
     assert!(runtime.workspace_activate(&request("desk-2", Some("w1")), 1000).unwrap().invoked);
     assert!(runtime.workspace_activate(&request("desk-1", None), 1000).unwrap().invoked);
     assert_eq!(*moved.borrow(), [("desk-2".to_string(), "w1".to_string())]);
     assert_eq!(*activated.borrow(), ["desk-1".to_string()]);
+}
+
+#[test]
+fn workspace_create_requests_go_to_on_create_and_are_advertised() {
+    use shojiwm_rs::runtime_workspace::{
+        RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    let created = Rc::new(RefCell::new(Vec::new()));
+    let activated = Rc::new(RefCell::new(0));
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new({
+            let created = created.clone();
+            let activated = activated.clone();
+            move || {
+                COMPOSITOR.workspace.configure(RuntimeWorkspaceConfigUpdate::default);
+                let created = created.clone();
+                COMPOSITOR.workspace.on_create(move |event| {
+                    created.borrow_mut().push((event.group_id.clone(), event.name.clone()))
+                });
+                let activated = activated.clone();
+                COMPOSITOR.workspace.on_activate(move |_| *activated.borrow_mut() += 1);
+            }
+        })),
+        &args,
+    )
+    .launch(host.clone());
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+
+    // Registering the listener offers `create_workspace` to bars.
+    let can_create = std::iter::from_fn(|| host.pop())
+        .filter_map(|message| match message {
+            HostMessage::Workspace(update) => Some(update.can_create),
+            _ => None,
+        })
+        .last();
+    assert_eq!(can_create, Some(true));
+
+    let request = RuntimeWorkspaceActivateRequestSnapshot {
+        workspace_id: String::new(),
+        group_id: Some("eDP-1".into()),
+        window_id: None,
+        create_name: Some("5".into()),
+    };
+    assert!(runtime.workspace_activate(&request, 1000).unwrap().invoked);
+    assert_eq!(*created.borrow(), [(Some("eDP-1".to_string()), "5".to_string())]);
+    assert_eq!(*activated.borrow(), 0);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::{
 };
 
 use shojiwm_lib::{
-    runtime_workspace::RuntimeWorkspaceMoveWindowEvent,
+    runtime_workspace::{RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent},
     runtime_api::{
         ConfigRuntime, DecorationRequest, EffectRequest, HostMessage, InputRequest, LaunchContext,
         ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply,
@@ -941,6 +941,14 @@ impl ConfigRuntime for ReactiveRuntime {
                             None => RuntimeReply::Unhandled,
                         }
                     }
+                    DecorationRequest::KdeDefaultMode { client } => {
+                        match with_registry(|registry| registry.kde_default_decoration.clone()) {
+                            Some(resolve) => RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
+                                mode: untrack(|| resolve(client)),
+                            }),
+                            None => RuntimeReply::Unhandled,
+                        }
+                    }
                     DecorationRequest::InvokeHandler {
                         window_id,
                         handler_id,
@@ -1060,15 +1068,22 @@ impl ConfigRuntime for ReactiveRuntime {
                     }
                 },
                 RuntimeRequest::Workspace(WorkspaceRequest::Activate(event)) => {
-                    let invoked = match &event.window_id {
-                        Some(window_id) => {
+                    let invoked = match (&event.create_name, &event.window_id) {
+                        (Some(name), _) => {
+                            let event = RuntimeWorkspaceCreateEvent {
+                                group_id: event.group_id.clone(),
+                                name: name.clone(),
+                            };
+                            batch(|| emit(|listeners| listeners.workspace_create.clone(), |listener| listener(&event)))
+                        }
+                        (None, Some(window_id)) => {
                             let event = RuntimeWorkspaceMoveWindowEvent {
                                 workspace_id: event.workspace_id.clone(),
                                 window_id: window_id.clone(),
                             };
                             batch(|| emit(|listeners| listeners.workspace_move_window.clone(), |listener| listener(&event)))
                         }
-                        None => batch(|| emit(|listeners| listeners.workspace_activate.clone(), |listener| listener(event))),
+                        (None, None) => batch(|| emit(|listeners| listeners.workspace_activate.clone(), |listener| listener(event))),
                     };
                     RuntimeReply::Handler(Box::new(handler_invocation(invoked)))
                 }

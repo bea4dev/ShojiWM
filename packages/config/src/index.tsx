@@ -79,6 +79,14 @@ COMPOSITOR.window.decoration.configure((_window, context) => {
   return { mode: context.clientPreference ?? "server" };
 });
 
+// GTK 3 applications (Thunar, ...) choose between their own title bar and
+// ours once, at startup, from this default alone: "server" drops theirs.
+// Firefox and GTK header bars still ask for CSD, and the policy above keeps
+// honoring that. Forcing "server" on Firefox makes it re-request CSD over and
+// over (ShojiWM stops answering after a few, but this loop once pinned
+// Firefox's CPU) and leaves two title bars.
+COMPOSITOR.window.decoration.kdeDefaultMode(() => "server");
+
 // enable triple buffer mode for massive performance
 COMPOSITOR.rendering.framePacing = "throughput";
 
@@ -200,21 +208,54 @@ function scheduleWorkspaceBroadcast() {
   });
 }
 
+// Workspaces a bar asked to create (by number). The view lists only
+// workspaces with windows plus the active one, so these are listed as well
+// until they show up there on their own.
+const requestedWorkspaces = new Map<string, Set<number>>();
+
 COMPOSITOR.workspace.configure(() => {
   const view = HYBRID_WINDOW_MANAGER.viewForIpc();
   return {
-    groups: view.monitors.map((monitor) => ({
-      id: monitor.name,
-      outputs: [monitor.name],
-      workspaces: monitor.workspaces.map((workspace) => ({
-        id: `${monitor.name}:${workspace.index}`,
-        name: String(workspace.index),
-        coordinates: [Math.max(0, workspace.index - 1)],
-        active: workspace.active,
-        hidden: !workspace.active && workspace.windowCount === 0,
-      })),
-    })),
+    groups: view.monitors.map((monitor) => {
+      const listed = new Set(monitor.workspaces.map((workspace) => workspace.index));
+      const requested = requestedWorkspaces.get(monitor.name) ?? new Set();
+      for (const index of requested) {
+        if (listed.has(index)) {
+          requested.delete(index);
+        }
+      }
+      const workspaces = [
+        ...monitor.workspaces,
+        ...[...requested].map((index) => ({ index, active: false, windowCount: 0 })),
+      ].sort((a, b) => a.index - b.index);
+      return {
+        id: monitor.name,
+        outputs: [monitor.name],
+        workspaces: workspaces.map((workspace) => ({
+          id: `${monitor.name}:${workspace.index}`,
+          name: String(workspace.index),
+          coordinates: [Math.max(0, workspace.index - 1)],
+          active: workspace.active,
+          hidden:
+            !workspace.active &&
+            workspace.windowCount === 0 &&
+            !requested.has(workspace.index),
+        })),
+      };
+    }),
   };
+});
+
+// ext-workspace `create_workspace`: the name is the workspace number.
+COMPOSITOR.workspace.event.onCreate((event) => {
+  const index = Number(event.name);
+  if (!event.groupId || !Number.isInteger(index) || index < 1) {
+    return;
+  }
+  const requested = requestedWorkspaces.get(event.groupId) ?? new Set<number>();
+  requested.add(index);
+  requestedWorkspaces.set(event.groupId, requested);
+  scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.workspace.event.onActivate((event) => {

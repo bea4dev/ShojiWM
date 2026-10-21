@@ -24,8 +24,8 @@ use crate::{
         DecorationWindowStateRequestInvocation, GestureSwipeEventSnapshot,
         LayerEffectEvaluationResult, PointerMoveEventSnapshot, PopupEffectEvaluationResult,
         WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot,
-        WindowActivateRequestEventSnapshot, WindowDecorationDecisionSnapshot,
-        WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
+        WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+        WindowDecorationDecisionSnapshot, WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
         WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
         WindowMoveEventSnapshot, WindowResizeEventSnapshot,
     },
@@ -80,6 +80,11 @@ pub enum DecorationRequest<'a> {
     Policy {
         window: &'a WaylandWindowSnapshot,
         context: &'a WindowDecorationPolicyContextSnapshot,
+    },
+    /// The legacy KDE decoration manager's default mode for a client that
+    /// just bound it. GTK 3 decides on its own title bar from this alone.
+    KdeDefaultMode {
+        client: &'a WindowDecorationClientSnapshot,
     },
     /// A decoration node handler (button click, state change) fired.
     InvokeHandler {

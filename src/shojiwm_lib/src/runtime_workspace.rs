@@ -7,6 +7,10 @@ pub struct RuntimeWorkspaceConfigUpdate {
     /// for plasmashell's Pager), if the config maps workspaces to them.
     #[serde(default)]
     pub virtual_desktops: Option<RuntimeVirtualDesktopConfig>,
+    /// The config listens to `workspace.event.onCreate`, so groups advertise
+    /// ext-workspace's `create_workspace`.
+    #[serde(default)]
+    pub can_create: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -72,6 +76,17 @@ pub struct RuntimeWorkspaceActivateRequestSnapshot {
     /// runtimes deliver such a request to `onMoveWindow`, not `onActivate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
+    /// Create a workspace with this name in `group_id` instead; `workspace_id`
+    /// is empty. The runtimes deliver such a request to `onCreate`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create_name: Option<String>,
+}
+
+/// A client (a bar) asked to create a workspace (`workspace.event.onCreate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWorkspaceCreateEvent {
+    pub group_id: Option<String>,
+    pub name: String,
 }
 
 /// A client (KDE's Pager or taskbar) asked to move a window to a workspace

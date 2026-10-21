@@ -78,6 +78,8 @@ import type {
   WorkspaceConfigEntry,
   WorkspaceConfigureFactory,
   WorkspaceController,
+  WorkspaceCreateEvent,
+  WorkspaceMoveWindowEvent,
   WorkspaceGroupConfig,
   EnvController,
   EnvUpdateOperation,
@@ -430,10 +432,12 @@ export {
   commitWorkspaceConfigurationRegistration,
   emitWorkspaceActivate,
   takePendingWorkspaceConfig,
+  type WorkspaceConfigPayload,
 } from "./workspace";
 export { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
 export {
   WINDOW_DECORATION_CONTROLLER,
+  resolveKdeDefaultDecorationMode,
   resolveWindowDecorationDecision,
 } from "./window-decoration";
 export { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
@@ -730,6 +734,8 @@ export type {
   SurfacePolicyTarget,
   CompositorWindowController,
   CompositorWindowDecorationController,
+  KdeDefaultDecorationResolver,
+  WindowDecorationClient,
   WindowDecorationContext,
   WindowDecorationDecision,
   WindowDecorationMode,

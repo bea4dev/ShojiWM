@@ -4,17 +4,24 @@ use smithay::{
     desktop::Window,
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as XdgMode,
-        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
-            Mode as KdeMode, OrgKdeKwinServerDecoration,
+        wayland_protocols_misc::server_decoration::server::{
+            org_kde_kwin_server_decoration::{Mode as KdeMode, OrgKdeKwinServerDecoration},
+            org_kde_kwin_server_decoration_manager::{
+                Mode as KdeDefaultMode, OrgKdeKwinServerDecorationManager,
+            },
         },
-        wayland_server::{Resource, protocol::wl_surface::WlSurface},
+        wayland_server::{
+            Client, DataInit, DisplayHandle, New, Resource, protocol::wl_surface::WlSurface,
+        },
     },
+    wayland::{GlobalData, GlobalDispatch2},
 };
 use tracing::{debug, warn};
 
 use crate::{
     ssd::{
-        WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
+        WindowDecorationClientSnapshot, WindowDecorationModeSnapshot,
+        WindowDecorationPolicyContextSnapshot,
         WindowDecorationPolicyReasonSnapshot, WindowDecorationProtocolSnapshot,
         WindowDecorationStateSnapshot,
     },
@@ -22,6 +29,63 @@ use crate::{
 };
 
 const LOOP_WARNING_THRESHOLD: u32 = 8;
+
+/// The legacy KDE decoration manager global. Smithay's announces one default
+/// mode to every client; this one asks the config for each client as it
+/// binds, because GTK 3 decides on its own title bar from that default alone.
+/// Requests on the bound manager go to smithay's handler.
+pub struct KdeDecorationManagerGlobal;
+
+impl GlobalDispatch2<OrgKdeKwinServerDecorationManager, ShojiWM> for KdeDecorationManagerGlobal {
+    fn bind(
+        &self,
+        state: &mut ShojiWM,
+        dh: &DisplayHandle,
+        client: &Client,
+        resource: New<OrgKdeKwinServerDecorationManager>,
+        data_init: &mut DataInit<'_, ShojiWM>,
+    ) {
+        let manager = data_init.init(resource, GlobalData);
+        let snapshot = decoration_client_snapshot(
+            client.get_credentials(dh).ok().map(|credentials| credentials.pid),
+        );
+        let mode = match state.config_runtime.kde_default_decoration_mode(&snapshot) {
+            Ok(mode) => mode,
+            Err(error) => {
+                warn!(?error, pid = ?snapshot.pid, "KDE default decoration resolver failed; announcing CSD");
+                WindowDecorationModeSnapshot::Client
+            }
+        };
+        debug!(pid = ?snapshot.pid, executable = ?snapshot.executable, ?mode, "announced KDE default decoration mode");
+        manager.default_mode(match mode {
+            WindowDecorationModeSnapshot::Client => KdeDefaultMode::Client,
+            WindowDecorationModeSnapshot::Server => KdeDefaultMode::Server,
+        });
+    }
+}
+
+fn decoration_client_snapshot(pid: Option<i32>) -> WindowDecorationClientSnapshot {
+    let Some(pid) = pid.filter(|pid| *pid > 0) else {
+        return WindowDecorationClientSnapshot::default();
+    };
+    let executable = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    let command = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|cmdline| {
+            cmdline
+                .split(|byte| *byte == 0)
+                .filter(|argument| !argument.is_empty())
+                .map(|argument| String::from_utf8_lossy(argument).into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    WindowDecorationClientSnapshot {
+        pid: Some(pid),
+        executable,
+        command,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WindowDecorationNegotiation {

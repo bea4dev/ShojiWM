@@ -36,7 +36,7 @@ use shojiwm_lib::{
     },
     runtime_workspace::{
         RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate,
-        RuntimeWorkspaceMoveWindowEvent,
+        RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent,
     },
     ssd::{
         GestureSwipeEventSnapshot,
@@ -44,7 +44,8 @@ use shojiwm_lib::{
         PointerMoveEventSnapshot, PopupParentKindSnapshot, SurfacePolicy, WaylandLayerSnapshot,
         WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot,
         WindowActivateRequestEventSnapshot, WindowDecorationModeSnapshot,
-        WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
+        WindowDecorationClientSnapshot, WindowDecorationPolicyContextSnapshot,
+        WindowFullscreenRequestEventSnapshot,
         WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
         WindowMoveEventSnapshot, WindowResizeEventSnapshot,
     },
@@ -975,8 +976,9 @@ impl WorkspaceController {
         let Some(factory) = with_registry(|registry| registry.workspace_configure.clone()) else {
             return;
         };
-        let model = untrack(|| factory());
+        let mut model = untrack(|| factory());
         with_registry(|registry| {
+            model.can_create = !registry.listeners.workspace_create.is_empty();
             if registry.desired_workspaces.as_ref() != Some(&model) {
                 registry.desired_workspaces = Some(model.clone());
                 registry.pending.workspace = Some(model);
@@ -993,6 +995,14 @@ impl WorkspaceController {
     /// workspace. The workspace ids are the `virtual_desktops` ids.
     pub fn on_move_window(&self, listener: impl Fn(&RuntimeWorkspaceMoveWindowEvent) + 'static) {
         with_registry(|registry| registry.listeners.workspace_move_window.push(Rc::new(listener)));
+    }
+
+    /// A bar asked to create a workspace (ext-workspace `create_workspace`).
+    /// Bars are offered the request once a listener is registered; publish
+    /// the new workspace from [`Self::configure`] so the bar sees it.
+    pub fn on_create(&self, listener: impl Fn(&RuntimeWorkspaceCreateEvent) + 'static) {
+        with_registry(|registry| registry.listeners.workspace_create.push(Rc::new(listener)));
+        self.reconfigure();
     }
 }
 
@@ -1079,6 +1089,20 @@ impl WindowController {
             + 'static,
     ) {
         with_registry(|registry| registry.decoration_policy = Some(Rc::new(f)));
+    }
+
+    /// `window.decoration.kdeDefaultMode`: the default mode the legacy KDE
+    /// decoration protocol announces to each client, chosen from its process
+    /// (it has no window yet). GTK 3 applications decide on their own title
+    /// bar from this alone, once at startup; return `Server` to have them
+    /// leave it to the compositor. Without this the default is `Client`.
+    /// Applications that draw their own title bar anyway (Firefox) still ask
+    /// for CSD, which [`Self::decoration`] should keep honoring.
+    pub fn kde_default_decoration(
+        &self,
+        f: impl Fn(&WindowDecorationClientSnapshot) -> WindowDecorationModeSnapshot + 'static,
+    ) {
+        with_registry(|registry| registry.kde_default_decoration = Some(Rc::new(f)));
     }
 
     /// Known windows, oldest first.

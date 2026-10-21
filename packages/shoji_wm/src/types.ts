@@ -87,6 +87,22 @@ export type WindowDecorationResolver = (
   context: WindowDecorationContext,
 ) => WindowDecorationDecision;
 
+/**
+ * The process of a client that bound the legacy KDE decoration manager. It
+ * has no window yet, so there is no app id or title.
+ */
+export interface WindowDecorationClient {
+  readonly pid?: number;
+  /** `/proc/<pid>/exe`, e.g. `/usr/bin/thunar`, when readable. */
+  readonly executable?: string;
+  /** The command line, split into its arguments. */
+  readonly command: readonly string[];
+}
+
+export type KdeDefaultDecorationResolver = (
+  client: WindowDecorationClient,
+) => WindowDecorationMode;
+
 export interface CompositorWindowDecorationController {
   /**
    * Register the policy that selects CSD (`client`) or SSD (`server`). The
@@ -94,6 +110,20 @@ export interface CompositorWindowDecorationController {
    * changes and during config reload.
    */
   configure(resolver: WindowDecorationResolver): void;
+  /**
+   * Choose the default mode the legacy KDE decoration protocol announces to
+   * each client. GTK 3 applications (Thunar, ...) decide on their own title
+   * bar from this alone, once at startup, and ignore later per-window
+   * answers from `configure`; return `server` to have them leave the title
+   * bar to the compositor. Without a resolver the default is `client`.
+   *
+   * The resolver runs once per client, when it starts, so a change applies
+   * to applications started afterwards. Applications that draw their own
+   * title bar anyway (Firefox, GTK header bars) still ask for CSD, and
+   * `configure` should keep honoring that request: forcing `server` on
+   * them gives two title bars.
+   */
+  kdeDefaultMode(resolver: KdeDefaultDecorationResolver): void;
 }
 
 export type WaylandLayerKind = "background" | "bottom" | "top" | "overlay";
@@ -1658,6 +1688,20 @@ export interface WorkspaceActivateEvent {
 }
 
 /**
+ * A client (an ext-workspace bar) asked to create a workspace.
+ * クライアント（ext-workspace 対応バー）がワークスペースの作成を要求したイベント。
+ */
+export interface WorkspaceCreateEvent {
+  /** The group (`WorkspaceGroupConfig.id`) to create it in. / 作成先のグループ。 */
+  groupId?: string;
+  /**
+   * The name the client asked for; the config decides what to create.
+   * クライアントが指定した名前。何を作るかは設定側が決めます。
+   */
+  name: string;
+}
+
+/**
  * A client (KDE's Pager or taskbar) asked to move a window to a workspace.
  * クライアント（KDE の Pager やタスクバー）がウィンドウをワークスペースへ
  * 移動するよう要求したイベント。
@@ -1696,6 +1740,17 @@ export interface WorkspaceController {
      * 要求したときに呼ばれます（`virtualDesktops` 設定時のみ）。
      */
     onMoveWindow(listener: (event: WorkspaceMoveWindowEvent) => void): () => void;
+    /**
+     * Called when a client such as a bar asks to create a workspace
+     * (ext-workspace `create_workspace`). Bars are offered the request only
+     * while a listener is registered. Publish the new workspace from
+     * `configure` (and call `reconfigure`) so the client sees it.
+     * バーなどのクライアントがワークスペースの作成を要求したときに呼ばれます
+     * （ext-workspace の `create_workspace`）。リスナーがある間だけバーに
+     * この要求を許可します。新しいワークスペースは `configure` から公開し
+     * （`reconfigure` を呼び）、クライアントに見えるようにしてください。
+     */
+    onCreate(listener: (event: WorkspaceCreateEvent) => void): () => void;
   };
 }
 

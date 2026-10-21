@@ -122,14 +122,13 @@ The resolver runs synchronously when a decoration object is created, the
 client changes its preference, relevant metadata changes, or the TS config is
 reloaded. `context` contains:
 
-The legacy KDE decoration manager advertises CSD as its global default because
-that event is sent before per-window metadata exists. The app id may therefore
-still be empty during the first decoration request. Preserve the CSD baseline
-while it is empty, then apply the final per-app policy when metadata arrives,
-as in the example above. Sending an early SSD response can make clients such
-as Firefox or Chromium construct reduced window chrome that they do not fully
-rebuild after a later CSD response. The resolver must be side-effect free;
-window actions such as `focus()` are rejected in this context.
+The app id may still be empty during the first decoration request. Preserve
+the CSD baseline while it is empty, then apply the final per-app policy when
+metadata arrives, as in the example above. Sending an early SSD response can
+make some versions of Firefox or Chromium construct reduced window chrome that
+they do not fully rebuild after a later CSD response. The resolver must be
+side-effect free; window actions such as `focus()` are rejected in this
+context.
 
 | Property           | Meaning                                                             |
 | ------------------ | ------------------------------------------------------------------- |
@@ -152,6 +151,30 @@ When `canNegotiate` is `false`, ShojiWM can still select which composition to
 draw, but cannot force the client to add or remove CSD. XWayland decoration is
 also observable as `protocol: 'xwayland'`, but is not negotiated through these
 Wayland protocols.
+
+#### GTK 3 applications
+
+GTK 3 applications such as Thunar do not use xdg-decoration. They decide on
+their own title bar once, at startup, from the default mode that the legacy
+KDE decoration manager announces when they connect, and they ignore later
+per-window answers from `configure`: forcing `server` on them only adds a
+second title bar. Choose that default with `kdeDefaultMode`:
+
+```ts
+COMPOSITOR.window.decoration.kdeDefaultMode((client) => "server");
+```
+
+The resolver runs once per client, as it connects and before it has any
+window, so it gets the process rather than a window: `pid`, `executable`
+(`/proc/<pid>/exe`, e.g. `/usr/bin/thunar`) and `command` (its arguments).
+A change applies to applications started afterwards. Without a resolver the
+default is `client`, which keeps every GTK 3 title bar.
+
+Applications that draw their own title bar anyway, such as Firefox or GTK
+header bar applications, still ask for CSD with `server` as the default; keep
+honoring `context.clientPreference` in `configure` for them. Forcing `server`
+on Firefox makes it request CSD over and over (the loop once pinned its CPU,
+see below) and leaves two title bars.
 
 For the legacy KDE protocol, ShojiWM suppresses repeated acknowledgements to
 prevent a client/compositor renegotiation loop. If eight identical requests

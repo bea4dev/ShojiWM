@@ -122,11 +122,10 @@ COMPOSITOR.window.composition = (window) => {
 resolver は装飾オブジェクトの作成、クライアント要求の変更、関連メタデータの変更、
 TS config のリロード時に同期的に実行されます。`context` の内容は次の通りです。
 
-旧 KDE decoration manager のグローバル初期値は、ウィンドウ単位のメタデータより先に
-送られるため、CSD に設定されています。最初の装飾要求時点では app id が空の場合があるので、
-上の例のように app id が空の間は CSD の初期値を維持し、メタデータ到着後にアプリごとの
-最終方針を適用してください。早い段階で SSD を返すと、Firefox や Chromium が簡素な
-ウィンドウ枠を構築し、後から CSD を返しても完全には作り直さないことがあります。resolver は
+最初の装飾要求時点では app id が空の場合があるので、上の例のように app id が空の間は
+CSD の初期値を維持し、メタデータ到着後にアプリごとの最終方針を適用してください。早い段階で
+SSD を返すと、一部のバージョンの Firefox や Chromium が簡素なウィンドウ枠を構築し、
+後から CSD を返しても完全には作り直さないことがあります。resolver は
 副作用なしである必要があり、この中で `focus()` などのウィンドウ操作を呼ぶとエラーになります。
 
 | プロパティ         | 意味                                                                        |
@@ -149,6 +148,29 @@ TS config のリロード時に同期的に実行されます。`context` の内
 ただし、クライアントに CSD の追加や削除を強制することはできません。XWayland は
 `protocol: 'xwayland'` として確認できますが、これらの Wayland 装飾プロトコルでは
 ネゴシエーションされません。
+
+#### GTK 3 アプリ
+
+Thunar などの GTK 3 アプリは xdg-decoration を使いません。接続時に旧 KDE decoration
+manager が送る既定モードだけを見て、起動時に一度だけ自前のタイトルバーを描くか決め、
+その後 `configure` がウィンドウごとに返す値は無視します。`server` を強制しても、
+タイトルバーが二重になるだけです。この既定モードは `kdeDefaultMode` で選びます。
+
+```ts
+COMPOSITOR.window.decoration.kdeDefaultMode((client) => "server");
+```
+
+resolver はクライアントの接続時に一度だけ、ウィンドウができる前に呼ばれるので、
+ウィンドウではなくプロセスの情報を受け取ります。`pid`、`executable`（`/proc/<pid>/exe`。
+例: `/usr/bin/thunar`）、`command`（引数の配列）です。変更はその後に起動したアプリから
+反映されます。resolver を登録しない場合の既定は `client` で、GTK 3 のタイトルバーは
+すべて残ります。
+
+Firefox や GTK のヘッダーバーを使うアプリのように、いずれにせよ自前でタイトルバーを
+描くアプリは、既定が `server` でも CSD を要求します。`configure` では
+`context.clientPreference` を尊重し続けてください。Firefox に `server` を強制すると
+CSD を何度も要求し直し（このループはかつて Firefox の CPU を張り付かせました。下記参照）、
+タイトルバーも二重になります。
 
 旧 KDE プロトコルでは、クライアントとコンポジターの再交渉ループを防ぐため、ShojiWM は
 同じackの繰り返しを抑止します。同じ要求が8回到着すると、そのループについて一度だけ

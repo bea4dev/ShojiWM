@@ -35,7 +35,9 @@ use smithay::{
             RecvFlags, recv,
             sockopt::{socket_error, socket_peercred},
         },
-        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::{
+            Mode as KdeDecorationMode, OrgKdeKwinServerDecorationManager,
+        },
         wayland_server::{
             Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason, GlobalId},
@@ -1568,14 +1570,18 @@ impl ShojiWM {
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        // The legacy KDE protocol announces this default when a client binds
-        // the manager, before any per-window metadata exists. Advertising
-        // Server here makes Firefox/Chromium construct an undecorated window
-        // up front, and some versions do not rebuild their full CSD after a
-        // later per-window Client response. Start from the Wayland-safe CSD
-        // baseline; COMPOSITOR.window.decoration.configure can still request
-        // SSD for each decoration object once the window is known.
-        let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeDecorationMode::Client);
+        // The legacy KDE protocol announces a default mode when a client
+        // binds the manager, before it has any window. Smithay's global sends
+        // one default to everyone, so it stays hidden; ShojiWM's own global
+        // (`KdeDecorationManagerGlobal`) asks the config per client instead
+        // and falls back to the CSD baseline. Smithay still handles requests
+        // on the bound manager and its decoration objects.
+        let kde_decoration_state =
+            KdeDecorationState::new_with_filter::<Self, _>(&dh, KdeDecorationMode::Client, |_| false);
+        dh.create_global::<Self, OrgKdeKwinServerDecorationManager, _>(
+            1,
+            crate::window_decoration::KdeDecorationManagerGlobal,
+        );
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);

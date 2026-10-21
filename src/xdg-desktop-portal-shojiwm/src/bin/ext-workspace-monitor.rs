@@ -2,7 +2,11 @@
 //! such as duplicate `workspace_enter` for a workspace already in the group
 //! (the way external bars end up rendering duplicated workspace buttons).
 //!
-//!   WAYLAND_DISPLAY=wayland-2 ext-workspace-monitor [seconds]
+//!   WAYLAND_DISPLAY=wayland-2 ext-workspace-monitor [seconds] [--create NAME]
+//!
+//! With `--create`, after the first `done` it asks the first group that
+//! advertises `create_workspace` for a workspace named NAME, then activates
+//! the workspace whose id ends in `:NAME` once it appears.
 //!
 //! Exits non-zero if any duplicate enter was observed.
 
@@ -23,6 +27,12 @@ struct App {
     group_members: HashMap<u32, Vec<u32>>,
     duplicate_enters: u32,
     events: u32,
+    manager: Option<ExtWorkspaceManagerV1>,
+    /// Groups that advertise `create_workspace`.
+    creatable_groups: Vec<ExtWorkspaceGroupHandleV1>,
+    create: Option<String>,
+    create_sent: bool,
+    activated: bool,
 }
 
 fn proto_id<P: wayland_client::Proxy>(proxy: &P) -> u32 {
@@ -31,7 +41,7 @@ fn proto_id<P: wayland_client::Proxy>(proxy: &P) -> u32 {
 
 impl Dispatch<wl_registry::WlRegistry, ()> for App {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
         _: &(),
@@ -43,8 +53,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
         } = event
             && interface == "ext_workspace_manager_v1"
         {
-            registry.bind::<ExtWorkspaceManagerV1, _, _>(name, 1, qh, ());
+            let manager = registry.bind::<ExtWorkspaceManagerV1, _, _>(name, 1, qh, ());
             println!("bound ext_workspace_manager_v1");
+            state.manager = Some(manager);
         }
     }
 }
@@ -85,6 +96,17 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for App {
                     summary.push(format!("group#{group}=[{}]", names.join(",")));
                 }
                 println!("done: {}", summary.join(" "));
+                if let (Some(name), false) = (state.create.clone(), state.create_sent) {
+                    match (state.creatable_groups.first(), &state.manager) {
+                        (Some(group), Some(manager)) => {
+                            println!("request: create_workspace({name}) on group#{}", proto_id(group));
+                            group.create_workspace(name);
+                            manager.commit();
+                            state.create_sent = true;
+                        }
+                        _ => println!("no group advertises create_workspace"),
+                    }
+                }
             }
             _ => {}
         }
@@ -136,6 +158,18 @@ impl Dispatch<ExtWorkspaceGroupHandleV1, ()> for App {
                     members.retain(|member| *member != workspace_num);
                 }
             }
+            ext_workspace_group_handle_v1::Event::Capabilities { capabilities } => {
+                println!("event: group#{group_id} capabilities={capabilities:?}");
+                let can_create = matches!(
+                    capabilities,
+                    wayland_client::WEnum::Value(capabilities)
+                        if capabilities.contains(ext_workspace_group_handle_v1::GroupCapabilities::CreateWorkspace)
+                );
+                state.creatable_groups.retain(|known| known != group);
+                if can_create {
+                    state.creatable_groups.push(group.clone());
+                }
+            }
             ext_workspace_group_handle_v1::Event::Removed => {
                 println!("event: group#{group_id} removed");
                 state.group_members.remove(&group_id);
@@ -159,6 +193,18 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for App {
         match event {
             ext_workspace_handle_v1::Event::Id { id } => {
                 println!("event: workspace #{workspace_num} id={id}");
+                let created = state
+                    .create
+                    .as_ref()
+                    .is_some_and(|name| state.create_sent && id.ends_with(&format!(":{name}")));
+                if created && !state.activated {
+                    if let Some(manager) = &state.manager {
+                        println!("request: activate {id}");
+                        workspace.activate();
+                        manager.commit();
+                        state.activated = true;
+                    }
+                }
                 state.workspace_ids.insert(workspace_num, id);
             }
             ext_workspace_handle_v1::Event::State { state: ws_state } => {
@@ -173,15 +219,24 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for App {
 }
 
 fn main() {
-    let seconds: u64 = std::env::args()
-        .nth(1)
+    let args = std::env::args().collect::<Vec<_>>();
+    let seconds: u64 = args
+        .get(1)
         .and_then(|value| value.parse().ok())
         .unwrap_or(10);
+    let create = args
+        .iter()
+        .position(|arg| arg == "--create")
+        .and_then(|index| args.get(index + 1))
+        .cloned();
     let conn = Connection::connect_to_env().expect("connect");
     let mut queue = conn.new_event_queue::<App>();
     let qh = queue.handle();
     let _registry = conn.display().get_registry(&qh, ());
-    let mut app = App::default();
+    let mut app = App {
+        create,
+        ..App::default()
+    };
 
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {

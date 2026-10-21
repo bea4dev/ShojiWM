@@ -21,7 +21,8 @@ use shojiwm_lib::ssd::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowState,
     PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot,
     WaylandWindowSnapshot,
-    WindowActivateRequestEventSnapshot, WindowDecorationDecisionSnapshot,
+    WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+    WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
     WindowDecorationPolicyContextSnapshot,
     WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
     WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
@@ -128,6 +129,11 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "inputState")]
         input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     },
+    KdeDecorationDefault {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        client: &'a WindowDecorationClientSnapshot,
+    },
     WindowClosed {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -175,6 +181,9 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "windowId")]
         #[serde(skip_serializing_if = "Option::is_none")]
         window_id: Option<&'a str>,
+        #[serde(rename = "createName")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        create_name: Option<&'a str>,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -2635,6 +2644,57 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         })
     }
 
+    fn kde_default_decoration_mode(
+        &self,
+        client: &WindowDecorationClientSnapshot,
+    ) -> Result<Option<WindowDecorationModeSnapshot>, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let request = serde_json::to_string(&RuntimeRequest::KdeDecorationDefault {
+            request_id,
+            client,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let Some(response) = runtime.read_response::<RuntimeWindowDecorationPolicyResponse>()?
+        else {
+            let status = runtime
+                .child
+                .try_wait()?
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
+            let stderr = runtime
+                .stderr_log
+                .lock()
+                .map(|stderr| stderr.clone())
+                .unwrap_or_default();
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+        };
+        if response.request_id != request_id || response.kind != "kdeDecorationDefault" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched kde decoration default response: expected {request_id}/kdeDecorationDefault, got {}/{}",
+                response.request_id, response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+        // No decision: the config did not register a resolver.
+        Ok(response.decision.map(|decision| decision.mode))
+    }
+
     fn evaluate_cached_window(
         &self,
         window_id: &str,
@@ -3261,6 +3321,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             workspace_id: &event.workspace_id,
             group_id: event.group_id.as_deref(),
             window_id: event.window_id.as_deref(),
+            create_name: event.create_name.as_deref(),
             now_ms,
             display_state: &display_state,
             input_state: &input_state,
@@ -6448,6 +6509,63 @@ COMPOSITOR.window.composition = () => <Label text={restored} />;
         drop(reloaded);
         drop(evaluator);
         let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn embedded_runtime_resolves_kde_default_mode_and_workspace_creation() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-kde-default-test-{}", std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(&config_path, r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text="kde default test" />;
+COMPOSITOR.window.decoration.kdeDefaultMode((client) =>
+  client.executable?.endsWith("/thunar") && client.command[1] === "--ssd" ? "server" : "client",
+);
+COMPOSITOR.workspace.configure(() => ({ groups: [] }));
+COMPOSITOR.workspace.event.onCreate((event) => {
+  if (event.groupId !== "eDP-1" || event.name !== "5") {
+    throw new Error(`unexpected create request ${JSON.stringify(event)}`);
+  }
+});
+"#).unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"), &config_path,
+        ).with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("initial", None).unwrap();
+
+        let client = |executable: &str, command: &[&str]| WindowDecorationClientSnapshot {
+            pid: Some(42),
+            executable: Some(executable.into()),
+            command: command.iter().map(|argument| argument.to_string()).collect(),
+        };
+        assert_eq!(
+            evaluator
+                .kde_default_decoration_mode(&client("/usr/bin/thunar", &["thunar", "--ssd"]))
+                .unwrap(),
+            Some(WindowDecorationModeSnapshot::Server),
+        );
+        assert_eq!(
+            evaluator
+                .kde_default_decoration_mode(&client("/usr/lib/firefox/firefox", &["firefox"]))
+                .unwrap(),
+            Some(WindowDecorationModeSnapshot::Client),
+        );
+
+        let create = RuntimeWorkspaceActivateRequestSnapshot {
+            workspace_id: String::new(),
+            group_id: Some("eDP-1".into()),
+            window_id: None,
+            create_name: Some("5".into()),
+        };
+        assert!(evaluator.workspace_activate(&create, 0).unwrap().invoked);
+        std::fs::remove_dir_all(test_dir).ok();
     }
 
     #[test]

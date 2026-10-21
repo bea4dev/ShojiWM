@@ -314,6 +314,7 @@ impl Dispatch<OrgKdePlasmaVirtualDesktop, String> for ShojiWM {
                 workspace_id: desktop_id.clone(),
                 group_id: None,
                 window_id: None,
+                create_name: None,
             });
         }
     }
@@ -347,6 +348,7 @@ impl ShojiWM {
             workspace_id: desktop_id,
             group_id: None,
             window_id: Some(window_id),
+            create_name: None,
         });
     }
 }

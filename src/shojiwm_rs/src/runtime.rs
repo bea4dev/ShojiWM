@@ -25,13 +25,14 @@ use shojiwm_lib::{
     runtime_process::{RuntimeProcessAction, RuntimeProcessEntry},
     runtime_workspace::{
         RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate,
-        RuntimeWorkspaceMoveWindowEvent,
+        RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent,
     },
     ssd::{
         GestureSwipeEventSnapshot, ManagedWindowState, PointerMoveEventSnapshot,
         RuntimeWindowAction, SurfacePolicy, WaylandLayerSnapshot, WaylandOutputSnapshot,
         WaylandPopupSnapshot, WaylandWindowSnapshot, WindowActivateRequestEventSnapshot,
-        WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot, WindowEffectConfig,
+        WindowDecorationClientSnapshot, WindowDecorationModeSnapshot,
+        WindowDecorationPolicyContextSnapshot, WindowEffectConfig,
         WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
         WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
         WindowTransform,
@@ -88,6 +89,7 @@ pub(crate) struct Listeners {
     pub destroy_layer: Vec<RefListener<WaylandLayerSnapshot>>,
     pub workspace_activate: Vec<RefListener<RuntimeWorkspaceActivateRequestSnapshot>>,
     pub workspace_move_window: Vec<RefListener<RuntimeWorkspaceMoveWindowEvent>>,
+    pub workspace_create: Vec<RefListener<RuntimeWorkspaceCreateEvent>>,
     pub dnd_start: Vec<Listener<crate::dnd::DragSession>>,
 }
 
@@ -100,6 +102,8 @@ pub(crate) type WindowStateSlots = HashMap<(&'static str, TypeId), Rc<dyn Any>>;
 pub(crate) type CompositionFn = Rc<dyn Fn(Window) -> Composition>;
 pub(crate) type DecorationPolicyFn =
     Rc<dyn Fn(&WaylandWindowSnapshot, &WindowDecorationPolicyContextSnapshot) -> WindowDecorationModeSnapshot>;
+pub(crate) type KdeDefaultDecorationFn =
+    Rc<dyn Fn(&WindowDecorationClientSnapshot) -> WindowDecorationModeSnapshot>;
 pub(crate) type OutputConfigureFn =
     Rc<dyn Fn(&crate::compositor::OutputContext) -> BTreeMap<String, Option<RuntimeOutputConfig>>>;
 pub(crate) type InputConfigureFn =
@@ -128,6 +132,7 @@ pub(crate) struct Registry {
     pub listeners: Listeners,
     pub composition: Option<CompositionFn>,
     pub decoration_policy: Option<DecorationPolicyFn>,
+    pub kde_default_decoration: Option<KdeDefaultDecorationFn>,
     pub key_bindings: Vec<RuntimeKeyBindingEntry>,
     pub key_handlers: HashMap<String, Rc<dyn Fn()>>,
     pub window_move_modifier: Option<String>,

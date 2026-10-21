@@ -109,6 +109,21 @@ pub struct WindowDecorationPolicyContextSnapshot {
     pub reason: WindowDecorationPolicyReasonSnapshot,
 }
 
+/// The process behind a client that bound the legacy KDE decoration manager,
+/// before it has any window: the manager's default mode is decided per
+/// client, from this.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowDecorationClientSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
+    /// `/proc/<pid>/exe`, when readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
+    /// `/proc/<pid>/cmdline`, split into its arguments.
+    pub command: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowDecorationDecisionSnapshot {

@@ -18,7 +18,11 @@ mod window_manager;
 mod window_switcher;
 mod workspace;
 
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use serde_json::{Value, json};
 use shojiwm_rs::{
@@ -130,6 +134,14 @@ fn setup() {
     COMPOSITOR.window.decoration(|_window, context| {
         context.client_preference.unwrap_or(WindowDecorationModeSnapshot::Server)
     });
+
+    // GTK 3 applications (Thunar, ...) choose between their own title bar
+    // and ours once, at startup, from this default alone: `Server` drops
+    // theirs. Firefox and GTK header bars still ask for CSD, and the policy
+    // above keeps honoring that. Forcing `Server` on Firefox makes it
+    // re-request CSD over and over (ShojiWM stops answering after a few, but
+    // this loop once pinned Firefox's CPU) and leaves two title bars.
+    COMPOSITOR.window.kde_default_decoration(|_client| WindowDecorationModeSnapshot::Server);
 
     // Triple buffering: render the next frame while the previous one waits
     // for its vblank.
@@ -259,19 +271,30 @@ fn setup_ipc(wm: &WindowManager) -> Ipc {
         dock_proximity: Rc::default(),
     };
 
+    // Workspaces a bar asked to create (by number). The view lists only
+    // workspaces with windows plus the active one, so these are listed as
+    // well until they show up there on their own.
+    let requested: Rc<RefCell<BTreeMap<String, BTreeSet<u32>>>> = Rc::default();
+
     {
         let wm = wm.clone();
+        let requested = requested.clone();
         COMPOSITOR.workspace.configure(move || {
             let view = wm.read(|wm| wm.view_for_ipc());
+            let mut requested = requested.borrow_mut();
             RuntimeWorkspaceConfigUpdate {
                 virtual_desktops: None,
+                // Set by the SDK from the `on_create` listeners.
+                can_create: false,
                 groups: view
                     .monitors
                     .iter()
-                    .map(|monitor| RuntimeWorkspaceGroupConfig {
-                        id: monitor.name.clone(),
-                        outputs: vec![monitor.name.clone()],
-                        workspaces: monitor
+                    .map(|monitor| {
+                        let pending = requested.entry(monitor.name.clone()).or_default();
+                        pending.retain(|index| {
+                            !monitor.workspaces.iter().any(|workspace| workspace.index == *index)
+                        });
+                        let mut workspaces = monitor
                             .workspaces
                             .iter()
                             .map(|workspace| RuntimeWorkspaceEntry {
@@ -282,9 +305,37 @@ fn setup_ipc(wm: &WindowManager) -> Ipc {
                                 urgent: false,
                                 hidden: !workspace.active && workspace.window_count == 0,
                             })
-                            .collect(),
+                            .chain(pending.iter().map(|index| RuntimeWorkspaceEntry {
+                                id: format!("{}:{index}", monitor.name),
+                                name: index.to_string(),
+                                coordinates: vec![index.saturating_sub(1)],
+                                active: false,
+                                urgent: false,
+                                hidden: false,
+                            }))
+                            .collect::<Vec<_>>();
+                        workspaces.sort_by_key(|workspace| workspace.coordinates[0]);
+                        RuntimeWorkspaceGroupConfig {
+                            id: monitor.name.clone(),
+                            outputs: vec![monitor.name.clone()],
+                            workspaces,
+                        }
                     })
                     .collect(),
+            }
+        });
+    }
+
+    {
+        // ext-workspace `create_workspace`: the name is the workspace number.
+        let ipc = ipc.clone();
+        COMPOSITOR.workspace.on_create(move |event| {
+            let (Some(monitor), Ok(index)) = (&event.group_id, event.name.parse::<u32>()) else {
+                return;
+            };
+            if index >= 1 {
+                requested.borrow_mut().entry(monitor.clone()).or_default().insert(index);
+                ipc.schedule_workspace_broadcast();
             }
         });
     }

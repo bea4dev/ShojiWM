@@ -16,7 +16,7 @@ use shojiwm_lib::{
         RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply, RuntimeRequest,
         WindowRequest, WorkspaceRequest, cli::ArgSpec,
     },
-    ssd::DecorationEvaluator,
+    ssd::{DecorationEvaluator, WindowDecorationDecisionSnapshot},
 };
 
 pub use evaluator::EmbeddedDecorationEvaluator;
@@ -116,6 +116,14 @@ impl ConfigRuntime for TypeScriptRuntime {
                 DecorationRequest::Policy { window, context } => RuntimeReply::DecorationPolicy(
                     evaluator.window_decoration_policy(window, context)?,
                 ),
+                DecorationRequest::KdeDefaultMode { client } => {
+                    match evaluator.kde_default_decoration_mode(client)? {
+                        Some(mode) => {
+                            RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot { mode })
+                        }
+                        None => RuntimeReply::Unhandled,
+                    }
+                }
                 DecorationRequest::InvokeHandler {
                     window_id,
                     handler_id,

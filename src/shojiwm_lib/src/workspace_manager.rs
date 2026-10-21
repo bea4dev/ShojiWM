@@ -38,6 +38,9 @@ pub struct ExtWorkspaceGroupHandle {
 }
 
 struct ExtWorkspaceGroupInner {
+    id: String,
+    /// Advertise `create_workspace` (the config listens to `onCreate`).
+    can_create: bool,
     outputs: Vec<String>,
     workspaces: Vec<String>,
     removed: bool,
@@ -75,9 +78,11 @@ struct ExtWorkspaceOutputResource {
 }
 
 impl ExtWorkspaceGroupHandle {
-    fn new(group: &RuntimeWorkspaceGroupConfig) -> Self {
+    fn new(group: &RuntimeWorkspaceGroupConfig, can_create: bool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(ExtWorkspaceGroupInner {
+                id: group.id.clone(),
+                can_create,
                 outputs: group.outputs.clone(),
                 workspaces: group
                     .workspaces
@@ -97,12 +102,12 @@ impl ExtWorkspaceGroupHandle {
         all_outputs: &[Output],
         workspaces: &[ExtWorkspaceHandle],
     ) {
-        let (outputs, workspace_ids) = {
+        let (outputs, workspace_ids, can_create) = {
             let inner = self.inner.lock().unwrap();
-            (inner.outputs.clone(), inner.workspaces.clone())
+            (inner.outputs.clone(), inner.workspaces.clone(), inner.can_create)
         };
 
-        resource.capabilities(ExtWorkspaceGroupCapability::empty());
+        resource.capabilities(group_capabilities(can_create));
         let mut entered_outputs = Vec::new();
         let mut output_resources = Vec::new();
         refresh_group_outputs(
@@ -188,6 +193,31 @@ impl ExtWorkspaceGroupHandle {
             }
         }
         config_changed || outputs_changed || workspaces_changed
+    }
+
+    fn id(&self) -> String {
+        self.inner.lock().unwrap().id.clone()
+    }
+
+    fn can_create(&self) -> bool {
+        self.inner.lock().unwrap().can_create
+    }
+
+    /// Advertise (or stop advertising) `create_workspace`; the protocol asks
+    /// for the capabilities event again whenever they change.
+    fn set_can_create(&self, can_create: bool) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.can_create == can_create {
+            return false;
+        }
+        inner.can_create = can_create;
+        retain_live_group_instances(&mut inner);
+        for instance in &inner.instances {
+            if let Ok(resource) = instance.resource.upgrade() {
+                resource.capabilities(group_capabilities(can_create));
+            }
+        }
+        true
     }
 
     fn refresh_outputs(&self, dh: &DisplayHandle, all_outputs: &[Output]) -> bool {
@@ -392,6 +422,14 @@ fn workspace_state(inner: &ExtWorkspaceInner) -> ExtWorkspaceState {
     state
 }
 
+fn group_capabilities(can_create: bool) -> ExtWorkspaceGroupCapability {
+    if can_create {
+        ExtWorkspaceGroupCapability::CreateWorkspace
+    } else {
+        ExtWorkspaceGroupCapability::empty()
+    }
+}
+
 fn retain_live_group_instances(inner: &mut ExtWorkspaceGroupInner) {
     inner
         .instances
@@ -536,6 +574,7 @@ pub struct ExtWorkspaceManagerState {
     managers: Vec<ExtWorkspaceManagerV1>,
     groups: BTreeMap<String, ExtWorkspaceGroupHandle>,
     workspaces: BTreeMap<String, ExtWorkspaceHandle>,
+    can_create: bool,
 }
 
 impl ExtWorkspaceManagerState {
@@ -554,6 +593,7 @@ impl ExtWorkspaceManagerState {
             managers: Vec::new(),
             groups: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            can_create: false,
         }
     }
 
@@ -590,9 +630,13 @@ impl ExtWorkspaceManagerState {
             }
         }
 
+        self.can_create = update.can_create;
+        for handle in self.groups.values() {
+            handle.set_can_create(self.can_create);
+        }
         for group in &update.groups {
             if !self.groups.contains_key(&group.id) {
-                let handle = ExtWorkspaceGroupHandle::new(group);
+                let handle = ExtWorkspaceGroupHandle::new(group, self.can_create);
                 self.announce_group::<D>(&handle, dh, all_outputs);
                 self.groups.insert(group.id.clone(), handle);
             }
@@ -715,6 +759,7 @@ pub trait ExtWorkspaceManagerHandler:
     fn ext_workspace_manager_state(&mut self) -> &mut ExtWorkspaceManagerState;
     fn ext_workspace_outputs(&self) -> Vec<Output>;
     fn ext_workspace_activate(&mut self, workspace_id: String, group_id: Option<String>);
+    fn ext_workspace_create(&mut self, group_id: String, name: String);
 }
 
 impl<D> GlobalDispatch<ExtWorkspaceManagerV1, ExtWorkspaceManagerGlobalData, D>
@@ -813,16 +858,21 @@ where
     D: ExtWorkspaceManagerHandler,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         _resource: &ExtWorkspaceGroupHandleV1,
         request: ext_workspace_group_handle_v1::Request,
-        _data: &ExtWorkspaceGroupHandle,
+        group: &ExtWorkspaceGroupHandle,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            ext_workspace_group_handle_v1::Request::CreateWorkspace { .. } => {}
+            // Ignored unless advertised, as the protocol asks.
+            ext_workspace_group_handle_v1::Request::CreateWorkspace { workspace } => {
+                if group.can_create() {
+                    state.ext_workspace_create(group.id(), workspace);
+                }
+            }
             ext_workspace_group_handle_v1::Request::Destroy => {}
             _ => unreachable!(),
         }
@@ -869,13 +919,24 @@ impl ExtWorkspaceManagerHandler for ShojiWM {
             workspace_id,
             group_id,
             window_id: None,
+            create_name: None,
+        });
+    }
+
+    fn ext_workspace_create(&mut self, group_id: String, name: String) {
+        self.runtime_workspace_activate(RuntimeWorkspaceActivateRequestSnapshot {
+            workspace_id: String::new(),
+            group_id: Some(group_id),
+            window_id: None,
+            create_name: Some(name),
         });
     }
 }
 
 impl ShojiWM {
-    /// Send a workspace activation (or, with `window_id`, a move of that
-    /// window) to the runtime's `workspace.event.onActivate` listeners.
+    /// Send a workspace activation to the runtime's `workspace.event.onActivate`
+    /// listeners (with `window_id`, a move of that window to `onMoveWindow`;
+    /// with `create_name`, a new workspace to `onCreate`).
     pub(crate) fn runtime_workspace_activate(&mut self, event: RuntimeWorkspaceActivateRequestSnapshot) {
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();

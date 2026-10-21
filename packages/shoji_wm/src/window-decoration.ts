@@ -1,5 +1,8 @@
 import type {
   CompositorWindowDecorationController,
+  KdeDefaultDecorationResolver,
+  WindowDecorationClient,
+  WindowDecorationMode,
   WaylandWindow,
   WindowDecorationContext,
   WindowDecorationDecision,
@@ -9,6 +12,7 @@ import type {
 const DEFAULT_DECISION: WindowDecorationDecision = { mode: "server" };
 
 let resolver: WindowDecorationResolver | null = null;
+let kdeDefaultResolver: KdeDefaultDecorationResolver | null = null;
 
 function validateDecision(
   value: WindowDecorationDecision,
@@ -32,6 +36,12 @@ export const WINDOW_DECORATION_CONTROLLER: CompositorWindowDecorationController 
       }
       resolver = nextResolver;
     },
+    kdeDefaultMode(nextResolver) {
+      if (typeof nextResolver !== "function") {
+        throw new TypeError("KDE default decoration resolver must be a function");
+      }
+      kdeDefaultResolver = nextResolver;
+    },
   };
 
 export function resolveWindowDecorationDecision(
@@ -39,4 +49,20 @@ export function resolveWindowDecorationDecision(
   context: WindowDecorationContext,
 ): WindowDecorationDecision {
   return validateDecision(resolver?.(window, context) ?? DEFAULT_DECISION);
+}
+
+/** The KDE default mode for `client`, or `null` without a resolver. */
+export function resolveKdeDefaultDecorationMode(
+  client: WindowDecorationClient,
+): WindowDecorationMode | null {
+  if (!kdeDefaultResolver) {
+    return null;
+  }
+  const mode = kdeDefaultResolver(client);
+  if (mode !== "client" && mode !== "server") {
+    throw new TypeError(
+      'KDE default decoration mode must be either "client" or "server"',
+    );
+  }
+  return mode;
 }

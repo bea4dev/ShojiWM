@@ -4,7 +4,8 @@
 use super::window_model::{
     GestureSwipeEventSnapshot, ManagedWindowAnimationSnapshot, ManagedWindowState,
     PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
-    WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationDecisionSnapshot,
+    WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+    WindowDecorationDecisionSnapshot,
     WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
     WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
     WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
@@ -44,6 +45,15 @@ pub trait DecorationEvaluator {
         Ok(WindowDecorationDecisionSnapshot {
             mode: WindowDecorationModeSnapshot::Server,
         })
+    }
+
+    /// The legacy KDE decoration manager's default mode for `client`, or
+    /// `None` to leave it to the compositor (CSD).
+    fn kde_default_decoration_mode(
+        &self,
+        _client: &WindowDecorationClientSnapshot,
+    ) -> Result<Option<WindowDecorationModeSnapshot>, DecorationEvaluationError> {
+        Ok(None)
     }
 
     fn evaluate_cached_window(

@@ -24,7 +24,8 @@ use crate::{
         LayerEffectEvaluationResult, PointerMoveEventSnapshot, PopupEffectEvaluationResult,
         StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandOutputSnapshot,
         WaylandPopupSnapshot, WaylandWindowSnapshot, WindowActivateRequestEventSnapshot,
-        WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
+        WindowDecorationClientSnapshot, WindowDecorationDecisionSnapshot,
+        WindowDecorationModeSnapshot,
         WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
         WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
         WindowMoveEventSnapshot, WindowResizeEventSnapshot,
@@ -201,6 +202,20 @@ impl RuntimeHandle {
                 mode: WindowDecorationModeSnapshot::Server,
             }),
             other => Err(mismatch("decoration policy", &other)),
+        }
+    }
+
+    /// The legacy KDE decoration manager's default mode for `client`; CSD
+    /// unless the config chooses.
+    pub fn kde_default_decoration_mode(
+        &mut self,
+        client: &WindowDecorationClientSnapshot,
+    ) -> Result<WindowDecorationModeSnapshot, RuntimeError> {
+        let request = RuntimeRequest::Decoration(DecorationRequest::KdeDefaultMode { client });
+        match self.request(0.0, request)? {
+            RuntimeReply::DecorationPolicy(decision) => Ok(decision.mode),
+            RuntimeReply::Unhandled => Ok(WindowDecorationModeSnapshot::Client),
+            other => Err(mismatch("kde default decoration mode", &other)),
         }
     }
 

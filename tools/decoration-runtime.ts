@@ -349,7 +349,7 @@ import {
   type WindowCompositionFunction,
   type OutputStateSnapshot,
   type OutputInfo,
-  type WorkspaceConfig,
+  type WorkspaceConfigPayload,
   emitWorkspaceActivate,
   type PollCallback,
   type PollDirtyMode,
@@ -380,8 +380,11 @@ import {
   type WaylandPopup,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
+  type WindowDecorationClient,
   type WindowDecorationContext,
   type WindowDecorationDecision,
+  type WindowDecorationMode,
+  resolveKdeDefaultDecorationMode,
   resolveWindowDecorationDecision,
   type WindowEffectAssignment,
   type ManagedWindowAnimationEasing,
@@ -527,6 +530,12 @@ interface WindowDecorationPolicyRequest {
   context: WindowDecorationContext;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
+}
+
+interface KdeDecorationDefaultRequest {
+  requestId: number;
+  kind: "kdeDecorationDefault";
+  client: WindowDecorationClient;
 }
 
 interface SchedulerTickRequest {
@@ -749,6 +758,7 @@ interface WorkspaceActivateRequest {
   workspaceId: string;
   groupId?: string;
   windowId?: string;
+  createName?: string;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
@@ -759,6 +769,7 @@ type RuntimeRequest =
   | EvaluateRequest
   | EvaluatePreviewRequest
   | WindowDecorationPolicyRequest
+  | KdeDecorationDefaultRequest
   | SchedulerTickRequest
   | WindowClosedRequest
   | StartCloseRequest
@@ -805,7 +816,7 @@ interface EvaluateSuccess {
   // before the open animation kicks in.
   actions?: RuntimeWindowAction[];
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -827,6 +838,14 @@ interface WindowDecorationPolicySuccess {
   decision: WindowDecorationDecision;
 }
 
+interface KdeDecorationDefaultSuccess {
+  requestId: number;
+  ok: true;
+  kind: "kdeDecorationDefault";
+  /** `null`: the config registered no resolver. */
+  decision: { mode: WindowDecorationMode } | null;
+}
+
 interface SchedulerTickSuccess {
   requestId: number;
   ok: true;
@@ -841,7 +860,7 @@ interface SchedulerTickSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -856,7 +875,7 @@ interface WindowClosedSuccess {
   ok: true;
   kind: "windowClosed";
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -939,7 +958,7 @@ interface InvokeHandlerSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -961,7 +980,7 @@ interface InvokeKeyBindingSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -984,7 +1003,7 @@ interface WindowResizeSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1005,7 +1024,7 @@ interface WindowMoveSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1030,7 +1049,7 @@ interface WindowStateRequestSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1063,7 +1082,7 @@ interface StartCloseSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1093,7 +1112,7 @@ interface NativeInteractionSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -1108,7 +1127,7 @@ interface GetEffectConfigSuccess {
   kind: "getEffectConfig";
   backgroundEffect?: CompiledEffectHandle | null;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -1120,7 +1139,7 @@ interface EvaluateLayerEffectsSuccess {
   effects: RuntimeLayerEffectAssignment[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1135,7 +1154,7 @@ interface EvaluatePopupEffectsSuccess {
   effects: RuntimePopupEffectAssignment[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -1149,7 +1168,7 @@ interface LifecycleEnableSuccess {
   ok: true;
   kind: "lifecycleEnable";
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -1170,7 +1189,7 @@ interface RuntimeFailure {
   kind?: RuntimeRequest["kind"];
   error: string;
   displayConfig?: { outputs: DisplayConfigDraft };
-  workspaceConfig?: WorkspaceConfig;
+  workspaceConfig?: WorkspaceConfigPayload;
 }
 
 interface RuntimeLayerEffectAssignment {
@@ -1229,7 +1248,7 @@ function pendingDisplayConfigPayload():
   return outputs ? { outputs } : undefined;
 }
 
-function pendingWorkspaceConfigPayload(): WorkspaceConfig | undefined {
+function pendingWorkspaceConfigPayload(): WorkspaceConfigPayload | undefined {
   return takePendingWorkspaceConfig();
 }
 
@@ -1668,6 +1687,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           case "lifecycleEnable":
           case "lifecycleDisable":
           case "windowDecorationPolicy":
+          case "kdeDecorationDefault":
           case "workspaceActivate":
           case "pointerRegion":
           case "inputGrab":
@@ -1730,6 +1750,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           workspaceId: request.workspaceId,
           groupId: request.groupId,
           windowId: request.windowId,
+          createName: request.createName,
         });
         const mutation = invoked
           ? collectRuntimeMutationState()
@@ -1903,6 +1924,14 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             ok: true,
             kind: "windowDecorationPolicy",
             decision,
+          });
+        } else if (request.kind === "kdeDecorationDefault") {
+          const mode = resolveKdeDefaultDecorationMode(request.client);
+          await writeResponse(embeddedBridge, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "kdeDecorationDefault",
+            decision: mode ? { mode } : null,
           });
         } else {
           if (request.kind === "schedulerTick") {
@@ -5340,6 +5369,7 @@ function writeResponse(
     | LifecycleDisableSuccess
     | DrainPreloadSuccess
     | WindowDecorationPolicySuccess
+    | KdeDecorationDefaultSuccess
     | RuntimeFailure,
 ): Promise<void> {
   return writeResponseWithRuntimeUpdates(
