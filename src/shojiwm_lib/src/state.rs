@@ -421,6 +421,10 @@ pub struct ShojiWM {
     pub damage_blink_capture_suppression: HashMap<String, u8>,
     pub runtime_poll_dirty: bool,
     pub runtime_dirty_window_ids: std::collections::HashSet<String>,
+    /// Windows marked dirty while a decoration refresh pass runs (by a host
+    /// message it drains, say): the pass must not clear them with the
+    /// windows it processed earlier, or their changes are never refreshed.
+    pub runtime_dirty_marked_during_refresh: Option<std::collections::HashSet<String>>,
     pub runtime_managed_only_window_ids: std::collections::HashSet<String>,
     pub runtime_node_only_window_ids: std::collections::HashSet<String>,
     pub runtime_scheduler_enabled: bool,
@@ -1850,6 +1854,7 @@ impl ShojiWM {
             damage_blink_capture_suppression: HashMap::new(),
             runtime_poll_dirty: false,
             runtime_dirty_window_ids: Default::default(),
+            runtime_dirty_marked_during_refresh: None,
             runtime_managed_only_window_ids: Default::default(),
             runtime_node_only_window_ids: Default::default(),
             runtime_scheduler_enabled: false,
@@ -4110,6 +4115,9 @@ impl ShojiWM {
                 self.runtime_node_only_window_ids.insert(window_id.clone());
             } else {
                 self.runtime_node_only_window_ids.remove(&window_id);
+            }
+            if let Some(marked) = &mut self.runtime_dirty_marked_during_refresh {
+                marked.insert(window_id.clone());
             }
             self.runtime_dirty_window_ids.insert(window_id);
         }

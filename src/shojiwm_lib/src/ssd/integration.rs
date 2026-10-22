@@ -2805,6 +2805,7 @@ impl ShojiWM {
         let mut closing_runtime_updates = 0usize;
         let mut animation_active_for_target = false;
         let mut processed_runtime_dirty_window_ids = std::collections::HashSet::new();
+        self.runtime_dirty_marked_during_refresh = Some(Default::default());
         let mut managed_rect_apply_window_ids = std::collections::HashSet::new();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         let closing_active_count = self.closing_window_snapshots.len();
@@ -4906,7 +4907,12 @@ impl ShojiWM {
             elapsed_ms = refresh_elapsed_ms,
             "refresh_window_decorations finished"
         );
+        let marked_during_refresh = self.runtime_dirty_marked_during_refresh.take().unwrap_or_default();
         for window_id in processed_runtime_dirty_window_ids {
+            // Marked again after it was processed: refresh it next time.
+            if marked_during_refresh.contains(&window_id) {
+                continue;
+            }
             self.runtime_dirty_window_ids.remove(&window_id);
             self.runtime_managed_only_window_ids.remove(&window_id);
             self.runtime_node_only_window_ids.remove(&window_id);
