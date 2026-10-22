@@ -111,7 +111,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
 
 fn main() {
     use wayland_client::Proxy;
-    let target = std::env::args().nth(1).expect("usage: wlr-activate <app_id>");
+    let target = std::env::args()
+        .nth(1)
+        .expect("usage: wlr-activate <app_id>");
     let conn = Connection::connect_to_env().expect("connect");
     let mut queue = conn.new_event_queue::<App>();
     let qh = queue.handle();

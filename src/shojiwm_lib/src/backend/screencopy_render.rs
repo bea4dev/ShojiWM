@@ -203,10 +203,8 @@ pub fn process_screencopy_queue_for_output<E: RenderElement<GlesRenderer>>(
 }
 
 /// `(sync point, damage regions)` produced by a screencopy render pass.
-type ScreencopyRenderResult = Result<
-    (Option<SyncPoint>, Option<Vec<Rectangle<i32, Physical>>>),
-    Box<dyn std::error::Error>,
->;
+type ScreencopyRenderResult =
+    Result<(Option<SyncPoint>, Option<Vec<Rectangle<i32, Physical>>>), Box<dyn std::error::Error>>;
 
 fn render_for_screencopy<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
@@ -214,8 +212,7 @@ fn render_for_screencopy<E: RenderElement<GlesRenderer>>(
     elements: &[&E],
     damage_tracker: &mut OutputDamageTracker,
     screencopy: &Screencopy,
-) -> ScreencopyRenderResult
-{
+) -> ScreencopyRenderResult {
     use smithay::output::OutputModeSource;
 
     let OutputModeSource::Static {

@@ -37,7 +37,9 @@ struct App {
 
 impl App {
     fn stamp(&self) -> String {
-        let elapsed = self.start.map_or(0.0, |start| start.elapsed().as_secs_f64());
+        let elapsed = self
+            .start
+            .map_or(0.0, |start| start.elapsed().as_secs_f64());
         format!("[{elapsed:7.3}s]")
     }
 }
@@ -72,15 +74,16 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                 "wl_output" => {
                     state
                         .outputs
-                        .push(registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ()));
+                        .push(registry.bind::<wl_output::WlOutput, _, _>(
+                            name,
+                            version.min(4),
+                            qh,
+                            (),
+                        ));
                 }
                 "ext_session_lock_manager_v1" => {
-                    state.manager = Some(registry.bind::<ExtSessionLockManagerV1, _, _>(
-                        name,
-                        1,
-                        qh,
-                        (),
-                    ));
+                    state.manager =
+                        Some(registry.bind::<ExtSessionLockManagerV1, _, _>(name, 1, qh, ()));
                 }
                 _ => {}
             }
@@ -111,7 +114,10 @@ impl Dispatch<ExtSessionLockV1, ()> for App {
                 state.locked = true;
             }
             ext_session_lock_v1::Event::Finished => {
-                println!("{} finished (compositor refused or ended the lock)", state.stamp());
+                println!(
+                    "{} finished (compositor refused or ended the lock)",
+                    state.stamp()
+                );
                 state.finished = true;
             }
             _ => {}
@@ -179,7 +185,11 @@ fn main() {
     let manager = app.manager.clone().expect("no ext_session_lock_manager_v1");
     let compositor = app.compositor.clone().expect("wl_compositor");
     let lock = manager.lock(&qh, ());
-    println!("{} lock requested for {} outputs", app.stamp(), app.outputs.len());
+    println!(
+        "{} lock requested for {} outputs",
+        app.stamp(),
+        app.outputs.len()
+    );
     for output in app.outputs.clone() {
         let surface = compositor.create_surface(&qh, ());
         let lock_surface = lock.get_lock_surface(&surface, &output, &qh, surface.clone());

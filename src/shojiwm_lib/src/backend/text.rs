@@ -201,9 +201,10 @@ impl TextRasterizer {
         let target_width = (logical_width * raster_scale as f32).round().max(1.0) as i32;
         let target_height = (logical_height * raster_scale as f32).round().max(1.0) as i32;
         let font_size = spec.font_size.max(1.0) * raster_scale as f32;
-        let line_height =
-            spec.line_height.unwrap_or(spec.font_size.max(1.0) + crate::ssd::DEFAULT_LABEL_LINE_GAP as f32)
-                * raster_scale as f32;
+        let line_height = spec
+            .line_height
+            .unwrap_or(spec.font_size.max(1.0) + crate::ssd::DEFAULT_LABEL_LINE_GAP as f32)
+            * raster_scale as f32;
         let metrics = Metrics::new(font_size, line_height.max(1.0));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
@@ -262,13 +263,7 @@ impl TextRasterizer {
         })
     }
 
-    pub fn handle_async_ready(
-        &mut self,
-        spec_hash: u64,
-        width: i32,
-        height: i32,
-        pixels: Vec<u8>,
-    ) {
+    pub fn handle_async_ready(&mut self, spec_hash: u64, width: i32, height: i32, pixels: Vec<u8>) {
         self.async_in_flight.remove(&spec_hash);
         self.async_missing.remove(&spec_hash);
         self.async_buffers.insert(
@@ -593,9 +588,23 @@ pub(crate) fn memory_text_element(
 
     let physical = label
         .rect_precise
-        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, root_subpixel, output_geo, scale))
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(
+                rect,
+                root_rect,
+                root_subpixel,
+                output_geo,
+                scale,
+            )
+        })
         .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(label.rect, root_rect, root_subpixel, output_geo, scale)
+            relative_physical_rect_from_root_snapped_edges(
+                label.rect,
+                root_rect,
+                root_subpixel,
+                output_geo,
+                scale,
+            )
         });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,

@@ -24,7 +24,8 @@ use std::{collections::BTreeMap, ffi::OsStr, path::PathBuf};
 pub use handle::RuntimeHandle;
 pub use host::{HostMessage, RuntimeConfigDelta, RuntimeHost, RuntimeSchedule};
 pub use message::{
-    CompositionPatch, DecorationRequest, OVERLAY_STAGE_INDEX, PAINT_STAGE_INDEX, SHADER_INPUT_STAGE_INDEX, EffectRequest, InputRequest, RuntimeEvent, RuntimeReply, RuntimeRequest,
+    CompositionPatch, DecorationRequest, EffectRequest, InputRequest, OVERLAY_STAGE_INDEX,
+    PAINT_STAGE_INDEX, RuntimeEvent, RuntimeReply, RuntimeRequest, SHADER_INPUT_STAGE_INDEX,
     SchedulerTickRequest, WindowRequest, WorkspaceRequest,
 };
 
@@ -195,7 +196,11 @@ impl RuntimeBoot {
     }
 
     /// [`launch`](Self::launch) for a compositor listening on `wayland_display`.
-    pub fn launch_with_display(&self, host: RuntimeHost, wayland_display: Option<&OsStr>) -> RuntimeHandle {
+    pub fn launch_with_display(
+        &self,
+        host: RuntimeHost,
+        wayland_display: Option<&OsStr>,
+    ) -> RuntimeHandle {
         let context = LaunchContext {
             config_path: self
                 .config_path

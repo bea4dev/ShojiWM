@@ -63,7 +63,10 @@ pub fn play_rect_animation(
     set_timeout(duration_ms, move || {
         ACTIVE_TARGETS.with(|targets| {
             let mut targets = targets.borrow_mut();
-            if targets.get(&slot).is_some_and(|(_, current)| *current == token) {
+            if targets
+                .get(&slot)
+                .is_some_and(|(_, current)| *current == token)
+            {
                 targets.remove(&slot);
             }
         });

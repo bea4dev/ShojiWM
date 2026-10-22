@@ -84,7 +84,8 @@ impl WindowSignals {
         self.is_transient.set(snapshot.is_transient);
         self.parent_id.set(snapshot.parent_id.clone());
         self.plasma.set(snapshot.plasma.clone());
-        self.minimized_geometry.set(snapshot.minimized_geometry.map(Into::into));
+        self.minimized_geometry
+            .set(snapshot.minimized_geometry.map(Into::into));
         self.icon.set(snapshot.icon.clone());
         self.interaction.set(snapshot.interaction.clone());
         self.decoration.set(snapshot.decoration);
@@ -185,7 +186,11 @@ impl Window {
         let Some(entry) = self.entry() else {
             return;
         };
-        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
         if entry.context.ui_scale.replace(scale) != scale {
             entry.context.mark_full();
         }

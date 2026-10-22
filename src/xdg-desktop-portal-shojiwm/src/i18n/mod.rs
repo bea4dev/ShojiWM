@@ -74,11 +74,7 @@ fn detect_locale() -> &'static str {
         .unwrap_or_default();
     // POSIX locale strings look like `ja_JP.UTF-8@modifier`; strip codeset
     // and modifier suffixes before matching.
-    let base = raw
-        .split(['.', '@'])
-        .next()
-        .unwrap_or("")
-        .trim();
+    let base = raw.split(['.', '@']).next().unwrap_or("").trim();
     match base {
         "ja_JP" | "ja" => "ja_JP",
         "en_US" | "en" | "C" | "POSIX" | "" => "en_US",

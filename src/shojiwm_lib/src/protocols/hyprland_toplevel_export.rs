@@ -32,7 +32,13 @@ pub use self::generated::server::{
     hyprland_toplevel_export_manager_v1::{self, HyprlandToplevelExportManagerV1},
 };
 
-#[allow(missing_docs, dead_code, non_camel_case_types, unused_imports, clippy::all)]
+#[allow(
+    missing_docs,
+    dead_code,
+    non_camel_case_types,
+    unused_imports,
+    clippy::all
+)]
 mod generated {
     pub mod server {
         use smithay::reexports::wayland_server;
@@ -84,7 +90,10 @@ pub struct HyprlandToplevelExportState {
     pub pending: Vec<PendingToplevelExport>,
     /// Per manager and window, what the last copy saw, so the next copy can
     /// wait for (and report) the window's damage since.
-    trackers: HashMap<HyprlandToplevelExportManagerV1, Vec<(WlrForeignToplevelHandle, OutputDamageTracker)>>,
+    trackers: HashMap<
+        HyprlandToplevelExportManagerV1,
+        Vec<(WlrForeignToplevelHandle, OutputDamageTracker)>,
+    >,
 }
 
 impl HyprlandToplevelExportState {
@@ -123,16 +132,20 @@ impl HyprlandToplevelExportState {
         let index = match trackers.iter().position(|(known, _)| known.same_as(handle)) {
             Some(index) => index,
             None => {
-                trackers.push((handle.clone(), OutputDamageTracker::new(size, scale, Default::default())));
+                trackers.push((
+                    handle.clone(),
+                    OutputDamageTracker::new(size, scale, Default::default()),
+                ));
                 trackers.len() - 1
             }
         };
         let tracker = &mut trackers[index].1;
-        let (current_size, current_scale, _) = tracker
-            .mode()
-            .clone()
-            .try_into()
-            .unwrap_or((size, scale, Default::default()));
+        let (current_size, current_scale, _) =
+            tracker
+                .mode()
+                .clone()
+                .try_into()
+                .unwrap_or((size, scale, Default::default()));
         if current_size != size || current_scale != scale {
             *tracker = OutputDamageTracker::new(size, scale, Default::default());
         }

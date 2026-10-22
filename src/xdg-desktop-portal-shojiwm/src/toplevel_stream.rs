@@ -38,9 +38,7 @@ use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 use spa::sys as spa_sys;
 
 use crate::pipewire_stream::{
-    build_header_meta_param,
-    fill_header_meta,
-    parse_pipewire_max_framerate,
+    build_header_meta_param, fill_header_meta, parse_pipewire_max_framerate,
 };
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
@@ -341,7 +339,8 @@ fn run(
             }
             CaptureSourceSpec::Output { name } => {
                 let Some(manager) = state.output_source_manager.clone() else {
-                    let err = "compositor doesn't expose ext_output_image_capture_source_manager_v1";
+                    let err =
+                        "compositor doesn't expose ext_output_image_capture_source_manager_v1";
                     let _ = state.node_id_tx.take().map(|tx| tx.send(Err(err.into())));
                     return Err(err.into());
                 };
@@ -418,21 +417,14 @@ fn run(
     let s_state = state_rc.clone();
     let s_add = state_rc.clone();
     let s_remove = state_rc.clone();
-    let s_param = state_rc
-        .clone();
+    let s_param = state_rc.clone();
     let _listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |stream, _ud, old, new| {
             s_state.borrow_mut().on_state_changed(stream, old, new);
         })
         .param_changed(move |stream, _ud, id, param| {
-            s_param
-                .borrow_mut()
-                .on_param_changed(
-                    stream,
-                    id,
-                    param,
-                );
+            s_param.borrow_mut().on_param_changed(stream, id, param);
         })
         .add_buffer(move |stream, _ud, buffer| {
             s_add.borrow_mut().on_add_buffer(stream, buffer);
@@ -455,17 +447,8 @@ fn run(
     let format_pod = Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
     let buffers_pod =
         Pod::from_bytes(&buffers_bytes).ok_or("buffers POD parse failed".to_string())?;
-    let meta_pod = Pod::from_bytes(
-        &meta_bytes,
-    ).ok_or(
-        "meta POD parse failed"
-            .to_string(),
-    )?;
-    let mut params = [
-        format_pod,
-        buffers_pod,
-        meta_pod,
-    ];
+    let meta_pod = Pod::from_bytes(&meta_bytes).ok_or("meta POD parse failed".to_string())?;
+    let mut params = [format_pod, buffers_pod, meta_pod];
     stream.connect(
         spa::utils::Direction::Output,
         None,
@@ -518,43 +501,13 @@ fn run(
                     build_buffers_param(new_w, new_h),
                     build_header_meta_param(),
                 ) {
-                    (
-                        Ok(
-                            fbytes,
-                        ),
-                        Ok(
-                            bbytes,
-                        ),
-                        Ok(
-                            mbytes,
-                        ),
-                    ) => {
-                        if let (
-                            Some(
-                                fpod,
-                            ),
-                            Some(
-                                bpod,
-                            ),
-                            Some(
-                                mpod,
-                            ),
-                        ) = (
-                            Pod::from_bytes(
-                                &fbytes,
-                            ),
-                            Pod::from_bytes(
-                                &bbytes,
-                            ),
-                            Pod::from_bytes(
-                                &mbytes,
-                            ),
+                    (Ok(fbytes), Ok(bbytes), Ok(mbytes)) => {
+                        if let (Some(fpod), Some(bpod), Some(mpod)) = (
+                            Pod::from_bytes(&fbytes),
+                            Pod::from_bytes(&bbytes),
+                            Pod::from_bytes(&mbytes),
                         ) {
-                            let mut params = [
-                                fpod,
-                                bpod,
-                                mpod,
-                            ];
+                            let mut params = [fpod, bpod, mpod];
                             if let Err(e) = stream.update_params(&mut params) {
                                 tracing::warn!("update_params failed: {e:?}");
                             }
@@ -563,17 +516,8 @@ fn run(
                             // reallocated buffers land (pending_frame is None).
                         }
                     }
-                    (
-                        e1,
-                        e2,
-                        e3,
-                    ) => {
-                        tracing::warn!(
-                            ?e1,
-                            ?e2,
-                            ?e3,
-                            "build params failed during renegotiate",
-                        );
+                    (e1, e2, e3) => {
+                        tracing::warn!(?e1, ?e2, ?e3, "build params failed during renegotiate",);
                     }
                 }
             }
@@ -880,18 +824,11 @@ impl AppState {
         }
     }
 
-    fn on_param_changed(
-        &mut self,
-        _stream: &pw::stream::Stream,
-        id: u32,
-        param: Option<&Pod>,
-    ) {
+    fn on_param_changed(&mut self, _stream: &pw::stream::Stream, id: u32, param: Option<&Pod>) {
         if id != spa_sys::SPA_PARAM_Format {
             return;
         }
-        let Some(
-            param,
-        ) = param else {
+        let Some(param) = param else {
             return;
         };
         // Same quiesce as the output path: a Format change while a buffer
@@ -904,16 +841,10 @@ impl AppState {
             );
             self.renegotiating = true;
         }
-        self.frame_interval = parse_pipewire_max_framerate(
-            param
-        )
-            .filter(
-                |framerate| framerate.num > 0 && framerate.denom > 0,
-            )
+        self.frame_interval = parse_pipewire_max_framerate(param)
+            .filter(|framerate| framerate.num > 0 && framerate.denom > 0)
             .map(|framerate| {
-                std::time::Duration::from_secs_f64(
-                    framerate.denom as f64 / framerate.num as f64,
-                )
+                std::time::Duration::from_secs_f64(framerate.denom as f64 / framerate.num as f64)
             });
     }
 
@@ -1010,9 +941,7 @@ impl AppState {
         }
         self.pw_buffer_stride.remove(&key);
         // A throttle-held buffer from the outgoing pool must not be reused.
-        if self.spare_buffer == Some(
-            key
-        ) {
+        if self.spare_buffer == Some(key) {
             self.spare_buffer = None;
         }
         // Abandon any in-flight frame that pointed at this buffer so a late
@@ -1055,13 +984,8 @@ impl AppState {
         // Reuse a throttle-held buffer if one exists, else dequeue a fresh
         // PW buffer.
         let pw_buf = match self.spare_buffer.take() {
-            Some(
-                key,
-            ) => key as *mut pw::sys::pw_buffer,
-            None => unsafe {
-                stream
-                    .dequeue_raw_buffer()
-            },
+            Some(key) => key as *mut pw::sys::pw_buffer,
+            None => unsafe { stream.dequeue_raw_buffer() },
         };
         if pw_buf.is_null() {
             // Consumer hasn't returned a buffer yet. Same situation as the
@@ -1110,20 +1034,8 @@ impl AppState {
         // Compare against 3/4 of the interval, not the full interval: when
         // the negotiated rate equals the capture rate, scheduling jitter
         // would otherwise flag ~every frame as early and halve the throughput.
-        let throttled = match (
-            self.frame_interval,
-            self.last_queue_at,
-        ) {
-            (
-                Some(
-                    interval,
-                ),
-                Some(
-                    last_queue_at,
-                ),
-            ) => last_queue_at
-                .elapsed() < interval
-                * 3 / 4,
+        let throttled = match (self.frame_interval, self.last_queue_at) {
+            (Some(interval), Some(last_queue_at)) => last_queue_at.elapsed() < interval * 3 / 4,
             _ => false,
         };
         if let Some(stream) = self.stream.clone()
@@ -1200,9 +1112,7 @@ impl AppState {
                         chunk.size = 0;
                         chunk.flags = spa_sys::SPA_CHUNK_FLAG_CORRUPTED as i32;
                     }
-                    stream.queue_raw_buffer(
-                        pw_buf,
-                    );
+                    stream.queue_raw_buffer(pw_buf);
                 }
             }
         }

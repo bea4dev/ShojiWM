@@ -19,7 +19,7 @@ use shojiwm_rs::{
     prelude::*,
     ssd::{
         GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, PointerHitTargetSnapshot,
-        PointerMovePointSnapshot, PointerMoveEventSnapshot, WindowActivateRequestEventSnapshot,
+        PointerMoveEventSnapshot, PointerMovePointSnapshot, WindowActivateRequestEventSnapshot,
         WindowActivateRequestSourceSnapshot, WindowFullscreenRequestEventSnapshot,
         WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
         WindowMoveEventSnapshot, WindowMovePhaseSnapshot, WindowMoveSourceSnapshot,
@@ -82,29 +82,43 @@ impl SnapZone {
     }
 }
 
-pub static WINDOW_STATE_RECT: WindowStateKey<Rect> = WindowStateKey::new("rect", |window| window.rect());
-pub static WINDOW_STATE_RESTORE_RECT: WindowStateKey<Option<Rect>> = WindowStateKey::new("restoreRect", |_| None);
-pub static WINDOW_STATE_MINIMIZED: WindowStateKey<bool> = WindowStateKey::new("minimized", |_| false);
+pub static WINDOW_STATE_RECT: WindowStateKey<Rect> =
+    WindowStateKey::new("rect", |window| window.rect());
+pub static WINDOW_STATE_RESTORE_RECT: WindowStateKey<Option<Rect>> =
+    WindowStateKey::new("restoreRect", |_| None);
+pub static WINDOW_STATE_MINIMIZED: WindowStateKey<bool> =
+    WindowStateKey::new("minimized", |_| false);
 pub static WINDOW_STATE_MINIMIZE_VISUAL_IDLE: WindowStateKey<bool> =
     WindowStateKey::new("minimizeVisualIdle", |_| false);
-pub static WINDOW_STATE_MAXIMIZED: WindowStateKey<bool> = WindowStateKey::new("maximized", |_| false);
-pub static WINDOW_STATE_FULLSCREEN: WindowStateKey<bool> = WindowStateKey::new("fullscreen", |_| false);
+pub static WINDOW_STATE_MAXIMIZED: WindowStateKey<bool> =
+    WindowStateKey::new("maximized", |_| false);
+pub static WINDOW_STATE_FULLSCREEN: WindowStateKey<bool> =
+    WindowStateKey::new("fullscreen", |_| false);
 /// Pre-fullscreen rect, separate from the maximize restore rect so a window
 /// maximized before going fullscreen comes back maximized.
 pub static WINDOW_STATE_FULLSCREEN_RESTORE_RECT: WindowStateKey<Option<Rect>> =
     WindowStateKey::new("fullscreenRestoreRect", |_| None);
-pub static WINDOW_STATE_WORKSPACE_VISIBLE: WindowStateKey<bool> = WindowStateKey::new("workspaceVisible", |_| true);
-pub static WINDOW_STATE_WORKSPACE_OFFSET_Y: WindowStateKey<f64> = WindowStateKey::new("workspaceOffsetY", |_| 0.0);
-pub static WINDOW_STATE_WORKSPACE_OPACITY: WindowStateKey<f64> = WindowStateKey::new("workspaceOpacity", |_| 1.0);
-pub static WINDOW_STATE_TILE_DRAGGING: WindowStateKey<bool> = WindowStateKey::new("tileDragging", |_| false);
-pub static WINDOW_STATE_TILE_REORDERING: WindowStateKey<bool> = WindowStateKey::new("tileReordering", |_| false);
+pub static WINDOW_STATE_WORKSPACE_VISIBLE: WindowStateKey<bool> =
+    WindowStateKey::new("workspaceVisible", |_| true);
+pub static WINDOW_STATE_WORKSPACE_OFFSET_Y: WindowStateKey<f64> =
+    WindowStateKey::new("workspaceOffsetY", |_| 0.0);
+pub static WINDOW_STATE_WORKSPACE_OPACITY: WindowStateKey<f64> =
+    WindowStateKey::new("workspaceOpacity", |_| 1.0);
+pub static WINDOW_STATE_TILE_DRAGGING: WindowStateKey<bool> =
+    WindowStateKey::new("tileDragging", |_| false);
+pub static WINDOW_STATE_TILE_REORDERING: WindowStateKey<bool> =
+    WindowStateKey::new("tileReordering", |_| false);
 pub static WINDOW_STATE_TILED: WindowStateKey<bool> = WindowStateKey::new("tiled", |_| false);
-pub static WINDOW_STATE_WORKSPACE_TILED: WindowStateKey<bool> = WindowStateKey::new("workspaceTiled", |_| false);
+pub static WINDOW_STATE_WORKSPACE_TILED: WindowStateKey<bool> =
+    WindowStateKey::new("workspaceTiled", |_| false);
 pub static WINDOW_STATE_VISIBLE_OUTPUTS: WindowStateKey<Option<Vec<String>>> =
     WindowStateKey::new("visibleOutputs", |_| None);
-pub static WINDOW_STATE_FLOATING_RECT: WindowStateKey<Option<Rect>> = WindowStateKey::new("floatingRect", |_| None);
-pub static WINDOW_STATE_SNAP_ZONE: WindowStateKey<Option<SnapZone>> = WindowStateKey::new("snapZone", |_| None);
-pub static WINDOW_STATE_SNAP_MONITOR: WindowStateKey<Option<String>> = WindowStateKey::new("snapMonitor", |_| None);
+pub static WINDOW_STATE_FLOATING_RECT: WindowStateKey<Option<Rect>> =
+    WindowStateKey::new("floatingRect", |_| None);
+pub static WINDOW_STATE_SNAP_ZONE: WindowStateKey<Option<SnapZone>> =
+    WindowStateKey::new("snapZone", |_| None);
+pub static WINDOW_STATE_SNAP_MONITOR: WindowStateKey<Option<String>> =
+    WindowStateKey::new("snapMonitor", |_| None);
 
 pub const OPEN_CLOSE_ANIMATION_DURATION: f64 = 500.0;
 pub const INITIAL_TILEABILITY_SETTLE_DURATION: f64 = 1000.0;
@@ -610,7 +624,9 @@ impl HybridWindowManager {
     }
 
     pub fn workspace_by_id_mut(&mut self, id: u64) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|workspace| workspace.id == id)
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == id)
     }
 
     fn workspace_by_id(&self, id: u64) -> Option<&Workspace> {
@@ -623,17 +639,32 @@ impl HybridWindowManager {
 
     pub fn configure_workspace_gesture_speed(&mut self, speed: WorkspaceGestureSpeed) {
         let factor = |value: f64, fallback: f64| {
-            if value.is_finite() && value > 0.0 { value } else { fallback }
+            if value.is_finite() && value > 0.0 {
+                value
+            } else {
+                fallback
+            }
         };
         let defaults = WorkspaceGestureSpeed::default();
-        let scroll = factor(speed.workspace_scroll_factor, defaults.workspace_scroll_factor);
-        let switch = factor(speed.workspace_switch_factor, defaults.workspace_switch_factor);
+        let scroll = factor(
+            speed.workspace_scroll_factor,
+            defaults.workspace_scroll_factor,
+        );
+        let switch = factor(
+            speed.workspace_switch_factor,
+            defaults.workspace_switch_factor,
+        );
         self.gesture_speed = WorkspaceGestureSpeed {
             workspace_scroll_factor: scroll,
             workspace_scroll_kinetic_factor: factor(speed.workspace_scroll_kinetic_factor, scroll),
             workspace_switch_factor: switch,
-            workspace_switch_velocity_factor: factor(speed.workspace_switch_velocity_factor, switch),
-            workspace_scroll_snap_max_velocity: if speed.workspace_scroll_snap_max_velocity.is_finite()
+            workspace_switch_velocity_factor: factor(
+                speed.workspace_switch_velocity_factor,
+                switch,
+            ),
+            workspace_scroll_snap_max_velocity: if speed
+                .workspace_scroll_snap_max_velocity
+                .is_finite()
                 && speed.workspace_scroll_snap_max_velocity >= 0.0
             {
                 speed.workspace_scroll_snap_max_velocity
@@ -751,7 +782,10 @@ impl HybridWindowManager {
             let target_index = self.available_workspace_index(&fallback, workspace.index);
             let was_active = orphaned_active.get(&workspace.monitor) == Some(&workspace.index);
             workspace.move_to_monitor(&fallback, target_index);
-            let has_active = self.active_workspace_by_monitor.borrow().contains_key(&fallback);
+            let has_active = self
+                .active_workspace_by_monitor
+                .borrow()
+                .contains_key(&fallback);
             if was_active || !has_active {
                 self.set_active_index(&fallback, target_index);
             }
@@ -808,7 +842,8 @@ impl HybridWindowManager {
         let Some(&was_tileable) = self.tileability.get(&window) else {
             return;
         };
-        let is_tileable = window.is_resizable().get_untracked() && !window.is_transient().get_untracked();
+        let is_tileable =
+            window.is_resizable().get_untracked() && !window.is_transient().get_untracked();
         if was_tileable == is_tileable {
             return;
         }
@@ -831,7 +866,11 @@ impl HybridWindowManager {
     }
 
     /// Returns (workspace, restored existing window).
-    fn initialize_window_layout(&mut self, window: Window, options: AddWindowOptions) -> (Option<u64>, bool) {
+    fn initialize_window_layout(
+        &mut self,
+        window: Window,
+        options: AddWindowOptions,
+    ) -> (Option<u64>, bool) {
         if let Some(existing) = self.find_workspace_for_window(window) {
             return (
                 Some(existing),
@@ -861,7 +900,11 @@ impl HybridWindowManager {
                 &WINDOW_STATE_RESTORE_RECT,
                 Some(self.initial_restore_rect_for_maximized_window(window)),
             );
-            set(window, &WINDOW_STATE_RECT, self.maximized_rect_for_window(window, None));
+            set(
+                window,
+                &WINDOW_STATE_RECT,
+                self.maximized_rect_for_window(window, None),
+            );
             set(window, &WINDOW_STATE_MAXIMIZED, true);
         }
 
@@ -943,7 +986,11 @@ impl HybridWindowManager {
 
     pub fn on_start_close(&mut self, window: Window) {
         schedule_close_animation(window);
-        let ids: Vec<u64> = self.workspaces.iter().map(|workspace| workspace.id).collect();
+        let ids: Vec<u64> = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect();
         for id in ids {
             if let Some(next_focus) = self.ws(id).remove_window(window) {
                 self.ws(id).apply_layout(LayoutOptions::default());
@@ -965,7 +1012,11 @@ impl HybridWindowManager {
         self.untrack_window_tileability(window);
         self.window_stack.remove(window);
         self.last_focused_at.remove(&window.id());
-        let ids: Vec<u64> = self.workspaces.iter().map(|workspace| workspace.id).collect();
+        let ids: Vec<u64> = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect();
         for id in ids {
             if self.ws(id).remove_window(window).is_some() {
                 self.ws(id).apply_layout(LayoutOptions::default());
@@ -998,7 +1049,10 @@ impl HybridWindowManager {
             return;
         }
         let workspace = self.find_workspace_for_window(window);
-        if matches!(event.phase, WindowResizePhaseSnapshot::Start | WindowResizePhaseSnapshot::Update) {
+        if matches!(
+            event.phase,
+            WindowResizePhaseSnapshot::Start | WindowResizePhaseSnapshot::Update
+        ) {
             self.begin_interactive_unmaximize(window);
         }
         if let Some(id) = workspace {
@@ -1041,7 +1095,8 @@ impl HybridWindowManager {
         }
 
         if event.phase == WindowMovePhaseSnapshot::Start && get(window, &WINDOW_STATE_MAXIMIZED) {
-            let restore = get(window, &WINDOW_STATE_RESTORE_RECT).unwrap_or(event.current_rect.into());
+            let restore =
+                get(window, &WINDOW_STATE_RESTORE_RECT).unwrap_or(event.current_rect.into());
             self.maximized_move_drag = Some(MaximizedMoveDrag {
                 window,
                 width: restore.width,
@@ -1084,7 +1139,10 @@ impl HybridWindowManager {
             return;
         }
 
-        if matches!(event.phase, WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel) {
+        if matches!(
+            event.phase,
+            WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel
+        ) {
             self.is_grabbing = false;
             if !self.finish_floating_drag_snap(window, event, workspace) {
                 stop_rect_animation(window, &WINDOW_STATE_RECT);
@@ -1099,9 +1157,17 @@ impl HybridWindowManager {
         self.apply_workspace_stack_policy(workspace);
     }
 
-    fn on_floating_window_move(&mut self, window: Window, event: &WindowMoveEventSnapshot, workspace: u64) {
+    fn on_floating_window_move(
+        &mut self,
+        window: Window,
+        event: &WindowMoveEventSnapshot,
+        workspace: u64,
+    ) {
         if event.phase == WindowMovePhaseSnapshot::Start
-            || self.floating_drag.as_ref().is_none_or(|drag| drag.window != window)
+            || self
+                .floating_drag
+                .as_ref()
+                .is_none_or(|drag| drag.window != window)
         {
             self.is_grabbing = true;
             self.floating_drag = Some(Drag {
@@ -1110,7 +1176,8 @@ impl HybridWindowManager {
                 last_workspace_switch_at: event.timestamp,
             });
             if get(window, &WINDOW_STATE_MAXIMIZED) {
-                let restore = get(window, &WINDOW_STATE_RESTORE_RECT).unwrap_or(event.current_rect.into());
+                let restore =
+                    get(window, &WINDOW_STATE_RESTORE_RECT).unwrap_or(event.current_rect.into());
                 self.maximized_move_drag = Some(MaximizedMoveDrag {
                     window,
                     width: restore.width,
@@ -1148,10 +1215,14 @@ impl HybridWindowManager {
 
         if event.phase != WindowMovePhaseSnapshot::Cancel {
             let target = self.workspace_for_drag(event, true);
-            let drag_workspace = self.floating_drag.as_ref().map_or(workspace, |drag| drag.workspace);
+            let drag_workspace = self
+                .floating_drag
+                .as_ref()
+                .map_or(workspace, |drag| drag.workspace);
             if target != drag_workspace {
                 self.ws(drag_workspace).remove_floating_window(window);
-                self.ws(drag_workspace).apply_layout(LayoutOptions::default());
+                self.ws(drag_workspace)
+                    .apply_layout(LayoutOptions::default());
                 let target_ws = self.workspace_by_id(target).expect("live");
                 if target_ws.is_tiled && target_ws.should_tile(window) {
                     self.clear_floating_snap_preview();
@@ -1193,12 +1264,19 @@ impl HybridWindowManager {
             self.update_floating_drag_snap(window, event);
         }
 
-        if matches!(event.phase, WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel) {
-            let drag_workspace = self.floating_drag.as_ref().map_or(workspace, |drag| drag.workspace);
+        if matches!(
+            event.phase,
+            WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel
+        ) {
+            let drag_workspace = self
+                .floating_drag
+                .as_ref()
+                .map_or(workspace, |drag| drag.workspace);
             if !self.finish_floating_drag_snap(window, event, Some(drag_workspace)) {
                 stop_rect_animation(window, &WINDOW_STATE_RECT);
                 set(window, &WINDOW_STATE_RECT, next_rect);
-                self.ws(drag_workspace).sync_floating_window_rect(window, next_rect);
+                self.ws(drag_workspace)
+                    .sync_floating_window_rect(window, next_rect);
             }
             self.apply_workspace_stack_policy(Some(drag_workspace));
             self.floating_drag = None;
@@ -1209,12 +1287,21 @@ impl HybridWindowManager {
         }
     }
 
-    fn on_tile_window_move(&mut self, window: Window, event: &WindowMoveEventSnapshot, workspace: u64) {
+    fn on_tile_window_move(
+        &mut self,
+        window: Window,
+        event: &WindowMoveEventSnapshot,
+        workspace: u64,
+    ) {
         if event.phase == WindowMovePhaseSnapshot::Start
-            || self.tile_drag.as_ref().is_none_or(|drag| drag.window != window)
+            || self
+                .tile_drag
+                .as_ref()
+                .is_none_or(|drag| drag.window != window)
         {
             self.is_grabbing = true;
-            self.ws(workspace).begin_tile_drag(window, event.current_rect.into());
+            self.ws(workspace)
+                .begin_tile_drag(window, event.current_rect.into());
             self.tile_drag = Some(Drag {
                 window,
                 workspace,
@@ -1225,8 +1312,15 @@ impl HybridWindowManager {
             return;
         };
 
-        if matches!(event.phase, WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel) {
-            let monitor = self.workspace_by_id(drag_workspace).expect("live").monitor.clone();
+        if matches!(
+            event.phase,
+            WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel
+        ) {
+            let monitor = self
+                .workspace_by_id(drag_workspace)
+                .expect("live")
+                .monitor
+                .clone();
             self.emit_snap_preview(&monitor, None, "tiling");
             self.ws(drag_workspace)
                 .end_tile_drag(window, event.phase == WindowMovePhaseSnapshot::Cancel);
@@ -1237,10 +1331,15 @@ impl HybridWindowManager {
 
         let target = self.workspace_for_drag(event, false);
         if target != drag_workspace {
-            let monitor = self.workspace_by_id(drag_workspace).expect("live").monitor.clone();
+            let monitor = self
+                .workspace_by_id(drag_workspace)
+                .expect("live")
+                .monitor
+                .clone();
             self.emit_snap_preview(&monitor, None, "tiling");
             self.ws(drag_workspace).remove_tile_drag_window(window);
-            self.ws(drag_workspace).apply_layout(LayoutOptions::default());
+            self.ws(drag_workspace)
+                .apply_layout(LayoutOptions::default());
             let target_ws = self.workspace_by_id(target).expect("live");
             if !target_ws.is_tiled || !target_ws.should_tile(window) {
                 set(window, &WINDOW_STATE_TILE_DRAGGING, false);
@@ -1265,8 +1364,11 @@ impl HybridWindowManager {
             self.sync_workspace_visibility();
         }
 
-        self.ws(target)
-            .update_tile_drag(window, event.current_rect.into(), event.current_pointer.x);
+        self.ws(target).update_tile_drag(
+            window,
+            event.current_rect.into(),
+            event.current_pointer.x,
+        );
         let (monitor, slot) = {
             let ws = self.workspace_by_id(target).expect("live");
             (ws.monitor.clone(), ws.dragging_slot_rect())
@@ -1274,7 +1376,11 @@ impl HybridWindowManager {
         self.emit_snap_preview(&monitor, slot, "tiling");
     }
 
-    pub fn on_window_maximize_request(&mut self, window: Window, event: &WindowMaximizeRequestEventSnapshot) {
+    pub fn on_window_maximize_request(
+        &mut self,
+        window: Window,
+        event: &WindowMaximizeRequestEventSnapshot,
+    ) {
         let workspace = self.find_workspace_for_window(window);
         if self.is_grabbing {
             return;
@@ -1357,7 +1463,11 @@ impl HybridWindowManager {
         self.apply_workspace_stack_policy(workspace);
     }
 
-    pub fn on_window_minimize_request(&mut self, window: Window, event: &WindowMinimizeRequestEventSnapshot) {
+    pub fn on_window_minimize_request(
+        &mut self,
+        window: Window,
+        event: &WindowMinimizeRequestEventSnapshot,
+    ) {
         // A client minimize while fullscreen is the X11 focus-loss reflex of
         // game toolkits (GLFW auto-iconify, SDL2 minimize-on-focus-loss), not
         // the user; honoring it drops the game out of its workspace.
@@ -1420,7 +1530,11 @@ impl HybridWindowManager {
         }
     }
 
-    pub fn on_window_activate_request(&mut self, window: Window, event: &WindowActivateRequestEventSnapshot) {
+    pub fn on_window_activate_request(
+        &mut self,
+        window: Window,
+        event: &WindowActivateRequestEventSnapshot,
+    ) {
         let was_minimized = get(window, &WINDOW_STATE_MINIMIZED);
         if was_minimized {
             self.set_minimized(window, false);
@@ -1526,10 +1640,11 @@ impl HybridWindowManager {
 
     pub fn move_focused_window_to_workspace(&mut self, direction: i32) {
         self.sync_workspaces();
-        let focused = self
-            .workspaces
-            .iter()
-            .find_map(|workspace| workspace.focused_window().map(|window| (workspace.id, window)));
+        let focused = self.workspaces.iter().find_map(|workspace| {
+            workspace
+                .focused_window()
+                .map(|window| (workspace.id, window))
+        });
         let Some((from, window)) = focused else {
             return;
         };
@@ -1617,12 +1732,21 @@ impl HybridWindowManager {
             return;
         }
         let current = self.active_index(&monitor);
-        self.switch_workspace_to(&monitor, (current as i64 + direction as i64).max(1) as u32, true);
+        self.switch_workspace_to(
+            &monitor,
+            (current as i64 + direction as i64).max(1) as u32,
+            true,
+        );
     }
 
     /// Animated switch to `target_index` on `monitor`, sliding in the
     /// direction implied by the current index.
-    pub fn switch_workspace_to(&mut self, monitor: &str, target_index: u32, focus_active_after: bool) {
+    pub fn switch_workspace_to(
+        &mut self,
+        monitor: &str,
+        target_index: u32,
+        focus_active_after: bool,
+    ) {
         self.switch_workspace_to_with(monitor, target_index, focus_active_after, false);
     }
 
@@ -1667,22 +1791,25 @@ impl HybridWindowManager {
                 ..LayoutOptions::default()
             });
         } else {
-            self.ws(from).animate_workspace_transition(WorkspaceTransition {
-                from_offset_y: 0.0,
-                to_offset_y: -direction * distance,
-                from_opacity: 1.0,
-                to_opacity: 0.0,
-                visible_after: false,
-            });
-            self.ws(to).prepare_workspace_transition(direction * distance, 0.0);
+            self.ws(from)
+                .animate_workspace_transition(WorkspaceTransition {
+                    from_offset_y: 0.0,
+                    to_offset_y: -direction * distance,
+                    from_opacity: 1.0,
+                    to_opacity: 0.0,
+                    visible_after: false,
+                });
+            self.ws(to)
+                .prepare_workspace_transition(direction * distance, 0.0);
             self.ws(to).apply_layout(LayoutOptions::default());
-            self.ws(to).animate_workspace_transition(WorkspaceTransition {
-                from_offset_y: direction * distance,
-                to_offset_y: 0.0,
-                from_opacity: 0.0,
-                to_opacity: 1.0,
-                visible_after: true,
-            });
+            self.ws(to)
+                .animate_workspace_transition(WorkspaceTransition {
+                    from_offset_y: direction * distance,
+                    to_offset_y: 0.0,
+                    from_opacity: 0.0,
+                    to_opacity: 1.0,
+                    visible_after: true,
+                });
         }
         // Callers focusing a different window afterwards opt out, so the
         // resulting focus callbacks do not stomp on their pan.
@@ -1730,7 +1857,11 @@ impl HybridWindowManager {
                         .map(|window| {
                             let id = window.id();
                             WindowView {
-                                last_focused_at: self.last_focused_at.get(&id).copied().unwrap_or(0.0),
+                                last_focused_at: self
+                                    .last_focused_at
+                                    .get(&id)
+                                    .copied()
+                                    .unwrap_or(0.0),
                                 id,
                                 app_id: window.app_id().get_untracked(),
                                 title: window.title().get_untracked(),
@@ -1794,7 +1925,11 @@ impl HybridWindowManager {
         });
     }
 
-    fn should_defer_focus_layout_for_initial_open(&mut self, window: Window, workspace: Option<u64>) -> bool {
+    fn should_defer_focus_layout_for_initial_open(
+        &mut self,
+        window: Window,
+        workspace: Option<u64>,
+    ) -> bool {
         let Some(ws) = workspace.and_then(|id| self.workspace_by_id(id)) else {
             return false;
         };
@@ -1804,7 +1939,9 @@ impl HybridWindowManager {
         if self.pending_initial_focus.remove(&window).is_some() {
             return false;
         }
-        let ws = self.workspace_by_id(workspace.expect("checked")).expect("live");
+        let ws = self
+            .workspace_by_id(workspace.expect("checked"))
+            .expect("live");
         self.pending_initial_focus
             .keys()
             .any(|pending| ws.is_active_window(*pending) && ws.has_window(*pending))
@@ -1862,7 +1999,10 @@ impl HybridWindowManager {
             if window.is_focused().get_untracked() {
                 f64::INFINITY
             } else {
-                self.last_focused_at.get(&window.id()).copied().unwrap_or(0.0)
+                self.last_focused_at
+                    .get(&window.id())
+                    .copied()
+                    .unwrap_or(0.0)
             }
         };
         let mut windows: Vec<(usize, Window, f64)> = self
@@ -1971,7 +2111,11 @@ impl HybridWindowManager {
 
     fn gesture_monitor(&self, event: &GestureSwipeEventSnapshot) -> String {
         let outputs = output_list();
-        if let Some(output) = event.output_name.as_ref().filter(|name| outputs.contains(name)) {
+        if let Some(output) = event
+            .output_name
+            .as_ref()
+            .filter(|name| outputs.contains(name))
+        {
             return output.clone();
         }
         if self.current_monitor.is_empty() {
@@ -1981,7 +2125,10 @@ impl HybridWindowManager {
         }
     }
 
-    fn resolve_workspace_gesture_mode(&mut self, event: &GestureSwipeEventSnapshot) -> Option<GestureMode> {
+    fn resolve_workspace_gesture_mode(
+        &mut self,
+        event: &GestureSwipeEventSnapshot,
+    ) -> Option<GestureMode> {
         if self.workspace_gesture_mode.is_some() {
             return self.workspace_gesture_mode;
         }
@@ -2071,7 +2218,8 @@ impl HybridWindowManager {
         }
         self.workspace_scroll_gesture_speed = None;
         // Without a position of its own, the glide follows the pointer.
-        self.kinetic_frame_context.insert(id, (event.position, monitor));
+        self.kinetic_frame_context
+            .insert(id, (event.position, monitor));
         let velocity = -event.velocity_x * self.gesture_speed.workspace_scroll_kinetic_factor;
         let snap_max = self.gesture_speed.workspace_scroll_snap_max_velocity;
         let moved = self.ws(id).start_kinetic_scroll(velocity, snap_max);
@@ -2168,8 +2316,10 @@ impl HybridWindowManager {
                 ..LayoutOptions::default()
             });
         }
-        self.ws(from).set_workspace_gesture_visual(raw_offset_y, from_opacity);
-        self.ws(to).set_workspace_gesture_visual(to_offset_y, to_opacity);
+        self.ws(from)
+            .set_workspace_gesture_visual(raw_offset_y, from_opacity);
+        self.ws(to)
+            .set_workspace_gesture_visual(to_offset_y, to_opacity);
         self.apply_workspace_stack_policy(Some(from));
         self.apply_workspace_stack_policy(Some(to));
         self.workspace_gesture = Some(WorkspaceGesture {
@@ -2204,20 +2354,22 @@ impl HybridWindowManager {
                 (gesture.current_index as i64 + gesture.direction as i64) as u32,
             );
             self.current_monitor = gesture.monitor.clone();
-            self.ws(gesture.from).animate_workspace_transition(WorkspaceTransition {
-                from_offset_y: gesture.from_offset_y,
-                to_offset_y: -direction * gesture.distance,
-                from_opacity: gesture.from_opacity,
-                to_opacity: 0.0,
-                visible_after: false,
-            });
-            self.ws(to).animate_workspace_transition(WorkspaceTransition {
-                from_offset_y: gesture.to_offset_y,
-                to_offset_y: 0.0,
-                from_opacity: gesture.to_opacity,
-                to_opacity: 1.0,
-                visible_after: true,
-            });
+            self.ws(gesture.from)
+                .animate_workspace_transition(WorkspaceTransition {
+                    from_offset_y: gesture.from_offset_y,
+                    to_offset_y: -direction * gesture.distance,
+                    from_opacity: gesture.from_opacity,
+                    to_opacity: 0.0,
+                    visible_after: false,
+                });
+            self.ws(to)
+                .animate_workspace_transition(WorkspaceTransition {
+                    from_offset_y: gesture.to_offset_y,
+                    to_offset_y: 0.0,
+                    from_opacity: gesture.to_opacity,
+                    to_opacity: 1.0,
+                    visible_after: true,
+                });
             self.ws(to).focus_active_window();
             self.apply_workspace_stack_policy(Some(gesture.from));
             self.apply_workspace_stack_policy(Some(to));
@@ -2225,34 +2377,40 @@ impl HybridWindowManager {
             return;
         }
 
-        self.ws(gesture.from).animate_workspace_transition(WorkspaceTransition {
-            from_offset_y: gesture.from_offset_y,
-            to_offset_y: 0.0,
-            from_opacity: gesture.from_opacity,
-            to_opacity: 1.0,
-            visible_after: true,
-        });
-        if let Some(to) = gesture.to {
-            self.ws(to).animate_workspace_transition(WorkspaceTransition {
-                from_offset_y: gesture.to_offset_y,
-                to_offset_y: direction * gesture.distance,
-                from_opacity: gesture.to_opacity,
-                to_opacity: 0.0,
-                visible_after: false,
+        self.ws(gesture.from)
+            .animate_workspace_transition(WorkspaceTransition {
+                from_offset_y: gesture.from_offset_y,
+                to_offset_y: 0.0,
+                from_opacity: gesture.from_opacity,
+                to_opacity: 1.0,
+                visible_after: true,
             });
+        if let Some(to) = gesture.to {
+            self.ws(to)
+                .animate_workspace_transition(WorkspaceTransition {
+                    from_offset_y: gesture.to_offset_y,
+                    to_offset_y: direction * gesture.distance,
+                    from_opacity: gesture.to_opacity,
+                    to_opacity: 0.0,
+                    visible_after: false,
+                });
         }
         self.apply_workspace_stack_policy(Some(gesture.from));
     }
 
-    fn focus_window_at_pointer_target(&mut self, target: &PointerHitTargetSnapshot, monitor_hint: Option<&str>) {
+    fn focus_window_at_pointer_target(
+        &mut self,
+        target: &PointerHitTargetSnapshot,
+        monitor_hint: Option<&str>,
+    ) {
         let PointerHitTargetSnapshot::Window { window_id } = target else {
             return;
         };
-        let Some((id, window)) = self
-            .workspaces
-            .iter()
-            .find_map(|workspace| workspace.find_window_by_id(window_id).map(|window| (workspace.id, window)))
-        else {
+        let Some((id, window)) = self.workspaces.iter().find_map(|workspace| {
+            workspace
+                .find_window_by_id(window_id)
+                .map(|window| (workspace.id, window))
+        }) else {
             return;
         };
         let ws = self.workspace_by_id(id).expect("live");
@@ -2262,10 +2420,11 @@ impl HybridWindowManager {
         if self.ws(id).focus_window_under_pointer(window).is_none() {
             return;
         }
-        self.current_monitor = match monitor_hint.filter(|hint| output_list().iter().any(|name| name == hint)) {
-            Some(hint) => hint.to_owned(),
-            None => self.workspace_by_id(id).expect("live").monitor.clone(),
-        };
+        self.current_monitor =
+            match monitor_hint.filter(|hint| output_list().iter().any(|name| name == hint)) {
+                Some(hint) => hint.to_owned(),
+                None => self.workspace_by_id(id).expect("live").monitor.clone(),
+            };
     }
 
     fn focus_window_at_pointer_position(
@@ -2276,13 +2435,17 @@ impl HybridWindowManager {
         let Some(position) = position else {
             return;
         };
-        if matches!(self.last_pointer_target, PointerHitTargetSnapshot::Layer { .. }) {
+        if matches!(
+            self.last_pointer_target,
+            PointerHitTargetSnapshot::Layer { .. }
+        ) {
             return;
         }
         let outputs = output_list();
         let monitor = match monitor_hint.filter(|hint| outputs.iter().any(|name| name == hint)) {
             Some(hint) => hint.to_owned(),
-            None => output_name_at(position.x, position.y).unwrap_or_else(|| self.current_monitor.clone()),
+            None => output_name_at(position.x, position.y)
+                .unwrap_or_else(|| self.current_monitor.clone()),
         };
         let Some(id) = self.workspace_for_monitor(&monitor) else {
             return;
@@ -2303,7 +2466,8 @@ impl HybridWindowManager {
                     )
             })
             .collect();
-        candidates.sort_by_key(|window| std::cmp::Reverse(self.window_stack.z_index_value(*window)));
+        candidates
+            .sort_by_key(|window| std::cmp::Reverse(self.window_stack.z_index_value(*window)));
         let Some(window) = candidates.first().copied() else {
             return;
         };
@@ -2354,9 +2518,13 @@ impl HybridWindowManager {
         }
         .expect("a drag is in progress");
         let last_switch = if floating {
-            self.floating_drag.as_ref().map(|drag| drag.last_workspace_switch_at)
+            self.floating_drag
+                .as_ref()
+                .map(|drag| drag.last_workspace_switch_at)
         } else {
-            self.tile_drag.as_ref().map(|drag| drag.last_workspace_switch_at)
+            self.tile_drag
+                .as_ref()
+                .map(|drag| drag.last_workspace_switch_at)
         }
         .unwrap_or(0);
         let monitor = match event
@@ -2365,7 +2533,11 @@ impl HybridWindowManager {
             .filter(|name| output_list().contains(name))
         {
             Some(name) => name.clone(),
-            None => self.workspace_by_id(drag_workspace).expect("live").monitor.clone(),
+            None => self
+                .workspace_by_id(drag_workspace)
+                .expect("live")
+                .monitor
+                .clone(),
         };
         let mut index = self.active_index(&monitor);
         let edge = tile_drag_workspace_edge_direction(&monitor, event.current_pointer.y);
@@ -2377,7 +2549,11 @@ impl HybridWindowManager {
             if next != index {
                 self.current_monitor = monitor.clone();
                 self.switch_workspace(edge);
-                let drag = if floating { &mut self.floating_drag } else { &mut self.tile_drag };
+                let drag = if floating {
+                    &mut self.floating_drag
+                } else {
+                    &mut self.tile_drag
+                };
                 if let Some(drag) = drag {
                     drag.last_workspace_switch_at = event.timestamp;
                 }
@@ -2390,8 +2566,14 @@ impl HybridWindowManager {
     fn constrain_resize_rect(&self, window: Window, event: &WindowResizeEventSnapshot) -> Rect {
         let constraints = window.size_constraints().get_untracked();
         let (extra_width, extra_height) = self.client_to_root_size_extra(window);
-        let min_width = constraints.min.map_or(1.0, |min| (min.width as f64).max(1.0)) + extra_width;
-        let min_height = constraints.min.map_or(1.0, |min| (min.height as f64).max(1.0)) + extra_height;
+        let min_width = constraints
+            .min
+            .map_or(1.0, |min| (min.width as f64).max(1.0))
+            + extra_width;
+        let min_height = constraints
+            .min
+            .map_or(1.0, |min| (min.height as f64).max(1.0))
+            + extra_height;
         let max_width = match constraints.max.map(|max| max.width) {
             Some(max) if max > 0 => max as f64 + extra_width,
             _ => f64::INFINITY,
@@ -2400,8 +2582,16 @@ impl HybridWindowManager {
             Some(max) if max > 0 => max as f64 + extra_height,
             _ => f64::INFINITY,
         };
-        let width = clamp(event.current_rect.width, min_width, min_width.max(max_width));
-        let height = clamp(event.current_rect.height, min_height, min_height.max(max_height));
+        let width = clamp(
+            event.current_rect.width,
+            min_width,
+            min_width.max(max_width),
+        );
+        let height = clamp(
+            event.current_rect.height,
+            min_height,
+            min_height.max(max_height),
+        );
         let x = if event.edges.left {
             event.start_rect.x + event.start_rect.width - width
         } else {
@@ -2441,10 +2631,16 @@ impl HybridWindowManager {
             .map(str::to_owned)
             .or_else(|| output_name_at(rect.center_x(), rect.center_y()))
             .or_else(|| (!self.current_monitor.is_empty()).then(|| self.current_monitor.clone()));
-        output.and_then(|output| output_rect(&output)).unwrap_or(rect)
+        output
+            .and_then(|output| output_rect(&output))
+            .unwrap_or(rect)
     }
 
-    pub fn on_window_fullscreen_request(&mut self, window: Window, event: &WindowFullscreenRequestEventSnapshot) {
+    pub fn on_window_fullscreen_request(
+        &mut self,
+        window: Window,
+        event: &WindowFullscreenRequestEventSnapshot,
+    ) {
         if self.is_grabbing {
             return;
         }
@@ -2597,7 +2793,8 @@ impl HybridWindowManager {
         if ws.is_tiled {
             return false;
         }
-        let Some(zone) = get(window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout()) else {
+        let Some(zone) = get(window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout())
+        else {
             return false;
         };
         let monitor = get(window, &WINDOW_STATE_SNAP_MONITOR)
@@ -2645,25 +2842,44 @@ impl HybridWindowManager {
         }
         self.clamp_floating_snap_layout(base, &mut layout, &snapped);
         for snapped_window in snapped {
-            if let Some(zone) = get(snapped_window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout()) {
+            if let Some(zone) =
+                get(snapped_window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout())
+            {
                 stop_rect_animation(snapped_window, &WINDOW_STATE_RECT);
-                set(snapped_window, &WINDOW_STATE_RECT, floating_snap_rect_for_zone(base, &layout, zone));
+                set(
+                    snapped_window,
+                    &WINDOW_STATE_RECT,
+                    floating_snap_rect_for_zone(base, &layout, zone),
+                );
             }
         }
         true
     }
 
-    fn clamp_floating_snap_layout(&self, base: Rect, layout: &mut FloatingSnapLayout, windows: &[Window]) {
+    fn clamp_floating_snap_layout(
+        &self,
+        base: Rect,
+        layout: &mut FloatingSnapLayout,
+        windows: &[Window],
+    ) {
         let (mut left_width, mut right_width) = (1.0_f64, 1.0_f64);
-        let (mut left_top, mut left_bottom, mut right_top, mut right_bottom) = (1.0_f64, 1.0_f64, 1.0_f64, 1.0_f64);
+        let (mut left_top, mut left_bottom, mut right_top, mut right_bottom) =
+            (1.0_f64, 1.0_f64, 1.0_f64, 1.0_f64);
         for window in windows {
-            let Some(zone) = get(*window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout()) else {
+            let Some(zone) = get(*window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout())
+            else {
                 continue;
             };
             let constraints = window.size_constraints().get_untracked();
             let (extra_width, extra_height) = self.client_to_root_size_extra(*window);
-            let min_width = constraints.min.map_or(1.0, |min| (min.width as f64).max(1.0)) + extra_width;
-            let min_height = constraints.min.map_or(1.0, |min| (min.height as f64).max(1.0)) + extra_height;
+            let min_width = constraints
+                .min
+                .map_or(1.0, |min| (min.width as f64).max(1.0))
+                + extra_width;
+            let min_height = constraints
+                .min
+                .map_or(1.0, |min| (min.height as f64).max(1.0))
+                + extra_height;
             if zone.is_left() {
                 left_width = left_width.max(min_width);
             } else {
@@ -2694,7 +2910,13 @@ impl HybridWindowManager {
         );
     }
 
-    fn set_window_snap_state(&self, workspace: Option<u64>, window: Window, monitor: &str, zone: SnapZone) {
+    fn set_window_snap_state(
+        &self,
+        workspace: Option<u64>,
+        window: Window,
+        monitor: &str,
+        zone: SnapZone,
+    ) {
         if let Some(ws) = workspace.and_then(|id| self.workspace_by_id(id)) {
             for other in ws.list_windows() {
                 if other != window
@@ -2712,11 +2934,15 @@ impl HybridWindowManager {
     /// Queue a preview (monitor-local) or a hide for the bar.
     fn emit_snap_preview(&mut self, monitor: &str, rect: Option<Rect>, kind: &'static str) {
         let rect = rect.map(|rect| {
-            let origin = COMPOSITOR
-                .output
-                .get(monitor)
-                .map_or((0.0, 0.0), |output| (output.position.x as f64, output.position.y as f64));
-            Rect::new(rect.x - origin.0, rect.y - origin.1, rect.width, rect.height)
+            let origin = COMPOSITOR.output.get(monitor).map_or((0.0, 0.0), |output| {
+                (output.position.x as f64, output.position.y as f64)
+            });
+            Rect::new(
+                rect.x - origin.0,
+                rect.y - origin.1,
+                rect.width,
+                rect.height,
+            )
         });
         self.outbox.snap_previews.push(SnapPreview {
             monitor: monitor.to_owned(),
@@ -2730,17 +2956,31 @@ impl HybridWindowManager {
             self.clear_floating_snap_preview();
             return;
         }
-        if matches!(event.phase, WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel) {
+        if matches!(
+            event.phase,
+            WindowMovePhaseSnapshot::End | WindowMovePhaseSnapshot::Cancel
+        ) {
             return;
         }
-        let monitor = match event.output_name.as_ref().filter(|name| output_list().contains(name)) {
+        let monitor = match event
+            .output_name
+            .as_ref()
+            .filter(|name| output_list().contains(name))
+        {
             Some(name) => name.clone(),
             None => self.current_monitor.clone(),
         };
         let zone = (!monitor.is_empty())
-            .then(|| self.floating_snap_zone_at(&monitor, event.current_pointer.x, event.current_pointer.y))
+            .then(|| {
+                self.floating_snap_zone_at(
+                    &monitor,
+                    event.current_pointer.x,
+                    event.current_pointer.y,
+                )
+            })
             .flatten();
-        let Some((zone, rect)) = zone.and_then(|zone| self.snap_zone_rect(&monitor, zone).map(|rect| (zone, rect)))
+        let Some((zone, rect)) =
+            zone.and_then(|zone| self.snap_zone_rect(&monitor, zone).map(|rect| (zone, rect)))
         else {
             self.clear_floating_snap_preview();
             return;
@@ -2849,7 +3089,8 @@ fn floating_snap_layout_from_windows(base: Rect, windows: &[Window]) -> Floating
     let default_split_y = base.y + (base.height - SNAP_GAP_PX) / 2.0;
     let (mut split_x, mut left_y, mut right_y) = (Vec::new(), Vec::new(), Vec::new());
     for window in windows {
-        let Some(zone) = get(*window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout()) else {
+        let Some(zone) = get(*window, &WINDOW_STATE_SNAP_ZONE).filter(|zone| zone.is_layout())
+        else {
             continue;
         };
         let rect = get(*window, &WINDOW_STATE_RECT);
@@ -2858,7 +3099,11 @@ fn floating_snap_layout_from_windows(base: Rect, windows: &[Window]) -> Floating
         } else {
             split_x.push(rect.x - SNAP_GAP_PX);
         }
-        let column = if zone.is_left() { &mut left_y } else { &mut right_y };
+        let column = if zone.is_left() {
+            &mut left_y
+        } else {
+            &mut right_y
+        };
         if zone.is_top() {
             column.push(rect.bottom());
         } else if zone.is_bottom() {
@@ -2880,12 +3125,22 @@ fn floating_snap_rect_for_zone(base: Rect, layout: &FloatingSnapLayout, zone: Sn
         SnapZone::Maximize => base,
         SnapZone::Left => Rect::new(base.x, base.y, left_width, base.height),
         SnapZone::Right => Rect::new(right_x, base.y, right_width, base.height),
-        SnapZone::TopLeft => Rect::new(base.x, base.y, left_width, (layout.left_split_y - base.y).max(1.0)),
+        SnapZone::TopLeft => Rect::new(
+            base.x,
+            base.y,
+            left_width,
+            (layout.left_split_y - base.y).max(1.0),
+        ),
         SnapZone::BottomLeft => {
             let y = layout.left_split_y + SNAP_GAP_PX;
             Rect::new(base.x, y, left_width, (base.bottom() - y).max(1.0))
         }
-        SnapZone::TopRight => Rect::new(right_x, base.y, right_width, (layout.right_split_y - base.y).max(1.0)),
+        SnapZone::TopRight => Rect::new(
+            right_x,
+            base.y,
+            right_width,
+            (layout.right_split_y - base.y).max(1.0),
+        ),
         SnapZone::BottomRight => {
             let y = layout.right_split_y + SNAP_GAP_PX;
             Rect::new(right_x, y, right_width, (base.bottom() - y).max(1.0))
@@ -2898,7 +3153,11 @@ pub fn clear_window_snap_state(window: Window) {
     set(window, &WINDOW_STATE_SNAP_MONITOR, None);
 }
 
-fn restore_rect_for_maximized_move(event: &WindowMoveEventSnapshot, width: f64, height: f64) -> Rect {
+fn restore_rect_for_maximized_move(
+    event: &WindowMoveEventSnapshot,
+    width: f64,
+    height: f64,
+) -> Rect {
     let pointer = event.current_pointer;
     let titlebar_center_y = WINDOW_BORDER_PX + TITLEBAR_HEIGHT / 2.0;
     let pointer_offset_y = if event.source == WindowMoveSourceSnapshot::Modifier {
@@ -2906,7 +3165,12 @@ fn restore_rect_for_maximized_move(event: &WindowMoveEventSnapshot, width: f64, 
     } else {
         (height / 2.0).min(titlebar_center_y)
     };
-    Rect::new(pointer.x - width / 2.0, pointer.y - pointer_offset_y, width, height)
+    Rect::new(
+        pointer.x - width / 2.0,
+        pointer.y - pointer_offset_y,
+        width,
+        height,
+    )
 }
 
 fn tile_drag_workspace_edge_direction(monitor: &str, y: f64) -> i32 {
@@ -2941,8 +3205,20 @@ fn schedule_open_animation(window: Window) {
     let duration = OPEN_CLOSE_ANIMATION_DURATION as u64;
     window.schedule_animation(
         ManagedAnimation::new(OPEN_ANIMATION_CHANNEL)
-            .rect(Some(delta(200.0)), delta(0.0), duration, WINDOW_OPEN_EASING, AnimationMode::Add)
-            .opacity(Some(0.0), 1.0, duration, WINDOW_OPEN_EASING, AnimationMode::Multiply),
+            .rect(
+                Some(delta(200.0)),
+                delta(0.0),
+                duration,
+                WINDOW_OPEN_EASING,
+                AnimationMode::Add,
+            )
+            .opacity(
+                Some(0.0),
+                1.0,
+                duration,
+                WINDOW_OPEN_EASING,
+                AnimationMode::Multiply,
+            ),
     );
 }
 
@@ -2950,8 +3226,20 @@ fn schedule_close_animation(window: Window) {
     let duration = OPEN_CLOSE_ANIMATION_DURATION as u64;
     window.schedule_animation(
         ManagedAnimation::new(CLOSE_ANIMATION_CHANNEL)
-            .rect(Some(delta(0.0)), delta(120.0), duration, WINDOW_CLOSE_EASING, AnimationMode::Add)
-            .opacity(Some(1.0), 0.0, duration, WINDOW_CLOSE_EASING, AnimationMode::Multiply),
+            .rect(
+                Some(delta(0.0)),
+                delta(120.0),
+                duration,
+                WINDOW_CLOSE_EASING,
+                AnimationMode::Add,
+            )
+            .opacity(
+                Some(1.0),
+                0.0,
+                duration,
+                WINDOW_CLOSE_EASING,
+                AnimationMode::Multiply,
+            ),
     );
 }
 
@@ -2963,7 +3251,13 @@ fn schedule_minimize_animation(window: Window, minimized: bool, instant: bool) {
         window.schedule_animation(
             ManagedAnimation::new(MINIMIZE_ANIMATION_CHANNEL)
                 .rect(Some(rest), rest, 1, Easing::Linear, AnimationMode::Add)
-                .opacity(Some(opacity), opacity, 1, Easing::Linear, AnimationMode::Override),
+                .opacity(
+                    Some(opacity),
+                    opacity,
+                    1,
+                    Easing::Linear,
+                    AnimationMode::Override,
+                ),
         );
         return;
     }
@@ -2980,8 +3274,20 @@ fn schedule_minimize_animation(window: Window, minimized: bool, instant: bool) {
     };
     window.schedule_animation(
         ManagedAnimation::new(MINIMIZE_ANIMATION_CHANNEL)
-            .rect(Some(rect_from), rect_to, duration, rect_easing, AnimationMode::Add)
-            .opacity(Some(opacity_from), opacity_to, duration, opacity_easing, AnimationMode::Override),
+            .rect(
+                Some(rect_from),
+                rect_to,
+                duration,
+                rect_easing,
+                AnimationMode::Add,
+            )
+            .opacity(
+                Some(opacity_from),
+                opacity_to,
+                duration,
+                opacity_easing,
+                AnimationMode::Override,
+            ),
     );
 }
 
@@ -2998,27 +3304,35 @@ pub fn schedule_workspace_visual_animation(
     set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
     set(window, &WINDOW_STATE_WORKSPACE_OPACITY, to_opacity);
     let duration = duration as u64;
-    window.schedule_animation(ManagedAnimation::new(WORKSPACE_VISUAL_RECT_ANIMATION_CHANNEL).rect(
-        Some(delta(from_offset_y)),
-        delta(to_offset_y),
-        duration,
-        easing,
-        AnimationMode::Add,
-    ));
-    window.schedule_animation(ManagedAnimation::new(WORKSPACE_VISUAL_OPACITY_ANIMATION_CHANNEL).opacity(
-        Some(from_opacity),
-        to_opacity,
-        duration,
-        easing,
-        AnimationMode::Override,
-    ));
+    window.schedule_animation(
+        ManagedAnimation::new(WORKSPACE_VISUAL_RECT_ANIMATION_CHANNEL).rect(
+            Some(delta(from_offset_y)),
+            delta(to_offset_y),
+            duration,
+            easing,
+            AnimationMode::Add,
+        ),
+    );
+    window.schedule_animation(
+        ManagedAnimation::new(WORKSPACE_VISUAL_OPACITY_ANIMATION_CHANNEL).opacity(
+            Some(from_opacity),
+            to_opacity,
+            duration,
+            easing,
+            AnimationMode::Override,
+        ),
+    );
 }
 
 pub fn reset_workspace_visual_state(window: Window, visible: bool) {
     cancel_workspace_visual_animation(window);
     set(window, &WINDOW_STATE_WORKSPACE_VISIBLE, visible);
     set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
-    set(window, &WINDOW_STATE_WORKSPACE_OPACITY, if visible { 1.0 } else { 0.0 });
+    set(
+        window,
+        &WINDOW_STATE_WORKSPACE_OPACITY,
+        if visible { 1.0 } else { 0.0 },
+    );
 }
 
 pub fn cancel_workspace_visual_animation(window: Window) {

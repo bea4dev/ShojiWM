@@ -64,10 +64,7 @@ impl IccLut {
     pub fn from_icc(path: &Path, bytes: &[u8]) -> Result<Self, String> {
         let profile = Profile::new_icc(bytes).map_err(|error| error.to_string())?;
         if profile.color_space() != ColorSpaceSignature::RgbData {
-            return Err(format!(
-                "not an RGB profile ({:?})",
-                profile.color_space()
-            ));
+            return Err(format!("not an RGB profile ({:?})", profile.color_space()));
         }
         if profile.device_class() != ProfileClassSignature::DisplayClass {
             // Some tools write monitor profiles with another class; lcms takes
@@ -149,11 +146,7 @@ impl IccLut {
             if weight == 0.0 {
                 continue;
             }
-            let value = self.at(
-                low[0] + offset[0],
-                low[1] + offset[1],
-                low[2] + offset[2],
-            );
+            let value = self.at(low[0] + offset[0], low[1] + offset[1], low[2] + offset[2]);
             for channel in 0..3 {
                 out[channel] += value[channel] * weight;
             }
@@ -170,8 +163,9 @@ impl IccLut {
         for g in 0..LUT_SIZE {
             for b in 0..LUT_SIZE {
                 for r in 0..LUT_SIZE {
-                    let [vr, vg, vb] =
-                        self.at(r, g, b).map(|value| (value * 1023.0).round() as u32 & 0x3ff);
+                    let [vr, vg, vb] = self
+                        .at(r, g, b)
+                        .map(|value| (value * 1023.0).round() as u32 & 0x3ff);
                     let word = vr | (vg << 10) | (vb << 20) | (0x3 << 30);
                     out.extend_from_slice(&word.to_le_bytes());
                 }
@@ -286,16 +280,31 @@ mod tests {
         .unwrap();
         if let Some(vcgt) = vcgt {
             let curve = ToneCurve::new(vcgt);
-            assert!(profile.write_tag(TagSignature::VcgtTag, Tag::VcgtCurves([&curve, &curve, &curve])));
+            assert!(profile.write_tag(
+                TagSignature::VcgtTag,
+                Tag::VcgtCurves([&curve, &curve, &curve])
+            ));
         }
         profile.icc().unwrap()
     }
 
     fn srgb_primaries() -> CIExyYTRIPLE {
         CIExyYTRIPLE {
-            Red: CIExyY { x: 0.64, y: 0.33, Y: 1.0 },
-            Green: CIExyY { x: 0.30, y: 0.60, Y: 1.0 },
-            Blue: CIExyY { x: 0.15, y: 0.06, Y: 1.0 },
+            Red: CIExyY {
+                x: 0.64,
+                y: 0.33,
+                Y: 1.0,
+            },
+            Green: CIExyY {
+                x: 0.30,
+                y: 0.60,
+                Y: 1.0,
+            },
+            Blue: CIExyY {
+                x: 0.15,
+                y: 0.06,
+                Y: 1.0,
+            },
         }
     }
 
@@ -309,8 +318,17 @@ mod tests {
     fn matching_profile_is_identity() {
         let bytes = profile_bytes(2.2, &srgb_primaries(), None);
         let lut = IccLut::from_icc(Path::new("test.icc"), &bytes).unwrap();
-        for rgb in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.25, 0.75], [0.1, 0.9, 0.3]] {
-            assert!(close(lut.sample(rgb), rgb, 0.003), "{rgb:?} -> {:?}", lut.sample(rgb));
+        for rgb in [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.5, 0.25, 0.75],
+            [0.1, 0.9, 0.3],
+        ] {
+            assert!(
+                close(lut.sample(rgb), rgb, 0.003),
+                "{rgb:?} -> {:?}",
+                lut.sample(rgb)
+            );
         }
     }
 
@@ -332,9 +350,21 @@ mod tests {
     #[test]
     fn wide_gamut_display_desaturates_srgb() {
         let display_p3 = CIExyYTRIPLE {
-            Red: CIExyY { x: 0.680, y: 0.320, Y: 1.0 },
-            Green: CIExyY { x: 0.265, y: 0.690, Y: 1.0 },
-            Blue: CIExyY { x: 0.150, y: 0.060, Y: 1.0 },
+            Red: CIExyY {
+                x: 0.680,
+                y: 0.320,
+                Y: 1.0,
+            },
+            Green: CIExyY {
+                x: 0.265,
+                y: 0.690,
+                Y: 1.0,
+            },
+            Blue: CIExyY {
+                x: 0.150,
+                y: 0.060,
+                Y: 1.0,
+            },
         };
         let bytes = profile_bytes(2.2, &display_p3, None);
         let lut = IccLut::from_icc(Path::new("test.icc"), &bytes).unwrap();

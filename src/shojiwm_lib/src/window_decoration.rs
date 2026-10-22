@@ -21,9 +21,8 @@ use tracing::{debug, warn};
 use crate::{
     ssd::{
         WindowDecorationClientSnapshot, WindowDecorationModeSnapshot,
-        WindowDecorationPolicyContextSnapshot,
-        WindowDecorationPolicyReasonSnapshot, WindowDecorationProtocolSnapshot,
-        WindowDecorationStateSnapshot,
+        WindowDecorationPolicyContextSnapshot, WindowDecorationPolicyReasonSnapshot,
+        WindowDecorationProtocolSnapshot, WindowDecorationStateSnapshot,
     },
     state::ShojiWM,
 };
@@ -47,7 +46,10 @@ impl GlobalDispatch2<OrgKdeKwinServerDecorationManager, ShojiWM> for KdeDecorati
     ) {
         let manager = data_init.init(resource, GlobalData);
         let snapshot = decoration_client_snapshot(
-            client.get_credentials(dh).ok().map(|credentials| credentials.pid),
+            client
+                .get_credentials(dh)
+                .ok()
+                .map(|credentials| credentials.pid),
         );
         let mode = match state.config_runtime.kde_default_decoration_mode(&snapshot) {
             Ok(mode) => mode,

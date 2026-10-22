@@ -44,9 +44,8 @@ impl CommonArgs {
 
     pub fn parse(args: &[String], extra_args: &[ArgSpec]) -> Self {
         let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let env_flag_off = |name: &str| {
-            std::env::var_os(name).is_some_and(|value| value == "off" || value == "0")
-        };
+        let env_flag_off =
+            |name: &str| std::env::var_os(name).is_some_and(|value| value == "off" || value == "0");
         let flag = |name: &str| args.iter().any(|arg| arg == name);
 
         let extra = extra_args
@@ -90,17 +89,41 @@ impl CommonArgs {
 }
 
 const COMMON_HELP: &[(&str, &str)] = &[
-    ("--tty", "Run on the console (DRM/KMS) instead of nested in another compositor"),
-    ("--tty-output <NAME,...>", "Only drive these connectors [SHOJI_TTY_OUTPUT]"),
+    (
+        "--tty",
+        "Run on the console (DRM/KMS) instead of nested in another compositor",
+    ),
+    (
+        "--tty-output <NAME,...>",
+        "Only drive these connectors [SHOJI_TTY_OUTPUT]",
+    ),
     ("--config <PATH>", "Config entry point [SHOJI_CONFIG]"),
-    ("--runtime-dir <DIR>", "Directory with the config runtime's files [SHOJI_RUNTIME_DIR]"),
+    (
+        "--runtime-dir <DIR>",
+        "Directory with the config runtime's files [SHOJI_RUNTIME_DIR]",
+    ),
     ("--dev", "Run from a source checkout"),
     ("--log-off", "Disable the session log [SHOJI_LOG=off]"),
-    ("--no-log-rotate", "Overwrite latest.log instead of rotating it [SHOJI_LOG_ROTATE=off]"),
-    ("--xwayland-satellite-path <PATH>", "External xwayland-satellite binary [SHOJI_XWAYLAND_SATELLITE_PATH]"),
-    ("--xwayland-satellite-glamor <gl|es|none>", "Glamor mode for Xwayland [SHOJI_XWAYLAND_SATELLITE_GLAMOR]"),
-    ("-q, --quit", "Quit the running ShojiWM (same as Super+Shift+Q)"),
-    ("-r, --reload", "Reload the running ShojiWM's config (same as Super+Shift+R)"),
+    (
+        "--no-log-rotate",
+        "Overwrite latest.log instead of rotating it [SHOJI_LOG_ROTATE=off]",
+    ),
+    (
+        "--xwayland-satellite-path <PATH>",
+        "External xwayland-satellite binary [SHOJI_XWAYLAND_SATELLITE_PATH]",
+    ),
+    (
+        "--xwayland-satellite-glamor <gl|es|none>",
+        "Glamor mode for Xwayland [SHOJI_XWAYLAND_SATELLITE_GLAMOR]",
+    ),
+    (
+        "-q, --quit",
+        "Quit the running ShojiWM (same as Super+Shift+Q)",
+    ),
+    (
+        "-r, --reload",
+        "Reload the running ShojiWM's config (same as Super+Shift+R)",
+    ),
     ("-h, --help", "Print this help"),
     ("-V, --version", "Print the version"),
 ];
@@ -121,7 +144,9 @@ pub fn help_text(binary: &str, runtime_name: &str, extra_args: &[ArgSpec]) -> St
         .max()
         .unwrap_or(0);
 
-    let mut text = format!("ShojiWM ({runtime_name} config runtime)\n\nUsage: {binary} [OPTIONS]\n\nOptions:\n");
+    let mut text = format!(
+        "ShojiWM ({runtime_name} config runtime)\n\nUsage: {binary} [OPTIONS]\n\nOptions:\n"
+    );
     for (option, help) in COMMON_HELP {
         text.push_str(&format!("  {option:width$}  {help}\n"));
     }

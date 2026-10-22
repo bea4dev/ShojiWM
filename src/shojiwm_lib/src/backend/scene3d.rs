@@ -122,7 +122,8 @@ pub struct Scene3dTarget {
 
 impl Drop for Scene3dTarget {
     fn drop(&mut self) {
-        if let (Some(context), Some(framebuffers)) = (self.context.clone(), self.framebuffers.take())
+        if let (Some(context), Some(framebuffers)) =
+            (self.context.clone(), self.framebuffers.take())
         {
             RETIRED.lock().unwrap().push((context, framebuffers));
         }
@@ -150,7 +151,9 @@ impl Scene3dTarget {
 
     /// Whether the GPU state belongs to `renderer` (or there is none yet).
     pub fn matches(&self, renderer: &GlesRenderer) -> bool {
-        self.context.as_ref().is_none_or(|context| *context == renderer.context_id())
+        self.context
+            .as_ref()
+            .is_none_or(|context| *context == renderer.context_id())
     }
 
     /// Redraw the scene if anything it shows changed. `inputs` holds every
@@ -264,7 +267,14 @@ fn scene_signature(
     spec.antialias.hash(&mut hasher);
     for object in &spec.objects {
         match object {
-            Object3d::Plane { texture, width, height, model, opacity, double_sided } => {
+            Object3d::Plane {
+                texture,
+                width,
+                height,
+                model,
+                opacity,
+                double_sided,
+            } => {
                 texture.hash(&mut hasher);
                 floats(&mut hasher, &[*width, *height, *opacity]);
                 floats(&mut hasher, model);
@@ -366,7 +376,13 @@ unsafe fn create_framebuffers(
                 let (mut fbo, mut color, mut depth) = (0, 0, 0);
                 gl.GenRenderbuffers(1, &mut color);
                 gl.BindRenderbuffer(ffi::RENDERBUFFER, color);
-                gl.RenderbufferStorageMultisample(ffi::RENDERBUFFER, samples, ffi::RGBA8, size.w, size.h);
+                gl.RenderbufferStorageMultisample(
+                    ffi::RENDERBUFFER,
+                    samples,
+                    ffi::RGBA8,
+                    size.w,
+                    size.h,
+                );
                 gl.GenRenderbuffers(1, &mut depth);
                 gl.BindRenderbuffer(ffi::RENDERBUFFER, depth);
                 gl.RenderbufferStorageMultisample(
@@ -378,8 +394,18 @@ unsafe fn create_framebuffers(
                 );
                 gl.GenFramebuffers(1, &mut fbo);
                 gl.BindFramebuffer(ffi::FRAMEBUFFER, fbo);
-                gl.FramebufferRenderbuffer(ffi::FRAMEBUFFER, ffi::COLOR_ATTACHMENT0, ffi::RENDERBUFFER, color);
-                gl.FramebufferRenderbuffer(ffi::FRAMEBUFFER, ffi::DEPTH_ATTACHMENT, ffi::RENDERBUFFER, depth);
+                gl.FramebufferRenderbuffer(
+                    ffi::FRAMEBUFFER,
+                    ffi::COLOR_ATTACHMENT0,
+                    ffi::RENDERBUFFER,
+                    color,
+                );
+                gl.FramebufferRenderbuffer(
+                    ffi::FRAMEBUFFER,
+                    ffi::DEPTH_ATTACHMENT,
+                    ffi::RENDERBUFFER,
+                    depth,
+                );
                 if gl.CheckFramebufferStatus(ffi::FRAMEBUFFER) == ffi::FRAMEBUFFER_COMPLETE {
                     framebuffers.msaa = Some((fbo, color, depth));
                 } else {
@@ -394,7 +420,11 @@ unsafe fn create_framebuffers(
             gl.BindRenderbuffer(ffi::RENDERBUFFER, framebuffers.depth);
             gl.RenderbufferStorage(
                 ffi::RENDERBUFFER,
-                if has_gles3 { ffi::DEPTH_COMPONENT24 } else { ffi::DEPTH_COMPONENT16 },
+                if has_gles3 {
+                    ffi::DEPTH_COMPONENT24
+                } else {
+                    ffi::DEPTH_COMPONENT16
+                },
                 size.w,
                 size.h,
             );
@@ -503,7 +533,9 @@ unsafe fn draw_scene(
     size: Size<i32, Physical>,
 ) {
     unsafe {
-        let draw_fbo = framebuffers.msaa.map_or(framebuffers.resolve, |(fbo, _, _)| fbo);
+        let draw_fbo = framebuffers
+            .msaa
+            .map_or(framebuffers.resolve, |(fbo, _, _)| fbo);
         gl.BindFramebuffer(ffi::FRAMEBUFFER, draw_fbo);
         gl.Viewport(0, 0, size.w, size.h);
         gl.Disable(ffi::SCISSOR_TEST);
@@ -555,14 +587,28 @@ unsafe fn draw_scene(
         let attrib = program.attrib_corner as u32;
         gl.EnableVertexAttribArray(attrib);
         gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
-        gl.VertexAttribPointer(attrib, 2, ffi::FLOAT, ffi::FALSE, 0, corners.as_ptr().cast());
+        gl.VertexAttribPointer(
+            attrib,
+            2,
+            ffi::FLOAT,
+            ffi::FALSE,
+            0,
+            corners.as_ptr().cast(),
+        );
         gl.ActiveTexture(ffi::TEXTURE0);
         for (blend_pass, (_, object)) in planes
             .iter()
             .map(|plane| (false, plane))
             .chain(planes.iter().map(|plane| (true, plane)))
         {
-            let Object3d::Plane { texture, width, height, model, opacity, double_sided } = object;
+            let Object3d::Plane {
+                texture,
+                width,
+                height,
+                model,
+                opacity,
+                double_sided,
+            } = object;
             let opaque_plane = *opacity >= 1.0;
             if !blend_pass && !opaque_plane {
                 continue;
@@ -571,8 +617,14 @@ unsafe fn draw_scene(
                 continue;
             };
             gl.DepthMask(if blend_pass { ffi::FALSE } else { ffi::TRUE });
-            gl.Uniform1f(program.uniform_blend_pass, if blend_pass { 1.0 } else { 0.0 });
-            gl.Uniform1f(program.uniform_opaque_plane, if opaque_plane { 1.0 } else { 0.0 });
+            gl.Uniform1f(
+                program.uniform_blend_pass,
+                if blend_pass { 1.0 } else { 0.0 },
+            );
+            gl.Uniform1f(
+                program.uniform_opaque_plane,
+                if opaque_plane { 1.0 } else { 0.0 },
+            );
             if *double_sided {
                 gl.Disable(ffi::CULL_FACE);
             } else {
@@ -586,8 +638,16 @@ unsafe fn draw_scene(
             gl.BindTexture(ffi::TEXTURE_2D, texture.tex_id());
             gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
             gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+            gl.TexParameteri(
+                ffi::TEXTURE_2D,
+                ffi::TEXTURE_WRAP_S,
+                ffi::CLAMP_TO_EDGE as i32,
+            );
+            gl.TexParameteri(
+                ffi::TEXTURE_2D,
+                ffi::TEXTURE_WRAP_T,
+                ffi::CLAMP_TO_EDGE as i32,
+            );
             gl.DrawArrays(ffi::TRIANGLE_STRIP, 0, 4);
         }
         gl.BindTexture(ffi::TEXTURE_2D, 0);
@@ -650,7 +710,11 @@ mod tests {
         let bytes = renderer.map_texture(&map).unwrap().to_vec();
         bytes
             .chunks(size.w as usize * 4)
-            .map(|row| row.chunks(4).map(|px| [px[0], px[1], px[2], px[3]]).collect())
+            .map(|row| {
+                row.chunks(4)
+                    .map(|px| [px[0], px[1], px[2], px[3]])
+                    .collect()
+            })
             .collect()
     }
 
@@ -764,7 +828,11 @@ mod tests {
             .unwrap();
         // A texture Smithay rendered (what a render texture holds).
         let rendered = smithay_draw(&mut renderer, &imported);
-        assert_eq!(rows(&mut renderer, &rendered)[0][0], RED, "smithay readback is top-down");
+        assert_eq!(
+            rows(&mut renderer, &rendered)[0][0],
+            RED,
+            "smithay readback is top-down"
+        );
         let green = renderer
             .import_memory(&GREEN.repeat(16), Fourcc::Abgr8888, (4, 4).into(), false)
             .unwrap();
@@ -774,7 +842,12 @@ mod tests {
             .unwrap();
         // Half-transparent black, like a window's shadow.
         let shadow = renderer
-            .import_memory(&[0, 0, 0, 128].repeat(16), Fourcc::Abgr8888, (4, 4).into(), false)
+            .import_memory(
+                &[0, 0, 0, 128].repeat(16),
+                Fourcc::Abgr8888,
+                (4, 4).into(),
+                false,
+            )
             .unwrap();
         let inputs = vec![
             Some((rendered.clone(), 1)),
@@ -793,7 +866,9 @@ mod tests {
             objects: vec![plane(0, IDENTITY)],
         };
         let mut target = Scene3dTarget::new();
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
         let scene = target.texture.clone().unwrap();
         let scene_rows = rows(&mut renderer, &scene);
         assert_eq!(scene_rows[0][0], RED, "scene top row: {scene_rows:?}");
@@ -805,19 +880,39 @@ mod tests {
         // Depth: the green plane is nearer (identity projection keeps z as
         // depth; smaller z is nearer), whatever the draw order.
         spec.objects = vec![plane(1, translate_z(-0.5)), plane(0, translate_z(0.5))];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
-        assert_eq!(rows(&mut renderer, target.texture.as_ref().unwrap())[1][1], GREEN);
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
+        assert_eq!(
+            rows(&mut renderer, target.texture.as_ref().unwrap())[1][1],
+            GREEN
+        );
         spec.objects.reverse();
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
-        assert_eq!(rows(&mut renderer, target.texture.as_ref().unwrap())[1][1], GREEN);
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
+        assert_eq!(
+            rows(&mut renderer, target.texture.as_ref().unwrap())[1][1],
+            GREEN
+        );
 
         // A fully transparent plane in front hides nothing.
         spec.objects = vec![plane(2, translate_z(-0.5)), plane(1, translate_z(0.5))];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
-        assert_eq!(rows(&mut renderer, target.texture.as_ref().unwrap())[1][1], GREEN);
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
+        assert_eq!(
+            rows(&mut renderer, target.texture.as_ref().unwrap())[1][1],
+            GREEN
+        );
         spec.objects.reverse();
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
-        assert_eq!(rows(&mut renderer, target.texture.as_ref().unwrap())[1][1], GREEN);
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
+        assert_eq!(
+            rows(&mut renderer, target.texture.as_ref().unwrap())[1][1],
+            GREEN
+        );
 
         // A fading plane in front, drawn first, still lets the opaque plane
         // behind it show through.
@@ -826,16 +921,26 @@ mod tests {
             *opacity = 0.1;
         }
         spec.objects = vec![faint, plane(1, translate_z(0.5))];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
         let blended = rows(&mut renderer, target.texture.as_ref().unwrap())[1][1];
-        assert!(blended[1] > 200 && blended[0] < 40, "faint plane hid green: {blended:?}");
+        assert!(
+            blended[1] > 200 && blended[0] < 40,
+            "faint plane hid green: {blended:?}"
+        );
 
         // A translucent texel (a shadow) in front, drawn first, does not hide
         // the opaque plane behind it either.
         spec.objects = vec![plane(3, translate_z(-0.5)), plane(1, translate_z(0.5))];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
         let shaded = rows(&mut renderer, target.texture.as_ref().unwrap())[1][1];
-        assert!(shaded[1] > 100 && shaded[3] == 255, "shadow hid green: {shaded:?}");
+        assert!(
+            shaded[1] > 100 && shaded[3] == 255,
+            "shadow hid green: {shaded:?}"
+        );
 
         // A plane a hair short of opaque (the end of a fade) is drawn whole,
         // even where the shader's mediump opacity rounds up to 1.
@@ -844,14 +949,21 @@ mod tests {
             *opacity = 0.99999;
         }
         spec.objects = vec![almost];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
         let almost_rows = rows(&mut renderer, target.texture.as_ref().unwrap());
-        assert!(almost_rows[1][1][1] > 250, "nearly opaque plane vanished: {almost_rows:?}");
+        assert!(
+            almost_rows[1][1][1] > 250,
+            "nearly opaque plane vanished: {almost_rows:?}"
+        );
 
         // Multisampled path resolves to the same picture.
         spec.antialias = true;
         spec.objects = vec![plane(0, IDENTITY)];
-        target.render(&mut renderer, &spec, &inputs, (4, 4).into()).unwrap();
+        target
+            .render(&mut renderer, &spec, &inputs, (4, 4).into())
+            .unwrap();
         let scene_rows = rows(&mut renderer, target.texture.as_ref().unwrap());
         assert_eq!(scene_rows[0][0], RED, "msaa scene: {scene_rows:?}");
         assert_eq!(scene_rows[3][3], BLUE, "msaa scene: {scene_rows:?}");

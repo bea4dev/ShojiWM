@@ -153,10 +153,16 @@ impl XwmHandler for ShojiWM {
             if !promoted
                 && let Err(error) = self.close_window_in_runtime(
                     &window_id,
-                    decoration.as_ref().map(|decoration| decoration.layout.root.rect),
+                    decoration
+                        .as_ref()
+                        .map(|decoration| decoration.layout.root.rect),
                 )
             {
-                warn!(window_id, ?error, "failed to report unmapped X11 window to the runtime");
+                warn!(
+                    window_id,
+                    ?error,
+                    "failed to report unmapped X11 window to the runtime"
+                );
             }
             // X11 *unmap* is the real close — `destroyed_window` never touches
             // the space. Re-elect now rather than leaving the stale target to be
@@ -165,9 +171,10 @@ impl XwmHandler for ShojiWM {
             self.update_keyboard_focus(smithay::utils::SERIAL_COUNTER.next_serial());
         }
         if !window.is_override_redirect()
-            && let Err(err) = window.set_mapped(false) {
-                warn!(?err, "failed to mark X11 surface as unmapped");
-            }
+            && let Err(err) = window.set_mapped(false)
+        {
+            warn!(?err, "failed to mark X11 surface as unmapped");
+        }
         self.request_tty_maintenance("x11-window-unmapped");
         self.schedule_redraw();
     }

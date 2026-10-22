@@ -7,8 +7,8 @@
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::gles::{GlesRenderbuffer, GlesRenderer};
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Offscreen};
 use smithay::utils::{Point, Rectangle, Size, Transform};
@@ -36,11 +36,16 @@ fn try_renderer() -> Option<GlesRenderer> {
 /// Renders a red rect at (10,10,40,20) logical through the given output
 /// transform and returns the bounding box of red pixels in the physical
 /// readback (buffer rows top-to-bottom as returned by copy_framebuffer).
-fn red_bounds_for_transform(transform: Transform) -> Option<Rectangle<i32, smithay::utils::Buffer>> {
+fn red_bounds_for_transform(
+    transform: Transform,
+) -> Option<Rectangle<i32, smithay::utils::Buffer>> {
     let mut renderer = try_renderer()?;
     let physical_size = Size::<i32, smithay::utils::Physical>::from((OUT_W, OUT_H));
     let mut buffer: GlesRenderbuffer = renderer
-        .create_buffer(Fourcc::Abgr8888, physical_size.to_logical(1).to_buffer(1, Transform::Normal))
+        .create_buffer(
+            Fourcc::Abgr8888,
+            physical_size.to_logical(1).to_buffer(1, Transform::Normal),
+        )
         .ok()?;
     let mut fb = renderer.bind(&mut buffer).ok()?;
 
@@ -66,8 +71,11 @@ fn red_bounds_for_transform(transform: Transform) -> Option<Rectangle<i32, smith
         )
         .ok()?;
 
-    let copy_rect = Rectangle::from_size(physical_size.to_logical(1).to_buffer(1, Transform::Normal));
-    let mapping = renderer.copy_framebuffer(&fb, copy_rect, Fourcc::Abgr8888).ok()?;
+    let copy_rect =
+        Rectangle::from_size(physical_size.to_logical(1).to_buffer(1, Transform::Normal));
+    let mapping = renderer
+        .copy_framebuffer(&fb, copy_rect, Fourcc::Abgr8888)
+        .ok()?;
     let bytes = renderer.map_texture(&mapping).ok()?;
 
     let mut min_x = i32::MAX;
@@ -204,7 +212,10 @@ fn output_transform_rotates_texture_content_on_offscreen_targets() {
         eprintln!("skipping: no GPU render node available");
         return;
     };
-    assert_eq!(normal_blue, Rectangle::new((10, 10).into(), (40, 20).into()));
+    assert_eq!(
+        normal_blue,
+        Rectangle::new((10, 10).into(), (40, 20).into())
+    );
     assert_eq!(normal_red, Rectangle::new((10, 10).into(), (10, 10).into()));
 
     // 180°: the rect lands at the antipode and its red top-left corner ends up
@@ -407,7 +418,11 @@ fn winit_framebuffer_flip_matches_tty_presentation_for_every_transform() {
         let (nested_red, nested_blue) =
             texture_bounds_for_transform(winit_render_transform(transform))
                 .expect("render node vanished mid-test");
-        assert_eq!(flip_rows(nested_red), tty_red, "{transform:?}: red quadrant");
+        assert_eq!(
+            flip_rows(nested_red),
+            tty_red,
+            "{transform:?}: red quadrant"
+        );
         assert_eq!(flip_rows(nested_blue), tty_blue, "{transform:?}: blue body");
     }
 }
@@ -436,7 +451,10 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
                 }
             }
         }
-        Rectangle::<i32, smithay::utils::Buffer>::new((x0, y0).into(), (x1 - x0 + 1, y1 - y0 + 1).into())
+        Rectangle::<i32, smithay::utils::Buffer>::new(
+            (x0, y0).into(),
+            (x1 - x0 + 1, y1 - y0 + 1).into(),
+        )
     };
 
     for transform in ALL_TRANSFORMS {
@@ -456,7 +474,10 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
             },
         );
         output.change_current_state(
-            Some(Mode { size: (OUT_W, OUT_H).into(), refresh: 60_000 }),
+            Some(Mode {
+                size: (OUT_W, OUT_H).into(),
+                refresh: 60_000,
+            }),
             Some(transform),
             Some(OutputScale::Integer(1)),
             None,
@@ -480,7 +501,11 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
             &[element],
             [0.0, 0.0, 0.0, 1.0],
             crate::backend::hdr_pipeline::OutputEncoding::Pq(
-                crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, crate::color::primaries::SRGB),
+                crate::backend::hdr_pipeline::EncodeParams::new(
+                    203.0,
+                    1000.0,
+                    crate::color::primaries::SRGB,
+                ),
             ),
             Fourcc::Abgr16161616f,
         )
@@ -493,9 +518,17 @@ fn hdr_pipeline_keeps_the_direct_render_orientation() {
         let mut buffer: GlesRenderbuffer = renderer
             .create_buffer(Fourcc::Abgr8888, buffer_size)
             .expect("scanout stand-in should allocate");
-        let mut fb = renderer.bind(&mut buffer).expect("scanout stand-in should bind");
+        let mut fb = renderer
+            .bind(&mut buffer)
+            .expect("scanout stand-in should bind");
         OutputDamageTracker::new(physical_size, 1.0, transform)
-            .render_output(&mut renderer, &mut fb, 0, &[encode], Color32F::new(0.0, 0.0, 0.0, 1.0))
+            .render_output(
+                &mut renderer,
+                &mut fb,
+                0,
+                &[encode],
+                Color32F::new(0.0, 0.0, 0.0, 1.0),
+            )
             .expect("encode pass should render");
         let mapping = renderer
             .copy_framebuffer(&fb, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
@@ -529,7 +562,10 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
         },
     );
     output.change_current_state(
-        Some(Mode { size: (30, 10).into(), refresh: 60_000 }),
+        Some(Mode {
+            size: (30, 10).into(),
+            refresh: 60_000,
+        }),
         Some(Transform::Normal),
         Some(OutputScale::Integer(1)),
         None,
@@ -563,7 +599,11 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
         &elements,
         [0.0, 0.0, 0.0, 1.0],
         crate::backend::hdr_pipeline::OutputEncoding::Pq(
-            crate::backend::hdr_pipeline::EncodeParams::new(SDR_WHITE, PEAK, crate::color::primaries::SRGB),
+            crate::backend::hdr_pipeline::EncodeParams::new(
+                SDR_WHITE,
+                PEAK,
+                crate::color::primaries::SRGB,
+            ),
         ),
         Fourcc::Abgr16161616f,
     )
@@ -575,9 +615,17 @@ fn hdr_encode_extends_past_sdr_white_to_the_display_peak() {
     let mut target: GlesRenderbuffer = renderer
         .create_buffer(Fourcc::Abgr8888, buffer_size)
         .expect("scanout stand-in should allocate");
-    let mut fb = renderer.bind(&mut target).expect("scanout stand-in should bind");
+    let mut fb = renderer
+        .bind(&mut target)
+        .expect("scanout stand-in should bind");
     OutputDamageTracker::new(size, 1.0, Transform::Normal)
-        .render_output(&mut renderer, &mut fb, 0, &[encode], Color32F::new(0.0, 0.0, 0.0, 1.0))
+        .render_output(
+            &mut renderer,
+            &mut fb,
+            0,
+            &[encode],
+            Color32F::new(0.0, 0.0, 0.0, 1.0),
+        )
         .expect("encode pass should render");
     let mapping = renderer
         .copy_framebuffer(&fb, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
@@ -641,7 +689,10 @@ fn encode_solid_with(
         },
     );
     output.change_current_state(
-        Some(Mode { size: (10, 10).into(), refresh: 60_000 }),
+        Some(Mode {
+            size: (10, 10).into(),
+            refresh: 60_000,
+        }),
         Some(Transform::Normal),
         Some(OutputScale::Integer(1)),
         None,
@@ -674,9 +725,17 @@ fn encode_solid_with(
     let mut target: GlesRenderbuffer = renderer
         .create_buffer(Fourcc::Abgr8888, buffer_size)
         .expect("scanout stand-in should allocate");
-    let mut fb = renderer.bind(&mut target).expect("scanout stand-in should bind");
+    let mut fb = renderer
+        .bind(&mut target)
+        .expect("scanout stand-in should bind");
     OutputDamageTracker::new(size, 1.0, Transform::Normal)
-        .render_output(renderer, &mut fb, 0, &[encode], Color32F::new(0.0, 0.0, 0.0, 1.0))
+        .render_output(
+            renderer,
+            &mut fb,
+            0,
+            &[encode],
+            Color32F::new(0.0, 0.0, 0.0, 1.0),
+        )
         .expect("encode pass should render");
     let mapping = renderer
         .copy_framebuffer(&fb, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
@@ -698,10 +757,22 @@ fn hdr_encode_takes_compositing_primaries_into_bt2020() {
         return;
     };
     let native = PrimariesChromaticities {
-        red: Chromaticity { x: 0.6826, y: 0.3164 },
-        green: Chromaticity { x: 0.2451, y: 0.7139 },
-        blue: Chromaticity { x: 0.1396, y: 0.0439 },
-        white: Chromaticity { x: 0.3125, y: 0.3291 },
+        red: Chromaticity {
+            x: 0.6826,
+            y: 0.3164,
+        },
+        green: Chromaticity {
+            x: 0.2451,
+            y: 0.7139,
+        },
+        blue: Chromaticity {
+            x: 0.1396,
+            y: 0.0439,
+        },
+        white: Chromaticity {
+            x: 0.3125,
+            y: 0.3291,
+        },
     };
     for primaries in [SRGB, native] {
         let matrix = chromaticity_conversion_matrix(primaries, BT2020);
@@ -719,7 +790,10 @@ fn hdr_encode_takes_compositing_primaries_into_bt2020() {
     // The two must differ, or the test proves nothing.
     let srgb = encode_solid(&mut renderer, [1.0, 0.0, 0.0], SRGB);
     let wide = encode_solid(&mut renderer, [1.0, 0.0, 0.0], native);
-    assert!((srgb[1] - wide[1]).abs() > 5.0 / 255.0, "{srgb:?} vs {wide:?}");
+    assert!(
+        (srgb[1] - wide[1]).abs() > 5.0 / 255.0,
+        "{srgb:?} vs {wide:?}"
+    );
 }
 
 /// The encode element reports only what stage 1 redrew, so the DRM pass
@@ -729,8 +803,8 @@ fn hdr_encode_takes_compositing_primaries_into_bt2020() {
 fn hdr_encode_damage_follows_stage1_damage() {
     use crate::backend::hdr_pipeline::{EncodeParams, render_hdr_pipeline};
     use smithay::backend::renderer::element::Element;
-    use smithay::utils::Scale;
     use smithay::output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel};
+    use smithay::utils::Scale;
 
     let Some(mut renderer) = try_renderer() else {
         eprintln!("skipping: no GPU render node available");
@@ -747,7 +821,10 @@ fn hdr_encode_damage_follows_stage1_damage() {
         },
     );
     output.change_current_state(
-        Some(Mode { size: (100, 100).into(), refresh: 60_000 }),
+        Some(Mode {
+            size: (100, 100).into(),
+            refresh: 60_000,
+        }),
         Some(Transform::Normal),
         Some(OutputScale::Integer(1)),
         None,
@@ -783,7 +860,10 @@ fn hdr_encode_damage_follows_stage1_damage() {
     };
     let scale = Scale::from(1.0);
     let damage_of = |encode: &crate::backend::hdr_pipeline::HdrEncodeElement, since| {
-        encode.damage_since(scale, Some(since)).into_iter().collect::<Vec<_>>()
+        encode
+            .damage_since(scale, Some(since))
+            .into_iter()
+            .collect::<Vec<_>>()
     };
     let full = Rectangle::<i32, smithay::utils::Physical>::from_size((100, 100).into());
 
@@ -798,7 +878,10 @@ fn hdr_encode_damage_follows_stage1_damage() {
     let damage = damage_of(&moved, first_commit);
     assert!(!damage.is_empty());
     assert!(!damage.contains(&full), "{damage:?}");
-    for rect in [Rectangle::new((10, 10).into(), (10, 10).into()), Rectangle::new((50, 60).into(), (10, 10).into())] {
+    for rect in [
+        Rectangle::new((10, 10).into(), (10, 10).into()),
+        Rectangle::new((50, 60).into(), (10, 10).into()),
+    ] {
         assert!(
             damage.iter().any(|damaged| damaged.contains_rect(rect)),
             "{rect:?} missing from {damage:?}"
@@ -807,12 +890,18 @@ fn hdr_encode_damage_follows_stage1_damage() {
     let covered: i32 = damage.iter().map(|rect| rect.size.w * rect.size.h).sum();
     assert!(covered < 100 * 100 / 4, "{damage:?}");
 
-    let brighter = render(at(50, 60), EncodeParams::new(300.0, 1000.0, crate::color::primaries::SRGB));
+    let brighter = render(
+        at(50, 60),
+        EncodeParams::new(300.0, 1000.0, crate::color::primaries::SRGB),
+    );
     assert_eq!(damage_of(&brighter, moved.current_commit()), vec![full]);
 
     // A commit the history no longer holds is a full re-encode too.
     assert_eq!(
-        brighter.damage_since(scale, None).into_iter().collect::<Vec<_>>(),
+        brighter
+            .damage_since(scale, None)
+            .into_iter()
+            .collect::<Vec<_>>(),
         vec![full]
     );
 }
@@ -828,15 +917,36 @@ fn hdr_cursor_cpu_encode_matches_the_encode_pass() {
         return;
     };
     let native = PrimariesChromaticities {
-        red: Chromaticity { x: 0.6826, y: 0.3164 },
-        green: Chromaticity { x: 0.2451, y: 0.7139 },
-        blue: Chromaticity { x: 0.1396, y: 0.0439 },
-        white: Chromaticity { x: 0.3125, y: 0.3291 },
+        red: Chromaticity {
+            x: 0.6826,
+            y: 0.3164,
+        },
+        green: Chromaticity {
+            x: 0.2451,
+            y: 0.7139,
+        },
+        blue: Chromaticity {
+            x: 0.1396,
+            y: 0.0439,
+        },
+        white: Chromaticity {
+            x: 0.3125,
+            y: 0.3291,
+        },
     };
     for primaries in [SRGB, native] {
         let params = crate::backend::hdr_pipeline::EncodeParams::new(203.0, 1000.0, primaries);
-        for pixel in [[255u8, 255, 255], [128, 128, 128], [200, 40, 90], [10, 230, 60]] {
-            let gpu = encode_solid(&mut renderer, pixel.map(|value| value as f32 / 255.0), primaries);
+        for pixel in [
+            [255u8, 255, 255],
+            [128, 128, 128],
+            [200, 40, 90],
+            [10, 230, 60],
+        ] {
+            let gpu = encode_solid(
+                &mut renderer,
+                pixel.map(|value| value as f32 / 255.0),
+                primaries,
+            );
             let cpu = crate::backend::hdr_cursor::encode_pixel(pixel, 255, &params);
             for channel in 0..3 {
                 assert!(
@@ -865,22 +975,51 @@ fn icc_encode_pass_matches_the_cpu_lut() {
     // every part of the LUT does something.
     let curve = ToneCurve::new(2.4);
     let mut profile = Profile::new_rgb(
-        &CIExyY { x: 0.3127, y: 0.3290, Y: 1.0 },
+        &CIExyY {
+            x: 0.3127,
+            y: 0.3290,
+            Y: 1.0,
+        },
         &CIExyYTRIPLE {
-            Red: CIExyY { x: 0.680, y: 0.320, Y: 1.0 },
-            Green: CIExyY { x: 0.265, y: 0.690, Y: 1.0 },
-            Blue: CIExyY { x: 0.150, y: 0.060, Y: 1.0 },
+            Red: CIExyY {
+                x: 0.680,
+                y: 0.320,
+                Y: 1.0,
+            },
+            Green: CIExyY {
+                x: 0.265,
+                y: 0.690,
+                Y: 1.0,
+            },
+            Blue: CIExyY {
+                x: 0.150,
+                y: 0.060,
+                Y: 1.0,
+            },
         },
         &[&curve, &curve, &curve],
     )
     .unwrap();
     let vcgt = ToneCurve::new(0.9);
-    assert!(profile.write_tag(TagSignature::VcgtTag, Tag::VcgtCurves([&vcgt, &vcgt, &vcgt])));
+    assert!(profile.write_tag(
+        TagSignature::VcgtTag,
+        Tag::VcgtCurves([&vcgt, &vcgt, &vcgt])
+    ));
     let lut = std::sync::Arc::new(
-        crate::color::icc::IccLut::from_icc(std::path::Path::new("probe.icc"), &profile.icc().unwrap())
-            .unwrap(),
+        crate::color::icc::IccLut::from_icc(
+            std::path::Path::new("probe.icc"),
+            &profile.icc().unwrap(),
+        )
+        .unwrap(),
     );
-    for pixel in [[255u8, 255, 255], [0, 0, 0], [128, 128, 128], [200, 40, 90], [10, 230, 60], [3, 7, 250]] {
+    for pixel in [
+        [255u8, 255, 255],
+        [0, 0, 0],
+        [128, 128, 128],
+        [200, 40, 90],
+        [10, 230, 60],
+        [3, 7, 250],
+    ] {
         let gpu = encode_solid_with(
             &mut renderer,
             pixel.map(|value| value as f32 / 255.0),

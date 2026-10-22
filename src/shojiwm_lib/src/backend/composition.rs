@@ -105,7 +105,11 @@ fn transparent() -> [f32; 4] {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum CompositionNode {
     /// Layer-shell surfaces of the output, `layers` back to front.
     Layers { layers: Vec<LayerKind> },
@@ -158,7 +162,11 @@ pub struct Scene3dSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Object3d {
     /// A textured rectangle centred on its origin in the XY plane (Y up),
     /// `width` x `height` world units, placed by `model`.
@@ -221,7 +229,9 @@ impl OutputComposition {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.textures.len() > MAX_TEXTURES {
-            return Err(format!("a composition may declare at most {MAX_TEXTURES} textures"));
+            return Err(format!(
+                "a composition may declare at most {MAX_TEXTURES} textures"
+            ));
         }
         let mut count = 0usize;
         self.validate_nodes(&self.nodes, &mut count)?;
@@ -230,9 +240,15 @@ impl OutputComposition {
             if !keys.insert(texture.key.as_str()) {
                 return Err(format!("duplicate texture key {:?}", texture.key));
             }
-            for value in [texture.width, texture.height, texture.scale].into_iter().flatten() {
+            for value in [texture.width, texture.height, texture.scale]
+                .into_iter()
+                .flatten()
+            {
                 if !value.is_finite() || value <= 0.0 {
-                    return Err(format!("texture {:?} has an invalid size or scale", texture.key));
+                    return Err(format!(
+                        "texture {:?} has an invalid size or scale",
+                        texture.key
+                    ));
                 }
             }
             self.validate_nodes(&texture.nodes, &mut count)?;
@@ -269,7 +285,9 @@ impl OutputComposition {
     fn validate_nodes(&self, nodes: &[CompositionNode], count: &mut usize) -> Result<(), String> {
         *count += nodes.len();
         if *count > MAX_NODES {
-            return Err(format!("a composition may contain at most {MAX_NODES} nodes"));
+            return Err(format!(
+                "a composition may contain at most {MAX_NODES} nodes"
+            ));
         }
         let texture = |index: usize| {
             if index < self.textures.len() {
@@ -280,7 +298,11 @@ impl OutputComposition {
         };
         for node in nodes {
             match node {
-                CompositionNode::TextureView { texture: index, rect, opacity } => {
+                CompositionNode::TextureView {
+                    texture: index,
+                    rect,
+                    opacity,
+                } => {
                     texture(*index)?;
                     validate_rect(rect.as_ref())?;
                     validate_unit(*opacity, "opacity")?;
@@ -300,7 +322,14 @@ impl OutputComposition {
                     }
                     for object in &scene.objects {
                         match object {
-                            Object3d::Plane { texture: index, width, height, model, opacity, .. } => {
+                            Object3d::Plane {
+                                texture: index,
+                                width,
+                                height,
+                                model,
+                                opacity,
+                                ..
+                            } => {
                                 texture(*index)?;
                                 validate_matrix(model)?;
                                 validate_unit(*opacity, "opacity")?;
@@ -331,7 +360,11 @@ impl OutputComposition {
     pub fn selected_window_ids(&self) -> HashSet<String> {
         fn collect(nodes: &[CompositionNode], ids: &mut HashSet<String>) {
             for node in nodes {
-                if let CompositionNode::Windows { windows: Some(windows), .. } = node {
+                if let CompositionNode::Windows {
+                    windows: Some(windows),
+                    ..
+                } = node
+                {
                     ids.extend(windows.iter().cloned());
                 }
             }
@@ -532,7 +565,10 @@ pub fn resolve_below(
                 for kind in kinds {
                     let surfaces = super::window::layer_surfaces_on(output, &[kind.wlr()]);
                     if !surfaces.is_empty() {
-                        items.push(BackdropItem::Layers { surfaces, upper: kind.is_upper() });
+                        items.push(BackdropItem::Layers {
+                            surfaces,
+                            upper: kind.is_upper(),
+                        });
                     }
                 }
             }
@@ -548,7 +584,10 @@ pub fn resolve_below(
 /// window stack, or everything when there is none. For the default stacking
 /// that is the Bottom and Background layers, as it always was.
 pub fn xray_items<'a, 'b>(items: &'b [&'a BackdropItem]) -> &'b [&'a BackdropItem] {
-    match items.iter().position(|item| matches!(item, BackdropItem::Windows { .. })) {
+    match items
+        .iter()
+        .position(|item| matches!(item, BackdropItem::Windows { .. }))
+    {
         Some(index) => &items[index + 1..],
         None => items,
     }
@@ -582,7 +621,10 @@ impl SceneContext {
         let top = (y * self.scale.y).round() as i32;
         let right = ((x + width) * self.scale.x).round() as i32;
         let bottom = ((y + height) * self.scale.y).round() as i32;
-        Rectangle::new((left, top).into(), ((right - left).max(0), (bottom - top).max(0)).into())
+        Rectangle::new(
+            (left, top).into(),
+            ((right - left).max(0), (bottom - top).max(0)).into(),
+        )
     }
 
     fn physical_rect(&self, rect: Option<&RectF>) -> Rectangle<i32, Physical> {
@@ -594,7 +636,10 @@ impl SceneContext {
         let top = (y.max(0.0) * self.scale.y).round() as i32;
         let right = ((x + width).min(size_w) * self.scale.x).round() as i32;
         let bottom = ((y + height).min(size_h) * self.scale.y).round() as i32;
-        Rectangle::new((left, top).into(), ((right - left).max(0), (bottom - top).max(0)).into())
+        Rectangle::new(
+            (left, top).into(),
+            ((right - left).max(0), (bottom - top).max(0)).into(),
+        )
     }
 }
 
@@ -840,9 +885,15 @@ impl<'p> Builder<'p> {
     ) -> Result<BuiltScene<S::Element>, Box<dyn std::error::Error>> {
         let plan = self.plan;
         let mut built = self.build_nodes(scene, targets, ctx, &plan.nodes, "root")?;
-        targets.textures.retain(|key, _| self.seen_textures.contains(key));
-        targets.scenes.retain(|key, _| self.seen_scenes.contains(key));
-        targets.solids.retain(|key, _| self.seen_solids.contains(key));
+        targets
+            .textures
+            .retain(|key, _| self.seen_textures.contains(key));
+        targets
+            .scenes
+            .retain(|key, _| self.seen_scenes.contains(key));
+        targets
+            .solids
+            .retain(|key, _| self.seen_solids.contains(key));
         built.presentation = self.presentation;
         Ok(built)
     }
@@ -860,9 +911,9 @@ impl<'p> Builder<'p> {
         // below the window stack.
         let fullscreen_stack = (ctx.primary && scene.fullscreen_active())
             .then(|| {
-                nodes
-                    .iter()
-                    .rposition(|node| matches!(node, CompositionNode::Windows { windows: None, .. }))
+                nodes.iter().rposition(|node| {
+                    matches!(node, CompositionNode::Windows { windows: None, .. })
+                })
             })
             .flatten();
         let fullscreen = fullscreen_stack.is_some();
@@ -913,7 +964,11 @@ impl<'p> Builder<'p> {
                 CompositionNode::LayerPopups => {
                     elements.extend(scene.layer_popups(ctx, fullscreen)?);
                 }
-                CompositionNode::Windows { windows, offset_x, offset_y } => {
+                CompositionNode::Windows {
+                    windows,
+                    offset_x,
+                    offset_y,
+                } => {
                     if below_layers.is_none() {
                         below_layers = Some(elements.len());
                     }
@@ -926,7 +981,10 @@ impl<'p> Builder<'p> {
                     let window_ctx = if *offset_x != 0 || *offset_y != 0 {
                         shifted = SceneContext {
                             output_geo: Rectangle::new(
-                                (ctx.output_geo.loc.x - offset_x, ctx.output_geo.loc.y - offset_y)
+                                (
+                                    ctx.output_geo.loc.x - offset_x,
+                                    ctx.output_geo.loc.y - offset_y,
+                                )
                                     .into(),
                                 ctx.output_geo.size,
                             ),
@@ -973,7 +1031,11 @@ impl<'p> Builder<'p> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         match node {
-            CompositionNode::TextureView { texture, rect, opacity } => {
+            CompositionNode::TextureView {
+                texture,
+                rect,
+                opacity,
+            } => {
                 if *opacity <= 0.0 || ctx.physical_rect(rect.as_ref()).is_empty() {
                     return Ok(None);
                 }
@@ -990,7 +1052,13 @@ impl<'p> Builder<'p> {
                     return Ok(None);
                 }
                 let element = target.element(scene.renderer(), geometry, ctx.scale, *opacity);
-                (&spec.key, target.generation, rect_key(geometry), opacity.to_bits()).hash(&mut hasher);
+                (
+                    &spec.key,
+                    target.generation,
+                    rect_key(geometry),
+                    opacity.to_bits(),
+                )
+                    .hash(&mut hasher);
                 let composited = Composited {
                     texture: Some(target.texture.clone()),
                     color: [0.0; 4],
@@ -1128,8 +1196,14 @@ impl<'p> Builder<'p> {
         let plan = self.plan;
         let spec = &plan.textures[index];
         let output_size = ctx.output_geo.size;
-        let width = spec.width.map_or(output_size.w, |width| width.round() as i32).max(1);
-        let height = spec.height.map_or(output_size.h, |height| height.round() as i32).max(1);
+        let width = spec
+            .width
+            .map_or(output_size.w, |width| width.round() as i32)
+            .max(1);
+        let height = spec
+            .height
+            .map_or(output_size.h, |height| height.round() as i32)
+            .max(1);
         let scale = spec.scale.map_or(ctx.scale, Scale::from);
         let child = SceneContext {
             output_geo: Rectangle::new(ctx.output_geo.loc, (width, height).into()),
@@ -1205,7 +1279,11 @@ fn below_nodes<'a, E>(
         .zip(made)
         .rev()
         .filter_map(|(node, made)| match node {
-            CompositionNode::Windows { windows, offset_x, offset_y } => Some(BelowNode::Windows {
+            CompositionNode::Windows {
+                windows,
+                offset_x,
+                offset_y,
+            } => Some(BelowNode::Windows {
                 selection: match windows {
                     Some(ids) => WindowSelection::Ids(ids),
                     None => WindowSelection::Output,
@@ -1217,9 +1295,9 @@ fn below_nodes<'a, E>(
             }
             CompositionNode::TextureView { .. }
             | CompositionNode::Solid { .. }
-            | CompositionNode::Scene3d(_) => {
-                made.as_ref().map(|(_, composited)| BelowNode::Composited(composited.clone()))
-            }
+            | CompositionNode::Scene3d(_) => made
+                .as_ref()
+                .map(|(_, composited)| BelowNode::Composited(composited.clone())),
             // Backdrops never sampled popups.
             CompositionNode::LayerPopups => None,
         })
@@ -1289,10 +1367,19 @@ impl TextureTarget {
         let rects: Vec<Rectangle<i32, Buffer>> = damage
             .unwrap_or_default()
             .into_iter()
-            .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
+            .map(|rect| {
+                Rectangle::new(
+                    (rect.loc.x, rect.loc.y).into(),
+                    (rect.size.w, rect.size.h).into(),
+                )
+            })
             .collect();
         if age == 0 {
-            target.damage.lock().unwrap().add([Rectangle::from_size(target.texture.size())]);
+            target
+                .damage
+                .lock()
+                .unwrap()
+                .add([Rectangle::from_size(target.texture.size())]);
             target.generation = target.generation.wrapping_add(1);
         } else if !rects.is_empty() {
             target.damage.lock().unwrap().add(rects);
@@ -1404,7 +1491,11 @@ mod tests {
                     height: None,
                     scale: None,
                     clear_color: [0.0; 4],
-                    nodes: vec![CompositionNode::TextureView { texture: 1, rect: None, opacity: 1.0 }],
+                    nodes: vec![CompositionNode::TextureView {
+                        texture: 1,
+                        rect: None,
+                        opacity: 1.0,
+                    }],
                 },
                 TextureSpec {
                     key: "b".into(),
@@ -1412,13 +1503,21 @@ mod tests {
                     height: None,
                     scale: None,
                     clear_color: [0.0; 4],
-                    nodes: vec![CompositionNode::TextureView { texture: 0, rect: None, opacity: 1.0 }],
+                    nodes: vec![CompositionNode::TextureView {
+                        texture: 0,
+                        rect: None,
+                        opacity: 1.0,
+                    }],
                 },
             ],
         };
         assert!(cyclic.validate().unwrap_err().contains("cycle"));
         let out_of_range = OutputComposition {
-            nodes: vec![CompositionNode::TextureView { texture: 3, rect: None, opacity: 1.0 }],
+            nodes: vec![CompositionNode::TextureView {
+                texture: 3,
+                rect: None,
+                opacity: 1.0,
+            }],
             textures: vec![],
         };
         assert!(out_of_range.validate().is_err());
@@ -1514,7 +1613,10 @@ mod tests {
     }
 
     fn walk(plan: &OutputComposition, fullscreen: bool) -> (Vec<String>, usize, bool) {
-        let mut scene = FakeScene { fullscreen, log: Vec::new() };
+        let mut scene = FakeScene {
+            fullscreen,
+            log: Vec::new(),
+        };
         let ctx = SceneContext {
             output_geo: Rectangle::from_size((100, 100).into()),
             scale: Scale::from(1.0),
@@ -1556,18 +1658,28 @@ mod tests {
             ]
         );
         assert_eq!(below_layers, 2);
-        assert!(covers, "anything in front of the fullscreen window forces compositing");
+        assert!(
+            covers,
+            "anything in front of the fullscreen window forces compositing"
+        );
     }
 
     #[test]
     fn custom_plans_keep_their_order_and_split_mixed_layer_runs() {
         let plan = OutputComposition {
             nodes: vec![
-                CompositionNode::Windows { windows: Some(vec!["a".into()]), offset_x: 0, offset_y: 0 },
+                CompositionNode::Windows {
+                    windows: Some(vec!["a".into()]),
+                    offset_x: 0,
+                    offset_y: 0,
+                },
                 CompositionNode::Layers {
                     layers: vec![LayerKind::Background, LayerKind::Top, LayerKind::Bottom],
                 },
-                CompositionNode::Solid { rect: None, color: [0.0, 0.0, 0.0, 1.0] },
+                CompositionNode::Solid {
+                    rect: None,
+                    color: [0.0, 0.0, 0.0, 1.0],
+                },
             ],
             textures: vec![],
         };
@@ -1582,7 +1694,10 @@ mod tests {
                 "windows Ids([\"a\"]) over []",
             ]
         );
-        assert_eq!(below_layers, 4, "the solid and three layer runs are in front");
+        assert_eq!(
+            below_layers, 4,
+            "the solid and three layer runs are in front"
+        );
         assert!(!covers);
     }
 
@@ -1590,10 +1705,22 @@ mod tests {
     fn backdrops_see_what_the_plan_composes_below_them() {
         let plan = OutputComposition {
             nodes: vec![
-                CompositionNode::Solid { rect: None, color: [0.0, 0.0, 0.0, 1.0] },
-                CompositionNode::Windows { windows: Some(vec!["a".into()]), offset_x: 0, offset_y: 0 },
-                CompositionNode::Solid { rect: None, color: [1.0, 0.0, 0.0, 1.0] },
-                CompositionNode::Layers { layers: vec![LayerKind::Top] },
+                CompositionNode::Solid {
+                    rect: None,
+                    color: [0.0, 0.0, 0.0, 1.0],
+                },
+                CompositionNode::Windows {
+                    windows: Some(vec!["a".into()]),
+                    offset_x: 0,
+                    offset_y: 0,
+                },
+                CompositionNode::Solid {
+                    rect: None,
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+                CompositionNode::Layers {
+                    layers: vec![LayerKind::Top],
+                },
             ],
             textures: vec![],
         };

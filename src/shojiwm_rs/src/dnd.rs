@@ -184,7 +184,9 @@ impl DragView {
         if let Some(scope) = state.content_scope.take() {
             scope.dispose();
         }
-        runtime::send(HostMessage::DragView(DragViewCommand::Dispose { view_id: state.id }));
+        runtime::send(HostMessage::DragView(DragViewCommand::Dispose {
+            view_id: state.id,
+        }));
         let callbacks = std::mem::take(&mut *state.on_closed.borrow_mut());
         for callback in callbacks {
             callback();
@@ -478,7 +480,13 @@ fn create_session(drag: &DragSnapshot) -> DragSession {
 }
 
 fn session(id: u64) -> Option<DragSession> {
-    SESSIONS.with(|sessions| sessions.borrow().iter().find(|session| session.0.id == id).cloned())
+    SESSIONS.with(|sessions| {
+        sessions
+            .borrow()
+            .iter()
+            .find(|session| session.0.id == id)
+            .cloned()
+    })
 }
 
 /// Route a compositor drag event. Returns whether a listener ran.
@@ -540,7 +548,9 @@ pub(crate) fn dispatch(event: &DndEventSnapshot) -> bool {
             let now = wall_clock_ms();
             for view in session.0.views.borrow().iter() {
                 if view.0.deadline_ms.get().is_none() {
-                    view.0.deadline_ms.set(Some(now + view.0.options.max_linger_ms));
+                    view.0
+                        .deadline_ms
+                        .set(Some(now + view.0.options.max_linger_ms));
                 }
             }
             let listeners = std::mem::take(&mut *session.0.end_listeners.borrow_mut());
@@ -562,7 +572,12 @@ fn sweep(now_ms: f64) {
     for session in sessions {
         let views = session.0.views.borrow().clone();
         for view in views {
-            if view.0.deadline_ms.get().is_some_and(|deadline| now_ms >= deadline) {
+            if view
+                .0
+                .deadline_ms
+                .get()
+                .is_some_and(|deadline| now_ms >= deadline)
+            {
                 view.dispose();
             }
         }
@@ -575,11 +590,18 @@ fn forget_finished() {
     let finished: Vec<DragSession> = SESSIONS.with(|sessions| {
         let mut sessions = sessions.borrow_mut();
         for session in sessions.iter() {
-            session.0.views.borrow_mut().retain(|view| !view.is_disposed());
+            session
+                .0
+                .views
+                .borrow_mut()
+                .retain(|view| !view.is_disposed());
         }
-        let (finished, live) = std::mem::take(&mut *sessions).into_iter().partition(|session| {
-            session.0.ended.with_untracked(Option::is_some) && session.0.views.borrow().is_empty()
-        });
+        let (finished, live) = std::mem::take(&mut *sessions)
+            .into_iter()
+            .partition(|session| {
+                session.0.ended.with_untracked(Option::is_some)
+                    && session.0.views.borrow().is_empty()
+            });
         *sessions = live;
         finished
     });

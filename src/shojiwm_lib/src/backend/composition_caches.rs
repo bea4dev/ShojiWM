@@ -61,7 +61,11 @@ impl ScopeCaches {
         decorations: &mut Decorations,
         layers: &mut LayerCaches<'_>,
     ) {
-        let current = self.stack.last().cloned().unwrap_or_else(|| output_name.to_owned());
+        let current = self
+            .stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| output_name.to_owned());
         self.stash(&current, decorations, layers);
         self.install(scope, decorations, layers);
         self.stack.push(scope.to_owned());
@@ -78,7 +82,11 @@ impl ScopeCaches {
     ) {
         self.stash(scope, decorations, layers);
         self.stack.pop();
-        let previous = self.stack.last().cloned().unwrap_or_else(|| output_name.to_owned());
+        let previous = self
+            .stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| output_name.to_owned());
         self.install(&previous, decorations, layers);
     }
 
@@ -108,7 +116,12 @@ impl ScopeCaches {
         );
     }
 
-    fn install(&mut self, scope: &str, decorations: &mut Decorations, layers: &mut LayerCaches<'_>) {
+    fn install(
+        &mut self,
+        scope: &str,
+        decorations: &mut Decorations,
+        layers: &mut LayerCaches<'_>,
+    ) {
         let mut windows = self.windows.remove(scope).unwrap_or_default();
         for decoration in decorations.values_mut() {
             if let Some(caches) = windows.remove(&decoration.snapshot.id) {

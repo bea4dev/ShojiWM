@@ -12,9 +12,9 @@ use tracing::warn;
 
 use shojiwm_lib::{
     runtime_api::{
-        ConfigRuntime, DecorationRequest, EffectRequest, InputRequest, LaunchContext,
-        RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply, RuntimeRequest,
-        WindowRequest, WorkspaceRequest, cli::ArgSpec,
+        ConfigRuntime, DecorationRequest, EffectRequest, InputRequest, LaunchContext, RuntimeError,
+        RuntimeEvent, RuntimeLauncher, RuntimeReply, RuntimeRequest, WindowRequest,
+        WorkspaceRequest, cli::ArgSpec,
     },
     ssd::{DecorationEvaluator, WindowDecorationDecisionSnapshot},
 };
@@ -119,7 +119,9 @@ impl ConfigRuntime for TypeScriptRuntime {
                 DecorationRequest::KdeDefaultMode { client } => {
                     match evaluator.kde_default_decoration_mode(client)? {
                         Some(mode) => {
-                            RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot { mode })
+                            RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
+                                mode,
+                            })
                         }
                         None => RuntimeReply::Unhandled,
                     }
@@ -188,15 +190,19 @@ impl ConfigRuntime for TypeScriptRuntime {
                 EffectRequest::Layers {
                     output_name,
                     layers,
-                } => RuntimeReply::LayerEffects(
-                    evaluator.evaluate_layer_effects(output_name, layers, now)?,
-                ),
+                } => RuntimeReply::LayerEffects(evaluator.evaluate_layer_effects(
+                    output_name,
+                    layers,
+                    now,
+                )?),
                 EffectRequest::Popups {
                     output_name,
                     popups,
-                } => RuntimeReply::PopupEffects(
-                    evaluator.evaluate_popup_effects(output_name, popups, now)?,
-                ),
+                } => RuntimeReply::PopupEffects(evaluator.evaluate_popup_effects(
+                    output_name,
+                    popups,
+                    now,
+                )?),
             },
             RuntimeRequest::Workspace(WorkspaceRequest::Activate(event)) => {
                 RuntimeReply::Handler(Box::new(evaluator.workspace_activate(event, now)?))
@@ -260,10 +266,8 @@ mod tests {
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-runtime-api-test-{}",
-            std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-runtime-api-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         let config_path = test_dir.join("config.tsx");
         let write_config = |extra_binding: bool| {
@@ -586,8 +590,8 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
     fn typescript_runtime_draws_drag_views() {
         use shojiwm_lib::cursor::CursorOverride;
         use shojiwm_lib::dnd::{
-            DndEventSnapshot, DragAction, DragActions, DragDevice, DragEndKind,
-            DragIconSnapshot, DragPoint, DragSnapshot, DragViewAnchor, DragViewCommand,
+            DndEventSnapshot, DragAction, DragActions, DragDevice, DragEndKind, DragIconSnapshot,
+            DragPoint, DragSnapshot, DragViewAnchor, DragViewCommand,
         };
         use shojiwm_lib::ssd::{DecorationNode, DecorationNodeKind};
 
@@ -595,22 +599,23 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             matches(node) || node.children.iter().any(|child| find(child, matches))
         }
         fn label(node: &DecorationNode, text: &str) -> bool {
-            find(node, &|node| {
-                matches!(&node.kind, DecorationNodeKind::Label(label) if label.text == text)
-            })
+            find(
+                node,
+                &|node| matches!(&node.kind, DecorationNodeKind::Label(label) if label.text == text),
+            )
         }
         fn slot(node: &DecorationNode) -> bool {
-            find(node, &|node| matches!(node.kind, DecorationNodeKind::WindowSlot))
+            find(node, &|node| {
+                matches!(node.kind, DecorationNodeKind::WindowSlot)
+            })
         }
 
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-drag-view-test-{}",
-            std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-drag-view-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         let config_path = test_dir.join("config.tsx");
         std::fs::write(
@@ -706,10 +711,19 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
                 }),
             },
         };
-        assert!(runtime.dnd_event(&start, 1).expect("start should be delivered").invoked);
+        assert!(
+            runtime
+                .dnd_event(&start, 1)
+                .expect("start should be delivered")
+                .invoked
+        );
         let shown = commands(&host);
         let view_id = match shown.first() {
-            Some(DragViewCommand::Show { view_id, drag_id: 9, max_linger_ms: Some(5000) }) => *view_id,
+            Some(DragViewCommand::Show {
+                view_id,
+                drag_id: 9,
+                max_linger_ms: Some(5000),
+            }) => *view_id,
             other => panic!("expected the view to be shown first: {other:?}"),
         };
         assert!(shown.iter().any(|command| matches!(
@@ -723,12 +737,18 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
         let content = shown
             .iter()
             .find_map(|command| match command {
-                DragViewCommand::Content { content: Some(node), .. } => Some(node.clone()),
+                DragViewCommand::Content {
+                    content: Some(node),
+                    ..
+                } => Some(node.clone()),
                 _ => None,
             })
             .expect("the content should be sent");
         assert!(slot(&content), "the icon goes in a window slot");
-        assert!(!label(&content, "no icon"), "the fallback is not drawn with an icon");
+        assert!(
+            !label(&content, "no icon"),
+            "the fallback is not drawn with an icon"
+        );
 
         let update = DndEventSnapshot::Update {
             drag_id: 9,
@@ -741,7 +761,9 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
                 offset_y: -5,
             }),
         };
-        runtime.dnd_event(&update, 2).expect("update should be delivered");
+        runtime
+            .dnd_event(&update, 2)
+            .expect("update should be delivered");
         let updated = commands(&host);
         assert!(updated.iter().any(|command| matches!(
             command,
@@ -796,7 +818,13 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
         runtime
             .evaluate_window(&window, 0)
             .expect("static decoration should be used");
-        assert!(runtime.scheduler_tick(0.0).unwrap().next_poll_in_ms.is_none());
+        assert!(
+            runtime
+                .scheduler_tick(0.0)
+                .unwrap()
+                .next_poll_in_ms
+                .is_none()
+        );
         assert!(!runtime.invoke_key_binding("any", 0).unwrap().invoked);
         assert!(matches!(
             runtime.reload(),

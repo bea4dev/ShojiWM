@@ -173,12 +173,20 @@ impl InputGrab {
     }
 
     pub fn is_active(&self) -> bool {
-        CURRENT.with(|current| current.borrow().as_ref().is_some_and(|grab| grab.id == self.id))
+        CURRENT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .is_some_and(|grab| grab.id == self.id)
+        })
     }
 }
 
 fn send(id: u64, active: bool) {
-    runtime::send(HostMessage::InputGrab(RuntimeInputGrabUpdate { id, active }));
+    runtime::send(HostMessage::InputGrab(RuntimeInputGrabUpdate {
+        id,
+        active,
+    }));
 }
 
 pub(crate) fn grab(options: InputGrabOptions) -> InputGrab {

@@ -27,9 +27,7 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             ImportMem,
-            element::{
-                Element, Id, Kind, RenderElement, UnderlyingStorage, memory::MemoryBuffer,
-            },
+            element::{Element, Id, Kind, RenderElement, UnderlyingStorage, memory::MemoryBuffer},
             gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
             utils::CommitCounter,
         },
@@ -212,10 +210,7 @@ fn channel_layout(format: Fourcc) -> Option<([usize; 3], Option<usize>)> {
     }
 }
 
-fn encode_storage(
-    storage: UnderlyingStorage<'_>,
-    params: &OutputEncoding,
-) -> Option<MemoryBuffer> {
+fn encode_storage(storage: UnderlyingStorage<'_>, params: &OutputEncoding) -> Option<MemoryBuffer> {
     match storage {
         UnderlyingStorage::Memory(memory) => encode_pixels(
             memory,
@@ -225,24 +220,26 @@ fn encode_storage(
             memory.stride(),
             params,
         ),
-        UnderlyingStorage::Wayland(buffer) => shm::with_buffer_contents(buffer, |ptr, len, data| {
-            let format = match data.format {
-                wl_shm::Format::Argb8888 => Fourcc::Argb8888,
-                wl_shm::Format::Xrgb8888 => Fourcc::Xrgb8888,
-                other => shm::shm_format_to_fourcc(other)?,
-            };
-            let start = data.offset as usize;
-            let end = start + (data.stride as usize) * (data.height as usize);
-            if data.offset < 0 || data.stride < 0 || data.height < 0 || end > len {
-                return None;
-            }
-            // SAFETY: smithay maps the pool for the duration of the callback
-            // and `end` was checked against its length.
-            let pixels = unsafe { std::slice::from_raw_parts(ptr.add(start), end - start) };
-            encode_pixels(pixels, format, data.width, data.height, data.stride, params)
-        })
-        .ok()
-        .flatten(),
+        UnderlyingStorage::Wayland(buffer) => {
+            shm::with_buffer_contents(buffer, |ptr, len, data| {
+                let format = match data.format {
+                    wl_shm::Format::Argb8888 => Fourcc::Argb8888,
+                    wl_shm::Format::Xrgb8888 => Fourcc::Xrgb8888,
+                    other => shm::shm_format_to_fourcc(other)?,
+                };
+                let start = data.offset as usize;
+                let end = start + (data.stride as usize) * (data.height as usize);
+                if data.offset < 0 || data.stride < 0 || data.height < 0 || end > len {
+                    return None;
+                }
+                // SAFETY: smithay maps the pool for the duration of the callback
+                // and `end` was checked against its length.
+                let pixels = unsafe { std::slice::from_raw_parts(ptr.add(start), end - start) };
+                encode_pixels(pixels, format, data.width, data.height, data.stride, params)
+            })
+            .ok()
+            .flatten()
+        }
     }
 }
 
@@ -282,7 +279,11 @@ fn encode_pixels(
             dst.copy_from_slice(&[b, g, r, a]);
         }
     }
-    Some(MemoryBuffer::from_slice(&out, Fourcc::Argb8888, (width, height)))
+    Some(MemoryBuffer::from_slice(
+        &out,
+        Fourcc::Argb8888,
+        (width, height),
+    ))
 }
 
 /// One premultiplied pixel through the encode pass: un-premultiply, SDR EOTF,
@@ -345,13 +346,24 @@ mod tests {
     #[test]
     fn opaque_white_lands_on_sdr_white() {
         // PQ(203 cd/m²) = 0.5806.
-        assert_eq!(encode_pixel([255, 255, 255], 255, &params()), [148, 148, 148]);
+        assert_eq!(
+            encode_pixel([255, 255, 255], 255, &params()),
+            [148, 148, 148]
+        );
     }
 
     #[test]
     fn black_and_transparent_stay_zero() {
         assert_eq!(encode_pixel([0, 0, 0], 255, &params()), [0, 0, 0]);
-        let memory = encode_pixels(&[0, 0, 0, 0], Fourcc::Argb8888, 1, 1, 4, &OutputEncoding::Pq(params())).unwrap();
+        let memory = encode_pixels(
+            &[0, 0, 0, 0],
+            Fourcc::Argb8888,
+            1,
+            1,
+            4,
+            &OutputEncoding::Pq(params()),
+        )
+        .unwrap();
         assert_eq!(&memory[..], &[0, 0, 0, 0]);
     }
 
@@ -367,7 +379,15 @@ mod tests {
         // only, so the encoded pixel is green.
         let mut params = params();
         params.compositing_to_bt2020 = [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let memory = encode_pixels(&[255, 0, 0, 255], Fourcc::Abgr8888, 1, 1, 4, &OutputEncoding::Pq(params)).unwrap();
+        let memory = encode_pixels(
+            &[255, 0, 0, 255],
+            Fourcc::Abgr8888,
+            1,
+            1,
+            4,
+            &OutputEncoding::Pq(params),
+        )
+        .unwrap();
         assert_eq!(memory.format(), Fourcc::Argb8888);
         assert_eq!(&memory[..], &[0, 148, 0, 255]);
     }
@@ -376,7 +396,15 @@ mod tests {
     fn rows_respect_the_source_stride() {
         // Two 1-pixel rows with 4 bytes of padding each.
         let pixels = [255, 255, 255, 255, 9, 9, 9, 9, 0, 0, 0, 255, 9, 9, 9, 9];
-        let memory = encode_pixels(&pixels, Fourcc::Argb8888, 1, 2, 8, &OutputEncoding::Pq(params())).unwrap();
+        let memory = encode_pixels(
+            &pixels,
+            Fourcc::Argb8888,
+            1,
+            2,
+            8,
+            &OutputEncoding::Pq(params()),
+        )
+        .unwrap();
         assert_eq!(&memory[..], &[148, 148, 148, 255, 0, 0, 0, 255]);
     }
 }

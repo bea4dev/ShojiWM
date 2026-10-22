@@ -31,8 +31,8 @@ use smithay::{
         bbox_from_surface_tree, update_surface_primary_scanout_output, with_surfaces_surface_tree,
     },
     output::Output,
-    wayland::compositor::send_surface_state,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+    wayland::compositor::send_surface_state,
 };
 use tracing::warn;
 
@@ -152,7 +152,8 @@ pub fn drag_elements(
         }
     }
 
-    let output_rect = Rectangle::from_size(output_geo.size.to_f64().to_physical(scale).to_i32_round());
+    let output_rect =
+        Rectangle::from_size(output_geo.size.to_f64().to_physical(scale).to_i32_round());
     let mut elements = Vec::new();
     // Later views are on top.
     for view in views.iter_mut().rev() {
@@ -269,7 +270,8 @@ fn update_icon_capture(
         render_elements_from_surface_tree(
             renderer,
             &icon.surface,
-            Point::<i32, Logical>::from((-bounds.loc.x, -bounds.loc.y)).to_physical_precise_round(scale.x),
+            Point::<i32, Logical>::from((-bounds.loc.x, -bounds.loc.y))
+                .to_physical_precise_round(scale.x),
             scale,
             1.0,
             Kind::Unspecified,
@@ -277,8 +279,12 @@ fn update_icon_capture(
     if surface_elements.is_empty() {
         return Ok(());
     }
-    let signature = crate::backend::snapshot::render_element_scene_signature(&surface_elements, scale);
-    let existing = icon.captures.iter().position(|capture| capture.context == context);
+    let signature =
+        crate::backend::snapshot::render_element_scene_signature(&surface_elements, scale);
+    let existing = icon
+        .captures
+        .iter()
+        .position(|capture| capture.context == context);
     if let Some(index) = existing {
         let capture = &icon.captures[index];
         if capture.signature == signature && capture.scale == scale.x && capture.bounds == bounds {
@@ -426,8 +432,11 @@ fn view_pieces(
                     root_px,
                     Relocate::Relative,
                 );
-                let element =
-                    RescaleRenderElement::from_element(element, anchor_px.to_i32_round(), view_scale);
+                let element = RescaleRenderElement::from_element(
+                    element,
+                    anchor_px.to_i32_round(),
+                    view_scale,
+                );
                 pieces.push(DragElement::Backdrop(RelocateRenderElement::from_element(
                     element,
                     (0, 0),
@@ -692,7 +701,13 @@ fn render_to_texture<E: RenderElement<GlesRenderer>>(
     let states = {
         let mut framebuffer = renderer.bind(&mut texture)?;
         tracker
-            .render_output(renderer, &mut framebuffer, 0, elements, [0.0, 0.0, 0.0, 0.0])
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                elements,
+                [0.0, 0.0, 0.0, 0.0],
+            )
             .map_err(|_| GlesError::FramebufferBindingError)?
             .states
     };
@@ -703,16 +718,13 @@ fn render_to_texture<E: RenderElement<GlesRenderer>>(
 mod tests {
     use smithay::backend::{
         egl::{EGLContext, EGLDisplay},
-        renderer::{
-            Color32F, ExportMem,
-            element::solid::SolidColorRenderElement,
-        },
+        renderer::{Color32F, ExportMem, element::solid::SolidColorRenderElement},
     };
 
     use super::*;
     use crate::ssd::{
-        BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, DecorationTree,
-        Edges, LayoutDirection, paint_buffers_for_layout,
+        BoxNode, Color, DecorationNode, DecorationNodeKind, DecorationStyle, DecorationTree, Edges,
+        LayoutDirection, paint_buffers_for_layout,
     };
 
     fn try_renderer() -> Option<GlesRenderer> {
@@ -764,7 +776,10 @@ mod tests {
         // 2 + max(8, 10) + 2 wide, 2 + 4 + 10 + 2 high.
         assert_eq!(layout.root.rect, LogicalRect::new(0, 0, 14, 18));
         assert_eq!(layout.window_slot_origin_px(), Some((3, 9)));
-        assert_eq!(layout.window_slot_rect(), Some(LogicalRect::new(2, 6, 10, 10)));
+        assert_eq!(
+            layout.window_slot_rect(),
+            Some(LogicalRect::new(2, 6, 10, 10))
+        );
         // Without an icon the slot is empty and the content shrinks.
         let layout = tree().layout_standalone(None, 1.0).unwrap();
         assert_eq!(layout.root.rect, LogicalRect::new(0, 0, 12, 8));
@@ -772,7 +787,12 @@ mod tests {
 
     fn pixel(pixels: &[u8], width: i32, x: i32, y: i32) -> [u8; 4] {
         let offset = ((y * width + x) * 4) as usize;
-        [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]]
+        [
+            pixels[offset],
+            pixels[offset + 1],
+            pixels[offset + 2],
+            pixels[offset + 3],
+        ]
     }
 
     fn read(renderer: &mut GlesRenderer, texture: &mut GlesTexture) -> Vec<u8> {
@@ -855,8 +875,16 @@ mod tests {
             let width = texture.size().w;
             let pixels = read(&mut renderer, &mut texture);
             let (x, y) = (anchor.0 as i32, anchor.1 as i32);
-            assert_eq!(pixel(&pixels, width, x, y), [0, 255, 0, 255], "icon under the pointer");
-            assert_eq!(pixel(&pixels, width, icon_px.0, icon_px.1), [255, 0, 0, 255], "icon corner");
+            assert_eq!(
+                pixel(&pixels, width, x, y),
+                [0, 255, 0, 255],
+                "icon under the pointer"
+            );
+            assert_eq!(
+                pixel(&pixels, width, icon_px.0, icon_px.1),
+                [255, 0, 0, 255],
+                "icon corner"
+            );
             assert_eq!(
                 pixel(&pixels, width, icon_px.0, icon_px.1 + third + 1),
                 [0, 255, 0, 255],
@@ -867,8 +895,16 @@ mod tests {
                 [255, 0, 0, 255],
                 "red ends a third down"
             );
-            assert_eq!(pixel(&pixels, width, icon_px.0 - 1, icon_px.1), [0, 0, 255, 255], "padding");
-            assert_eq!(pixel(&pixels, width, icon_px.0, icon_px.1 - 1), [0, 255, 0, 255], "box above");
+            assert_eq!(
+                pixel(&pixels, width, icon_px.0 - 1, icon_px.1),
+                [0, 0, 255, 255],
+                "padding"
+            );
+            assert_eq!(
+                pixel(&pixels, width, icon_px.0, icon_px.1 - 1),
+                [0, 255, 0, 255],
+                "box above"
+            );
             assert_eq!(pixel(&pixels, width, 0, 0), [0, 0, 255, 255], "background");
         }
     }
@@ -1033,10 +1069,26 @@ mod tests {
         let _ = std::fs::remove_file(&shader_path);
         let pixels = read(&mut renderer, &mut target);
         // Root at (10, 10), effect at (14, 14) 20x20, blue square at (14, 14) 6x6.
-        assert_eq!(pixel(&pixels, 48, 12, 12), [255, 0, 0, 255], "padding shows the frame");
-        assert_eq!(pixel(&pixels, 48, 30, 30), [0, 255, 0, 255], "the effect swapped the red");
-        assert_eq!(pixel(&pixels, 48, 16, 16), [0, 0, 255, 255], "its child in front");
-        assert_eq!(pixel(&pixels, 48, 40, 40), [255, 0, 0, 255], "outside the view");
+        assert_eq!(
+            pixel(&pixels, 48, 12, 12),
+            [255, 0, 0, 255],
+            "padding shows the frame"
+        );
+        assert_eq!(
+            pixel(&pixels, 48, 30, 30),
+            [0, 255, 0, 255],
+            "the effect swapped the red"
+        );
+        assert_eq!(
+            pixel(&pixels, 48, 16, 16),
+            [0, 0, 255, 255],
+            "its child in front"
+        );
+        assert_eq!(
+            pixel(&pixels, 48, 40, 40),
+            [255, 0, 0, 255],
+            "outside the view"
+        );
     }
 
     #[test]

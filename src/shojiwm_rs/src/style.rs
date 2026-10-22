@@ -44,7 +44,12 @@ pub const fn hex(input: &str) -> Color {
         "color must start with '#'"
     );
     match bytes.len() {
-        4 => Color::rgba(digit(bytes[1]) * 17, digit(bytes[2]) * 17, digit(bytes[3]) * 17, 255),
+        4 => Color::rgba(
+            digit(bytes[1]) * 17,
+            digit(bytes[2]) * 17,
+            digit(bytes[3]) * 17,
+            255,
+        ),
         5 => Color::rgba(
             digit(bytes[1]) * 17,
             digit(bytes[2]) * 17,
@@ -417,7 +422,11 @@ mod tests {
 
     #[test]
     fn edges_follow_the_typescript_precedence() {
-        let style = Style::new().padding(1.0).padding_x(2.0).padding_right(3.0).resolve();
+        let style = Style::new()
+            .padding(1.0)
+            .padding_x(2.0)
+            .padding_right(3.0)
+            .resolve();
         assert_eq!(
             style.padding,
             Edges {
@@ -433,7 +442,16 @@ mod tests {
     fn reactive_border_color() {
         let scope = Scope::root();
         let hover = scope.signal(false);
-        let style = Style::new().border(1.0, hover.map(|hover| if *hover { hex("#000000") } else { hex("#ffffff") }));
+        let style = Style::new().border(
+            1.0,
+            hover.map(|hover| {
+                if *hover {
+                    hex("#000000")
+                } else {
+                    hex("#ffffff")
+                }
+            }),
+        );
         assert_eq!(style.resolve().border.unwrap().color, hex("#ffffff"));
         hover.set(true);
         assert_eq!(style.resolve().border.unwrap().color, hex("#000000"));

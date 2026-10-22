@@ -808,10 +808,7 @@ pub fn relative_physical_rect_from_root_global_origin_size(
     let top_px = (((rect.y - root_rect.y) as f64) * scale_y).round() as i32;
     let width_px = ((rect.width as f64) * scale_x).round().max(0.0) as i32;
     let height_px = ((rect.height as f64) * scale_y).round().max(0.0) as i32;
-    Rectangle::new(
-        Point::from((left_px, top_px)),
-        (width_px, height_px).into(),
-    )
+    Rectangle::new(Point::from((left_px, top_px)), (width_px, height_px).into())
 }
 
 pub fn relative_physical_rect_from_root_global_edges_precise(
@@ -935,8 +932,9 @@ mod tests {
             width: 30.5,
             height: 17.25,
         };
-        let reference =
-            super::relative_physical_rect_from_root_precise(child, base, subpixel, output_geo, scale);
+        let reference = super::relative_physical_rect_from_root_precise(
+            child, base, subpixel, output_geo, scale,
+        );
 
         for delta in 1..8 {
             let root = LogicalRect::new(base.x + delta, base.y + delta, base.width, base.height);

@@ -20,8 +20,8 @@
 use std::collections::{HashMap, HashSet};
 
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-    Weak as WaylandWeak, backend::ClientId,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak as WaylandWeak,
+    backend::ClientId,
 };
 use wayland_protocols_plasma::plasma_virtual_desktop::server::{
     org_kde_plasma_virtual_desktop::{self, OrgKdePlasmaVirtualDesktop},
@@ -125,7 +125,11 @@ impl PlasmaVirtualDesktopState {
         self.configured = true;
 
         // Desktops that are gone.
-        let next_ids: HashSet<&str> = config.desktops.iter().map(|desktop| desktop.id.as_str()).collect();
+        let next_ids: HashSet<&str> = config
+            .desktops
+            .iter()
+            .map(|desktop| desktop.id.as_str())
+            .collect();
         let mut kept = Vec::new();
         for mut desktop in std::mem::take(&mut self.desktops) {
             if next_ids.contains(desktop.id.as_str()) {
@@ -267,7 +271,11 @@ impl Dispatch<OrgKdePlasmaVirtualDesktopManagement, ()> for ShojiWM {
             Request::GetVirtualDesktop { id, desktop_id } => {
                 let resource = data_init.init(id, desktop_id.clone());
                 let desktops = &mut state.plasma_virtual_desktop_state;
-                match desktops.desktops.iter_mut().find(|desktop| desktop.id == desktop_id) {
+                match desktops
+                    .desktops
+                    .iter_mut()
+                    .find(|desktop| desktop.id == desktop_id)
+                {
                     Some(desktop) => {
                         desktop.send_all(&resource);
                         desktop.resources.push(resource.downgrade());

@@ -92,7 +92,10 @@ pub struct DragActions {
 impl DragActions {
     fn from_metadata(metadata: Option<&SourceMetadata>) -> Self {
         let mut actions = Self::default();
-        for action in metadata.map(|metadata| metadata.dnd_actions.as_slice()).unwrap_or_default() {
+        for action in metadata
+            .map(|metadata| metadata.dnd_actions.as_slice())
+            .unwrap_or_default()
+        {
             match action {
                 DndAction::Copy => actions.copy = true,
                 DndAction::Move => actions.move_ = true,
@@ -166,7 +169,9 @@ pub enum DragEndKind {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "phase", rename_all = "camelCase")]
 pub enum DndEventSnapshot {
-    Start { drag: DragSnapshot },
+    Start {
+        drag: DragSnapshot,
+    },
     /// The negotiated action, the target window or the icon changed.
     #[serde(rename_all = "camelCase")]
     Update {
@@ -282,7 +287,8 @@ impl<S: Source> Source for TrackedSource<S> {
     }
 
     fn choose_action(&self, action: DndAction) {
-        self.chosen.store(DragAction::encode(action), Ordering::Release);
+        self.chosen
+            .store(DragAction::encode(action), Ordering::Release);
         self.inner.choose_action(action);
     }
 
@@ -441,7 +447,10 @@ impl DndState {
     }
 
     /// Where a view's anchor point is (global logical coordinates).
-    pub(crate) fn anchor_point(props: &DragViewProps, pointer: Point<f64, Logical>) -> Point<f64, Logical> {
+    pub(crate) fn anchor_point(
+        props: &DragViewProps,
+        pointer: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
         match props.anchor {
             DragViewAnchor::Pointer => pointer + Point::from((props.x, props.y)),
             DragViewAnchor::Global => Point::from((props.x, props.y)),
@@ -458,7 +467,10 @@ impl DndState {
             return;
         }
         // A view shown for a drag that already ended starts its linger now.
-        let ended = self.active.as_ref().is_none_or(|active| active.id != drag_id);
+        let ended = self
+            .active
+            .as_ref()
+            .is_none_or(|active| active.id != drag_id);
         self.views.push(DragView {
             id: view_id,
             drag_id,
@@ -544,7 +556,11 @@ impl DndState {
         let active = self.active.take()?;
         self.views
             .retain(|view| !(view.drag_id == active.id && view.id == BUILTIN_VIEW_ID));
-        for view in self.views.iter_mut().filter(|view| view.drag_id == active.id) {
+        for view in self
+            .views
+            .iter_mut()
+            .filter(|view| view.drag_id == active.id)
+        {
             view.deadline.get_or_insert(now + view.max_linger);
         }
         self.collect_records();
@@ -593,9 +609,8 @@ impl DndState {
     fn collect_records(&mut self) {
         let active = self.active.as_ref().map(|active| active.id);
         let views = &self.views;
-        self.records.retain(|id, _| {
-            Some(*id) == active || views.iter().any(|view| view.drag_id == *id)
-        });
+        self.records
+            .retain(|id, _| Some(*id) == active || views.iter().any(|view| view.drag_id == *id));
     }
 }
 
@@ -670,7 +685,9 @@ impl ShojiWM {
                 offset: Point::default(),
                 captures: Vec::new(),
             }),
-            app_icon: source_snapshot.as_ref().and_then(|snapshot| snapshot.icon.clone()),
+            app_icon: source_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.icon.clone()),
             app_id: source_snapshot.and_then(|snapshot| snapshot.app_id),
         };
         let drag_id = self.dnd.start(drag, record);
@@ -716,7 +733,12 @@ impl ShojiWM {
         accepted: bool,
         position: Point<f64, Logical>,
     ) {
-        if self.dnd.active.as_ref().is_none_or(|active| active.id != drag_id) {
+        if self
+            .dnd
+            .active
+            .as_ref()
+            .is_none_or(|active| active.id != drag_id)
+        {
             return;
         }
         self.sync_drag_state();
@@ -744,20 +766,12 @@ impl ShojiWM {
         let Some(active) = self.dnd.active.as_ref() else {
             return;
         };
-        let before = (
-            active.action,
-            active.target_window_id.clone(),
-            active.icon,
-        );
+        let before = (active.action, active.target_window_id.clone(), active.icon);
         self.refresh_active_drag_fields();
         let Some(active) = self.dnd.active.as_ref() else {
             return;
         };
-        let after = (
-            active.action,
-            active.target_window_id.clone(),
-            active.icon,
-        );
+        let after = (active.action, active.target_window_id.clone(), active.icon);
         if before != after && active.reported {
             let event = DndEventSnapshot::Update {
                 drag_id: active.id,
@@ -904,7 +918,10 @@ impl ShojiWM {
                 .layouts
                 .retain(|layout| scales.contains(&layout.scale));
             for &scale in &scales {
-                let index = content.layouts.iter().position(|layout| layout.scale == scale);
+                let index = content
+                    .layouts
+                    .iter()
+                    .position(|layout| layout.scale == scale);
                 let current = index.map(|index| &content.layouts[index]);
                 if current.is_some_and(|layout| {
                     layout.generation == content.generation
@@ -935,7 +952,11 @@ impl ShojiWM {
                         rebuilt = true;
                     }
                     Err(error) => {
-                        warn!(view_id = view.id, ?error, "drag view content cannot be laid out");
+                        warn!(
+                            view_id = view.id,
+                            ?error,
+                            "drag view content cannot be laid out"
+                        );
                     }
                 }
             }
@@ -1080,14 +1101,20 @@ mod tests {
         let props = state.views[0].props;
         assert_eq!((props.y, props.opacity, props.scale), (0.0, 1.0, 0.0));
         let pointer = Point::from((100.0, 50.0));
-        assert_eq!(DndState::anchor_point(&props, pointer), Point::from((104.0, 50.0)));
+        assert_eq!(
+            DndState::anchor_point(&props, pointer),
+            Point::from((104.0, 50.0))
+        );
         let global = DragViewProps {
             anchor: DragViewAnchor::Global,
             x: 7.0,
             y: 8.0,
             ..props
         };
-        assert_eq!(DndState::anchor_point(&global, pointer), Point::from((7.0, 8.0)));
+        assert_eq!(
+            DndState::anchor_point(&global, pointer),
+            Point::from((7.0, 8.0))
+        );
     }
 
     #[test]

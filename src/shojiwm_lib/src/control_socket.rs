@@ -81,7 +81,10 @@ impl Drop for ControlSocket {
 
 /// Bind the control socket for `wayland_display` and export its path. Failing
 /// to bind only costs the CLI commands, so it is logged rather than fatal.
-pub fn start(loop_handle: &LoopHandle<'static, ShojiWM>, wayland_display: &OsStr) -> Option<ControlSocket> {
+pub fn start(
+    loop_handle: &LoopHandle<'static, ShojiWM>,
+    wayland_display: &OsStr,
+) -> Option<ControlSocket> {
     let Some(path) = socket_path(wayland_display) else {
         warn!("XDG_RUNTIME_DIR is not set; shoji_wm --quit/--reload will not work");
         return None;

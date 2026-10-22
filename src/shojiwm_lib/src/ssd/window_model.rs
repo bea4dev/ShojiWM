@@ -433,16 +433,19 @@ pub enum ManagedWindowAnimationMode {
     Multiply,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[derive(Default)]
 pub enum ManagedWindowAnimationEasingSnapshot {
     #[default]
     Linear,
-    CubicBezier { x1: f64, y1: f64, x2: f64, y2: f64 },
+    CubicBezier {
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    },
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

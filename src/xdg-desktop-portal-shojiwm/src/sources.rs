@@ -278,16 +278,15 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
                 width,
                 height,
                 refresh,
+            } if flags
+                .into_result()
+                .map(|f| f.contains(wl_output::Mode::Current))
+                .unwrap_or(false) =>
+            {
+                cur.width = width;
+                cur.height = height;
+                cur.refresh_mhz = refresh;
             }
-                if flags
-                    .into_result()
-                    .map(|f| f.contains(wl_output::Mode::Current))
-                    .unwrap_or(false)
-                => {
-                    cur.width = width;
-                    cur.height = height;
-                    cur.refresh_mhz = refresh;
-                }
             wl_output::Event::Done => {
                 let info = state.output_pending.pop().unwrap();
                 state.outputs.push(DiscoveredOutput {
@@ -410,8 +409,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppData {
                 format: WEnum::Value(f),
             } => {
                 // Prefer Xrgb8888 / Argb8888 over more exotic ones.
-                let is_preferred =
-                    matches!(f, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
+                let is_preferred = matches!(f, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
                 if c.constraint_format.is_none() || is_preferred {
                     c.constraint_format = Some(f);
                 }

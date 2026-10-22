@@ -187,7 +187,11 @@ mod tests {
             move || buffer.clone()
         };
         let subscriber = tracing_subscriber::registry()
-            .with(LogRateLimitLayer::with_limits(buffer.clone(), burst, window))
+            .with(LogRateLimitLayer::with_limits(
+                buffer.clone(),
+                burst,
+                window,
+            ))
             .with(
                 tracing_subscriber::fmt::layer()
                     .compact()
@@ -207,7 +211,10 @@ mod tests {
         });
         let floods = lines.iter().filter(|line| line.contains("flood")).count();
         assert_eq!(floods, 3, "{lines:#?}");
-        let notices = lines.iter().filter(|line| line.contains("dropping repeats")).count();
+        let notices = lines
+            .iter()
+            .filter(|line| line.contains("dropping repeats"))
+            .count();
         assert_eq!(notices, 1, "{lines:#?}");
     }
 
@@ -240,8 +247,20 @@ mod tests {
             }
             tracing::warn!("warn b");
         });
-        assert_eq!(lines.iter().filter(|line| line.contains("chatty info")).count(), 5);
-        assert_eq!(lines.iter().filter(|line| line.contains("warn a")).count(), 2);
-        assert_eq!(lines.iter().filter(|line| line.contains("warn b")).count(), 1);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("chatty info"))
+                .count(),
+            5
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("warn a")).count(),
+            2
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("warn b")).count(),
+            1
+        );
     }
 }

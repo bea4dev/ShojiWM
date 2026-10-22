@@ -32,11 +32,7 @@ use smithay::{
     wayland::{
         background_effect::BackgroundEffectSurfaceCachedState,
         compositor::{
-            RectangleKind, 
-            RegionAttributes, 
-            SurfaceAttributes,
-            TraversalAction, 
-            with_states,
+            RectangleKind, RegionAttributes, SurfaceAttributes, TraversalAction, with_states,
             with_surface_tree_downward,
         },
         session_lock::LockSurface,
@@ -59,7 +55,9 @@ pub enum WindowClipElement {
 
 /// Color-management tags of a window's surface tree, keyed by the element id
 /// `WaylandSurfaceRenderElement` derives from each surface.
-fn surface_descriptions(window: &Window) -> std::collections::HashMap<Id, crate::color::ImageDescription> {
+fn surface_descriptions(
+    window: &Window,
+) -> std::collections::HashMap<Id, crate::color::ImageDescription> {
     match window.underlying_surface() {
         // Skipped entirely until something in the session has ever been
         // tagged, which is one relaxed atomic load in the common case.
@@ -79,9 +77,7 @@ fn surface_descriptions(window: &Window) -> std::collections::HashMap<Id, crate:
                 // window that maps.
                 |surface, states, _| {
                     if let Some(description) =
-                        crate::protocols::color_management::image_description_from_states(
-                            states,
-                        )
+                        crate::protocols::color_management::image_description_from_states(states)
                     {
                         found.insert(Id::from_wayland_resource(surface), description);
                     }
@@ -145,7 +141,8 @@ fn raw_or_color_converted(
         return Ok(WindowClipElement::Raw(element));
     };
     let is_root = root_id.is_some_and(|root_id| Element::id(&element) == root_id);
-    let converted = ClippedSurfaceElement::color_only(renderer, element, output_scale, description)?;
+    let converted =
+        ClippedSurfaceElement::color_only(renderer, element, output_scale, description)?;
     Ok(if is_root {
         WindowClipElement::Clipped(converted)
     } else {
@@ -350,14 +347,16 @@ pub fn layer_effect_region_bounds(
             };
             input_region
         }
-        crate::ssd::EffectRegion::BlurRegion => with_states(layer_surface.wl_surface(), |states| {
-            states
-                .cached_state
-                .get::<BackgroundEffectSurfaceCachedState>()
-                .current()
-                .blur_region
-                .clone()
-        })?,
+        crate::ssd::EffectRegion::BlurRegion => {
+            with_states(layer_surface.wl_surface(), |states| {
+                states
+                    .cached_state
+                    .get::<BackgroundEffectSurfaceCachedState>()
+                    .current()
+                    .blur_region
+                    .clone()
+            })?
+        }
     };
     region_bounds_within_layer(&region, layer_rect)
 }
@@ -1099,10 +1098,7 @@ pub fn clipped_surface_elements(
         .iter()
         .map(|element| Element::geometry(element, output_scale))
         .collect::<Vec<_>>();
-    let element_srcs = elements
-        .iter()
-        .map(Element::src)
-        .collect::<Vec<_>>();
+    let element_srcs = elements.iter().map(Element::src).collect::<Vec<_>>();
     let selected_indices = geometry
         .map(|forced_geometry| {
             let best_score = element_geometries
@@ -1178,12 +1174,7 @@ pub fn clipped_surface_elements(
                 if Element::id(&element) == &root_id {
                     // Resolve before the move: `element` is consumed below.
                     let element_description =
-                        surface_descriptions
-                            .get(
-                                Element::id(
-                                    &element,
-                                ),
-                            ).copied();
+                        surface_descriptions.get(Element::id(&element)).copied();
                     output.push(WindowClipElement::Clipped(ClippedSurfaceElement::new(
                         renderer,
                         element,
@@ -1224,12 +1215,7 @@ pub fn clipped_surface_elements(
                     );
                 }
                 // Resolve before the move: `element` is consumed below.
-                let element_description = surface_descriptions
-                    .get(
-                        Element::id(
-                            &element,
-                        )
-                    ).copied();
+                let element_description = surface_descriptions.get(Element::id(&element)).copied();
                 if geometry_override.is_some() {
                     ClippedSurfaceElement::new(
                         renderer,
@@ -1292,7 +1278,9 @@ mod region_bounds_tests {
         RegionAttributes {
             rects: rects
                 .iter()
-                .map(|(kind, (x, y, w, h))| (*kind, Rectangle::new((*x, *y).into(), (*w, *h).into())))
+                .map(|(kind, (x, y, w, h))| {
+                    (*kind, Rectangle::new((*x, *y).into(), (*w, *h).into()))
+                })
                 .collect(),
         }
     }

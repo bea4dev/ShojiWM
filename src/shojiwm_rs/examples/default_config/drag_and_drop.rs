@@ -129,14 +129,16 @@ fn frosted_panel(radius: f64, content: Element) -> Element {
                 .box_shadow(shadow(0.0, 6.0, 18.0, hex("#00000080"))),
         )
         .child(
-            ShaderEffect::new(card_blur()).direction(Direction::Column).child(
-                content.style(
-                    Style::new()
-                        .background(hex(CARD_TINT))
-                        .border_radius(radius)
-                        .border(1.0, hex(CARD_BORDER)),
+            ShaderEffect::new(card_blur())
+                .direction(Direction::Column)
+                .child(
+                    content.style(
+                        Style::new()
+                            .background(hex(CARD_TINT))
+                            .border_radius(radius)
+                            .border(1.0, hex(CARD_BORDER)),
+                    ),
                 ),
-            ),
         )
 }
 
@@ -195,13 +197,15 @@ fn drag_card(drag: &DragSession, kind: DragKind) -> Element {
                                 .align_items(AlignItems::Center)
                                 .justify_content(JustifyContent::Center),
                         )
-                        .child(Label::new(text).style(
-                            Style::new()
-                                .color(hex("#ffffff"))
-                                .fonts(FONT)
-                                .font_size(12.0)
-                                .font_weight(700),
-                        )),
+                        .child(
+                            Label::new(text).style(
+                                Style::new()
+                                    .color(hex("#ffffff"))
+                                    .fonts(FONT)
+                                    .font_size(12.0)
+                                    .font_weight(700),
+                            ),
+                        ),
                 ),
         );
     }
@@ -217,9 +221,14 @@ fn drag_card(drag: &DragSession, kind: DragKind) -> Element {
                     .align_items(AlignItems::Center),
             )
             .child(kind_icon(kind, 13.0))
-            .child(Label::new(kind.label()).style(
-                Style::new().color(hex("#e6e9ef")).fonts(FONT).font_size(12.0),
-            )),
+            .child(
+                Label::new(kind.label()).style(
+                    Style::new()
+                        .color(hex("#e6e9ef"))
+                        .fonts(FONT)
+                        .font_size(12.0),
+                ),
+            ),
     );
     Flex::column()
         .style(Style::new().align_items(AlignItems::Center).gap(6.0))
@@ -255,7 +264,11 @@ pub fn install_drag_and_drop() {
         let view = drag.show(
             DragViewOptions::new()
                 .anchor(derive(move || {
-                    if ended.get().is_some() { DragViewAnchor::Global } else { DragViewAnchor::Pointer }
+                    if ended.get().is_some() {
+                        DragViewAnchor::Global
+                    } else {
+                        DragViewAnchor::Pointer
+                    }
                 }))
                 .x(position(|point| point.x))
                 .y(position(|point| point.y))

@@ -5,10 +5,10 @@ use super::window_model::{
     GestureSwipeEventSnapshot, ManagedWindowAnimationSnapshot, ManagedWindowState,
     PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
     WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
-    WindowDecorationDecisionSnapshot,
-    WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
-    WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
-    WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
+    WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
+    WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
+    WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
+    WindowMoveEventSnapshot, WindowResizeEventSnapshot,
 };
 use super::{
     DecorationBridgeError, DecorationLayoutError, DecorationNode, DecorationTree, EffectInput,

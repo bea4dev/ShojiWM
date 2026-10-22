@@ -37,9 +37,11 @@ fn setup() {
         let texture = RenderTexture::new().key("all").child(Windows::all());
         OutputStack::new()
             .child(Solid::new([0.0, 0.0, 0.0, 0.5]))
-            .child(Scene3D::new(screen_camera(width, height, ScreenCamera::default())).plane(
-                Plane::new(&texture, width, height).transform(transform3d().rotate_y(20.0)),
-            ))
+            .child(
+                Scene3D::new(screen_camera(width, height, ScreenCamera::default())).plane(
+                    Plane::new(&texture, width, height).transform(transform3d().rotate_y(20.0)),
+                ),
+            )
     });
     COMPOSITOR.effect.background_with(move || {
         (!blur_off.get()).then(|| {
@@ -154,7 +156,9 @@ fn background_effect_is_republished_when_its_signals_change() {
         HostMessage::BackgroundEffect(config) => Some(config),
         _ => None,
     });
-    let config = update.expect("a uniform change republishes the effect").unwrap();
+    let config = update
+        .expect("a uniform change republishes the effect")
+        .unwrap();
     assert_ne!(Some(config), first);
 
     BLUR_OFF.with(|signal| signal.set(true));
@@ -193,7 +197,9 @@ fn input_grab_receives_events_until_cancelled() {
     };
     runtime.input_grab_event(grab_id, &key("Tab"), 0).unwrap();
     // A stale id is ignored.
-    runtime.input_grab_event(grab_id + 100, &key("Escape"), 0).unwrap();
+    runtime
+        .input_grab_event(grab_id + 100, &key("Escape"), 0)
+        .unwrap();
     assert_eq!(KEYS.with(|signal| signal.get_untracked()), ["Tab"]);
 
     runtime
@@ -209,6 +215,8 @@ fn input_grab_receives_events_until_cancelled() {
         CANCELLED.with(|signal| signal.get_untracked()),
         Some(InputGrabCancelReason::SessionLock)
     );
-    runtime.input_grab_event(grab_id, &key("Return"), 0).unwrap();
+    runtime
+        .input_grab_event(grab_id, &key("Return"), 0)
+        .unwrap();
     assert_eq!(KEYS.with(|signal| signal.get_untracked()), ["Tab"]);
 }

@@ -12,26 +12,14 @@ use drm_metadata::EdidHdrMetadata;
 use tracing::{info, warn};
 
 /// Named primaries we support parametrically (no custom chromaticities yet).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPrimaries {
     Srgb,
     Bt2020,
 }
 
 /// Transfer characteristics we support parametrically.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferCharacteristics {
     Srgb,
     St2084Pq,
@@ -40,12 +28,7 @@ pub enum TransferCharacteristics {
 
 /// Luminance metadata in cd/m², from `set_luminances` or the
 /// per-transfer-function protocol defaults.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq
-)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Luminances {
     pub min: f32,
     pub max: f32,
@@ -73,12 +56,7 @@ impl TransferCharacteristics {
 
 /// An immutable parametric image description, as created through
 /// `wp_image_description_creator_params_v1` or synthesized for an output.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq
-)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageDescription {
     pub primaries: ColorPrimaries,
     pub tf: TransferCharacteristics,
@@ -96,12 +74,7 @@ pub struct ImageDescription {
 }
 
 /// Minimum and maximum luminance of a target color volume, in cd/m².
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq
-)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TargetLuminance {
     pub min: f32,
     pub max: f32,
@@ -275,13 +248,7 @@ impl Drop for RenderColorTargetGuard {
 }
 
 /// The space all compositing (blur, liquid-glass, blending) happens in.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendSpace {
     /// Non-linear sRGB in Abgr8888 — unchanged current behavior.
     Srgb,
@@ -367,11 +334,7 @@ static SESSION_HDR_CONFIGURED: std::sync::atomic::AtomicBool =
 /// output request HDR". Widens/narrows the protocol advertisement for
 /// clients that bind afterwards.
 pub fn set_session_hdr_configured(enabled: bool) {
-    SESSION_HDR_CONFIGURED
-        .store(
-            enabled,
-            std::sync::atomic::Ordering::Relaxed
-        );
+    SESSION_HDR_CONFIGURED.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// HDR gate for the protocol advertisement (PQ/BT.2020 capabilities):
@@ -379,18 +342,13 @@ pub fn set_session_hdr_configured(enabled: bool) {
 /// `SHOJI_HDR_OUTPUTS=DP-1,DP-2` (or `all`) env override. Off by default
 /// because the render pipeline still composites in sRGB.
 pub fn hdr_experiment_enabled() -> bool {
-    SESSION_HDR_CONFIGURED
-        .load(
-            std::sync::atomic::Ordering::Relaxed
-        )
+    SESSION_HDR_CONFIGURED.load(std::sync::atomic::Ordering::Relaxed)
         || std::env::var("SHOJI_HDR_OUTPUTS").is_ok_and(|value| !value.trim().is_empty())
 }
 
 /// Env-override opt-in for one output, independent of the runtime display
 /// config (useful for `cargo run` sessions without a config).
-pub fn hdr_output_requested_via_env(
-    output_name: &str
-) -> bool {
+pub fn hdr_output_requested_via_env(output_name: &str) -> bool {
     std::env::var("SHOJI_HDR_OUTPUTS").is_ok_and(|value| {
         value
             .split(',')
@@ -514,9 +472,7 @@ pub fn resolve_output_mode(
             "applying configured display luminance override"
         );
     }
-    let max_display_luminance = max_override
-        .or(edid.max_luminance)
-        .unwrap_or(1000.0);
+    let max_display_luminance = max_override.or(edid.max_luminance).unwrap_or(1000.0);
     // Following the backlight, full brightness reaches the panel's suggested
     // SDR maximum (what the backlight itself tops out at in SDR mode). A floor
     // keeps a zeroed backlight from blacking the desktop out.
@@ -545,9 +501,7 @@ pub fn resolve_output_mode(
         .unwrap_or(primaries::SRGB);
     OutputColorMode::Hdr10 {
         max_display_luminance,
-        min_display_luminance: min_override
-            .or(edid.min_luminance)
-            .unwrap_or(0.005),
+        min_display_luminance: min_override.or(edid.min_luminance).unwrap_or(0.005),
         sdr_white_luminance,
         sdr_primaries,
     }
@@ -598,7 +552,10 @@ mod tests {
 
     fn sdr_white(luminance_override: HdrLuminanceOverride) -> f32 {
         match resolve_output_mode("eDP-1", true, Some(&oled_edid()), luminance_override) {
-            OutputColorMode::Hdr10 { sdr_white_luminance, .. } => sdr_white_luminance,
+            OutputColorMode::Hdr10 {
+                sdr_white_luminance,
+                ..
+            } => sdr_white_luminance,
             OutputColorMode::Sdr => panic!("should drive HDR10"),
         }
     }

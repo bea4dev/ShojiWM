@@ -99,7 +99,10 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for App {
                 if let (Some(name), false) = (state.create.clone(), state.create_sent) {
                     match (state.creatable_groups.first(), &state.manager) {
                         (Some(group), Some(manager)) => {
-                            println!("request: create_workspace({name}) on group#{}", proto_id(group));
+                            println!(
+                                "request: create_workspace({name}) on group#{}",
+                                proto_id(group)
+                            );
                             group.create_workspace(name);
                             manager.commit();
                             state.create_sent = true;
@@ -244,9 +247,7 @@ fn main() {
         conn.prepare_read().map(|guard| {
             let _ = guard.read_without_dispatch();
         });
-        queue
-            .dispatch_pending(&mut app)
-            .expect("dispatch");
+        queue.dispatch_pending(&mut app).expect("dispatch");
         std::thread::sleep(Duration::from_millis(20));
     }
     println!(

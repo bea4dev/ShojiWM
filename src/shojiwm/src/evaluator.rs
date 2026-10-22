@@ -12,24 +12,33 @@ use std::{
 use tracing::{debug, info, warn};
 
 use crate::embedded_runtime::{
-    EmbeddedRuntime, EmbeddedRuntimeResponse, NativeCachedResponse,
-    NativeCompositionRequest, NativeCompositionUpdate, NativeEffectRequest, NativeEffectUpdate,
-    NativeInteractionRequest, NativeInteractionResponse, NativeSchedulerRequest,
-    NativeSchedulerResponse,
+    EmbeddedRuntime, EmbeddedRuntimeResponse, NativeCachedResponse, NativeCompositionRequest,
+    NativeCompositionUpdate, NativeEffectRequest, NativeEffectUpdate, NativeInteractionRequest,
+    NativeInteractionResponse, NativeSchedulerRequest, NativeSchedulerResponse,
 };
+use shojiwm_lib::runtime_api::{HostMessage, RuntimeConfigDelta, RuntimeHost};
 use shojiwm_lib::ssd::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowState,
     PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot,
-    WaylandWindowSnapshot,
-    WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+    WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
     WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
-    WindowDecorationPolicyContextSnapshot,
-    WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
-    WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
+    WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
+    WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
+    WindowMoveEventSnapshot, WindowResizeEventSnapshot,
 };
 use shojiwm_lib::ssd::{
     BackgroundEffectConfig, DecorationBridgeError, WindowEffectConfig, WindowTransform,
     decode_tree_json,
+};
+use shojiwm_lib::ssd::{
+    DecorationCachedEvaluationResult, DecorationEvaluationError, DecorationEvaluationResult,
+    DecorationEvaluator, DecorationGestureSwipeAsyncInvocation, DecorationHandlerInvocation,
+    DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation, DecorationSchedulerTick,
+    DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
+    DecorationWindowStateRequestInvocation, LayerEffectEvaluationResult,
+    PopupEffectEvaluationResult, RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment,
+    RuntimePopupEffectAssignment, RuntimeWindowAction, validate_layer_effect_config,
+    validate_popup_effect_config,
 };
 use shojiwm_lib::{
     activation_environment::RuntimeEnvUpdates,
@@ -41,17 +50,6 @@ use shojiwm_lib::{
     runtime_pointer::RuntimePointerConfigUpdate,
     runtime_process::{RuntimeProcessAction, RuntimeProcessConfigUpdate},
     runtime_workspace::{RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate},
-};
-use shojiwm_lib::runtime_api::{HostMessage, RuntimeConfigDelta, RuntimeHost};
-use shojiwm_lib::ssd::{
-    DecorationCachedEvaluationResult, DecorationEvaluationError, DecorationEvaluationResult,
-    DecorationEvaluator, DecorationGestureSwipeAsyncInvocation, DecorationHandlerInvocation,
-    DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation, DecorationSchedulerTick,
-    DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
-    DecorationWindowStateRequestInvocation, LayerEffectEvaluationResult,
-    PopupEffectEvaluationResult, RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment,
-    RuntimePopupEffectAssignment, RuntimeWindowAction, validate_layer_effect_config,
-    validate_popup_effect_config,
 };
 
 fn managed_rect_debug_enabled() -> bool {
@@ -949,11 +947,12 @@ impl EmbeddedDecorationEvaluator {
         display_state: std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     ) {
         if let Ok(mut guard) = self.display_state.lock()
-            && *guard != display_state {
-                *guard = display_state;
-                self.runtime_state_generation
-                    .fetch_add(1, Ordering::Release);
-            }
+            && *guard != display_state
+        {
+            *guard = display_state;
+            self.runtime_state_generation
+                .fetch_add(1, Ordering::Release);
+        }
     }
 
     pub fn set_input_state(
@@ -961,11 +960,12 @@ impl EmbeddedDecorationEvaluator {
         input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     ) {
         if let Ok(mut guard) = self.input_state.lock()
-            && *guard != input_state {
-                *guard = input_state;
-                self.runtime_state_generation
-                    .fetch_add(1, Ordering::Release);
-            }
+            && *guard != input_state
+        {
+            *guard = input_state;
+            self.runtime_state_generation
+                .fetch_add(1, Ordering::Release);
+        }
     }
 
     pub fn set_keyboard_layout(&self, layout: KeyboardLayoutSnapshot) -> bool {
@@ -1398,7 +1398,11 @@ impl EmbeddedDecorationEvaluator {
     fn ensure_pointer_move_async_worker(&self) {
         // The worker is now process-lifetime, so this only ever flips once.
         // Reading first keeps the steady state off a cacheline the worker owns.
-        if self.pointer_move_async.worker_started.load(Ordering::Relaxed) {
+        if self
+            .pointer_move_async
+            .worker_started
+            .load(Ordering::Relaxed)
+        {
             return;
         }
         if self
@@ -1751,16 +1755,19 @@ impl EmbeddedDecorationEvaluator {
             process_actions: response.process_actions.unwrap_or_default(),
             ..RuntimeConfigDelta::default()
         };
-        Ok(Some((DecorationPointerMoveAsyncInvocation {
-            invoked: response.invoked.unwrap_or(false),
-            dirty: response.dirty.unwrap_or(false),
-            dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
-            dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
-            dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
-            dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
-            actions: response.actions.unwrap_or_default(),
-            next_poll_in_ms: response.next_poll_in_ms,
-        }, config)))
+        Ok(Some((
+            DecorationPointerMoveAsyncInvocation {
+                invoked: response.invoked.unwrap_or(false),
+                dirty: response.dirty.unwrap_or(false),
+                dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+                dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
+                dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+                dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+                actions: response.actions.unwrap_or_default(),
+                next_poll_in_ms: response.next_poll_in_ms,
+            },
+            config,
+        )))
     }
 
     fn dispatch_gesture_swipe_async(
@@ -1847,16 +1854,19 @@ impl EmbeddedDecorationEvaluator {
             process_actions: response.process_actions.unwrap_or_default(),
             ..RuntimeConfigDelta::default()
         };
-        Ok(Some((DecorationGestureSwipeAsyncInvocation {
-            invoked: response.invoked.unwrap_or(false),
-            dirty: response.dirty.unwrap_or(false),
-            dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
-            dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
-            dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
-            dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
-            actions: response.actions.unwrap_or_default(),
-            next_poll_in_ms: response.next_poll_in_ms,
-        }, config)))
+        Ok(Some((
+            DecorationGestureSwipeAsyncInvocation {
+                invoked: response.invoked.unwrap_or(false),
+                dirty: response.dirty.unwrap_or(false),
+                dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+                dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
+                dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+                dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+                actions: response.actions.unwrap_or_default(),
+                next_poll_in_ms: response.next_poll_in_ms,
+            },
+            config,
+        )))
     }
 }
 
@@ -2657,11 +2667,9 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         let runtime = self.ensure_runtime(&mut runtime_guard)?;
         let request_id = runtime.next_request_id;
         runtime.next_request_id += 1;
-        let request = serde_json::to_string(&RuntimeRequest::KdeDecorationDefault {
-            request_id,
-            client,
-        })
-        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        let request =
+            serde_json::to_string(&RuntimeRequest::KdeDecorationDefault { request_id, client })
+                .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
         runtime.write_request(&request)?;
 
         let Some(response) = runtime.read_response::<RuntimeWindowDecorationPolicyResponse>()?
@@ -4366,14 +4374,14 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
 mod tests {
     use super::*;
     use shojiwm_lib::ssd::{
-        EffectInput, EffectRegion, StaticDecorationEvaluator, WindowDecorationModeSnapshot,
-        evaluate_dynamic_decoration,
-    };
-    use shojiwm_lib::ssd::{
         BackdropBlur, CompiledEffect, DecorationNodeKind, EffectAlphaMode,
         EffectInvalidationPolicy, EffectOutsets, EffectStage, ShaderModule, ShaderStage,
         WindowEffectSlot, WindowSourceInclude,
         window_model::{WaylandWindowSnapshot, WindowPositionSnapshot},
+    };
+    use shojiwm_lib::ssd::{
+        EffectInput, EffectRegion, StaticDecorationEvaluator, WindowDecorationModeSnapshot,
+        evaluate_dynamic_decoration,
     };
     use std::{
         io::{BufRead, BufReader, Write},
@@ -4472,8 +4480,13 @@ COMPOSITOR.window.composition = () => <Box />;
 
     #[test]
     fn embedded_runtime_output_overlay_rejects_blocking_callbacks_and_times_out_detached_capture() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-        let dir = root.join("target").join(format!("overlay-runtime-test-{}", std::process::id()));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let dir = root
+            .join("target")
+            .join(format!("overlay-runtime-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("config.tsx");
         std::fs::write(&config, r#"
@@ -4490,26 +4503,48 @@ COMPOSITOR.event.onPointerMoveAsync(async () => {
 });
 COMPOSITOR.onDisable(event => event.persist("errors", errors));
 "#).unwrap();
-        let evaluator = EmbeddedDecorationEvaluator::for_paths(root.join("tools/decoration-runtime.ts"), &config)
-            .with_working_dir(&root);
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            root.join("tools/decoration-runtime.ts"),
+            &config,
+        )
+        .with_working_dir(&root);
         evaluator.lifecycle_enable("initial", None).unwrap();
         let pointer = shojiwm_lib::ssd::PointerMoveEventSnapshot {
             position: shojiwm_lib::ssd::PointerMovePointSnapshot { x: 1.0, y: 2.0 },
             delta: shojiwm_lib::ssd::PointerMovePointSnapshot { x: 0.0, y: 0.0 },
             target: shojiwm_lib::ssd::PointerHitTargetSnapshot::None,
             output_name: Some("overlay-runtime-test".into()),
-            modifiers: shojiwm_lib::ssd::PointerModifierStateSnapshot { logo: false, alt: false, ctrl: false, shift: false },
+            modifiers: shojiwm_lib::ssd::PointerModifierStateSnapshot {
+                logo: false,
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
             timestamp: 1,
         };
-        assert!(evaluator.dispatch_pointer_move_async(&pointer, 1).unwrap().is_some());
+        assert!(
+            evaluator
+                .dispatch_pointer_move_async(&pointer, 1)
+                .unwrap()
+                .is_some()
+        );
         // No render loop: the native runtime must enforce the capture deadline itself.
         std::thread::sleep(Duration::from_millis(150));
         let saved = evaluator.lifecycle_disable("test").unwrap();
         let errors = saved["errors"].as_array().unwrap();
         assert_eq!(errors.len(), 3, "all failure paths must settle: {saved:?}");
-        assert!(errors[0].as_str().unwrap().contains("initialization"), "{saved:?}");
-        assert!(errors[1].as_str().unwrap().contains("detached task"), "{saved:?}");
-        assert!(errors[2].as_str().unwrap().contains("timed out"), "{saved:?}");
+        assert!(
+            errors[0].as_str().unwrap().contains("initialization"),
+            "{saved:?}"
+        );
+        assert!(
+            errors[1].as_str().unwrap().contains("detached task"),
+            "{saved:?}"
+        );
+        assert!(
+            errors[2].as_str().unwrap().contains("timed out"),
+            "{saved:?}"
+        );
         drop(evaluator);
     }
 
@@ -4790,7 +4825,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             },
             exclusive_edge: Some(shojiwm_lib::ssd::window_model::LayerEdgeSnapshot::Top),
             margin: shojiwm_lib::ssd::window_model::LayerMarginSnapshot::default(),
-            keyboard_interactivity: shojiwm_lib::ssd::window_model::KeyboardInteractivitySnapshot::None,
+            keyboard_interactivity:
+                shojiwm_lib::ssd::window_model::KeyboardInteractivitySnapshot::None,
             desired_size: shojiwm_lib::ssd::window_model::LayerDesiredSizeSnapshot {
                 width: 800,
                 height: 32,
@@ -5059,7 +5095,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             shojiwm_lib::ssd::WindowActivateRequestSourceSnapshot::Api,
         );
         assert!(
-            has_action(&actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "dock activation of the focused floating window should minimize it: {actions:?}"
         );
     }
@@ -5107,7 +5147,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .actions;
 
         assert!(
-            !has_action(&actions, "0xb", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            !has_action(
+                &actions,
+                "0xb",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "a dock focusing the window it just launched must not minimize it: {actions:?}"
         );
     }
@@ -5119,11 +5163,19 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             shojiwm_lib::ssd::WindowActivateRequestSourceSnapshot::Api,
         );
         assert!(
-            !has_action(&actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            !has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "activating an unfocused window must not minimize it: {actions:?}"
         );
         assert!(
-            has_action(&actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "activating an unfocused window should focus it: {actions:?}"
         );
     }
@@ -5159,7 +5211,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .window_activate_request(&focused, &event, 200)
             .expect("first activate should evaluate");
         assert!(
-            has_action(&first.actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            has_action(
+                &first.actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "first activation should toggle the focused window into minimize: {:?}",
             first.actions
         );
@@ -5185,12 +5241,20 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .window_activate_request(&focused, &event, 300)
             .expect("second activate should evaluate");
         assert!(
-            !has_action(&second.actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            !has_action(
+                &second.actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "re-activating the minimized window must not re-minimize it: {:?}",
             second.actions
         );
         assert!(
-            has_action(&second.actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &second.actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "re-activating the minimized window should restore and focus it: {:?}",
             second.actions
         );
@@ -5361,10 +5425,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                     bottom: false,
                 },
                 start_pointer: WindowResizePointSnapshot { x: 800.0, y: 300.0 },
-                current_pointer: WindowResizePointSnapshot {
-                    x: width,
-                    y: 300.0,
-                },
+                current_pointer: WindowResizePointSnapshot { x: width, y: 300.0 },
                 delta: WindowResizePointSnapshot {
                     x: width - 800.0,
                     y: 0.0,
@@ -5390,12 +5451,20 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             "tile-focus-right-quick should be a known binding"
         );
         assert!(
-            !has_action(&first.actions, "0xc", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            !has_action(
+                &first.actions,
+                "0xc",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "an overflowing tile must be panned into view, not skipped: {:?}",
             first.actions
         );
         assert!(
-            has_action(&first.actions, "0xb", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &first.actions,
+                "0xb",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "the overflowing tile should keep focus while panning: {:?}",
             first.actions
         );
@@ -5406,7 +5475,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .invoke_key_binding("tile-focus-right-quick", now + 100)
             .expect("second focus-right should evaluate");
         assert!(
-            has_action(&second.actions, "0xc", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &second.actions,
+                "0xc",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "a fully-visible tile should advance focus to the neighbor: {:?}",
             second.actions
         );
@@ -5456,7 +5529,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .invoke_key_binding("tile-focus-left-quick", now)
             .expect("first focus-left should evaluate");
         assert!(
-            has_action(&first.actions, "0xb", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &first.actions,
+                "0xb",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "a fully-visible maximized tile must advance on the first press: {:?}",
             first.actions
         );
@@ -5465,7 +5542,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             .invoke_key_binding("tile-focus-left-quick", now + 100)
             .expect("second focus-left should evaluate");
         assert!(
-            has_action(&second.actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Focus),
+            has_action(
+                &second.actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
             "every subsequent press must advance one tile as well: {:?}",
             second.actions
         );
@@ -5528,25 +5609,23 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             now += 100;
         }
 
-        let swipe = |phase: GestureSwipePhaseSnapshot,
-                     delta_x: f64,
-                     velocity_x: f64,
-                     timestamp: u64| {
-            GestureSwipeEventSnapshot {
-                phase,
-                fingers: 3,
-                position: None,
-                delta_x,
-                delta_y: 0.0,
-                total_x: delta_x,
-                total_y: 0.0,
-                velocity_x,
-                velocity_y: 0.0,
-                output_name: Some("TEST-1".into()),
-                device: None,
-                timestamp,
-            }
-        };
+        let swipe =
+            |phase: GestureSwipePhaseSnapshot, delta_x: f64, velocity_x: f64, timestamp: u64| {
+                GestureSwipeEventSnapshot {
+                    phase,
+                    fingers: 3,
+                    position: None,
+                    delta_x,
+                    delta_y: 0.0,
+                    total_x: delta_x,
+                    total_y: 0.0,
+                    velocity_x,
+                    velocity_y: 0.0,
+                    output_name: Some("TEST-1".into()),
+                    device: None,
+                    timestamp,
+                }
+            };
         // The repo config maps scroll delta as -delta_x * 1.5 and compares
         // -velocity_x * 1.5 against the 300 px/s snap threshold.
         const SLOW_STEP: f64 = 30.0; // delta_x 20 at 150 px/s: catchable
@@ -5632,7 +5711,10 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         // Lift while caught: no kinetic glide, the catch holds.
         now += 10;
         evaluator
-            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::End, 0.0, -100.0, now), now)
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, 0.0, -100.0, now),
+                now,
+            )
             .expect("end should evaluate");
         assert_eq!(
             rect_x("0xc", now + 1),
@@ -5706,7 +5788,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
 
         let swipe = |phase: GestureSwipePhaseSnapshot, velocity_x: f64, timestamp: u64| {
-            let delta_x = if phase == GestureSwipePhaseSnapshot::Update { 15.0 } else { 0.0 };
+            let delta_x = if phase == GestureSwipePhaseSnapshot::Update {
+                15.0
+            } else {
+                0.0
+            };
             GestureSwipeEventSnapshot {
                 phase,
                 fingers: 3,
@@ -5729,14 +5815,20 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         for _ in 0..4 {
             now += 10;
             evaluator
-                .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Update, RELEASE_VELOCITY, now), now)
+                .gesture_swipe(
+                    &swipe(GestureSwipePhaseSnapshot::Update, RELEASE_VELOCITY, now),
+                    now,
+                )
                 .expect("update should evaluate");
         }
         now += 10;
         evaluator
             // The persisted workspace starts scrolled to its end, so the glide
             // runs back toward the start: the tiles move right.
-            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::End, RELEASE_VELOCITY, now), now)
+            .gesture_swipe(
+                &swipe(GestureSwipePhaseSnapshot::End, RELEASE_VELOCITY, now),
+                now,
+            )
             .expect("end should evaluate");
 
         // The test output runs at 60 Hz: one frame is 16.67 ms, which no whole
@@ -5763,8 +5855,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
                 .scheduler_tick(frame_time, None, &[])
                 .expect("scheduler tick should evaluate");
             let x = rect_x(frame_time.floor() as u64);
-            let velocity =
-                RELEASE_VELOCITY * (-(frame as f64) * frame_ms / time_constant_ms).exp();
+            let velocity = RELEASE_VELOCITY * (-(frame as f64) * frame_ms / time_constant_ms).exp();
             let expected_step = velocity * frame_ms / 1000.0;
             let step = x - last_x;
             assert!(
@@ -5814,25 +5905,23 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             now += 100;
         }
 
-        let swipe = |phase: GestureSwipePhaseSnapshot,
-                     delta_x: f64,
-                     velocity_x: f64,
-                     timestamp: u64| {
-            GestureSwipeEventSnapshot {
-                phase,
-                fingers: 3,
-                position: None,
-                delta_x,
-                delta_y: 0.0,
-                total_x: delta_x,
-                total_y: 0.0,
-                velocity_x,
-                velocity_y: 0.0,
-                output_name: Some("TEST-1".into()),
-                device: None,
-                timestamp,
-            }
-        };
+        let swipe =
+            |phase: GestureSwipePhaseSnapshot, delta_x: f64, velocity_x: f64, timestamp: u64| {
+                GestureSwipeEventSnapshot {
+                    phase,
+                    fingers: 3,
+                    position: None,
+                    delta_x,
+                    delta_y: 0.0,
+                    total_x: delta_x,
+                    total_y: 0.0,
+                    velocity_x,
+                    velocity_y: 0.0,
+                    output_name: Some("TEST-1".into()),
+                    device: None,
+                    timestamp,
+                }
+            };
 
         // Drag to scroll ~516 and release at 150 px/s so the settle engages
         // at the release position. There the screen center (~1462) is
@@ -5852,10 +5941,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
         now += 10;
         evaluator
-            .gesture_swipe(
-                &swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now),
-                now,
-            )
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now), now)
             .expect("end should evaluate");
 
         for _ in 0..250 {
@@ -5919,25 +6005,23 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             now += 100;
         }
 
-        let swipe = |phase: GestureSwipePhaseSnapshot,
-                     delta_x: f64,
-                     velocity_x: f64,
-                     timestamp: u64| {
-            GestureSwipeEventSnapshot {
-                phase,
-                fingers: 3,
-                position: None,
-                delta_x,
-                delta_y: 0.0,
-                total_x: delta_x,
-                total_y: 0.0,
-                velocity_x,
-                velocity_y: 0.0,
-                output_name: Some("TEST-1".into()),
-                device: None,
-                timestamp,
-            }
-        };
+        let swipe =
+            |phase: GestureSwipePhaseSnapshot, delta_x: f64, velocity_x: f64, timestamp: u64| {
+                GestureSwipeEventSnapshot {
+                    phase,
+                    fingers: 3,
+                    position: None,
+                    delta_x,
+                    delta_y: 0.0,
+                    total_x: delta_x,
+                    total_y: 0.0,
+                    velocity_x,
+                    velocity_y: 0.0,
+                    output_name: Some("TEST-1".into()),
+                    device: None,
+                    timestamp,
+                }
+            };
 
         // Opening 0xb scrolled it fully into view at the right end (scroll
         // 824, flush at the viewport right edge); the maximized 0xa pokes off
@@ -6026,25 +6110,23 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             now += 100;
         }
 
-        let swipe = |phase: GestureSwipePhaseSnapshot,
-                     delta_x: f64,
-                     velocity_x: f64,
-                     timestamp: u64| {
-            GestureSwipeEventSnapshot {
-                phase,
-                fingers: 3,
-                position: None,
-                delta_x,
-                delta_y: 0.0,
-                total_x: delta_x,
-                total_y: 0.0,
-                velocity_x,
-                velocity_y: 0.0,
-                output_name: Some("TEST-1".into()),
-                device: None,
-                timestamp,
-            }
-        };
+        let swipe =
+            |phase: GestureSwipePhaseSnapshot, delta_x: f64, velocity_x: f64, timestamp: u64| {
+                GestureSwipeEventSnapshot {
+                    phase,
+                    fingers: 3,
+                    position: None,
+                    delta_x,
+                    delta_y: 0.0,
+                    total_x: delta_x,
+                    total_y: 0.0,
+                    velocity_x,
+                    velocity_y: 0.0,
+                    output_name: Some("TEST-1".into()),
+                    device: None,
+                    timestamp,
+                }
+            };
 
         // Three maximized tiles, 1904px wide with centers 1916px apart:
         // 0xb spans [1916, 3820] and is centered at scroll offset 1920.
@@ -6147,25 +6229,23 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             now += 100;
         }
 
-        let swipe = |phase: GestureSwipePhaseSnapshot,
-                     delta_x: f64,
-                     velocity_x: f64,
-                     timestamp: u64| {
-            GestureSwipeEventSnapshot {
-                phase,
-                fingers: 3,
-                position: None,
-                delta_x,
-                delta_y: 0.0,
-                total_x: delta_x,
-                total_y: 0.0,
-                velocity_x,
-                velocity_y: 0.0,
-                output_name: Some("TEST-1".into()),
-                device: None,
-                timestamp,
-            }
-        };
+        let swipe =
+            |phase: GestureSwipePhaseSnapshot, delta_x: f64, velocity_x: f64, timestamp: u64| {
+                GestureSwipeEventSnapshot {
+                    phase,
+                    fingers: 3,
+                    position: None,
+                    delta_x,
+                    delta_y: 0.0,
+                    total_x: delta_x,
+                    total_y: 0.0,
+                    velocity_x,
+                    velocity_y: 0.0,
+                    output_name: Some("TEST-1".into()),
+                    device: None,
+                    timestamp,
+                }
+            };
 
         // Drag to scroll ~996 and release at 150 px/s — below any realistic
         // snap threshold, so the settle engages right at the release
@@ -6186,10 +6266,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }
         now += 10;
         evaluator
-            .gesture_swipe(
-                &swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now),
-                now,
-            )
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::End, 0.0, 150.0, now), now)
             .expect("end should evaluate");
 
         for _ in 0..250 {
@@ -6222,7 +6299,11 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
             shojiwm_lib::ssd::WindowActivateRequestSourceSnapshot::XdgActivation,
         );
         assert!(
-            !has_action(&actions, "0xa", shojiwm_lib::ssd::WaylandWindowAction::Minimize),
+            !has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Minimize
+            ),
             "xdg-activation must never trigger the minimize toggle: {actions:?}"
         );
     }
@@ -6288,7 +6369,13 @@ COMPOSITOR.key.bind("first", "Super+T", () => {{}});
         let binding_ids = |update: &Option<RuntimeKeyBindingConfigUpdate>| -> Vec<String> {
             update
                 .as_ref()
-                .map(|update| update.entries.iter().map(|entry| entry.id.clone()).collect())
+                .map(|update| {
+                    update
+                        .entries
+                        .iter()
+                        .map(|entry| entry.id.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         };
 
@@ -6359,7 +6446,13 @@ COMPOSITOR.window.composition = () => <Label text="x" />;
         let binding_ids = |update: &Option<RuntimeKeyBindingConfigUpdate>| -> Vec<String> {
             update
                 .as_ref()
-                .map(|update| update.entries.iter().map(|entry| entry.id.clone()).collect())
+                .map(|update| {
+                    update
+                        .entries
+                        .iter()
+                        .map(|entry| entry.id.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         };
 
@@ -6522,12 +6615,13 @@ COMPOSITOR.window.composition = () => <Label text={restored} />;
             .join("../..")
             .canonicalize()
             .unwrap();
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-kde-default-test-{}", std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-kde-default-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).unwrap();
         let config_path = test_dir.join("config.tsx");
-        std::fs::write(&config_path, r#"
+        std::fs::write(
+            &config_path,
+            r#"
 import { COMPOSITOR, Label } from "shoji_wm";
 COMPOSITOR.window.composition = () => <Label text="kde default test" />;
 COMPOSITOR.window.decoration.kdeDefaultMode((client) =>
@@ -6539,16 +6633,23 @@ COMPOSITOR.workspace.event.onCreate((event) => {
     throw new Error(`unexpected create request ${JSON.stringify(event)}`);
   }
 });
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let evaluator = EmbeddedDecorationEvaluator::for_paths(
-            repository_root.join("tools/decoration-runtime.ts"), &config_path,
-        ).with_working_dir(&repository_root);
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
         evaluator.lifecycle_enable("initial", None).unwrap();
 
         let client = |executable: &str, command: &[&str]| WindowDecorationClientSnapshot {
             pid: Some(42),
             executable: Some(executable.into()),
-            command: command.iter().map(|argument| argument.to_string()).collect(),
+            command: command
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect(),
         };
         assert_eq!(
             evaluator
@@ -6579,20 +6680,25 @@ COMPOSITOR.workspace.event.onCreate((event) => {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-start-locked-test-{}", std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-start-locked-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).unwrap();
         let config_path = test_dir.join("config.tsx");
-        std::fs::write(&config_path, r#"
+        std::fs::write(
+            &config_path,
+            r#"
 import { COMPOSITOR, Label } from "shoji_wm";
 COMPOSITOR.window.composition = () => <Label text="start locked test" />;
 COMPOSITOR.session.startLocked = true;
 COMPOSITOR.process.once("locker", { command: ["true"] });
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let evaluator = EmbeddedDecorationEvaluator::for_paths(
-            repository_root.join("tools/decoration-runtime.ts"), &config_path,
-        ).with_working_dir(&repository_root);
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
         evaluator.lifecycle_enable("initial", None).unwrap();
 
         let messages: Vec<_> = std::iter::from_fn(|| evaluator.host.pop()).collect();
@@ -6615,11 +6721,14 @@ COMPOSITOR.process.once("locker", { command: ["true"] });
             .canonicalize()
             .unwrap();
         let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-keyboard-layout-test-{}", std::process::id()
+            "shojiwm-keyboard-layout-test-{}",
+            std::process::id()
         ));
         std::fs::create_dir_all(&test_dir).unwrap();
         let config_path = test_dir.join("config.tsx");
-        std::fs::write(&config_path, r#"
+        std::fs::write(
+            &config_path,
+            r#"
 import { COMPOSITOR, Label } from "shoji_wm";
 COMPOSITOR.window.composition = () => <Label text="layout test" />;
 const layouts = [];
@@ -6631,47 +6740,63 @@ COMPOSITOR.event.onEnable(() => {
   unsubscribe();
 });
 COMPOSITOR.event.onDisable((event) => event.persist("layouts", layouts));
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let evaluator = EmbeddedDecorationEvaluator::for_paths(
-            repository_root.join("tools/decoration-runtime.ts"), &config_path,
-        ).with_working_dir(&repository_root);
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
         evaluator.lifecycle_enable("initial", None).unwrap();
         for (index, name) in [(0, "English (US)"), (1, "Russian"), (1, "German")] {
             assert!(evaluator.set_keyboard_layout(KeyboardLayoutSnapshot {
-                index, name: name.into(),
+                index,
+                name: name.into(),
             }));
             // Other runtime traffic must not consume the pending layout update.
             evaluator.evaluate_window(&make_window(false), 0).unwrap();
             evaluator.scheduler_tick(1.0, None, &[]).unwrap();
             assert!(!evaluator.set_keyboard_layout(KeyboardLayoutSnapshot {
-                index, name: name.into(),
+                index,
+                name: name.into(),
             }));
             evaluator.scheduler_tick(2.0, None, &[]).unwrap();
             // A full state payload must not re-emit an unchanged layout either.
-            evaluator.runtime_state_generation.fetch_add(1, Ordering::Release);
+            evaluator
+                .runtime_state_generation
+                .fetch_add(1, Ordering::Release);
             evaluator.scheduler_tick(3.0, None, &[]).unwrap();
         }
         evaluator.set_keyboard_layout(KeyboardLayoutSnapshot {
-            index: 0, name: "English (US)".into(),
+            index: 0,
+            name: "English (US)".into(),
         });
         evaluator.set_keyboard_layout(KeyboardLayoutSnapshot {
-            index: 1, name: "German".into(),
+            index: 1,
+            name: "German".into(),
         });
         evaluator.scheduler_tick(4.0, None, &[]).unwrap();
         let state = evaluator.lifecycle_disable("reload").unwrap();
-        assert_eq!(state["layouts"], serde_json::json!([
-            { "index": 0, "name": "English (US)" },
-            { "index": 1, "name": "Russian" },
-            { "index": 1, "name": "German" },
-        ]));
+        assert_eq!(
+            state["layouts"],
+            serde_json::json!([
+                { "index": 0, "name": "English (US)" },
+                { "index": 1, "name": "Russian" },
+                { "index": 1, "name": "German" },
+            ])
+        );
         let reloaded = evaluator.fresh_like();
         reloaded.lifecycle_enable("reload", None).unwrap();
         reloaded.scheduler_tick(5.0, None, &[]).unwrap();
         reloaded.scheduler_tick(6.0, None, &[]).unwrap();
         let state = reloaded.lifecycle_disable("shutdown").unwrap();
-        assert_eq!(state["layouts"], serde_json::json!([
-            { "index": 1, "name": "German" },
-        ]));
+        assert_eq!(
+            state["layouts"],
+            serde_json::json!([
+                { "index": 1, "name": "German" },
+            ])
+        );
         drop(reloaded);
         drop(evaluator);
         std::fs::remove_dir_all(test_dir).unwrap();
@@ -6861,10 +6986,8 @@ COMPOSITOR.window.composition = (window) => {
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-deno-paint-test-{}",
-            std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-paint-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         std::fs::write(
             test_dir.join("glow.frag"),
@@ -6954,10 +7077,8 @@ COMPOSITOR.window.composition = (window) => {
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-deno-popup-test-{}",
-            std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-deno-popup-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         let config_path = test_dir.join("config.tsx");
         std::fs::write(
@@ -7065,9 +7186,19 @@ COMPOSITOR.window.composition = () => (
         .expect("test config should be written");
 
         use shojiwm_lib::ssd::{PopupHandlers, PopupMode, PopupNode};
-        fn popups(node: &shojiwm_lib::ssd::DecorationNode, out: &mut Vec<(PopupNode, PopupHandlers)>) {
+        fn popups(
+            node: &shojiwm_lib::ssd::DecorationNode,
+            out: &mut Vec<(PopupNode, PopupHandlers)>,
+        ) {
             if let DecorationNodeKind::Popup(popup) = &node.kind {
-                out.push((*popup, node.interaction.popup.as_deref().cloned().unwrap_or_default()));
+                out.push((
+                    *popup,
+                    node.interaction
+                        .popup
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or_default(),
+                ));
             }
             for child in &node.children {
                 popups(child, out);
@@ -7075,14 +7206,18 @@ COMPOSITOR.window.composition = () => (
         }
         let open_states = |cached: &DecorationCachedEvaluationResult| {
             let mut found = Vec::new();
-            for node in cached
-                .node
-                .iter()
-                .chain(cached.node_patches.iter().filter_map(|patch| patch.replacement_node()))
-            {
+            for node in cached.node.iter().chain(
+                cached
+                    .node_patches
+                    .iter()
+                    .filter_map(|patch| patch.replacement_node()),
+            ) {
                 popups(node, &mut found);
             }
-            found.into_iter().map(|(popup, _)| popup.open).collect::<Vec<_>>()
+            found
+                .into_iter()
+                .map(|(popup, _)| popup.open)
+                .collect::<Vec<_>>()
         };
 
         let evaluator = EmbeddedDecorationEvaluator::for_paths(
@@ -7099,11 +7234,23 @@ COMPOSITOR.window.composition = () => (
         let [(hover_popup, hover), (click_popup, click)] = found.as_slice() else {
             panic!("two popups expected: {found:?}");
         };
-        assert_eq!((hover_popup.mode, hover_popup.open), (PopupMode::Auto, false));
+        assert_eq!(
+            (hover_popup.mode, hover_popup.open),
+            (PopupMode::Auto, false)
+        );
         assert!(!click_popup.close_on_escape && click_popup.close_on_outside_press);
-        let interest = hover.interest_change.clone().expect("hover trigger listens to interest");
-        let dismiss = hover.dismiss.clone().expect("auto popups listen to close requests");
-        let press = click.anchor_press.clone().expect("click trigger listens to anchor presses");
+        let interest = hover
+            .interest_change
+            .clone()
+            .expect("hover trigger listens to interest");
+        let dismiss = hover
+            .dismiss
+            .clone()
+            .expect("auto popups listen to close requests");
+        let press = click
+            .anchor_press
+            .clone()
+            .expect("click trigger listens to anchor presses");
         assert!(hover.anchor_press.is_none() && click.interest_change.is_none());
 
         // Hover: opens after the delay.
@@ -7114,7 +7261,10 @@ COMPOSITOR.window.composition = () => (
         let cached = evaluator
             .evaluate_cached_window(&window.id, None, 1200, false)
             .expect("evaluate");
-        assert!(!open_states(&cached).contains(&true), "opened before the delay");
+        assert!(
+            !open_states(&cached).contains(&true),
+            "opened before the delay"
+        );
         evaluator.scheduler_tick(1300.0, None, &[]).expect("tick");
         let cached = evaluator
             .evaluate_cached_window(&window.id, None, 1300, false)
@@ -7136,7 +7286,9 @@ COMPOSITOR.window.composition = () => (
 
         // Click: each anchor press toggles (the hover popup stays closed).
         for (now, open) in [(1500, true), (1600, false)] {
-            evaluator.invoke_handler(&window.id, &press, now).expect("anchor press");
+            evaluator
+                .invoke_handler(&window.id, &press, now)
+                .expect("anchor press");
             let cached = evaluator
                 .evaluate_cached_window(&window.id, None, now, false)
                 .expect("evaluate");
@@ -7247,14 +7399,23 @@ COMPOSITOR.window.composition = () => (
             .evaluate_cached_window(&window.id, None, 1000, false)
             .expect("hovered composition should evaluate");
         assert_ne!(opened_by(&cached), Some(true), "opened without a delay");
-        assert!(cached.next_poll_in_ms.is_some(), "the delay must wake the compositor");
+        assert!(
+            cached.next_poll_in_ms.is_some(),
+            "the delay must wake the compositor"
+        );
 
         for now_ms in [1001, 1500, 2900] {
-            evaluator.scheduler_tick(now_ms as f64, None, &[]).expect("tick");
+            evaluator
+                .scheduler_tick(now_ms as f64, None, &[])
+                .expect("tick");
             let cached = evaluator
                 .evaluate_cached_window(&window.id, None, now_ms, false)
                 .expect("composition should evaluate");
-            assert_ne!(opened_by(&cached), Some(true), "opened early at {now_ms} ms");
+            assert_ne!(
+                opened_by(&cached),
+                Some(true),
+                "opened early at {now_ms} ms"
+            );
         }
 
         evaluator.scheduler_tick(3000.0, None, &[]).expect("tick");
@@ -7449,7 +7610,10 @@ COMPOSITOR.window.composition = (window) => (
         );
         assert!(texts.contains(&"a,12.5".to_owned()), "{texts:?}");
         assert!(texts.contains(&"t=0.125".to_owned()), "{texts:?}");
-        assert!(!texts.iter().any(|text| text.starts_with("b,")), "{texts:?}");
+        assert!(
+            !texts.iter().any(|text| text.starts_with("b,")),
+            "{texts:?}"
+        );
 
         // B's frame does not move A's clock: the animation stays put.
         evaluator
@@ -7461,7 +7625,12 @@ COMPOSITOR.window.composition = (window) => (
                 .expect("evaluate"),
         );
         assert!(texts.contains(&"b,25".to_owned()), "{texts:?}");
-        assert!(!texts.iter().any(|text| text.starts_with("t=") && text != "t=0.125"), "{texts:?}");
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text.starts_with("t=") && text != "t=0.125"),
+            "{texts:?}"
+        );
 
         // A frame due within the tolerance runs; a frame before it does not.
         // (Due at 22.5.)
@@ -7751,8 +7920,8 @@ COMPOSITOR.window.composition = () => <Box />;
             .expect("repository root should exist");
         // Keep an encoded-looking segment in the path so the runtime's manual
         // file URL conversion cannot accidentally decode it into a space.
-        let test_dir = std::env::temp_dir()
-            .join(format!("shojiwm-ipc%20reload-test-{}", std::process::id()));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-ipc%20reload-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
 
         let mut baseline = 0usize;
@@ -8146,10 +8315,8 @@ COMPOSITOR.event.onPointerMove(() => {{}});
             .join("../..")
             .canonicalize()
             .expect("repository root should exist");
-        let test_dir = std::env::temp_dir().join(format!(
-            "shojiwm-output-fields-test-{}",
-            std::process::id()
-        ));
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-output-fields-test-{}", std::process::id()));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         let socket_path = test_dir.join("fields.sock");
         let socket_literal =
@@ -8197,18 +8364,17 @@ COMPOSITOR.output.configure(() => ({{
             _ => None,
         })
         .expect("the output factory should produce a display config")
-            .outputs
-            .remove("TEST-1")
-            .flatten()
-            .expect("TEST-1 should be configured");
+        .outputs
+        .remove("TEST-1")
+        .flatten()
+        .expect("TEST-1 should be configured");
         let hdr = config.hdr.expect("hdr should be configured");
         assert!(hdr.enabled());
         let options = hdr.options().expect("hdr should carry its settings");
         assert_eq!(options.max_luminance, Some(420.0));
         assert_eq!(options.min_luminance, Some(0.05));
 
-        let mut socket =
-            UnixStream::connect(&socket_path).expect("IPC server should be listening");
+        let mut socket = UnixStream::connect(&socket_path).expect("IPC server should be listening");
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout should be configured");
@@ -8465,7 +8631,10 @@ COMPOSITOR.event.onPointerMoveAsync(() => {});
         assert!(validate_layer_effect_config(in_front).is_err());
 
         let popup_behind = WindowEffectConfig {
-            behind: slot(EffectInput::PopupSource(WindowSourceInclude::Full), EffectRegion::Input),
+            behind: slot(
+                EffectInput::PopupSource(WindowSourceInclude::Full),
+                EffectRegion::Input,
+            ),
             ..Default::default()
         };
         assert!(validate_popup_effect_config(popup_behind).is_err());
@@ -8533,9 +8702,12 @@ COMPOSITOR.output.configure(() => ({{
             _ => None,
         })
         .expect("the output factory should produce a display config")
-            .outputs;
+        .outputs;
         let subpixel_of = |config: Option<Option<shojiwm_lib::config::RuntimeOutputConfig>>| {
-            config.flatten().expect("output should be configured").subpixel
+            config
+                .flatten()
+                .expect("output should be configured")
+                .subpixel
         };
         assert_eq!(
             subpixel_of(outputs.remove("TEST-1")),
@@ -8547,8 +8719,7 @@ COMPOSITOR.output.configure(() => ({{
             "a mirror entry keeps its panel's layout"
         );
 
-        let mut socket =
-            UnixStream::connect(&socket_path).expect("IPC server should be listening");
+        let mut socket = UnixStream::connect(&socket_path).expect("IPC server should be listening");
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout should be configured");

@@ -273,7 +273,10 @@ impl WindowSwitcher {
     }
 
     /// Where a card's title bar buttons are (layouts with `card_actions`).
-    pub fn set_titlebar_button_at(&self, f: impl Fn(Window, f64, f64) -> Option<TitlebarButton> + 'static) {
+    pub fn set_titlebar_button_at(
+        &self,
+        f: impl Fn(Window, f64, f64) -> Option<TitlebarButton> + 'static,
+    ) {
         *self.0.titlebar_button_at.borrow_mut() = Some(Rc::new(f));
     }
 
@@ -311,7 +314,8 @@ impl WindowSwitcher {
     }
 
     fn is_current(&self, session: &SessionRef) -> bool {
-        self.current().is_some_and(|current| Rc::ptr_eq(&current, session))
+        self.current()
+            .is_some_and(|current| Rc::ptr_eq(&current, session))
     }
 
     fn set_current(&self, session: Option<SessionRef>) {
@@ -349,7 +353,11 @@ impl WindowSwitcher {
                 let pose = if session.phase == Phase::Leaving {
                     let from = session.leave_from.get(window).copied().unwrap_or(shown);
                     let target = if session.shown_after.contains(window) {
-                        real_pose(rect, viewport, session.ranks_after.get(window).copied().unwrap_or(0))
+                        real_pose(
+                            rect,
+                            viewport,
+                            session.ranks_after.get(window).copied().unwrap_or(0),
+                        )
                     } else {
                         Pose {
                             z: from.z - height * 0.15,
@@ -359,11 +367,16 @@ impl WindowSwitcher {
                     };
                     lerp_pose(from, target, eased)
                 } else {
-                    let from = session.start_poses.get(window).copied().flatten().unwrap_or(Pose {
-                        z: shown.z - height * 0.3,
-                        opacity: 0.0,
-                        ..shown
-                    });
+                    let from = session
+                        .start_poses
+                        .get(window)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(Pose {
+                            z: shown.z - height * 0.3,
+                            opacity: 0.0,
+                            ..shown
+                        });
                     match (session.phase, session.move_from.get(window)) {
                         (Phase::Entering, _) => lerp_pose(from, shown, eased),
                         (Phase::Shown, Some(moving_from)) => lerp_pose(*moving_from, shown, moved),
@@ -399,7 +412,11 @@ impl WindowSwitcher {
             let target = self.card_alpha_target(window);
             let now = session.card_alpha.get(&window).copied().unwrap_or(target);
             let step = dt_ms / CARD_FADE_MS;
-            let next = if now < target { (now + step).min(target) } else { (now - step).max(target) };
+            let next = if now < target {
+                (now + step).min(target)
+            } else {
+                (now - step).max(target)
+            };
             session.card_alpha.insert(window, next);
             moving |= next != target;
         }
@@ -423,7 +440,9 @@ impl WindowSwitcher {
         let this = self.clone();
         let ticking = session.clone();
         let output = session.borrow().output.clone();
-        let poll = create_poll(1.0, output, move |handle| this.tick(&ticking, handle.now_ms()));
+        let poll = create_poll(1.0, output, move |handle| {
+            this.tick(&ticking, handle.now_ms())
+        });
         let mut session = session.borrow_mut();
         session.last_tick_ms = None;
         session.poll = Some(poll);
@@ -472,7 +491,10 @@ impl WindowSwitcher {
                 s.phase = Phase::Shown;
                 s.progress = 1.0;
             }
-            (s.phase == Phase::Leaving && self.ready_to_hand_off(&s), moving)
+            (
+                s.phase == Phase::Leaving && self.ready_to_hand_off(&s),
+                moving,
+            )
         };
         if hand_off {
             self.finish(session);
@@ -503,7 +525,11 @@ impl WindowSwitcher {
             let target = real_pose(
                 rect,
                 &viewport,
-                session.ranks_after.get(&placed.window).copied().unwrap_or(0),
+                session
+                    .ranks_after
+                    .get(&placed.window)
+                    .copied()
+                    .unwrap_or(0),
             );
             let pose = placed.pose;
             let half_extent = rect.width.max(rect.height) / 2.0 + MARGIN;
@@ -562,9 +588,17 @@ impl WindowSwitcher {
         let start_poses = windows
             .iter()
             .map(|window| {
-                let shown = self.0.wm.read(|wm| wm.is_window_shown_on(*window, output_name));
-                let pose = shown
-                    .then(|| real_pose(window.rect(), &viewport, ranks.get(window).copied().unwrap_or(0)));
+                let shown = self
+                    .0
+                    .wm
+                    .read(|wm| wm.is_window_shown_on(*window, output_name));
+                let pose = shown.then(|| {
+                    real_pose(
+                        window.rect(),
+                        &viewport,
+                        ranks.get(window).copied().unwrap_or(0),
+                    )
+                });
                 (*window, pose)
             })
             .collect();
@@ -626,7 +660,11 @@ impl WindowSwitcher {
     }
 
     /// A grab handler that runs `f` on this session.
-    fn handler<E: 'static>(&self, session: &SessionRef, f: fn(&Self, &SessionRef, &E)) -> impl Fn(&E) + 'static {
+    fn handler<E: 'static>(
+        &self,
+        session: &SessionRef,
+        f: fn(&Self, &SessionRef, &E),
+    ) -> impl Fn(&E) + 'static {
         let (this, session) = (self.clone(), session.clone());
         move |event| f(&this, &session, event)
     }
@@ -847,7 +885,11 @@ impl WindowSwitcher {
             return;
         };
         if let Some(window) = self.window_at(session, cursor.x, cursor.y) {
-            let index = session.borrow().windows.iter().position(|other| *other == window);
+            let index = session
+                .borrow()
+                .windows
+                .iter()
+                .position(|other| *other == window);
             if let Some(index) = index {
                 self.select(session, index as i64);
             }
@@ -908,7 +950,11 @@ impl WindowSwitcher {
         let shown: HashSet<Window> = windows
             .iter()
             .copied()
-            .filter(|window| self.0.wm.read(|wm| wm.is_window_shown_on(*window, &output_name)))
+            .filter(|window| {
+                self.0
+                    .wm
+                    .read(|wm| wm.is_window_shown_on(*window, &output_name))
+            })
             .collect();
         let mut ranks = self.rank_map(&windows);
         if let Some(target) = target {
@@ -987,7 +1033,12 @@ impl WindowSwitcher {
 
     /// The card under a global point, with the point in its window's own
     /// logical px (from the top-left corner of `window.rect()`, unscaled).
-    fn card_at(&self, session: &SessionRef, global_x: f64, global_y: f64) -> Option<(Window, f64, f64)> {
+    fn card_at(
+        &self,
+        session: &SessionRef,
+        global_x: f64,
+        global_y: f64,
+    ) -> Option<(Window, f64, f64)> {
         let window = self.window_at(session, global_x, global_y)?;
         let session = session.borrow();
         let viewport = viewport_of(&session.output)?;
@@ -1021,7 +1072,11 @@ impl WindowSwitcher {
         }
         let u = (px * by - py * bx) / det;
         let v = (ax * py - ay * px) / det;
-        Some((window, u * placed.width - MARGIN, v * placed.height - MARGIN))
+        Some((
+            window,
+            u * placed.width - MARGIN,
+            v * placed.height - MARGIN,
+        ))
     }
 
     /// Cards whose window closed, fading out where they were.
@@ -1036,7 +1091,11 @@ impl WindowSwitcher {
                     opacity: 0.0,
                     ..departing.from
                 };
-                plane_for(departing.window, departing.rect, lerp_pose(departing.from, to, eased))
+                plane_for(
+                    departing.window,
+                    departing.rect,
+                    lerp_pose(departing.from, to, eased),
+                )
             })
             .collect()
     }
@@ -1067,11 +1126,16 @@ impl WindowSwitcher {
         let mut planes = self.departing_planes(&session);
         planes.extend(self.visible_planes(&session, &viewport));
         let name = self.0.layout.name();
-        let scene = Scene3D::new(switcher_camera(width, height)).planes(planes.iter().map(|plane| {
-            Plane::new(&window_texture(name, plane.window, plane.rect, output), plane.width, plane.height)
+        let scene =
+            Scene3D::new(switcher_camera(width, height)).planes(planes.iter().map(|plane| {
+                Plane::new(
+                    &window_texture(name, plane.window, plane.rect, output),
+                    plane.width,
+                    plane.height,
+                )
                 .transform(plane.transform)
                 .opacity(plane.pose.opacity)
-        }));
+            }));
         Some(
             OutputStack::new()
                 .child(Layers::new([LayerName::Background, LayerName::Bottom]))
@@ -1103,10 +1167,18 @@ fn selected_window(session: &Session) -> Option<Window> {
     if count == 0 || !session.has_selection {
         return None;
     }
-    session.windows.get(session.selected.rem_euclid(count) as usize).copied()
+    session
+        .windows
+        .get(session.selected.rem_euclid(count) as usize)
+        .copied()
 }
 
-fn window_texture(name: &str, window: Window, rect: Rect, output: &WaylandOutputSnapshot) -> RenderTexture {
+fn window_texture(
+    name: &str,
+    window: Window,
+    rect: Rect,
+    output: &WaylandOutputSnapshot,
+) -> RenderTexture {
     RenderTexture::new()
         .key(format!("{name}-{}", window.id()))
         .size(rect.width + MARGIN * 2.0, rect.height + MARGIN * 2.0)
@@ -1119,7 +1191,11 @@ fn window_texture(name: &str, window: Window, rect: Rect, output: &WaylandOutput
 fn viewport_of(name: &str) -> Option<Viewport> {
     let output = COMPOSITOR.output.get(name)?;
     let (width, height) = output_logical_size(&output);
-    Some(Viewport { output, width, height })
+    Some(Viewport {
+        output,
+        width,
+        height,
+    })
 }
 
 /// Distance at which the camera sees the plane z = 0 1:1 in logical pixels.
@@ -1132,7 +1208,12 @@ pub fn camera_distance(height: f64) -> f64 {
 fn switcher_camera(width: f64, height: f64) -> Camera {
     let distance = camera_distance(height);
     Camera {
-        projection: perspective(CAMERA_FOV_DEGREES, width / height.max(1.0), distance / 100.0, distance * 6.0),
+        projection: perspective(
+            CAMERA_FOV_DEGREES,
+            width / height.max(1.0),
+            distance / 100.0,
+            distance * 6.0,
+        ),
         view: look_at([0.0, 0.0, distance], [0.0, 0.0, 0.0]),
     }
 }
@@ -1156,7 +1237,11 @@ pub fn flat_pose(center_x: f64, center_y: f64, scale: f64, viewport: &Viewport) 
 /// window `rank` steps up the stack sits that much nearer the camera, shrunk
 /// by the perspective it gains so it covers the same pixels.
 fn real_pose(rect: Rect, viewport: &Viewport, rank: usize) -> Pose {
-    let Viewport { output, width, height } = viewport;
+    let Viewport {
+        output,
+        width,
+        height,
+    } = viewport;
     let center_x = rect.x - output.position.x as f64 + rect.width / 2.0;
     let center_y = rect.y - output.position.y as f64 + rect.height / 2.0;
     let distance = camera_distance(*height);

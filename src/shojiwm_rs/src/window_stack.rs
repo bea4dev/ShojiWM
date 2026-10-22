@@ -66,7 +66,10 @@ impl WindowStack {
         let signal = self.signal(window);
         let next = {
             let mut inner = self.0.borrow_mut();
-            let current = inner.order.iter().position(|candidate| *candidate == window);
+            let current = inner
+                .order
+                .iter()
+                .position(|candidate| *candidate == window);
             let target = match placement {
                 Placement::Front => inner.order.len().saturating_sub(1),
                 Placement::Back => 0,

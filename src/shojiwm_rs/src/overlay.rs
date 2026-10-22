@@ -206,7 +206,11 @@ pub(crate) fn sync() {
                 (entry.observer, std::mem::take(&mut entry.on_closed))
             };
             observer.dispose();
-            ENTRIES.with(|entries| entries.borrow_mut().retain(|other| !Rc::ptr_eq(other, &entry)));
+            ENTRIES.with(|entries| {
+                entries
+                    .borrow_mut()
+                    .retain(|other| !Rc::ptr_eq(other, &entry))
+            });
             for callback in callbacks {
                 callback();
             }

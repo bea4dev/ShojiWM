@@ -131,7 +131,11 @@ impl Workspace {
         for window in self.windows.clone() {
             self.sync_window_visible_outputs(window);
             if get(window, &WINDOW_STATE_FULLSCREEN) {
-                set(window, &WINDOW_STATE_RECT, self.fullscreen_root_rect(window));
+                set(
+                    window,
+                    &WINDOW_STATE_RECT,
+                    self.fullscreen_root_rect(window),
+                );
                 continue;
             }
             if get(window, &WINDOW_STATE_MAXIMIZED) {
@@ -159,8 +163,9 @@ impl Workspace {
         let previous_active_window = self.active_window;
         let previous_scroll_offset = self.scroll_offset;
         let restored = self.restored_window_state.remove(&window);
-        let tile_insertion_index = (restored.is_none() && self.is_tiled && self.should_tile(window))
-            .then(|| self.tile_insertion_index_after_focused_window());
+        let tile_insertion_index =
+            (restored.is_none() && self.is_tiled && self.should_tile(window))
+                .then(|| self.tile_insertion_index_after_focused_window());
         self.windows.push(window);
         if let Some(index) = tile_insertion_index {
             self.move_tile_window_to_index(window, index);
@@ -174,9 +179,17 @@ impl Workspace {
             set(window, &WINDOW_STATE_FLOATING_RECT, restored.floating_rect);
             set(window, &WINDOW_STATE_RESTORE_RECT, restored.restore_rect);
             set(window, &WINDOW_STATE_SNAP_ZONE, restored.snap_zone);
-            set(window, &WINDOW_STATE_SNAP_MONITOR, restored.snap_monitor.clone());
+            set(
+                window,
+                &WINDOW_STATE_SNAP_MONITOR,
+                restored.snap_monitor.clone(),
+            );
             set(window, &WINDOW_STATE_MINIMIZED, restored.minimized);
-            set(window, &WINDOW_STATE_MINIMIZE_VISUAL_IDLE, restored.minimized);
+            set(
+                window,
+                &WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
+                restored.minimized,
+            );
             set(window, &WINDOW_STATE_MAXIMIZED, restored.maximized);
             if let Some(width) = restored.tile_width {
                 self.tile_width_by_window.insert(window, width);
@@ -185,14 +198,20 @@ impl Workspace {
         let visible = self.is_active();
         set(window, &WINDOW_STATE_WORKSPACE_VISIBLE, visible);
         set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
-        set(window, &WINDOW_STATE_WORKSPACE_OPACITY, if visible { 1.0 } else { 0.0 });
+        set(
+            window,
+            &WINDOW_STATE_WORKSPACE_OPACITY,
+            if visible { 1.0 } else { 0.0 },
+        );
         self.sync_window_visible_outputs(window);
 
         if !output_list().contains(&self.monitor) {
             return restored.is_some();
         }
 
-        let restored_floating = restored.as_ref().and_then(|restored| restored.floating_rect);
+        let restored_floating = restored
+            .as_ref()
+            .and_then(|restored| restored.floating_rect);
         if let (Some(floating), false) = (restored_floating, self.is_tiled) {
             set(window, &WINDOW_STATE_RECT, floating);
         } else if self.is_tiled && self.should_tile(window) {
@@ -202,7 +221,11 @@ impl Workspace {
                 &WINDOW_STATE_FLOATING_RECT,
                 Some(restored_floating.unwrap_or(initial_rect)),
             );
-            if restored.as_ref().and_then(|restored| restored.tile_width).is_none() {
+            if restored
+                .as_ref()
+                .and_then(|restored| restored.tile_width)
+                .is_none()
+            {
                 self.set_tile_width_from_rect(window, initial_rect, true);
                 if options.restore_scroll_if_initially_floating {
                     self.remember_initial_tile_state(
@@ -300,7 +323,11 @@ impl Workspace {
     /// Only a tile of a tiled workspace has a "next one along"; anywhere
     /// else the compositor's focus history knows better (e.g. returning to
     /// the terminal that asked for a dismissed dialog).
-    fn successor_for_removed_window(&self, was_tile: bool, tile_index: Option<usize>) -> Option<Window> {
+    fn successor_for_removed_window(
+        &self,
+        was_tile: bool,
+        tile_index: Option<usize>,
+    ) -> Option<Window> {
         let tile_index = tile_index?;
         if !self.is_tiled || !was_tile {
             return None;
@@ -342,12 +369,19 @@ impl Workspace {
                     && (!self.is_tiled || !self.should_tile(*current))
             })
             // On a tie the first window wins (`max_by_key` would take the last).
-            .reduce(|top, current| if z_index_of(current) > z_index_of(top) { current } else { top });
+            .reduce(|top, current| {
+                if z_index_of(current) > z_index_of(top) {
+                    current
+                } else {
+                    top
+                }
+            });
         if topmost.is_some() || !self.is_tiled {
             return topmost;
         }
         let tileable = self.tileable_windows();
-        self.active_window_in(&tileable).or_else(|| tileable.last().copied())
+        self.active_window_in(&tileable)
+            .or_else(|| tileable.last().copied())
     }
 
     pub fn remove_tile_drag_window(&mut self, window: Window) {
@@ -379,7 +413,10 @@ impl Workspace {
     }
 
     pub fn find_window_by_id(&self, id: &str) -> Option<Window> {
-        self.windows.iter().copied().find(|window| window.id() == id)
+        self.windows
+            .iter()
+            .copied()
+            .find(|window| window.id() == id)
     }
 
     pub fn is_active_window(&self, window: Window) -> bool {
@@ -390,7 +427,10 @@ impl Workspace {
         if !self.is_tiled {
             return false;
         }
-        let Some(focused) = self.focused_window().filter(|window| self.should_tile(*window)) else {
+        let Some(focused) = self
+            .focused_window()
+            .filter(|window| self.should_tile(*window))
+        else {
             return false;
         };
         let tileable = self.tileable_windows();
@@ -448,7 +488,12 @@ impl Workspace {
     }
 
     pub fn is_active(&self) -> bool {
-        self.active.borrow().get(&self.monitor).copied().unwrap_or(1) == self.index
+        self.active
+            .borrow()
+            .get(&self.monitor)
+            .copied()
+            .unwrap_or(1)
+            == self.index
     }
 
     pub fn refresh_usable_area_layout(&mut self) {
@@ -533,11 +578,17 @@ impl Workspace {
             // Minimized windows are hidden purely by `idle`; animating them
             // would bypass the idle render gate and fade them in with the
             // switch. Keep them on static state only.
-            if get(window, &WINDOW_STATE_MINIMIZED) || get(window, &WINDOW_STATE_MINIMIZE_VISUAL_IDLE) {
+            if get(window, &WINDOW_STATE_MINIMIZED)
+                || get(window, &WINDOW_STATE_MINIMIZE_VISUAL_IDLE)
+            {
                 cancel_workspace_visual_animation(window);
                 set(window, &WINDOW_STATE_WORKSPACE_VISIBLE, true);
                 set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
-                set(window, &WINDOW_STATE_WORKSPACE_OPACITY, transition.to_opacity);
+                set(
+                    window,
+                    &WINDOW_STATE_WORKSPACE_OPACITY,
+                    transition.to_opacity,
+                );
                 continue;
             }
             // Schedule first, then flip VISIBLE, so a completed hold
@@ -669,7 +720,9 @@ impl Workspace {
             return;
         }
 
-        if !self.active_window.is_some_and(|active| tileable.contains(&active))
+        if !self
+            .active_window
+            .is_some_and(|active| tileable.contains(&active))
             && !options.preserve_missing_active
         {
             self.active_window = tileable.last().copied();
@@ -711,12 +764,18 @@ impl Workspace {
         self.apply_floating_layout(animate, options.immediate_floating_windows.as_ref());
     }
 
-    pub fn resize_tile(&mut self, window: Window, event: &shojiwm_rs::ssd::WindowResizeEventSnapshot) {
+    pub fn resize_tile(
+        &mut self,
+        window: Window,
+        event: &shojiwm_rs::ssd::WindowResizeEventSnapshot,
+    ) {
         if !self.tileable_windows().contains(&window) {
             return;
         }
         use shojiwm_rs::ssd::WindowResizePhaseSnapshot as Phase;
-        if matches!(event.phase, Phase::Start | Phase::Update) && get(window, &WINDOW_STATE_MAXIMIZED) {
+        if matches!(event.phase, Phase::Start | Phase::Update)
+            && get(window, &WINDOW_STATE_MAXIMIZED)
+        {
             set(window, &WINDOW_STATE_MAXIMIZED, false);
             set(window, &WINDOW_STATE_RESTORE_RECT, None);
             window.unmaximize();
@@ -727,7 +786,11 @@ impl Workspace {
         let viewport = self.tile_viewport_rect();
         let min_width = self.min_tile_width(window, viewport);
         let max_width = self.max_tile_width(window);
-        let width = clamp(event.current_rect.width, min_width, min_width.max(max_width));
+        let width = clamp(
+            event.current_rect.width,
+            min_width,
+            min_width.max(max_width),
+        );
         self.tile_width_by_window.insert(window, width);
         self.scroll_to_window(window, false);
         self.apply_layout(LayoutOptions::default());
@@ -772,7 +835,11 @@ impl Workspace {
         self.sync_window_visible_outputs(window);
         set(window, &WINDOW_STATE_WORKSPACE_VISIBLE, true);
         set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
-        set(window, &WINDOW_STATE_WORKSPACE_OPACITY, if visible { 1.0 } else { 0.0 });
+        set(
+            window,
+            &WINDOW_STATE_WORKSPACE_OPACITY,
+            if visible { 1.0 } else { 0.0 },
+        );
         stop_rect_animation(window, &WINDOW_STATE_RECT);
         set(window, &WINDOW_STATE_RECT, rect);
     }
@@ -819,7 +886,11 @@ impl Workspace {
         set(window, &WINDOW_STATE_TILE_DRAGGING, false);
         self.sync_window_visible_outputs(window);
         set(window, &WINDOW_STATE_WORKSPACE_OFFSET_Y, 0.0);
-        set(window, &WINDOW_STATE_WORKSPACE_OPACITY, if self.is_active() { 1.0 } else { 0.0 });
+        set(
+            window,
+            &WINDOW_STATE_WORKSPACE_OPACITY,
+            if self.is_active() { 1.0 } else { 0.0 },
+        );
         if !cancelled {
             self.active_window = Some(window);
             self.scroll_to_window(window, false);
@@ -915,7 +986,12 @@ impl Workspace {
         });
     }
 
-    pub fn scroll_by(&mut self, delta_x: f64, stop_kinetic: bool, cancel_rect_animations: bool) -> bool {
+    pub fn scroll_by(
+        &mut self,
+        delta_x: f64,
+        stop_kinetic: bool,
+        cancel_rect_animations: bool,
+    ) -> bool {
         if !self.is_tiled || delta_x == 0.0 {
             return false;
         }
@@ -983,7 +1059,15 @@ impl Workspace {
             } else {
                 offset < from - 0.5 && offset >= to
             };
-            if crossed && best.is_none_or(|best| if forward { offset < best } else { offset > best }) {
+            if crossed
+                && best.is_none_or(|best| {
+                    if forward {
+                        offset < best
+                    } else {
+                        offset > best
+                    }
+                })
+            {
                 best = Some(offset);
             }
         }
@@ -1026,7 +1110,11 @@ impl Workspace {
 
     /// Start a glide; returns whether the first step moved (the caller then
     /// runs its per-frame hook once).
-    pub fn start_kinetic_scroll(&mut self, initial_velocity_x: f64, snap_max_velocity: f64) -> bool {
+    pub fn start_kinetic_scroll(
+        &mut self,
+        initial_velocity_x: f64,
+        snap_max_velocity: f64,
+    ) -> bool {
         self.stop_kinetic_scroll();
         if !self.is_tiled || initial_velocity_x.abs() < WORKSPACE_KINETIC_SCROLL_MIN_VELOCITY {
             return false;
@@ -1071,7 +1159,10 @@ impl Workspace {
         let now = now_ms();
         let dt = {
             let kinetic = self.kinetic.as_mut().expect("checked above");
-            let dt = kinetic.last_time.map_or(interval, |last| now - last).max(1.0);
+            let dt = kinetic
+                .last_time
+                .map_or(interval, |last| now - last)
+                .max(1.0);
             kinetic.last_time = Some(now);
             dt
         };
@@ -1083,8 +1174,11 @@ impl Workspace {
         let Some(kinetic) = &self.kinetic else {
             return (false, false);
         };
-        let (velocity, first_step, snap_max) =
-            (kinetic.velocity_x, kinetic.first_step, kinetic.snap_max_velocity);
+        let (velocity, first_step, snap_max) = (
+            kinetic.velocity_x,
+            kinetic.first_step,
+            kinetic.snap_max_velocity,
+        );
         // Once the glide decays to snapping speed, settle on the anchor with
         // the standard tile animation.
         if snap_max > 0.0
@@ -1173,7 +1267,12 @@ impl Workspace {
     /// A focused tile sticking out on the side the focus key heads first
     /// pans fully into view; the next press moves on. Measured against the
     /// usable area (content inside the cosmetic margin is on screen).
-    fn pan_active_tile_into_view(&mut self, tileable: &[Window], index: usize, direction: i32) -> bool {
+    fn pan_active_tile_into_view(
+        &mut self,
+        tileable: &[Window],
+        index: usize,
+        direction: i32,
+    ) -> bool {
         let viewport = self.tile_viewport_rect();
         let window_left = self.tile_left_for_index(tileable, index, viewport);
         let window_right = window_left + self.tile_width_for_window(tileable[index], viewport);
@@ -1229,7 +1328,10 @@ impl Workspace {
     }
 
     pub fn focus_active_window(&self) {
-        if let Some(active) = self.active_window.filter(|active| self.windows.contains(active)) {
+        if let Some(active) = self
+            .active_window
+            .filter(|active| self.windows.contains(active))
+        {
             active.focus();
         }
     }
@@ -1302,7 +1404,11 @@ impl Workspace {
 
     fn sync_window_visible_outputs(&self, window: Window) {
         set(window, &WINDOW_STATE_WORKSPACE_TILED, self.is_tiled);
-        set(window, &WINDOW_STATE_TILED, self.is_tiled && self.should_tile(window));
+        set(
+            window,
+            &WINDOW_STATE_TILED,
+            self.is_tiled && self.should_tile(window),
+        );
         set(
             window,
             &WINDOW_STATE_VISIBLE_OUTPUTS,
@@ -1397,7 +1503,11 @@ impl Workspace {
     }
 
     fn move_tile_window_to_index(&mut self, window: Window, tile_index: usize) {
-        let Some(current) = self.windows.iter().position(|candidate| *candidate == window) else {
+        let Some(current) = self
+            .windows
+            .iter()
+            .position(|candidate| *candidate == window)
+        else {
             return;
         };
         self.windows.remove(current);
@@ -1481,8 +1591,12 @@ impl Workspace {
         if !is_taken(x, y) {
             return rect;
         }
-        let area = output_rect(&self.monitor)
-            .map(|output| COMPOSITOR.layer.usable_area(&self.monitor).unwrap_or(output));
+        let area = output_rect(&self.monitor).map(|output| {
+            COMPOSITOR
+                .layer
+                .usable_area(&self.monitor)
+                .unwrap_or(output)
+        });
         let mut restarts = 0.0;
         for _ in 0..64 {
             if !is_taken(x, y) {
@@ -1525,7 +1639,10 @@ impl Workspace {
         let Some(output) = output_rect(&self.monitor) else {
             return size;
         };
-        let area = COMPOSITOR.layer.usable_area(&self.monitor).unwrap_or(output);
+        let area = COMPOSITOR
+            .layer
+            .usable_area(&self.monitor)
+            .unwrap_or(output);
         let (mut width, mut height) = (size.width, size.height);
         // A natural size read while the client geometry is still unsettled
         // is nothing but the SSD frame; freezing it as the floating rect
@@ -1634,8 +1751,10 @@ impl Workspace {
         }
         let viewport = self.tile_viewport_rect();
         let min = self.min_tile_width(window, viewport);
-        self.tile_width_by_window
-            .insert(window, clamp(rect.width, min, min.max(self.max_tile_width(window))));
+        self.tile_width_by_window.insert(
+            window,
+            clamp(rect.width, min, min.max(self.max_tile_width(window))),
+        );
     }
 
     fn min_tile_width(&self, window: Window, viewport: Rect) -> f64 {
@@ -1724,5 +1843,8 @@ fn default_tile_width(viewport: Rect) -> f64 {
 
 fn is_transient_child_of(child: Window, parent: Window) -> bool {
     child.is_transient().get_untracked()
-        && child.parent_id().get_untracked().is_some_and(|id| id == parent.id())
+        && child
+            .parent_id()
+            .get_untracked()
+            .is_some_and(|id| id == parent.id())
 }

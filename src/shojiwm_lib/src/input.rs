@@ -2,8 +2,9 @@ use smithay::{
     backend::{
         input::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
-            GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
-            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+            GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend,
+            InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+            PointerMotionEvent,
         },
         session::Session,
     },
@@ -31,15 +32,15 @@ use crate::{
         move_grab::MoveSurfaceGrab,
         resize_grab::{ResizeEdge, ResizeSurfaceGrab},
     },
-    ssd::{
-        DecorationHitTestResult, GestureSwipeEventSnapshot,
-        GestureSwipePhaseSnapshot, LogicalPoint, PointerModifierStateSnapshot,
-        PointerMoveEventSnapshot, PointerMovePointSnapshot, ResizeEdges, RuntimeWindowAction,
-        WindowAction, WindowMoveSourceSnapshot, WindowResizeSourceSnapshot,
-    },
     runtime_input_grab::{
         InputGrabEventSnapshot, InputGrabStateSnapshot, RuntimeInputGrabState,
         RuntimeInputGrabUpdate,
+    },
+    ssd::{
+        DecorationHitTestResult, GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        LogicalPoint, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
+        PointerMovePointSnapshot, ResizeEdges, RuntimeWindowAction, WindowAction,
+        WindowMoveSourceSnapshot, WindowResizeSourceSnapshot,
     },
     state::{ShojiWM, TrackedDecorationInteractionTarget},
 };
@@ -402,10 +403,7 @@ impl ShojiWM {
     fn run_runtime_key_binding(&mut self, binding_id: &str) {
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();
-        match self
-            .config_runtime
-            .invoke_key_binding(binding_id, now_ms)
-        {
+        match self.config_runtime.invoke_key_binding(binding_id, now_ms) {
             Ok(invocation) => {
                 self.drain_runtime_host_messages();
                 if invocation.dirty {
@@ -541,7 +539,11 @@ impl ShojiWM {
             match self.config_runtime.pointer_region(&event, now_ms) {
                 Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
                 Err(error) => {
-                    tracing::warn!(?error, region = event.id, "runtime pointer region event failed");
+                    tracing::warn!(
+                        ?error,
+                        region = event.id,
+                        "runtime pointer region event failed"
+                    );
                 }
             }
         }
@@ -609,7 +611,10 @@ impl ShojiWM {
     /// motion would (focus, hover, pointer regions) without reporting it to
     /// `onPointerMove`. Ignored while a client holds the pointer locked or
     /// confined, while a button is held, and while the session is locked.
-    pub(crate) fn set_cursor_position(&mut self, target: crate::cursor::RuntimeCursorPositionTarget) {
+    pub(crate) fn set_cursor_position(
+        &mut self,
+        target: crate::cursor::RuntimeCursorPositionTarget,
+    ) {
         use crate::cursor::RuntimeCursorPositionTarget;
 
         let Some(pointer) = self.seat.get_pointer() else {
@@ -818,13 +823,20 @@ impl ShojiWM {
         let Some(grab) = self.runtime_input_grab.take() else {
             return;
         };
-        info!(grab_id = grab.id, reason = cancel_reason, "input grab ended");
+        info!(
+            grab_id = grab.id,
+            reason = cancel_reason,
+            "input grab ended"
+        );
         if let Some(reason) = cancel_reason {
             let event = InputGrabEventSnapshot::Cancel {
                 reason: reason.to_owned(),
             };
             let now_ms = self.input_grab_now_ms();
-            match self.config_runtime.input_grab_event(grab.id, &event, now_ms) {
+            match self
+                .config_runtime
+                .input_grab_event(grab.id, &event, now_ms)
+            {
                 Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
                 Err(error) => warn!(?error, "runtime input grab cancel failed"),
             }
@@ -840,10 +852,16 @@ impl ShojiWM {
             return;
         };
         let now_ms = self.input_grab_now_ms();
-        match self.config_runtime.input_grab_event(grab_id, &event, now_ms) {
+        match self
+            .config_runtime
+            .input_grab_event(grab_id, &event, now_ms)
+        {
             Ok(invocation) => self.handle_runtime_pointer_move_invocation(invocation),
             Err(error) => {
-                warn!(?error, "runtime input grab event failed; releasing the grab");
+                warn!(
+                    ?error,
+                    "runtime input grab event failed; releasing the grab"
+                );
                 self.end_runtime_input_grab(Some("error"));
             }
         }
@@ -946,12 +964,25 @@ impl ShojiWM {
         }
     }
 
-    fn dispatch_gesture_pinch(&mut self, phase: GestureSwipePhaseSnapshot, timestamp: u64, scale: f64, rotation: f64, delta_x: f64, delta_y: f64) {
+    fn dispatch_gesture_pinch(
+        &mut self,
+        phase: GestureSwipePhaseSnapshot,
+        timestamp: u64,
+        scale: f64,
+        rotation: f64,
+        delta_x: f64,
+        delta_y: f64,
+    ) {
         if !self.runtime_gesture_pinch_async_enabled {
             return;
         }
-        let pointer_position = self.seat.get_pointer().map(|pointer| pointer.current_location());
-        let output_name = pointer_position.and_then(|position| self.output_at_point(position)).map(|output| output.name());
+        let pointer_position = self
+            .seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location());
+        let output_name = pointer_position
+            .and_then(|position| self.output_at_point(position))
+            .map(|output| output.name());
         let event = crate::ssd::GesturePinchEventSnapshot {
             phase,
             fingers: self.runtime_gesture_pinch_fingers,
@@ -959,7 +990,10 @@ impl ShojiWM {
             rotation,
             delta_x,
             delta_y,
-            position: pointer_position.map(|position| PointerMovePointSnapshot { x: position.x, y: position.y }),
+            position: pointer_position.map(|position| PointerMovePointSnapshot {
+                x: position.x,
+                y: position.y,
+            }),
             output_name,
             timestamp,
         };
@@ -1268,31 +1302,32 @@ impl ShojiWM {
                 let mut confine_region = None;
 
                 if let Some((surface, surface_origin)) = under.as_ref()
-                    && pointer.current_focus().as_ref() == Some(surface) {
-                        with_pointer_constraint(surface, &pointer, |constraint| {
-                            let Some(constraint) =
-                                constraint.filter(|constraint| constraint.is_active())
-                            else {
-                                return;
-                            };
-                            if !constraint.region().is_none_or(|region| {
-                                // Floor, not round: the pointer clamp above can
-                                // sit half a logical pixel inside the trailing
-                                // edge, and rounding would carry that back out
-                                // of the region it is actually within.
-                                region.contains((previous_pos - *surface_origin).to_i32_floor())
-                            }) {
-                                return;
+                    && pointer.current_focus().as_ref() == Some(surface)
+                {
+                    with_pointer_constraint(surface, &pointer, |constraint| {
+                        let Some(constraint) =
+                            constraint.filter(|constraint| constraint.is_active())
+                        else {
+                            return;
+                        };
+                        if !constraint.region().is_none_or(|region| {
+                            // Floor, not round: the pointer clamp above can
+                            // sit half a logical pixel inside the trailing
+                            // edge, and rounding would carry that back out
+                            // of the region it is actually within.
+                            region.contains((previous_pos - *surface_origin).to_i32_floor())
+                        }) {
+                            return;
+                        }
+                        match &*constraint {
+                            PointerConstraint::Locked(_) => pointer_locked = true,
+                            PointerConstraint::Confined(confined) => {
+                                pointer_confined = true;
+                                confine_region = confined.region().cloned();
                             }
-                            match &*constraint {
-                                PointerConstraint::Locked(_) => pointer_locked = true,
-                                PointerConstraint::Confined(confined) => {
-                                    pointer_confined = true;
-                                    confine_region = confined.region().cloned();
-                                }
-                            }
-                        });
-                    }
+                        }
+                    });
+                }
 
                 if pointer_locked {
                     pointer.relative_motion(
@@ -1843,9 +1878,7 @@ impl ShojiWM {
                                     },
                                 );
                                 if let Err(error) =
-                                    crate::backend::capture_live_snapshot_for_close(
-                                        self, &window,
-                                    )
+                                    crate::backend::capture_live_snapshot_for_close(self, &window)
                                 {
                                     warn!(
                                         ?error,
@@ -2222,10 +2255,8 @@ impl ShojiWM {
                             self.runtime_key_bindings
                                 .iter()
                                 .find(|binding| {
-                                    binding.matches_wheel(
-                                        direction,
-                                        &self.current_keyboard_modifiers,
-                                    )
+                                    binding
+                                        .matches_wheel(direction, &self.current_keyboard_modifiers)
                                 })
                                 .map(|binding| binding.id.clone())
                         });
@@ -2272,20 +2303,23 @@ impl ShojiWM {
                     velocity_y: 0.0,
                     grabbed,
                 });
-                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
-                    phase: GestureSwipePhaseSnapshot::Begin,
-                    fingers,
-                    position,
-                    delta_x: 0.0,
-                    delta_y: 0.0,
-                    total_x: 0.0,
-                    total_y: 0.0,
-                    velocity_x: 0.0,
-                    velocity_y: 0.0,
-                    output_name,
-                    device,
-                    timestamp,
-                }, grabbed);
+                self.dispatch_gesture_swipe_events(
+                    GestureSwipeEventSnapshot {
+                        phase: GestureSwipePhaseSnapshot::Begin,
+                        fingers,
+                        position,
+                        delta_x: 0.0,
+                        delta_y: 0.0,
+                        total_x: 0.0,
+                        total_y: 0.0,
+                        velocity_x: 0.0,
+                        velocity_y: 0.0,
+                        output_name,
+                        device,
+                        timestamp,
+                    },
+                    grabbed,
+                );
             }
             InputEvent::GestureSwipeUpdate { event, .. } => {
                 let grabbed = self
@@ -2332,20 +2366,23 @@ impl ShojiWM {
                 let total_y = gesture.total_y;
                 let velocity_x = gesture.velocity_x;
                 let velocity_y = gesture.velocity_y;
-                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
-                    phase: GestureSwipePhaseSnapshot::Update,
-                    fingers,
-                    position,
-                    delta_x,
-                    delta_y,
-                    total_x,
-                    total_y,
-                    velocity_x,
-                    velocity_y,
-                    output_name,
-                    device,
-                    timestamp,
-                }, grabbed);
+                self.dispatch_gesture_swipe_events(
+                    GestureSwipeEventSnapshot {
+                        phase: GestureSwipePhaseSnapshot::Update,
+                        fingers,
+                        position,
+                        delta_x,
+                        delta_y,
+                        total_x,
+                        total_y,
+                        velocity_x,
+                        velocity_y,
+                        output_name,
+                        device,
+                        timestamp,
+                    },
+                    grabbed,
+                );
             }
             InputEvent::GestureSwipeEnd { event, .. } => {
                 let grabbed = self
@@ -2379,29 +2416,39 @@ impl ShojiWM {
                 let Some(gesture) = self.runtime_gesture_swipe.take() else {
                     return;
                 };
-                self.dispatch_gesture_swipe_events(GestureSwipeEventSnapshot {
-                    phase: if event.cancelled() {
-                        GestureSwipePhaseSnapshot::Cancel
-                    } else {
-                        GestureSwipePhaseSnapshot::End
+                self.dispatch_gesture_swipe_events(
+                    GestureSwipeEventSnapshot {
+                        phase: if event.cancelled() {
+                            GestureSwipePhaseSnapshot::Cancel
+                        } else {
+                            GestureSwipePhaseSnapshot::End
+                        },
+                        fingers: gesture.fingers,
+                        position,
+                        delta_x: 0.0,
+                        delta_y: 0.0,
+                        total_x: gesture.total_x,
+                        total_y: gesture.total_y,
+                        velocity_x: gesture.velocity_x,
+                        velocity_y: gesture.velocity_y,
+                        output_name,
+                        device,
+                        timestamp,
                     },
-                    fingers: gesture.fingers,
-                    position,
-                    delta_x: 0.0,
-                    delta_y: 0.0,
-                    total_x: gesture.total_x,
-                    total_y: gesture.total_y,
-                    velocity_x: gesture.velocity_x,
-                    velocity_y: gesture.velocity_y,
-                    output_name,
-                    device,
-                    timestamp,
-                }, grabbed);
+                    grabbed,
+                );
             }
             // Pinches go to the config only (no client takes them).
             InputEvent::GesturePinchBegin { event, .. } => {
                 self.runtime_gesture_pinch_fingers = event.fingers();
-                self.dispatch_gesture_pinch(GestureSwipePhaseSnapshot::Begin, u64::from(event.time_msec()), 1.0, 0.0, 0.0, 0.0);
+                self.dispatch_gesture_pinch(
+                    GestureSwipePhaseSnapshot::Begin,
+                    u64::from(event.time_msec()),
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                );
             }
             InputEvent::GesturePinchUpdate { event, .. } => {
                 self.dispatch_gesture_pinch(
@@ -2414,8 +2461,19 @@ impl ShojiWM {
                 );
             }
             InputEvent::GesturePinchEnd { event, .. } => {
-                let phase = if event.cancelled() { GestureSwipePhaseSnapshot::Cancel } else { GestureSwipePhaseSnapshot::End };
-                self.dispatch_gesture_pinch(phase, u64::from(event.time_msec()), 1.0, 0.0, 0.0, 0.0);
+                let phase = if event.cancelled() {
+                    GestureSwipePhaseSnapshot::Cancel
+                } else {
+                    GestureSwipePhaseSnapshot::End
+                };
+                self.dispatch_gesture_pinch(
+                    phase,
+                    u64::from(event.time_msec()),
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                );
                 self.runtime_gesture_pinch_fingers = 0;
             }
             _ => {}
@@ -2446,9 +2504,7 @@ impl ShojiWM {
                     .remove(&runtime_action.window_id);
                 self.snapshot_dirty_window_ids
                     .remove(&runtime_action.window_id);
-                let _ = self
-                    .config_runtime
-                    .window_closed(&runtime_action.window_id);
+                let _ = self.config_runtime.window_closed(&runtime_action.window_id);
                 self.runtime_dirty_window_ids
                     .remove(&runtime_action.window_id);
                 self.runtime_managed_only_window_ids
@@ -2678,8 +2734,7 @@ impl ShojiWM {
         // actions can refresh ManagedWindow immediately, so stage the protocol state first. This
         // keeps that refresh from sending a configure with the new rect and the old Fullscreen
         // state. If no listener accepts the request, restore the pending state below.
-        let xdg_state_changed =
-            self.prepare_xdg_fullscreen_hint(window, &snapshot.id, fullscreen);
+        let xdg_state_changed = self.prepare_xdg_fullscreen_hint(window, &snapshot.id, fullscreen);
         let invoked = self.invoke_window_fullscreen_request_event(&snapshot, &event, now_ms);
         self.finish_xdg_fullscreen_hint(
             window,
@@ -3403,7 +3458,10 @@ impl ShojiWM {
     /// handler no longer exists (a hover or press for a node just rebuilt)
     /// leaves those changes unrefreshed, and the runtime only announces a
     /// window again once its dirty set is empty, so it never does.
-    pub(crate) fn apply_runtime_handler_mutation(&mut self, invocation: crate::ssd::DecorationHandlerInvocation) {
+    pub(crate) fn apply_runtime_handler_mutation(
+        &mut self,
+        invocation: crate::ssd::DecorationHandlerInvocation,
+    ) {
         self.mark_runtime_dirty_windows(
             invocation.dirty_window_ids,
             invocation.dirty_managed_window_ids,
@@ -3440,7 +3498,8 @@ impl ShojiWM {
                     }
                     DecorationHitTestResult::Move
                     | DecorationHitTestResult::Action(_)
-                    | DecorationHitTestResult::Popup                    | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
+                    | DecorationHitTestResult::Popup
+                    | DecorationHitTestResult::Outside => Some(CursorIcon::Default),
                     DecorationHitTestResult::ClientArea => None,
                 })
             })

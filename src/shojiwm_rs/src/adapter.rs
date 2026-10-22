@@ -11,17 +11,16 @@ use std::{
 };
 
 use shojiwm_lib::{
-    runtime_workspace::{RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent},
     runtime_api::{
         ConfigRuntime, DecorationRequest, EffectRequest, HostMessage, InputRequest, LaunchContext,
         ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply,
         RuntimeRequest, SchedulerTickRequest, WindowRequest, WorkspaceRequest,
     },
+    runtime_workspace::{RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent},
     ssd::{
-        DecorationCachedEvaluationResult, DecorationEvaluationResult,
-        DecorationHandlerInvocation, DecorationKeyBindingInvocation,
-        DecorationPointerMoveAsyncInvocation, DecorationSchedulerTick,
-        DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
+        DecorationCachedEvaluationResult, DecorationEvaluationResult, DecorationHandlerInvocation,
+        DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation,
+        DecorationSchedulerTick, DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
         DecorationWindowStateRequestInvocation, LayerEffectEvaluationResult, ManagedWindowState,
         PopupEffectEvaluationResult, RuntimeLayerEffectAssignment, RuntimePopupEffectAssignment,
         RuntimeWindowAction, WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
@@ -171,7 +170,9 @@ fn guard<R>(f: impl FnOnce() -> Result<R, RuntimeError>) -> Result<R, RuntimeErr
                 .map(|message| (*message).to_owned())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "non-string panic payload".to_owned());
-            Err(RuntimeError::RuntimeProtocol(format!("config panicked: {message}")))
+            Err(RuntimeError::RuntimeProtocol(format!(
+                "config panicked: {message}"
+            )))
         }
     }
 }
@@ -299,12 +300,18 @@ fn update_snapshot(entry: &Rc<WindowEntry>, snapshot: &WaylandWindowSnapshot) {
     batch(|| {
         signals.update(snapshot);
         if focus_changed {
-            emit(|listeners| listeners.focus.clone(), |listener| listener(window, snapshot.is_focused));
+            emit(
+                |listeners| listeners.focus.clone(),
+                |listener| listener(window, snapshot.is_focused),
+            );
         }
     });
 }
 
-fn emit_window(select: impl FnOnce(&runtime::Listeners) -> Vec<Rc<dyn Fn(Window)>>, window: Window) -> bool {
+fn emit_window(
+    select: impl FnOnce(&runtime::Listeners) -> Vec<Rc<dyn Fn(Window)>>,
+    window: Window,
+) -> bool {
     batch(|| emit(select, |listener| listener(window)))
 }
 
@@ -320,9 +327,15 @@ fn ensure_window(snapshot: &WaylandWindowSnapshot) -> (Rc<WindowEntry>, bool) {
             let window = entry.handle;
             batch(|| {
                 if !entry.opened.replace(true) {
-                    emit(|listeners| listeners.open.clone(), |listener| listener(window));
+                    emit(
+                        |listeners| listeners.open.clone(),
+                        |listener| listener(window),
+                    );
                 }
-                emit(|listeners| listeners.focus.clone(), |listener| listener(window, snapshot.is_focused));
+                emit(
+                    |listeners| listeners.focus.clone(),
+                    |listener| listener(window, snapshot.is_focused),
+                );
             });
             (entry, true)
         }
@@ -399,11 +412,15 @@ fn resolve_managed(entry: &Rc<WindowEntry>) {
         match view.as_ref().and_then(|view| view.managed.as_ref()) {
             Some((managed, observer)) => observer.track(|| {
                 let mut state = managed.resolve();
-                state.surface_policy = policy.as_ref().and_then(|policy| policy(SurfaceRef::Toplevel(window)));
+                state.surface_policy = policy
+                    .as_ref()
+                    .and_then(|policy| policy(SurfaceRef::Toplevel(window)));
                 state
             }),
             None => ManagedWindowState {
-                surface_policy: policy.as_ref().and_then(|policy| untrack(|| policy(SurfaceRef::Toplevel(window)))),
+                surface_policy: policy
+                    .as_ref()
+                    .and_then(|policy| untrack(|| policy(SurfaceRef::Toplevel(window)))),
                 ..ManagedWindowState::default()
             },
         }
@@ -457,7 +474,9 @@ fn refresh(entry: &Rc<WindowEntry>, force_full: bool) -> Refresh {
             view.tree.rebuild(&entry.context);
             (Vec::new(), Vec::new())
         } else {
-            let update = view.tree.update(dirty.nodes, dirty.uniforms, &entry.context);
+            let update = view
+                .tree
+                .update(dirty.nodes, dirty.uniforms, &entry.context);
             (update.patches, update.dirty_node_ids)
         }
     };
@@ -480,27 +499,35 @@ fn current_tree(entry: &Rc<WindowEntry>) -> Option<shojiwm_lib::ssd::DecorationN
         .map(|view| view.tree.tree.clone())
 }
 
-fn evaluation(entry: &Rc<WindowEntry>, actions: Vec<RuntimeWindowAction>) -> Result<RuntimeReply, RuntimeError> {
+fn evaluation(
+    entry: &Rc<WindowEntry>,
+    actions: Vec<RuntimeWindowAction>,
+) -> Result<RuntimeReply, RuntimeError> {
     let Some(node) = current_tree(entry) else {
         return Ok(RuntimeReply::Unhandled);
     };
     let managed_window = entry.managed_state.borrow().clone();
-    Ok(RuntimeReply::Evaluation(Box::new(DecorationEvaluationResult {
-        node,
-        transform: managed_window.transform,
-        managed_window,
-        window_effects: entry.window_effects.borrow().clone(),
-        dirty_node_ids: Vec::new(),
-        next_poll_in_ms: next_poll(),
-        actions,
-    })))
+    Ok(RuntimeReply::Evaluation(Box::new(
+        DecorationEvaluationResult {
+            node,
+            transform: managed_window.transform,
+            managed_window,
+            window_effects: entry.window_effects.borrow().clone(),
+            dirty_node_ids: Vec::new(),
+            next_poll_in_ms: next_poll(),
+            actions,
+        },
+    )))
 }
 
 fn evaluate(snapshot: &WaylandWindowSnapshot, preview: bool) -> Result<RuntimeReply, RuntimeError> {
     let (entry, created) = ensure_window(snapshot);
     if preview {
         if !entry.initial_configured.replace(true) {
-            emit_window(|listeners| listeners.initial_configure.clone(), entry.handle);
+            emit_window(
+                |listeners| listeners.initial_configure.clone(),
+                entry.handle,
+            );
         }
         entry.preconfigured.set(true);
     } else {
@@ -550,18 +577,24 @@ fn evaluate_cached(
     }
     let refresh = refresh(&entry, force_full);
     let managed_window = entry.managed_state.borrow().clone();
-    Ok(RuntimeReply::CachedEvaluation(Box::new(DecorationCachedEvaluationResult {
-        node: if refresh.full { current_tree(&entry) } else { None },
-        node_patches: refresh.patches,
-        transform: managed_window.transform,
-        managed_window,
-        window_effects: entry.window_effects.borrow().clone(),
-        window_effect_uniform_only: false,
-        dirty_node_ids: refresh.dirty_node_ids,
-        managed_window_only: refresh.managed_only,
-        next_poll_in_ms: next_poll(),
-        actions: Vec::new(),
-    })))
+    Ok(RuntimeReply::CachedEvaluation(Box::new(
+        DecorationCachedEvaluationResult {
+            node: if refresh.full {
+                current_tree(&entry)
+            } else {
+                None
+            },
+            node_patches: refresh.patches,
+            transform: managed_window.transform,
+            managed_window,
+            window_effects: entry.window_effects.borrow().clone(),
+            window_effect_uniform_only: false,
+            dirty_node_ids: refresh.dirty_node_ids,
+            managed_window_only: refresh.managed_only,
+            next_poll_in_ms: next_poll(),
+            actions: Vec::new(),
+        },
+    )))
 }
 
 fn handler_invocation(invoked: bool) -> DecorationHandlerInvocation {
@@ -670,7 +703,12 @@ fn scheduler_tick(tick: SchedulerTickRequest<'_>, now_ms: f64) -> DecorationSche
     batch(|| animation::tick(tick.output, tick.frame_outputs, now_ms));
     let mutation = collect_mutation();
     let dirty_layer_ids: Vec<String> = if runtime::take_layer_effects_dirty() {
-        compositor::COMPOSITOR.layer.list().into_iter().map(|layer| layer.id).collect()
+        compositor::COMPOSITOR
+            .layer
+            .list()
+            .into_iter()
+            .map(|layer| layer.id)
+            .collect()
     } else {
         Vec::new()
     };
@@ -725,22 +763,32 @@ fn sync_layers(output_name: &str, layers: &[WaylandLayerSnapshot]) {
         global.layers.set(next.clone());
         for (id, layer) in &previous {
             if layer.output_name == output_name && !next.contains_key(id) {
-                emit(|listeners| listeners.destroy_layer.clone(), |listener| listener(layer));
+                emit(
+                    |listeners| listeners.destroy_layer.clone(),
+                    |listener| listener(layer),
+                );
             }
         }
         for layer in layers {
             match previous.get(&layer.id) {
-                None => emit(|listeners| listeners.create_layer.clone(), |listener| listener(layer)),
-                Some(old) if old != layer => {
-                    emit(|listeners| listeners.update_layer.clone(), |listener| listener(layer))
-                }
+                None => emit(
+                    |listeners| listeners.create_layer.clone(),
+                    |listener| listener(layer),
+                ),
+                Some(old) if old != layer => emit(
+                    |listeners| listeners.update_layer.clone(),
+                    |listener| listener(layer),
+                ),
                 Some(_) => false,
             };
         }
     });
 }
 
-fn layer_effects(output_name: &str, layers: &[WaylandLayerSnapshot]) -> LayerEffectEvaluationResult {
+fn layer_effects(
+    output_name: &str,
+    layers: &[WaylandLayerSnapshot],
+) -> LayerEffectEvaluationResult {
     sync_layers(output_name, layers);
     let Some(effect) = with_registry(|registry| registry.layer_effect.clone()) else {
         return LayerEffectEvaluationResult::default();
@@ -767,9 +815,15 @@ fn layer_effects(output_name: &str, layers: &[WaylandLayerSnapshot]) -> LayerEff
     }
 }
 
-fn popup_effects(output_name: &str, popups: &[WaylandPopupSnapshot]) -> PopupEffectEvaluationResult {
+fn popup_effects(
+    output_name: &str,
+    popups: &[WaylandPopupSnapshot],
+) -> PopupEffectEvaluationResult {
     let (effect, policy) = with_registry(|registry| {
-        (registry.popup_effect.clone(), registry.surface_policy.clone())
+        (
+            registry.popup_effect.clone(),
+            registry.surface_policy.clone(),
+        )
     });
     if effect.is_none() && policy.is_none() {
         return PopupEffectEvaluationResult::default();
@@ -836,11 +890,16 @@ fn set_display_state(state: BTreeMap<String, shojiwm_lib::ssd::WaylandOutputSnap
         global.outputs.set(state);
         animation::sync_output_poll_groups();
         compositor::reconfigure_outputs(false);
-        emit(|listeners| listeners.output_change.clone(), |listener| listener(&event));
+        emit(
+            |listeners| listeners.output_change.clone(),
+            |listener| listener(&event),
+        );
     });
 }
 
-fn set_input_state(state: BTreeMap<String, shojiwm_lib::runtime_input::RuntimeInputDeviceSnapshot>) {
+fn set_input_state(
+    state: BTreeMap<String, shojiwm_lib::runtime_input::RuntimeInputDeviceSnapshot>,
+) {
     let global = runtime::global();
     let previous = global.inputs.get_untracked();
     if previous == state {
@@ -862,7 +921,10 @@ fn set_input_state(state: BTreeMap<String, shojiwm_lib::runtime_input::RuntimeIn
     batch(|| {
         global.inputs.set(state);
         compositor::reconfigure_input(false);
-        emit(|listeners| listeners.input_change.clone(), |listener| listener(&event));
+        emit(
+            |listeners| listeners.input_change.clone(),
+            |listener| listener(&event),
+        );
     });
 }
 
@@ -909,7 +971,10 @@ impl ConfigRuntime for ReactiveRuntime {
                 let event = EnableEvent {
                     reason: "initial".to_owned(),
                 };
-                emit(|listeners| listeners.enable.clone(), |listener| listener(&event));
+                emit(
+                    |listeners| listeners.enable.clone(),
+                    |listener| listener(&event),
+                );
             });
             with_registry(|registry| {
                 let pending = &mut registry.pending;
@@ -929,14 +994,22 @@ impl ConfigRuntime for ReactiveRuntime {
     }
 
     fn prepare_reload(&mut self) -> Result<ReloadPreparation, RuntimeError> {
-        Err(RuntimeError::Unsupported("hot reload of a compiled Rust config"))
+        Err(RuntimeError::Unsupported(
+            "hot reload of a compiled Rust config",
+        ))
     }
 
     fn reload(&mut self) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Unsupported("hot reload of a compiled Rust config"))
+        Err(RuntimeError::Unsupported(
+            "hot reload of a compiled Rust config",
+        ))
     }
 
-    fn request(&mut self, now_ms: f64, request: RuntimeRequest<'_>) -> Result<RuntimeReply, RuntimeError> {
+    fn request(
+        &mut self,
+        now_ms: f64,
+        request: RuntimeRequest<'_>,
+    ) -> Result<RuntimeReply, RuntimeError> {
         let reply = guard(|| {
             begin_turn((!matches!(request, RuntimeRequest::SchedulerTick(_))).then_some(now_ms));
             Ok(match request {
@@ -949,17 +1022,21 @@ impl ConfigRuntime for ReactiveRuntime {
                     } => evaluate_cached(window_id, window, force_full)?,
                     DecorationRequest::Policy { window, context } => {
                         match with_registry(|registry| registry.decoration_policy.clone()) {
-                            Some(policy) => RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
-                                mode: untrack(|| policy(window, context)),
-                            }),
+                            Some(policy) => {
+                                RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
+                                    mode: untrack(|| policy(window, context)),
+                                })
+                            }
                             None => RuntimeReply::Unhandled,
                         }
                     }
                     DecorationRequest::KdeDefaultMode { client } => {
                         match with_registry(|registry| registry.kde_default_decoration.clone()) {
-                            Some(resolve) => RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
-                                mode: untrack(|| resolve(client)),
-                            }),
+                            Some(resolve) => {
+                                RuntimeReply::DecorationPolicy(WindowDecorationDecisionSnapshot {
+                                    mode: untrack(|| resolve(client)),
+                                })
+                            }
                             None => RuntimeReply::Unhandled,
                         }
                     }
@@ -984,55 +1061,89 @@ impl ConfigRuntime for ReactiveRuntime {
                     WindowRequest::Resize { window_id, event } => {
                         let invoked = runtime::window_entry(window_id).is_some_and(|entry| {
                             batch(|| {
-                                emit(|listeners| listeners.window_resize.clone(), |listener| {
-                                    listener(entry.handle, event)
-                                })
+                                emit(
+                                    |listeners| listeners.window_resize.clone(),
+                                    |listener| listener(entry.handle, event),
+                                )
                             })
                         });
-                        RuntimeReply::WindowResize(mutation_reply!(DecorationWindowResizeInvocation, invoked))
+                        RuntimeReply::WindowResize(mutation_reply!(
+                            DecorationWindowResizeInvocation,
+                            invoked
+                        ))
                     }
                     WindowRequest::Move { window_id, event } => {
                         let invoked = runtime::window_entry(window_id).is_some_and(|entry| {
                             batch(|| {
-                                emit(|listeners| listeners.window_move.clone(), |listener| {
-                                    listener(entry.handle, event)
-                                })
+                                emit(
+                                    |listeners| listeners.window_move.clone(),
+                                    |listener| listener(entry.handle, event),
+                                )
                             })
                         });
-                        RuntimeReply::WindowMove(mutation_reply!(DecorationWindowMoveInvocation, invoked))
+                        RuntimeReply::WindowMove(mutation_reply!(
+                            DecorationWindowMoveInvocation,
+                            invoked
+                        ))
                     }
                     WindowRequest::Maximize { window, event } => {
                         let window = request_window(window);
                         let invoked = batch(|| {
-                            emit(|listeners| listeners.maximize_request.clone(), |listener| listener(window, event))
+                            emit(
+                                |listeners| listeners.maximize_request.clone(),
+                                |listener| listener(window, event),
+                            )
                         });
-                        RuntimeReply::WindowStateRequest(mutation_reply!(DecorationWindowStateRequestInvocation, invoked))
+                        RuntimeReply::WindowStateRequest(mutation_reply!(
+                            DecorationWindowStateRequestInvocation,
+                            invoked
+                        ))
                     }
                     WindowRequest::Minimize { window, event } => {
                         let window = request_window(window);
                         let invoked = batch(|| {
-                            emit(|listeners| listeners.minimize_request.clone(), |listener| listener(window, event))
+                            emit(
+                                |listeners| listeners.minimize_request.clone(),
+                                |listener| listener(window, event),
+                            )
                         });
-                        RuntimeReply::WindowStateRequest(mutation_reply!(DecorationWindowStateRequestInvocation, invoked))
+                        RuntimeReply::WindowStateRequest(mutation_reply!(
+                            DecorationWindowStateRequestInvocation,
+                            invoked
+                        ))
                     }
                     WindowRequest::Fullscreen { window, event } => {
                         let window = request_window(window);
                         let invoked = batch(|| {
-                            emit(|listeners| listeners.fullscreen_request.clone(), |listener| listener(window, event))
+                            emit(
+                                |listeners| listeners.fullscreen_request.clone(),
+                                |listener| listener(window, event),
+                            )
                         });
-                        RuntimeReply::WindowStateRequest(mutation_reply!(DecorationWindowStateRequestInvocation, invoked))
+                        RuntimeReply::WindowStateRequest(mutation_reply!(
+                            DecorationWindowStateRequestInvocation,
+                            invoked
+                        ))
                     }
                     WindowRequest::Activate { window, event } => {
                         let window = request_window(window);
                         let invoked = batch(|| {
-                            emit(|listeners| listeners.activate_request.clone(), |listener| listener(window, event))
+                            emit(
+                                |listeners| listeners.activate_request.clone(),
+                                |listener| listener(window, event),
+                            )
                         });
-                        RuntimeReply::WindowStateRequest(mutation_reply!(DecorationWindowStateRequestInvocation, invoked))
+                        RuntimeReply::WindowStateRequest(mutation_reply!(
+                            DecorationWindowStateRequestInvocation,
+                            invoked
+                        ))
                     }
                 },
                 RuntimeRequest::Input(request) => match request {
                     InputRequest::KeyBinding { binding_id } => {
-                        let handler = with_registry(|registry| registry.key_handlers.get(binding_id).cloned());
+                        let handler = with_registry(|registry| {
+                            registry.key_handlers.get(binding_id).cloned()
+                        });
                         let invoked = match handler {
                             Some(handler) => {
                                 batch(|| handler());
@@ -1040,20 +1151,38 @@ impl ConfigRuntime for ReactiveRuntime {
                             }
                             None => false,
                         };
-                        RuntimeReply::KeyBinding(mutation_reply!(DecorationKeyBindingInvocation, invoked))
+                        RuntimeReply::KeyBinding(mutation_reply!(
+                            DecorationKeyBindingInvocation,
+                            invoked
+                        ))
                     }
                     InputRequest::PointerMove(event) => {
-                        let invoked = batch(|| emit(|listeners| listeners.pointer_move.clone(), |listener| listener(event)));
+                        let invoked = batch(|| {
+                            emit(
+                                |listeners| listeners.pointer_move.clone(),
+                                |listener| listener(event),
+                            )
+                        });
                         RuntimeReply::PointerHook(pointer_hook(invoked))
                     }
                     InputRequest::GestureSwipe(event) => {
-                        let invoked = batch(|| emit(|listeners| listeners.gesture_swipe.clone(), |listener| listener(event)));
+                        let invoked = batch(|| {
+                            emit(
+                                |listeners| listeners.gesture_swipe.clone(),
+                                |listener| listener(event),
+                            )
+                        });
                         RuntimeReply::PointerHook(pointer_hook(invoked))
                     }
                     InputRequest::PointerRegion(event) => {
-                        let handler = with_registry(|registry| registry.region_handlers.get(&event.id).cloned());
+                        let handler = with_registry(|registry| {
+                            registry.region_handlers.get(&event.id).cloned()
+                        });
                         let invoked = batch(|| {
-                            let listened = emit(|listeners| listeners.pointer_region.clone(), |listener| listener(event));
+                            let listened = emit(
+                                |listeners| listeners.pointer_region.clone(),
+                                |listener| listener(event),
+                            );
                             if let Some(handler) = &handler {
                                 handler(event);
                             }
@@ -1074,12 +1203,14 @@ impl ConfigRuntime for ReactiveRuntime {
                     EffectRequest::Background => {
                         RuntimeReply::BackgroundEffect(crate::published::background_effect())
                     }
-                    EffectRequest::Layers { output_name, layers } => {
-                        RuntimeReply::LayerEffects(layer_effects(output_name, layers))
-                    }
-                    EffectRequest::Popups { output_name, popups } => {
-                        RuntimeReply::PopupEffects(popup_effects(output_name, popups))
-                    }
+                    EffectRequest::Layers {
+                        output_name,
+                        layers,
+                    } => RuntimeReply::LayerEffects(layer_effects(output_name, layers)),
+                    EffectRequest::Popups {
+                        output_name,
+                        popups,
+                    } => RuntimeReply::PopupEffects(popup_effects(output_name, popups)),
                 },
                 RuntimeRequest::Workspace(WorkspaceRequest::Activate(event)) => {
                     let invoked = match (&event.create_name, &event.window_id) {
@@ -1088,16 +1219,31 @@ impl ConfigRuntime for ReactiveRuntime {
                                 group_id: event.group_id.clone(),
                                 name: name.clone(),
                             };
-                            batch(|| emit(|listeners| listeners.workspace_create.clone(), |listener| listener(&event)))
+                            batch(|| {
+                                emit(
+                                    |listeners| listeners.workspace_create.clone(),
+                                    |listener| listener(&event),
+                                )
+                            })
                         }
                         (None, Some(window_id)) => {
                             let event = RuntimeWorkspaceMoveWindowEvent {
                                 workspace_id: event.workspace_id.clone(),
                                 window_id: window_id.clone(),
                             };
-                            batch(|| emit(|listeners| listeners.workspace_move_window.clone(), |listener| listener(&event)))
+                            batch(|| {
+                                emit(
+                                    |listeners| listeners.workspace_move_window.clone(),
+                                    |listener| listener(&event),
+                                )
+                            })
                         }
-                        (None, None) => batch(|| emit(|listeners| listeners.workspace_activate.clone(), |listener| listener(event))),
+                        (None, None) => batch(|| {
+                            emit(
+                                |listeners| listeners.workspace_activate.clone(),
+                                |listener| listener(event),
+                            )
+                        }),
                     };
                     RuntimeReply::Handler(Box::new(handler_invocation(invoked)))
                 }
@@ -1116,25 +1262,46 @@ impl ConfigRuntime for ReactiveRuntime {
                 RuntimeEvent::KeyboardLayout(layout) => {
                     batch(|| {
                         runtime::global().keyboard_layout.set(Some(layout.clone()));
-                        emit(|listeners| listeners.keyboard_layout.clone(), |listener| listener(&layout));
+                        emit(
+                            |listeners| listeners.keyboard_layout.clone(),
+                            |listener| listener(&layout),
+                        );
                     });
                 }
                 RuntimeEvent::KeyboardLocks(locks) => {
                     batch(|| {
                         runtime::global().keyboard_locks.set(Some(locks));
-                        emit(|listeners| listeners.keyboard_locks.clone(), |listener| listener(&locks));
+                        emit(
+                            |listeners| listeners.keyboard_locks.clone(),
+                            |listener| listener(&locks),
+                        );
                     });
                 }
                 RuntimeEvent::PointerMove(event) => {
-                    let invoked = batch(|| emit(|listeners| listeners.pointer_move_async.clone(), |listener| listener(&event)));
+                    let invoked = batch(|| {
+                        emit(
+                            |listeners| listeners.pointer_move_async.clone(),
+                            |listener| listener(&event),
+                        )
+                    });
                     runtime::send(HostMessage::PointerHookResult(pointer_hook(invoked)));
                 }
                 RuntimeEvent::GestureSwipe(event) => {
-                    let invoked = batch(|| emit(|listeners| listeners.gesture_swipe_async.clone(), |listener| listener(&event)));
+                    let invoked = batch(|| {
+                        emit(
+                            |listeners| listeners.gesture_swipe_async.clone(),
+                            |listener| listener(&event),
+                        )
+                    });
                     runtime::send(HostMessage::PointerHookResult(pointer_hook(invoked)));
                 }
                 RuntimeEvent::GesturePinch(event) => {
-                    batch(|| emit(|listeners| listeners.gesture_pinch_async.clone(), |listener| listener(&event)));
+                    batch(|| {
+                        emit(
+                            |listeners| listeners.gesture_pinch_async.clone(),
+                            |listener| listener(&event),
+                        )
+                    });
                 }
             }
             Ok(())
@@ -1152,7 +1319,10 @@ impl ConfigRuntime for ReactiveRuntime {
                 let event = DisableEvent {
                     reason: "shutdown".to_owned(),
                 };
-                emit(|listeners| listeners.disable.clone(), |listener| listener(&event));
+                emit(
+                    |listeners| listeners.disable.clone(),
+                    |listener| listener(&event),
+                );
             });
             Ok(())
         });

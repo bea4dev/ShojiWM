@@ -33,21 +33,21 @@ use crate::backend::{
 };
 use crate::state::{ActiveManagedWindowAnimation, ShojiWM};
 
-use crate::runtime_api::{
-    CompositionPatch, OVERLAY_STAGE_INDEX, PAINT_STAGE_INDEX, SHADER_INPUT_STAGE_INDEX,
-};
 use super::{
     ComputedDecorationTree, DecorationEvaluationError, DecorationEvaluator,
     DecorationHandlerInvocation, DecorationHitTestResult, DecorationNode, DecorationTree,
-    LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
-    WaylandWindowSnapshot, WindowEffectConfig, WindowPositionSnapshot, WindowTransform,
-    reapply_tree_preserving_layout,
+    LogicalPoint, LogicalRect, StaticDecorationEvaluator, WaylandLayerSnapshot,
+    WaylandPopupSnapshot, WaylandWindowAction, WaylandWindowSnapshot, WindowEffectConfig,
+    WindowPositionSnapshot, WindowTransform, reapply_tree_preserving_layout,
     window_model::{
         ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
         ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
         ManagedWindowPointSnapshot, ManagedWindowRectAnimationSnapshot, ManagedWindowRectSnapshot,
         ManagedWindowScalarAnimationSnapshot, ManagedWindowState,
     },
+};
+use crate::runtime_api::{
+    CompositionPatch, OVERLAY_STAGE_INDEX, PAINT_STAGE_INDEX, SHADER_INPUT_STAGE_INDEX,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -481,8 +481,7 @@ pub struct EffectEvaluationCacheEntry {
     animating: bool,
 }
 
-type BumpNodeGeometryMap<'a> =
-    BumpHashMap<&'a str, NodeGeometry, DefaultHashBuilder, &'a Bump>;
+type BumpNodeGeometryMap<'a> = BumpHashMap<&'a str, NodeGeometry, DefaultHashBuilder, &'a Bump>;
 
 trait NodeGeometryLookup {
     fn node_geometry(&self, stable_id: &str) -> Option<NodeGeometry>;
@@ -932,7 +931,8 @@ impl WindowDecorationState {
     /// Whether the tree has a `<Popup>`, open or not.
     pub fn has_popup(&self) -> bool {
         fn any(node: &super::ComputedDecorationNode) -> bool {
-            matches!(node.kind, super::DecorationNodeKind::Popup(_)) || node.children.iter().any(any)
+            matches!(node.kind, super::DecorationNodeKind::Popup(_))
+                || node.children.iter().any(any)
         }
         any(&self.layout.root)
     }
@@ -1170,14 +1170,11 @@ impl ShojiWM {
 
         if let Some(node) = invocation.node.clone() {
             decoration.tree = crate::ssd::DecorationTree::new(node);
-            if let Ok(layout) = decoration
-                .tree
-                .layout_for_client_with_subpixel(
-                    decoration.client_rect,
-                    decoration.layout_scale,
-                    decoration.root_subpixel_offset,
-                )
-            {
+            if let Ok(layout) = decoration.tree.layout_for_client_with_subpixel(
+                decoration.client_rect,
+                decoration.layout_scale,
+                decoration.root_subpixel_offset,
+            ) {
                 decoration.layout = layout;
                 let node_geometry = build_node_geometry_map(&decoration.layout);
                 decoration.content_clip =
@@ -1246,10 +1243,7 @@ impl ShojiWM {
         now_ms: u64,
     ) -> bool {
         self.sync_runtime_display_state();
-        let invocation = match self
-            .config_runtime
-            .window_resize(window_id, event, now_ms)
-        {
+        let invocation = match self.config_runtime.window_resize(window_id, event, now_ms) {
             Ok(invocation) => invocation,
             Err(error) => {
                 warn!(window_id, ?error, "runtime window resize event failed");
@@ -1290,10 +1284,7 @@ impl ShojiWM {
         now_ms: u64,
     ) -> bool {
         self.sync_runtime_display_state();
-        let invocation = match self
-            .config_runtime
-            .window_move(window_id, event, now_ms)
-        {
+        let invocation = match self.config_runtime.window_move(window_id, event, now_ms) {
             Ok(invocation) => invocation,
             Err(error) => {
                 warn!(window_id, ?error, "runtime window move event failed");
@@ -1824,7 +1815,8 @@ impl ShojiWM {
                 // its decoration layout at the last on-screen position while
                 // the space location keeps moving — visible as a window stuck
                 // at the screen edge. Attribute it to the nearest output.
-                self.nearest_output_to_point(center).map(|output| output.name())
+                self.nearest_output_to_point(center)
+                    .map(|output| output.name())
             })
     }
 
@@ -3027,9 +3019,7 @@ impl ShojiWM {
                             // fallback either, so it holds after a move too.
                             if !cached.client_rect_potentially_stale
                                 && (cached.snapshot.position == snapshot.position
-                                    || managed_client_rect_ignores_fallback(
-                                        &cached.managed_window,
-                                    ))
+                                    || managed_client_rect_ignores_fallback(&cached.managed_window))
                             {
                                 return Ok(cached.client_rect);
                             }
@@ -3087,9 +3077,8 @@ impl ShojiWM {
                 // Forcing every window of the output too re-evaluated all of them on
                 // each frame of any one window's animation (a focus fade), and kept
                 // moving windows off the translate fast path below.
-                let runtime_dirty = force_runtime_reevaluate
-                    || runtime_state_changed
-                    || window_was_runtime_dirty;
+                let runtime_dirty =
+                    force_runtime_reevaluate || runtime_state_changed || window_was_runtime_dirty;
                 let force_full_cached_reevaluation = force_runtime_reevaluate
                     || (window_was_runtime_dirty
                         && !self.runtime_managed_only_window_ids.contains(&snapshot_id)
@@ -3910,8 +3899,7 @@ impl ShojiWM {
                                 }
                                 {
                                     timescope::scope!("ssd window clip");
-                                    let node_geometry =
-                                        build_node_geometry_map(&cached.layout);
+                                    let node_geometry = build_node_geometry_map(&cached.layout);
                                     cached.content_clip = content_clip_for_layout(
                                         &cached.tree,
                                         &cached.layout,
@@ -4052,8 +4040,7 @@ impl ShojiWM {
                                 client_rect_potentially_stale = has_active_animation;
                                 {
                                     timescope::scope!("ssd window clip");
-                                    let node_geometry =
-                                        build_node_geometry_map(&cached.layout);
+                                    let node_geometry = build_node_geometry_map(&cached.layout);
                                     cached.content_clip = content_clip_for_layout(
                                         &cached.tree,
                                         &cached.layout,
@@ -4333,10 +4320,9 @@ impl ShojiWM {
                         // final state is frozen; adopting the TS static
                         // transform here would flash the window back to
                         // opacity 1 (see `native_animation_completed`).
-                        let preserve_animated_state = closing
-                            .decoration
-                            .managed_window_animation_active
-                            || closing.native_animation_completed;
+                        let preserve_animated_state =
+                            closing.decoration.managed_window_animation_active
+                                || closing.native_animation_completed;
                         let next_managed_window = evaluation.managed_window;
                         let next_transform = evaluation.transform;
 
@@ -4464,10 +4450,9 @@ impl ShojiWM {
                     )?;
                     // See the managed_window_only branch above: a completed
                     // native close animation freezes the animated state.
-                    let preserve_animated_state = closing
-                        .decoration
-                        .managed_window_animation_active
-                        || closing.native_animation_completed;
+                    let preserve_animated_state =
+                        closing.decoration.managed_window_animation_active
+                            || closing.native_animation_completed;
                     let next_managed_window = evaluation.managed_window;
                     let next_transform = evaluation.transform;
                     closing.decoration.static_managed_window = next_managed_window.clone();
@@ -4490,8 +4475,7 @@ impl ShojiWM {
                                 None,
                             );
                             closing.decoration.layout.root.sync_root_bounds();
-                            let node_geometry =
-                                build_node_geometry_map(&closing.decoration.layout);
+                            let node_geometry = build_node_geometry_map(&closing.decoration.layout);
                             closing.decoration.content_clip = content_clip_for_layout(
                                 &closing.decoration.tree,
                                 &closing.decoration.layout,
@@ -4907,7 +4891,10 @@ impl ShojiWM {
             elapsed_ms = refresh_elapsed_ms,
             "refresh_window_decorations finished"
         );
-        let marked_during_refresh = self.runtime_dirty_marked_during_refresh.take().unwrap_or_default();
+        let marked_during_refresh = self
+            .runtime_dirty_marked_during_refresh
+            .take()
+            .unwrap_or_default();
         for window_id in processed_runtime_dirty_window_ids {
             // Marked again after it was processed: refresh it next time.
             if marked_during_refresh.contains(&window_id) {
@@ -4991,7 +4978,9 @@ impl ShojiWM {
     ) -> Option<(Window, Vec<super::DecorationInteractionTarget>)> {
         if let Some(window) = self.ssd_popup_window_under(point) {
             let decoration = self.window_decorations.get(&window)?;
-            let targets = decoration.layout.interaction_targets_at_precise(point.x, point.y);
+            let targets = decoration
+                .layout
+                .interaction_targets_at_precise(point.x, point.y);
             return Some((window, targets));
         }
         let output_name = self.output_name_at_point(point);
@@ -5237,15 +5226,18 @@ impl ShojiWM {
             // by a physical pixel without changing any integer rect: relayout
             // so the decoration follows (the client slot absorbs it).
             let subpixel_size_changed = force_rect_size
-                && self.window_decorations.get(&window).is_some_and(|decoration| {
-                    decoration.layout.root.frame.root_extra_px
-                        != root_subpixel_extra_px(
-                            current_root.width,
-                            current_root.height,
-                            decoration.root_subpixel_offset,
-                            decoration.layout_scale,
-                        )
-                });
+                && self
+                    .window_decorations
+                    .get(&window)
+                    .is_some_and(|decoration| {
+                        decoration.layout.root.frame.root_extra_px
+                            != root_subpixel_extra_px(
+                                current_root.width,
+                                current_root.height,
+                                decoration.root_subpixel_offset,
+                                decoration.layout_scale,
+                            )
+                    });
 
             // When an Override rect animation is in flight we want the client
             // configured at its **final** target size — not the animated
@@ -6221,10 +6213,9 @@ fn managed_client_rect_for_move(cached: &WindowDecorationState) -> Option<Logica
     }
     let desired_root = managed_rect_snapshot_to_logical_rect(cached.managed_window.rect?);
     let current_root = cached.layout.root.rect;
-    (desired_root.width == current_root.width && desired_root.height == current_root.height)
-        .then(|| {
-            managed_client_rect_from_current_insets(current_root, cached.client_rect, desired_root)
-        })
+    (desired_root.width == current_root.width && desired_root.height == current_root.height).then(
+        || managed_client_rect_from_current_insets(current_root, cached.client_rect, desired_root),
+    )
 }
 
 fn managed_client_rect_from_current_insets(
@@ -6318,7 +6309,8 @@ fn managed_client_rect_for_root(
     };
     let content_clip = {
         timescope::scope!("ssd managed client rect final content clip");
-        let Some(content_clip) = content_clip_for_layout(tree, &final_layout, &node_geometry) else {
+        let Some(content_clip) = content_clip_for_layout(tree, &final_layout, &node_geometry)
+        else {
             return Ok(desired_root);
         };
         content_clip
@@ -6703,7 +6695,9 @@ fn translate_precise_rect(rect: PreciseLogicalRect, dx: i32, dy: i32) -> Precise
 
 /// The paint items of a laid-out tree, in render order (front first).
 #[cfg(test)]
-pub(crate) fn paint_buffers_for_layout(layout: &ComputedDecorationTree) -> Vec<CachedDecorationBuffer> {
+pub(crate) fn paint_buffers_for_layout(
+    layout: &ComputedDecorationTree,
+) -> Vec<CachedDecorationBuffer> {
     let order_map = build_render_order_map(layout);
     let mut buffers = build_cached_buffers(layout, &order_map);
     buffers.sort_by_key(|buffer| buffer.order);
@@ -7611,7 +7605,10 @@ fn collect_text_buffers(
         ),
         text: label.text.clone(),
         color: color.with_opacity(node.style.opacity),
-        font_size: node.style.font_size.unwrap_or(crate::ssd::DEFAULT_LABEL_FONT_SIZE) as f32,
+        font_size: node
+            .style
+            .font_size
+            .unwrap_or(crate::ssd::DEFAULT_LABEL_FONT_SIZE) as f32,
         font_weight: node.style.font_weight.clone(),
         font_family: node.style.font_family.clone(),
         text_align: node.style.text_align.clone(),
@@ -7929,9 +7926,7 @@ fn collect_icon_buffers(
 
     let (asset_path, image_fit, fallback_asset_path) = match &node.kind {
         super::DecorationNodeKind::AppIcon(icon) => (None, None, icon.fallback.clone()),
-        super::DecorationNodeKind::Image(image) => {
-            (Some(image.src.clone()), Some(image.fit), None)
-        }
+        super::DecorationNodeKind::Image(image) => (Some(image.src.clone()), Some(image.fit), None),
         _ => return,
     };
     let shared_geometry = node
@@ -8045,8 +8040,7 @@ fn label_preview(text: &str) -> String {
 }
 
 fn gap_debug_layout_enabled() -> bool {
-    crate::env_flag!("SHOJI_GAP_LAYOUT_DEBUG")
-        || crate::env_flag!("SHOJI_GAP_DEBUG")
+    crate::env_flag!("SHOJI_GAP_LAYOUT_DEBUG") || crate::env_flag!("SHOJI_GAP_DEBUG")
 }
 
 fn format_resolved_rect(rect: crate::ssd::ResolvedLogicalRect) -> String {
@@ -8264,9 +8258,10 @@ fn push_damage_pair(
     new_rect: LogicalRect,
 ) {
     if let Some(old_rect) = old_rect
-        && old_rect != new_rect {
-            damage.push(old_rect);
-        }
+        && old_rect != new_rect
+    {
+        damage.push(old_rect);
+    }
     damage.push(new_rect);
 }
 
@@ -8286,19 +8281,13 @@ fn runtime_dirty_damage_rects(
         previous_buffers.iter().map(|item| {
             (
                 item.stable_key.clone(),
-                (
-                    item.rect,
-                    format!("{:?}", item.paint),
-                ),
+                (item.rect, format!("{:?}", item.paint)),
             )
         }),
         next_buffers.iter().map(|item| {
             (
                 item.stable_key.clone(),
-                (
-                    item.rect,
-                    format!("{:?}", item.paint),
-                ),
+                (item.rect, format!("{:?}", item.paint)),
             )
         }),
         &mut damage,
@@ -8572,16 +8561,17 @@ mod tests {
         let clip_rect_precise = glass_cache.clip_rect_precise.expect("glass clip");
         let local_rect_w = glass_cache.rect.width;
         let local_rect_h = glass_cache.rect.height;
-        let clip_area = crate::backend::visual::snapped_precise_logical_rect_in_root_frame_area_space(
-            clip_rect_precise,
-            rect_precise,
-            local_rect_w,
-            local_rect_h,
-            root_rect,
-            subpixel,
-            output_geo,
-            scale2,
-        );
+        let clip_area =
+            crate::backend::visual::snapped_precise_logical_rect_in_root_frame_area_space(
+                clip_rect_precise,
+                rect_precise,
+                local_rect_w,
+                local_rect_h,
+                root_rect,
+                subpixel,
+                output_geo,
+                scale2,
+            );
         let clip_radius = glass_cache
             .clip_radius_precise
             .unwrap_or(glass_cache.clip_radius as f32);
@@ -8589,7 +8579,9 @@ mod tests {
             "root={root_rect:?} glass rect={:?} rect_precise={rect_precise:?}",
             glass_cache.rect
         );
-        eprintln!("geometry(root-local px)={geometry:?} clip_area={clip_area:?} clip_radius={clip_radius}");
+        eprintln!(
+            "geometry(root-local px)={geometry:?} clip_area={clip_area:?} clip_radius={clip_radius}"
+        );
 
         // Shader emulation (wrap_backdrop_shader_source): coverage at a
         // root-local physical point. Models the full GPU data flow: the
@@ -8724,14 +8716,16 @@ mod tests {
         eprintln!(
             "root rect={:?} content(resolved)={:?} effective_clip={:?}",
             layout.root.rect,
-            layout.root.frame.logical_rect(layout.root.resolved_content_rect),
+            layout
+                .root
+                .frame
+                .logical_rect(layout.root.resolved_content_rect),
             layout.root.effective_clip,
         );
         let arena = Bump::new();
         let shared = build_node_geometry_map_in(&layout, &arena);
         let order = build_render_order_map(&layout);
-        let (buffers, shaders) =
-            build_cached_buffers_and_shaders(&layout, &order, None, &shared);
+        let (buffers, shaders) = build_cached_buffers_and_shaders(&layout, &order, None, &shared);
         for shader in &shaders {
             eprintln!(
                 "shader {} rect={:?} rect_precise={:?} clip_rect_precise={:?} clip_radius_precise={:?}",
@@ -8813,7 +8807,11 @@ mod tests {
         let (clip_rect, clip_radius) = shape.clip.expect("inside the rounded border");
         // The border's inner edge: 3px border at 1.5x, radius (10 - 2) * 1.5.
         assert_eq!(clip_radius, [12; 4]);
-        assert_eq!(&clip_rect[..2], &[0, 0], "the titlebar starts at the inner edge");
+        assert_eq!(
+            &clip_rect[..2],
+            &[0, 0],
+            "the titlebar starts at the inner edge"
+        );
 
         let frame = shape.effect_frame(None, 1.5);
         assert_eq!(frame.radius, [6.0; 4]);
@@ -8834,13 +8832,17 @@ mod tests {
         let frame_ms = 1000.0 / 120.0;
         let steps = (1..=6)
             .map(|frame| {
-                let before = managed_animation_progress(&animation, (frame - 1) as f64 * frame_ms).0;
+                let before =
+                    managed_animation_progress(&animation, (frame - 1) as f64 * frame_ms).0;
                 let after = managed_animation_progress(&animation, frame as f64 * frame_ms).0;
                 after - before
             })
             .collect::<Vec<_>>();
         for step in &steps {
-            assert!((step - frame_ms / 250.0).abs() < 1e-9, "uneven steps: {steps:?}");
+            assert!(
+                (step - frame_ms / 250.0).abs() < 1e-9,
+                "uneven steps: {steps:?}"
+            );
         }
     }
 
@@ -8947,36 +8949,37 @@ mod tests {
     #[test]
     fn partial_rebuild_renumbers_the_buffers_it_keeps() {
         let tree = |open: bool| {
-            let mut background = DecorationNode::new(DecorationNodeKind::Box(
-                super::super::BoxNode::default(),
-            ))
-            .with_style(DecorationStyle {
-                height: Some(20.0),
-                background: Some(super::super::Color::rgba(0, 0, 0, 255)),
-                ..Default::default()
-            });
-            background.stable_id = Some("root.background".into());
-            let mut popup = DecorationNode::new(DecorationNodeKind::Popup(super::super::PopupNode {
-                open,
-                ..Default::default()
-            }))
-            .with_children(vec![
+            let mut background =
                 DecorationNode::new(DecorationNodeKind::Box(super::super::BoxNode::default()))
                     .with_style(DecorationStyle {
-                        width: Some(10.0),
-                        height: Some(10.0),
-                        background: Some(super::super::Color::rgba(255, 0, 0, 255)),
+                        height: Some(20.0),
+                        background: Some(super::super::Color::rgba(0, 0, 0, 255)),
                         ..Default::default()
-                    }),
-            ]);
-            popup.stable_id = Some("root.popup".into());
-            let mut root = DecorationNode::new(DecorationNodeKind::Box(super::super::BoxNode::default()))
+                    });
+            background.stable_id = Some("root.background".into());
+            let mut popup =
+                DecorationNode::new(DecorationNodeKind::Popup(super::super::PopupNode {
+                    open,
+                    ..Default::default()
+                }))
                 .with_children(vec![
-                    background,
-                    DecorationNode::new(DecorationNodeKind::WindowSlot),
-                    // Last child: painted first (front), so it shifts the rest.
-                    popup,
+                    DecorationNode::new(DecorationNodeKind::Box(super::super::BoxNode::default()))
+                        .with_style(DecorationStyle {
+                            width: Some(10.0),
+                            height: Some(10.0),
+                            background: Some(super::super::Color::rgba(255, 0, 0, 255)),
+                            ..Default::default()
+                        }),
                 ]);
+            popup.stable_id = Some("root.popup".into());
+            let mut root =
+                DecorationNode::new(DecorationNodeKind::Box(super::super::BoxNode::default()))
+                    .with_children(vec![
+                        background,
+                        DecorationNode::new(DecorationNodeKind::WindowSlot),
+                        // Last child: painted first (front), so it shifts the rest.
+                        popup,
+                    ]);
             root.stable_id = Some("root".into());
             DecorationTree::new(root)
                 .layout_for_client(LogicalRect::new(0, 0, 100, 100))
@@ -8996,7 +8999,10 @@ mod tests {
             .iter()
             .find(|buffer| buffer.owner_node_id.as_deref() == Some("root.background"))
             .expect("kept background buffer");
-        assert_eq!(Some(&background.order), open_orders.get(&background.stable_key));
+        assert_eq!(
+            Some(&background.order),
+            open_orders.get(&background.stable_key)
+        );
         assert_ne!(
             closed_orders.get(&background.stable_key),
             open_orders.get(&background.stable_key),
@@ -9160,7 +9166,11 @@ mod tests {
         .expect("a paint uniform patch should apply next to node patches");
 
         assert!(update.changed);
-        let paint = tree.root.children[0].style.paint.as_ref().expect("paint kept");
+        let paint = tree.root.children[0]
+            .style
+            .paint
+            .as_ref()
+            .expect("paint kept");
         assert_eq!(
             paint.uniforms.get("hover"),
             Some(&crate::ssd::ShaderUniformValue::Float(1.0))
@@ -9390,9 +9400,13 @@ mod tests {
         // Still animating, rescaled, or the rect really moved: keep probing.
         assert!(!client_rect_probe_agrees(true, true, 1.5, 1.5, rect, rect));
         assert!(!client_rect_probe_agrees(true, false, 1.0, 1.5, rect, rect));
-        assert!(!client_rect_probe_agrees(true, false, 1.5, 1.5, rect, moved));
+        assert!(!client_rect_probe_agrees(
+            true, false, 1.5, 1.5, rect, moved
+        ));
         // Nothing to restore.
-        assert!(!client_rect_probe_agrees(false, false, 1.5, 1.5, rect, rect));
+        assert!(!client_rect_probe_agrees(
+            false, false, 1.5, 1.5, rect, rect
+        ));
     }
 
     #[test]
@@ -9803,8 +9817,8 @@ mod tests {
             for width in 900..960 {
                 for (x, y) in [(0, 0), (37, 11)] {
                     let root = LogicalRect::new(x, y, width, width - 7);
-                    let client = managed_client_rect_for_root(&tree, root, scale)
-                        .expect("client rect");
+                    let client =
+                        managed_client_rect_for_root(&tree, root, scale).expect("client rect");
                     let layout = tree
                         .layout_for_client_with_scale(client, scale)
                         .expect("layout");
@@ -9840,7 +9854,9 @@ mod tests {
         );
         let scale = 1.5;
         let client = LogicalRect::new(100, 100, 600, 400);
-        let base = tree.layout_for_client_with_scale(client, scale).expect("layout");
+        let base = tree
+            .layout_for_client_with_scale(client, scale)
+            .expect("layout");
         let base_root_px = base.root.resolved_rect;
         let base_slot_px = base.root.resolved_window_slot_rect().expect("slot");
 
@@ -9854,10 +9870,13 @@ mod tests {
                 .layout_for_client_with_subpixel(client, scale, subpixel)
                 .expect("layout");
             let root = &layout.root;
-            let expected_width = crate::ssd::round_half_up(
-                (base.root.rect.width as f64 + right) * scale,
+            let expected_width =
+                crate::ssd::round_half_up((base.root.rect.width as f64 + right) * scale);
+            assert_eq!(
+                root.resolved_rect.width.raw(),
+                expected_width,
+                "right {right}"
             );
-            assert_eq!(root.resolved_rect.width.raw(), expected_width, "right {right}");
             let slot_px = root.resolved_window_slot_rect().expect("slot");
             assert_eq!(
                 slot_px.width.raw() - base_slot_px.width.raw(),

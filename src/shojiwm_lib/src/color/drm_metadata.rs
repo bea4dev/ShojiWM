@@ -10,27 +10,14 @@
 use std::io;
 
 use smithay::reexports::drm::control::{
-    Device as ControlDevice,
-    ResourceHandle,
-    connector,
-    crtc,
-    property,
+    Device as ControlDevice, ResourceHandle, connector, crtc, property,
 };
-use tracing::{
-    debug,
-    info,
-    warn,
-};
+use tracing::{debug, info, warn};
 
 use super::{ColorPrimaries, OutputColorMode};
 
 /// CTA-861-G HDR static metadata parsed from the EDID.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq
-)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdidHdrMetadata {
     /// Display accepts SMPTE ST 2084 (PQ) EOTF.
     pub supports_pq: bool,
@@ -92,12 +79,7 @@ fn find_connector_property(
     conn: &connector::Info,
     name: &str,
 ) -> Option<(property::Info, property::RawValue)> {
-    find_object_property(
-        device,
-        conn
-            .handle(), 
-        name,
-    )
+    find_object_property(device, conn.handle(), name)
 }
 
 fn find_object_property(
@@ -123,10 +105,7 @@ pub fn read_edid_hdr(
     device: &impl ControlDevice,
     conn: &connector::Info,
 ) -> Option<EdidHdrMetadata> {
-    let (_, blob_id) = find_connector_property(
-        device,
-        conn,
-        PROP_EDID)?;
+    let (_, blob_id) = find_connector_property(device, conn, PROP_EDID)?;
     if blob_id == 0 {
         return None;
     }
@@ -223,7 +202,11 @@ fn half_to_f32(bits: u16) -> f32 {
         0x1f => f32::INFINITY,
         exponent => (1.0 + mantissa / 1024.0) * 2f32.powi(i32::from(exponent) - 15),
     };
-    if bits & 0x8000 != 0 { -magnitude } else { magnitude }
+    if bits & 0x8000 != 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
 }
 
 /// Call `visit(tag, payload)` for each data block of a CTA data block
@@ -305,7 +288,12 @@ pub fn parse_edid_primaries(edid: &[u8]) -> Option<super::primaries::PrimariesCh
         white: point(8, bytes[1], 0),
     };
     // A triangle with real area and every point on the chromaticity plane.
-    let points = [primaries.red, primaries.green, primaries.blue, primaries.white];
+    let points = [
+        primaries.red,
+        primaries.green,
+        primaries.blue,
+        primaries.white,
+    ];
     let plausible = points
         .iter()
         .all(|point| point.x > 0.0 && point.y > 0.0 && point.x + point.y < 1.0);
@@ -361,12 +349,12 @@ impl HdmiLinkCapability {
     pub fn max_bandwidth_gbps(&self) -> Option<f32> {
         if let Some(rate) = self.max_frl_rate.filter(|rate| *rate > 0) {
             return match rate {
-                1 => Some(9.0),   // 3 Gbps x 3 lanes
-                2 => Some(18.0),  // 6 Gbps x 3 lanes
-                3 => Some(24.0),  // 6 Gbps x 4 lanes
-                4 => Some(32.0),  // 8 Gbps x 4 lanes
-                5 => Some(40.0),  // 10 Gbps x 4 lanes
-                6 => Some(48.0),  // 12 Gbps x 4 lanes
+                1 => Some(9.0),  // 3 Gbps x 3 lanes
+                2 => Some(18.0), // 6 Gbps x 3 lanes
+                3 => Some(24.0), // 6 Gbps x 4 lanes
+                4 => Some(32.0), // 8 Gbps x 4 lanes
+                5 => Some(40.0), // 10 Gbps x 4 lanes
+                6 => Some(48.0), // 12 Gbps x 4 lanes
                 _ => None,
             };
         }
@@ -439,9 +427,7 @@ pub fn parse_edid_hdmi_link(edid: &[u8]) -> Option<HdmiLinkCapability> {
                 if let Some(&code) = payload.get(4)
                     && code != 0
                 {
-                    caps.max_tmds_khz = caps
-                        .max_tmds_khz
-                        .max(Some(u32::from(code) * 5_000));
+                    caps.max_tmds_khz = caps.max_tmds_khz.max(Some(u32::from(code) * 5_000));
                 }
                 if let Some(&byte) = payload.get(7) {
                     caps.max_frl_rate = Some(byte >> 4);
@@ -511,19 +497,13 @@ pub fn apply_hdr_connector_state(
             .values()
             .1
             .iter()
-            .find(|entry| entry
-                .name()
-                .to_str() == Ok("BT2020_RGB"))
+            .find(|entry| entry.name().to_str() == Ok("BT2020_RGB"))
             .map(|entry| entry.value()),
         _ => None,
     }
     .ok_or_else(|| io::Error::other("Colorspace property has no BT2020_RGB entry"))?;
 
-    let (metadata_info, _) = find_connector_property(
-        device,
-        conn,
-        PROP_HDR_OUTPUT_METADATA
-    )
+    let (metadata_info, _) = find_connector_property(device, conn, PROP_HDR_OUTPUT_METADATA)
         .ok_or_else(|| io::Error::other("connector has no HDR_OUTPUT_METADATA property"))?;
 
     // What we actually put on the wire, as opposed to what the sink can do —
@@ -554,23 +534,11 @@ pub fn apply_hdr_connector_state(
             eotf: HDMI_EOTF_ST2084,
             metadata_type: HDMI_STATIC_METADATA_TYPE1,
             display_primaries: [
-                [
-                    chroma.red.to_cta861().0,
-                    chroma.red.to_cta861().1
-                ],
-                [
-                    chroma.green.to_cta861().0,
-                    chroma.green.to_cta861().1
-                ],
-                [
-                    chroma.blue.to_cta861().0,
-                    chroma.blue.to_cta861().1
-                ],
+                [chroma.red.to_cta861().0, chroma.red.to_cta861().1],
+                [chroma.green.to_cta861().0, chroma.green.to_cta861().1],
+                [chroma.blue.to_cta861().0, chroma.blue.to_cta861().1],
             ],
-            white_point: [
-                chroma.white.to_cta861().0,
-                chroma.white.to_cta861().1
-            ],
+            white_point: [chroma.white.to_cta861().0, chroma.white.to_cta861().1],
             max_display_mastering_luminance: content_peak,
             min_display_mastering_luminance: (min_display_luminance * 10000.0).round() as u16,
             // Upper bounds, not estimates: no pixel and no frame average can
@@ -583,16 +551,8 @@ pub fn apply_hdr_connector_state(
     let property::Value::Blob(blob_id) = blob else {
         return Err(io::Error::other("create_property_blob returned non-blob"));
     };
-    device.set_property(
-        conn.handle(),
-        metadata_info.handle(),
-        blob_id
-    )?;
-    device.set_property(
-        conn.handle(),
-        colorspace_info.handle(),
-        bt2020_value
-    )?;
+    device.set_property(conn.handle(), metadata_info.handle(), blob_id)?;
+    device.set_property(conn.handle(), colorspace_info.handle(), bt2020_value)?;
     debug!(
         connector = ?conn.handle(),
         blob_id,
@@ -606,55 +566,29 @@ pub fn apply_hdr_connector_state(
 
 /// Best-effort reset for SDR outputs: clears HDR metadata and Colorspace
 /// leftovers from a previous session so the sink drops out of HDR mode.
-pub fn reset_hdr_connector_state(
-    device: &impl ControlDevice,
-    conn: &connector::Info
-) {
-    if let Some((info, current)) = find_connector_property(
-        device,
-        conn,
-        PROP_HDR_OUTPUT_METADATA
-    )
+pub fn reset_hdr_connector_state(device: &impl ControlDevice, conn: &connector::Info) {
+    if let Some((info, current)) = find_connector_property(device, conn, PROP_HDR_OUTPUT_METADATA)
         && current != 0
-            && let Err(error) = device.set_property(
-                conn.handle(),
-                info.handle(),
-                0
-            ) {
-                warn!(
-                    ?error,
-                    "failed to clear HDR_OUTPUT_METADATA"
-                );
-            }
-    if let Some((info, current)) = find_connector_property(
-        device,
-        conn,
-        PROP_COLORSPACE
-    ) {
+        && let Err(error) = device.set_property(conn.handle(), info.handle(), 0)
+    {
+        warn!(?error, "failed to clear HDR_OUTPUT_METADATA");
+    }
+    if let Some((info, current)) = find_connector_property(device, conn, PROP_COLORSPACE) {
         let default_value = match info.value_type() {
             property::ValueType::Enum(values) => values
                 .values()
                 .1
                 .iter()
-                .find(|entry| entry.name()
-                    .to_str() == Ok("Default"))
+                .find(|entry| entry.name().to_str() == Ok("Default"))
                 .map(|entry| entry.value()),
             _ => None,
         };
         if let Some(default_value) = default_value
             && current != default_value
-                && let Err(error) =
-                    device.set_property(
-                        conn.handle(),
-                        info.handle(),
-                        default_value
-                    )
-                {
-                    warn!(
-                        ?error,
-                        "failed to reset Colorspace"
-                    );
-                }
+            && let Err(error) = device.set_property(conn.handle(), info.handle(), default_value)
+        {
+            warn!(?error, "failed to reset Colorspace");
+        }
     }
 }
 
@@ -696,14 +630,7 @@ pub fn reset_inherited_color_state(
     crtc: crtc::Handle,
     conn: &connector::Info,
 ) {
-    let output = format!(
-        "{}-{}",
-        conn
-            .interface()
-                .as_str(),
-        conn
-            .interface_id()
-    );
+    let output = format!("{}-{}", conn.interface().as_str(), conn.interface_id());
     // What actually changed, so the INFO line below tells "reset something",
     // "found nothing to reset" and "never ran" apart in an ordinary session log.
     let mut reset: Vec<&'static str> = Vec::new();
@@ -711,11 +638,7 @@ pub fn reset_inherited_color_state(
         if let Some((info, current)) = find_object_property(device, crtc, name)
             && current != 0
         {
-            match device.set_property(
-                crtc,
-                info.handle(),
-                0,
-            ) {
+            match device.set_property(crtc, info.handle(), 0) {
                 Ok(()) => {
                     debug!(
                         %output,
@@ -748,13 +671,7 @@ pub fn reset_inherited_color_state(
         if current == value {
             continue;
         }
-        match device.set_property(
-            conn
-                .handle(),
-            info
-                .handle(),
-            value,
-        ) {
+        match device.set_property(conn.handle(), info.handle(), value) {
             Ok(()) => reset.push(name),
             Err(error) => warn!(
                 %output,
@@ -785,8 +702,16 @@ pub fn reset_inherited_color_state(
 
 fn is_nvidia_device(device: &impl ControlDevice) -> bool {
     device.get_driver().is_ok_and(|driver| {
-        driver.name().to_string_lossy().to_lowercase().contains("nvidia")
-            || driver.description().to_string_lossy().to_lowercase().contains("nvidia")
+        driver
+            .name()
+            .to_string_lossy()
+            .to_lowercase()
+            .contains("nvidia")
+            || driver
+                .description()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("nvidia")
     })
 }
 
@@ -813,10 +738,14 @@ fn reset_nvidia_plane_color_range(
         let Ok(info) = device.get_plane(plane) else {
             continue;
         };
-        if !resources.filter_crtcs(info.possible_crtcs()).contains(&crtc) {
+        if !resources
+            .filter_crtcs(info.possible_crtcs())
+            .contains(&crtc)
+        {
             continue;
         }
-        let Some((property, current)) = find_object_property(device, plane, PROP_COLOR_RANGE) else {
+        let Some((property, current)) = find_object_property(device, plane, PROP_COLOR_RANGE)
+        else {
             continue;
         };
         let Some(full) = enum_entry_value(&property, "YCbCr full range") else {
@@ -845,20 +774,9 @@ fn reset_nvidia_plane_color_range(
 
 /// Free an HDR_OUTPUT_METADATA blob created by [`apply_hdr_connector_state`].
 /// Best-effort: the kernel reclaims blobs at fd close anyway.
-pub fn destroy_metadata_blob(
-    device: &impl ControlDevice,
-    blob: u64
-) {
-    if let Err(
-        error
-    ) = device.destroy_property_blob(
-        blob
-    ) {
-        warn!(
-            ?error,
-            blob,
-            "failed to destroy HDR metadata blob"
-        );
+pub fn destroy_metadata_blob(device: &impl ControlDevice, blob: u64) {
+    if let Err(error) = device.destroy_property_blob(blob) {
+        warn!(?error, blob, "failed to destroy HDR metadata blob");
     }
 }
 
@@ -868,12 +786,7 @@ mod tests {
 
     /// Base EDID block + one CTA-861 extension carrying an HDR static
     /// metadata data block (extended tag 0x06).
-    fn edid_with_hdr_block(
-        eotfs: u8,
-        max: u8,
-        favg: u8,
-        min: u8
-    ) -> Vec<u8> {
+    fn edid_with_hdr_block(eotfs: u8, max: u8, favg: u8, min: u8) -> Vec<u8> {
         let mut edid = vec![0u8; 256];
         // one extension block
         edid[126] = 1;
@@ -898,41 +811,14 @@ mod tests {
     #[test]
     fn parses_hdr_static_metadata() {
         // EOTF bits: SDR (0) + ST 2084 (2). Code 96 = 50 * 2^3 = 400 cd/m².
-        let edid = edid_with_hdr_block(
-            0b0000_0101,
-            96,
-            64,
-            255);
-        let hdr = parse_edid_hdr(
-            &edid
-        ).expect(
-            "HDR block should parse"
-        );
-        assert!(
-            hdr.supports_pq
-        );
-        assert!(
-            !hdr.supports_hlg
-        );
-        assert_eq!(
-            hdr.max_luminance,
-            Some(
-                400.0
-            )
-        );
-        assert_eq!(
-            hdr.max_frame_avg_luminance,
-            Some(
-                200.0
-            )
-        );
+        let edid = edid_with_hdr_block(0b0000_0101, 96, 64, 255);
+        let hdr = parse_edid_hdr(&edid).expect("HDR block should parse");
+        assert!(hdr.supports_pq);
+        assert!(!hdr.supports_hlg);
+        assert_eq!(hdr.max_luminance, Some(400.0));
+        assert_eq!(hdr.max_frame_avg_luminance, Some(200.0));
         // min code 255 => max * 1.0² / 100.
-        assert_eq!(
-            hdr.min_luminance,
-            Some(
-                4.0
-            )
-        );
+        assert_eq!(hdr.min_luminance, Some(4.0));
     }
 
     /// Laid out like a Samsung ATNA40CU05 OLED (eDP): no CTA-861 extension,
@@ -947,7 +833,9 @@ mod tests {
         ext.extend_from_slice(&[0x20, 0x00, 0x03, 0x4c, 0x83, 0x00]);
         // CTA-861 DisplayID Data Block: colorimetry (BT2020RGB), then HDR
         // static metadata with SDR + ST 2084, type 1, codes 116/96/2.
-        let cta = [0xe3, 0x05, 0x80, 0x00, 0xe6, 0x06, 0x05, 0x01, 0x74, 0x60, 0x02];
+        let cta = [
+            0xe3, 0x05, 0x80, 0x00, 0xe6, 0x06, 0x05, 0x01, 0x74, 0x60, 0x02,
+        ];
         ext.extend_from_slice(&[0x81, 0x00, cta.len() as u8]);
         ext.extend_from_slice(&cta);
         // Brightness Luminance Range: 0.0005 / 400 / 616 cd/m² as half floats.
@@ -961,7 +849,10 @@ mod tests {
         let max = hdr.max_luminance.expect("max luminance");
         assert!((max - 616.88).abs() < 0.01, "max {max}");
         assert_eq!(hdr.max_frame_avg_luminance, Some(400.0));
-        assert!(hdr.min_luminance.is_some_and(|min| min > 0.0 && min < 0.001));
+        assert!(
+            hdr.min_luminance
+                .is_some_and(|min| min > 0.0 && min < 0.001)
+        );
         assert_eq!(hdr.max_sdr_luminance, Some(400.0));
     }
 
@@ -985,68 +876,32 @@ mod tests {
     fn ignores_edid_without_hdr_block() {
         // Plain base block, no extensions.
         let edid = vec![0u8; 128];
-        assert_eq!(
-            parse_edid_hdr(
-                &edid
-            ),
-            None
-        );
+        assert_eq!(parse_edid_hdr(&edid), None);
         // CTA extension present but empty data block collection.
         let mut edid = vec![0u8; 256];
         edid[126] = 1;
         edid[128] = 0x02;
         edid[130] = 4;
-        assert_eq!(
-            parse_edid_hdr(
-                &edid
-            ),
-            None,
-        );
+        assert_eq!(parse_edid_hdr(&edid), None,);
     }
 
     #[test]
     fn zero_luminance_codes_mean_unknown() {
-        let edid = edid_with_hdr_block(
-            0b0000_0100,
-            0,
-            0,
-            0,
-        );
-        let hdr = parse_edid_hdr(
-            &edid
-        ).expect(
-            "HDR block should parse",
-        );
-        assert!(
-            hdr.supports_pq,
-        );
-        assert_eq!(
-            hdr.max_luminance,
-            None,
-        );
-        assert_eq!(
-            hdr.min_luminance,
-            None,
-        );
+        let edid = edid_with_hdr_block(0b0000_0100, 0, 0, 0);
+        let hdr = parse_edid_hdr(&edid).expect("HDR block should parse");
+        assert!(hdr.supports_pq,);
+        assert_eq!(hdr.max_luminance, None,);
+        assert_eq!(hdr.min_luminance, None,);
     }
 
     #[test]
     fn hdr_metadata_blob_matches_kernel_layout() {
         // The kernel copies sizeof(struct hdr_output_metadata) bytes; a
         // layout drift would corrupt the infoframe silently.
+        assert_eq!(std::mem::size_of::<HdrMetadataInfoframe>(), 26,);
+        assert_eq!(std::mem::size_of::<HdrOutputMetadata>(), 32,);
         assert_eq!(
-            std::mem::size_of::<HdrMetadataInfoframe>(),
-            26,
-        );
-        assert_eq!(
-            std::mem::size_of::<HdrOutputMetadata>(),
-            32,
-        );
-        assert_eq!(
-            std::mem::offset_of!(
-                HdrOutputMetadata,
-                hdmi_metadata_type1,
-            ),
+            std::mem::offset_of!(HdrOutputMetadata, hdmi_metadata_type1,),
             4,
         );
     }

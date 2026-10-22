@@ -14,9 +14,9 @@ use std::{
 
 use shojiwm_lib::{
     activation_environment::{RuntimeEnvOperation, RuntimeEnvUpdates},
-    frame_pacing::FramePacing,
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
+    frame_pacing::FramePacing,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_api::{HostMessage, RuntimeHost},
     runtime_debug::RuntimeDebugConfigUpdate,
@@ -41,9 +41,7 @@ use shojiwm_lib::{
 
 use crate::{
     animation::TimerHandle,
-    compositor::{
-        DisableEvent, EnableEvent, InputChangeEvent, OutputChangeEvent, SurfaceRef,
-    },
+    compositor::{DisableEvent, EnableEvent, InputChangeEvent, OutputChangeEvent, SurfaceRef},
     effect::{Effect, SurfaceEffects},
     output_composition::OutputStack,
     reactive::{Observer, Scope, Signal},
@@ -100,8 +98,12 @@ pub(crate) type SurfacePolicyFn = Rc<dyn Fn(SurfaceRef<'_>) -> Option<SurfacePol
 /// Per-window state signals, keyed by state key name and value type.
 pub(crate) type WindowStateSlots = HashMap<(&'static str, TypeId), Rc<dyn Any>>;
 pub(crate) type CompositionFn = Rc<dyn Fn(Window) -> Composition>;
-pub(crate) type DecorationPolicyFn =
-    Rc<dyn Fn(&WaylandWindowSnapshot, &WindowDecorationPolicyContextSnapshot) -> WindowDecorationModeSnapshot>;
+pub(crate) type DecorationPolicyFn = Rc<
+    dyn Fn(
+        &WaylandWindowSnapshot,
+        &WindowDecorationPolicyContextSnapshot,
+    ) -> WindowDecorationModeSnapshot,
+>;
 pub(crate) type KdeDefaultDecorationFn =
     Rc<dyn Fn(&WindowDecorationClientSnapshot) -> WindowDecorationModeSnapshot>;
 pub(crate) type OutputConfigureFn =
@@ -358,10 +360,7 @@ impl Windows {
     }
 
     pub fn all(&self) -> Vec<Rc<WindowEntry>> {
-        self.order
-            .iter()
-            .filter_map(|id| self.by_id(id))
-            .collect()
+        self.order.iter().filter_map(|id| self.by_id(id)).collect()
     }
 }
 
@@ -374,7 +373,10 @@ pub(crate) fn all_windows() -> Vec<Rc<WindowEntry>> {
 }
 
 /// Run a list of listeners, cloned out of the registry first.
-pub(crate) fn emit<L: ?Sized>(select: impl FnOnce(&Listeners) -> Vec<Rc<L>>, call: impl Fn(&L)) -> bool {
+pub(crate) fn emit<L: ?Sized>(
+    select: impl FnOnce(&Listeners) -> Vec<Rc<L>>,
+    call: impl Fn(&L),
+) -> bool {
     let listeners = with_registry(|registry| select(&registry.listeners));
     for listener in &listeners {
         call(listener);
@@ -443,14 +445,16 @@ pub(crate) fn publish_pending() {
         }
         if pending.event_filter {
             let listeners = &registry.listeners;
-            messages.push(HostMessage::EventFilter(shojiwm_lib::ssd::RuntimeEventConfigUpdate {
-                pointer_move: !listeners.pointer_move.is_empty(),
-                pointer_move_async: !listeners.pointer_move_async.is_empty(),
-                gesture_swipe: !listeners.gesture_swipe.is_empty(),
-                gesture_swipe_async: !listeners.gesture_swipe_async.is_empty(),
-                gesture_pinch_async: !listeners.gesture_pinch_async.is_empty(),
-                dnd: !listeners.dnd_start.is_empty(),
-            }));
+            messages.push(HostMessage::EventFilter(
+                shojiwm_lib::ssd::RuntimeEventConfigUpdate {
+                    pointer_move: !listeners.pointer_move.is_empty(),
+                    pointer_move_async: !listeners.pointer_move_async.is_empty(),
+                    gesture_swipe: !listeners.gesture_swipe.is_empty(),
+                    gesture_swipe_async: !listeners.gesture_swipe_async.is_empty(),
+                    gesture_pinch_async: !listeners.gesture_pinch_async.is_empty(),
+                    dnd: !listeners.dnd_start.is_empty(),
+                },
+            ));
         }
         if pending.processes {
             messages.push(HostMessage::Process(

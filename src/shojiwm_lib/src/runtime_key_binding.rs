@@ -126,8 +126,7 @@ impl RuntimeKeyShortcut {
             return false;
         };
 
-        self.modifiers_match(modifiers)
-            && keysym == raw_keysym
+        self.modifiers_match(modifiers) && keysym == raw_keysym
     }
 
     pub fn matches_wheel(

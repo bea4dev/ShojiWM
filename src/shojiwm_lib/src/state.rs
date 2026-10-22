@@ -96,6 +96,9 @@ use crate::backend::tty::{
     apply_tty_output_mode, tty_connected_outputs, tty_output_available_modes,
 };
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
+use crate::runtime_api::{
+    HostMessage, ReloadPreparation, RuntimeBoot, RuntimeError, RuntimeHandle, RuntimeHost,
+};
 use crate::runtime_input::{
     RuntimeInputConfig, RuntimeInputConfigUpdate, RuntimeInputDeviceSnapshot,
     apply_config_to_libinput_devices, apply_keyboard_config, libinput_device_key,
@@ -114,9 +117,6 @@ use crate::runtime_process::{
     kill_runtime_service, should_restart_service, spawn_runtime_process,
 };
 use crate::runtime_workspace::RuntimeWorkspaceConfigUpdate;
-use crate::runtime_api::{
-    HostMessage, ReloadPreparation, RuntimeBoot, RuntimeError, RuntimeHandle, RuntimeHost,
-};
 use crate::ssd::{
     BackgroundEffectConfig, DecorationInteractionSnapshot, DecorationInteractionTarget,
     DecorationPointerMoveAsyncInvocation, LogicalPoint, LogicalRect,
@@ -700,7 +700,10 @@ pub struct ShojiWM {
     pub xwayland_refresh_override_mhz: Arc<AtomicI32>,
 }
 
-pub(crate) fn logical_rect_intersects_output(rect: LogicalRect, output_geo: Rectangle<i32, Logical>) -> bool {
+pub(crate) fn logical_rect_intersects_output(
+    rect: LogicalRect,
+    output_geo: Rectangle<i32, Logical>,
+) -> bool {
     let left = rect.x.max(output_geo.loc.x);
     let top = rect.y.max(output_geo.loc.y);
     let right = (rect.x + rect.width).min(output_geo.loc.x + output_geo.size.w);
@@ -720,15 +723,12 @@ struct DetectedSubpixel(smithay::output::Subpixel);
 
 fn detected_subpixel(output: &Output) -> smithay::output::Subpixel {
     let user_data = output.user_data();
-    user_data.insert_if_missing_threadsafe(|| {
-        DetectedSubpixel(output.physical_properties().subpixel)
-    });
     user_data
-        .get::<DetectedSubpixel>()
-        .map_or_else(
-            || output.physical_properties().subpixel,
-            |detected| detected.0,
-        )
+        .insert_if_missing_threadsafe(|| DetectedSubpixel(output.physical_properties().subpixel));
+    user_data.get::<DetectedSubpixel>().map_or_else(
+        || output.physical_properties().subpixel,
+        |detected| detected.0,
+    )
 }
 
 /// A frame ticks the runtime for work due within this much past its presentation time;
@@ -995,9 +995,10 @@ impl ShojiWM {
             });
 
         if let Some(keyboard) = self.seat.get_keyboard()
-            && keyboard.current_focus().as_ref() != focus.as_ref() {
-                keyboard.set_focus(self, focus, serial);
-            }
+            && keyboard.current_focus().as_ref() != focus.as_ref()
+        {
+            keyboard.set_focus(self, focus, serial);
+        }
     }
 
     fn window_root_surface(window: &Window) -> Option<WlSurface> {
@@ -1095,10 +1096,11 @@ impl ShojiWM {
             && matches!(
                 layer.cached_state().keyboard_interactivity,
                 smithay::wayland::shell::wlr_layer::KeyboardInteractivity::OnDemand
-            ) {
-                self.layer_shell_on_demand_focus = Some(layer);
-                return;
-            }
+            )
+        {
+            self.layer_shell_on_demand_focus = Some(layer);
+            return;
+        }
 
         self.layer_shell_on_demand_focus = None;
     }
@@ -1144,8 +1146,7 @@ impl ShojiWM {
     }
 
     fn window_was_used_by_user(&self, window: &Window) -> bool {
-        Self::window_root_surface(window)
-            .is_some_and(|root| self.focus_chain.contains(&root))
+        Self::window_root_surface(window).is_some_and(|root| self.focus_chain.contains(&root))
     }
 
     /// Record that the user acted on `window`: a pointer press on it, a key
@@ -1588,7 +1589,9 @@ impl ShojiWM {
         // and falls back to the CSD baseline. Smithay still handles requests
         // on the bound manager and its decoration objects.
         let kde_decoration_state =
-            KdeDecorationState::new_with_filter::<Self, _>(&dh, KdeDecorationMode::Client, |_| false);
+            KdeDecorationState::new_with_filter::<Self, _>(&dh, KdeDecorationMode::Client, |_| {
+                false
+            });
         dh.create_global::<Self, OrgKdeKwinServerDecorationManager, _>(
             1,
             crate::window_decoration::KdeDecorationManagerGlobal,
@@ -1685,7 +1688,11 @@ impl ShojiWM {
         let config_error_report = match config_runtime.preload() {
             Ok(()) => None,
             Err(error) => {
-                warn!(?error, runtime = config_runtime.name(), "failed to preload config");
+                warn!(
+                    ?error,
+                    runtime = config_runtime.name(),
+                    "failed to preload config"
+                );
                 Some(crate::config_error::ConfigErrorReport::initial_load(error))
             }
         };
@@ -1711,12 +1718,9 @@ impl ShojiWM {
                             height,
                             pixels,
                         } => {
-                            state.text_rasterizer.handle_async_ready(
-                                spec_hash,
-                                width,
-                                height,
-                                pixels,
-                            );
+                            state
+                                .text_rasterizer
+                                .handle_async_ready(spec_hash, width, height, pixels);
                             should_redraw = true;
                         }
                         AsyncAssetResult::TextMissing { spec_hash } => {
@@ -1728,12 +1732,9 @@ impl ShojiWM {
                             height,
                             pixels,
                         } => {
-                            state.icon_rasterizer.handle_async_ready(
-                                spec_hash,
-                                width,
-                                height,
-                                pixels,
-                            );
+                            state
+                                .icon_rasterizer
+                                .handle_async_ready(spec_hash, width, height, pixels);
                             should_redraw = true;
                         }
                         AsyncAssetResult::IconMissing { spec_hash } => {
@@ -1749,8 +1750,6 @@ impl ShojiWM {
                 ChannelEvent::Closed => {}
             })
             .expect("Failed to init async asset worker.");
-
-        
 
         Self {
             start_time,
@@ -2606,7 +2605,11 @@ impl ShojiWM {
                 return enabled;
             }
             let enabled = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| std::path::Path::new(&dir).join("shoji-motion-trace").exists())
+                .map(|dir| {
+                    std::path::Path::new(&dir)
+                        .join("shoji-motion-trace")
+                        .exists()
+                })
                 .unwrap_or(false);
             cache.set((Some(Instant::now()), enabled));
             enabled
@@ -2692,15 +2695,15 @@ impl ShojiWM {
         let generation = self.runtime_schedule_timer_generation;
         let now_ms = Duration::from(self.clock.now()).as_secs_f64() * 1000.0;
         let delay = Duration::from_secs_f64((wake_at_ms - now_ms).max(0.0) / 1000.0);
-        let result = self
-            .loop_handle
-            .insert_source(Timer::from_duration(delay), move |_, _, state| {
-                state.record_event_source_wake("runtime-schedule");
-                if state.runtime_schedule_timer_generation == generation {
-                    state.run_runtime_schedule();
-                }
-                TimeoutAction::Drop
-            });
+        let result =
+            self.loop_handle
+                .insert_source(Timer::from_duration(delay), move |_, _, state| {
+                    state.record_event_source_wake("runtime-schedule");
+                    if state.runtime_schedule_timer_generation == generation {
+                        state.run_runtime_schedule();
+                    }
+                    TimeoutAction::Drop
+                });
         if let Err(error) = result {
             debug!(?error, "failed to arm the runtime schedule timer");
         }
@@ -2721,9 +2724,10 @@ impl ShojiWM {
         // stays due on every tick; one tick per refresh period is as often as anything
         // could show it, and more would only spin the loop.
         let timer_wake = schedule.timer_due_ms.map(|due_ms| {
-            self.runtime_schedule_last_timer_tick_ms.map_or(due_ms, |last_ms| {
-                due_ms.max(last_ms + self.runtime_frame_sync_interval_ms() as f64)
-            })
+            self.runtime_schedule_last_timer_tick_ms
+                .map_or(due_ms, |last_ms| {
+                    due_ms.max(last_ms + self.runtime_frame_sync_interval_ms() as f64)
+                })
         });
         output_wakes.chain(timer_wake).min_by(f64::total_cmp)
     }
@@ -3094,27 +3098,40 @@ impl ShojiWM {
         if self.output_overlays.is_idle() {
             return crate::backend::overlay::deadline_interval_ms();
         }
-        let outputs: Vec<_> = self.space.outputs()
-            .filter(|output| self.runtime_output_render_enabled(&output.name())).cloned().collect();
-        let unavailable = self.session_lock_active || (!self.tty_backends.is_empty() && !self.tty_session_active);
+        let outputs: Vec<_> = self
+            .space
+            .outputs()
+            .filter(|output| self.runtime_output_render_enabled(&output.name()))
+            .cloned()
+            .collect();
+        let unavailable =
+            self.session_lock_active || (!self.tty_backends.is_empty() && !self.tty_session_active);
         if self.output_overlays.tick(&outputs, unavailable) {
             self.schedule_redraw();
-            self.runtime_frame_sync_interval_ms().min(crate::backend::overlay::deadline_interval_ms())
-        } else { crate::backend::overlay::deadline_interval_ms() }
+            self.runtime_frame_sync_interval_ms()
+                .min(crate::backend::overlay::deadline_interval_ms())
+        } else {
+            crate::backend::overlay::deadline_interval_ms()
+        }
     }
 
     fn schedule_output_overlay_tick(&mut self) {
-        if self.output_overlay_timer_active || !crate::backend::overlay::any() { return; }
+        if self.output_overlay_timer_active || !crate::backend::overlay::any() {
+            return;
+        }
         let interval = self.runtime_frame_sync_interval_ms();
-        let result = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(interval)), |_, _, state| {
-            let interval = state.tick_output_overlays();
-            if crate::backend::overlay::any() {
-                TimeoutAction::ToDuration(Duration::from_millis(interval))
-            } else {
-                state.output_overlay_timer_active = false;
-                TimeoutAction::Drop
-            }
-        });
+        let result = self.loop_handle.insert_source(
+            Timer::from_duration(Duration::from_millis(interval)),
+            |_, _, state| {
+                let interval = state.tick_output_overlays();
+                if crate::backend::overlay::any() {
+                    TimeoutAction::ToDuration(Duration::from_millis(interval))
+                } else {
+                    state.output_overlay_timer_active = false;
+                    TimeoutAction::Drop
+                }
+            },
+        );
         match result {
             Ok(_) => self.output_overlay_timer_active = true,
             Err(error) => {
@@ -3211,7 +3228,11 @@ impl ShojiWM {
     }
 
     fn report_hot_reload_error(&mut self, error: impl std::fmt::Debug + ToString) {
-        warn!(?error, runtime = self.config_runtime.name(), "failed to hot reload config");
+        warn!(
+            ?error,
+            runtime = self.config_runtime.name(),
+            "failed to hot reload config"
+        );
         self.config_error_report = Some(crate::config_error::ConfigErrorReport::hot_reload(error));
         self.schedule_redraw();
     }
@@ -3388,29 +3409,28 @@ impl ShojiWM {
                 // Prefer the DRM-backed list, which still carries each mode's
                 // pixel clock; fall back to the wl_output modes (no clock) for
                 // backends with no DRM behind them.
-                let available_modes = match crate::backend::tty::
-                    tty_output_available_mode_clocks(self, &name)
-                {
-                    Some(modes) => modes
-                        .into_iter()
-                        .map(|(mode, clock_khz)| OutputModeSnapshot {
-                            width: mode.size.w,
-                            height: mode.size.h,
-                            refresh_rate: mode.refresh as f64 / 1000.0,
-                            clock_khz: Some(clock_khz),
-                        })
-                        .collect::<Vec<_>>(),
-                    None => tty_output_available_modes(self, &name)
-                        .unwrap_or_else(|| output.modes())
-                        .into_iter()
-                        .map(|mode| OutputModeSnapshot {
-                            width: mode.size.w,
-                            height: mode.size.h,
-                            refresh_rate: mode.refresh as f64 / 1000.0,
-                            clock_khz: None,
-                        })
-                        .collect::<Vec<_>>(),
-                };
+                let available_modes =
+                    match crate::backend::tty::tty_output_available_mode_clocks(self, &name) {
+                        Some(modes) => modes
+                            .into_iter()
+                            .map(|(mode, clock_khz)| OutputModeSnapshot {
+                                width: mode.size.w,
+                                height: mode.size.h,
+                                refresh_rate: mode.refresh as f64 / 1000.0,
+                                clock_khz: Some(clock_khz),
+                            })
+                            .collect::<Vec<_>>(),
+                        None => tty_output_available_modes(self, &name)
+                            .unwrap_or_else(|| output.modes())
+                            .into_iter()
+                            .map(|mode| OutputModeSnapshot {
+                                width: mode.size.w,
+                                height: mode.size.h,
+                                refresh_rate: mode.refresh as f64 / 1000.0,
+                                clock_khz: None,
+                            })
+                            .collect::<Vec<_>>(),
+                    };
                 // Report the mode size in the output's transformed orientation
                 // so config-side logical-size math (`resolution / scale`) stays
                 // correct on rotated outputs. `availableModes` stay physical.
@@ -3447,20 +3467,16 @@ impl ShojiWM {
                         detected_subpixel: detected_subpixel(&output).into(),
                         hdr_supported: self
                             .output_color
-                            .get(
-                                &name,
-                            )
+                            .get(&name)
                             .is_some_and(|color| color.edid_hdr.is_some()),
                         hdmi: self
                             .output_color
                             .get(&name)
                             .and_then(|color| color.hdmi_link)
-                            .map(|link| {
-                                crate::ssd::HdmiLinkSnapshot {
-                                    standard: link.standard(),
-                                    max_tmds_khz: link.max_tmds_khz,
-                                    max_bandwidth_gbps: link.max_bandwidth_gbps(),
-                                }
+                            .map(|link| crate::ssd::HdmiLinkSnapshot {
+                                standard: link.standard(),
+                                max_tmds_khz: link.max_tmds_khz,
+                                max_bandwidth_gbps: link.max_bandwidth_gbps(),
                             }),
                     },
                 )
@@ -3636,7 +3652,9 @@ impl ShojiWM {
 
         let mut extend_output_names = outputs
             .iter()
-            .filter(|&output| self.runtime_output_mode_setting(&output.name()) == RuntimeOutputMode::Extend)
+            .filter(|&output| {
+                self.runtime_output_mode_setting(&output.name()) == RuntimeOutputMode::Extend
+            })
             .map(|output| output.name())
             .collect::<std::collections::BTreeSet<_>>();
         if extend_output_names.is_empty()
@@ -4269,14 +4287,15 @@ impl ShojiWM {
         // Reap fire-and-forget Once/spawn children as they exit. We don't
         // care about their exit status, just that they don't sit around as
         // zombies — same try_wait() polling as the Service loop above.
-        self.runtime_pending_reap.retain_mut(|child| match child.try_wait() {
-            Ok(Some(_status)) => false,
-            Ok(None) => true,
-            Err(error) => {
-                warn!(?error, "failed to poll fire-and-forget runtime process");
-                false
-            }
-        });
+        self.runtime_pending_reap
+            .retain_mut(|child| match child.try_wait() {
+                Ok(Some(_status)) => false,
+                Ok(None) => true,
+                Err(error) => {
+                    warn!(?error, "failed to poll fire-and-forget runtime process");
+                    false
+                }
+            });
 
         self.reconcile_runtime_processes();
     }
@@ -4317,9 +4336,10 @@ impl ShojiWM {
 
             if should_remove || should_restart {
                 if let Some(mut service) = self.runtime_managed_services.remove(&service_id)
-                    && let Err(error) = kill_runtime_service(&mut service) {
-                        warn!(?error, service_id, "failed to stop runtime service");
-                    }
+                    && let Err(error) = kill_runtime_service(&mut service)
+                {
+                    warn!(?error, service_id, "failed to stop runtime service");
+                }
                 self.runtime_process_suppressed_services.remove(&service_id);
             }
         }
@@ -4821,7 +4841,11 @@ impl ShojiWM {
         let root_surface = window
             .toplevel()
             .map(|surface| surface.wl_surface().clone())
-            .or_else(|| window.x11_surface().and_then(|surface| surface.wl_surface()));
+            .or_else(|| {
+                window
+                    .x11_surface()
+                    .and_then(|surface| surface.wl_surface())
+            });
         let Some(root_surface) = root_surface else {
             return true;
         };
@@ -4998,11 +5022,14 @@ impl ShojiWM {
     /// Whether some output's composition drew `window` by id last frame.
     pub fn window_drawn_by_composition(&self, window: &Window) -> bool {
         !self.composition_windows.is_empty()
-            && self.window_decorations.get(window).is_some_and(|decoration| {
-                self.composition_windows
-                    .values()
-                    .any(|ids| ids.contains(&decoration.snapshot.id))
-            })
+            && self
+                .window_decorations
+                .get(window)
+                .is_some_and(|decoration| {
+                    self.composition_windows
+                        .values()
+                        .any(|ids| ids.contains(&decoration.snapshot.id))
+                })
     }
 
     fn sorted_windows_top_to_bottom<'a, I>(&self, windows: I) -> Vec<&'a Window>
@@ -5288,19 +5315,20 @@ impl ShojiWM {
 
     pub fn note_xdg_popup_committed(&mut self, surface_id: u32) {
         if let Some(popup_debug) = self.popup_latency_debug.as_mut()
-            && popup_debug.surface_id == surface_id {
-                popup_debug.committed_at = Some(Duration::from(self.clock.now()));
-                if crate::env_flag!("SHOJI_XDG_POPUP_LATENCY_DEBUG") {
-                    tracing::info!(
-                        surface_id,
-                        created_to_commit_ms = popup_debug
-                            .committed_at
-                            .and_then(|commit| commit.checked_sub(popup_debug.created_at))
-                            .map(|delta| delta.as_secs_f64() * 1000.0),
-                        "xdg popup latency: committed"
-                    );
-                }
+            && popup_debug.surface_id == surface_id
+        {
+            popup_debug.committed_at = Some(Duration::from(self.clock.now()));
+            if crate::env_flag!("SHOJI_XDG_POPUP_LATENCY_DEBUG") {
+                tracing::info!(
+                    surface_id,
+                    created_to_commit_ms = popup_debug
+                        .committed_at
+                        .and_then(|commit| commit.checked_sub(popup_debug.created_at))
+                        .map(|delta| delta.as_secs_f64() * 1000.0),
+                    "xdg popup latency: committed"
+                );
             }
+        }
     }
 
     fn popup_kind_name(popup: &PopupKind) -> &'static str {
@@ -5853,11 +5881,7 @@ impl WaylandClientIdentity {
         };
 
         let mut byte = [0_u8; 1];
-        let peer_state = match recv(
-            socket,
-            &mut byte,
-            RecvFlags::PEEK | RecvFlags::DONTWAIT,
-        ) {
+        let peer_state = match recv(socket, &mut byte, RecvFlags::PEEK | RecvFlags::DONTWAIT) {
             Ok((_, 0)) => "peer-closed".to_owned(),
             Ok((_, count)) => format!("peer-open-pending-data:{count}"),
             Err(error) if error == smithay::reexports::rustix::io::Errno::AGAIN => {
@@ -5939,7 +5963,7 @@ mod wayland_client_identity_tests {
 #[cfg(test)]
 mod subpixel_latch_tests {
     use super::detected_subpixel;
-    use crate::config::{resolve_output_subpixel, RuntimeOutputSubpixel};
+    use crate::config::{RuntimeOutputSubpixel, resolve_output_subpixel};
     use smithay::output::{Output, PhysicalProperties, Subpixel};
 
     fn output_with_detected(subpixel: Subpixel) -> Output {

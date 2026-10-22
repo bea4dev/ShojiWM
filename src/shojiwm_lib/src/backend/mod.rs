@@ -12,8 +12,8 @@ pub mod fps_counter;
 pub mod hdr_cursor;
 pub mod hdr_pipeline;
 pub mod icon;
-pub mod overlay;
 pub mod image_copy_capture_render;
+pub mod overlay;
 pub mod paint;
 pub mod scene3d;
 pub mod screencopy_render;
@@ -114,7 +114,9 @@ fn run_winit(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<dyn std
     Ok(())
 }
 
-pub fn run_tty_udev(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_tty_udev(
+    runtime: crate::runtime_api::RuntimeBoot,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<ShojiWM> = EventLoop::try_new()?;
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display, &runtime);
@@ -312,7 +314,7 @@ pub fn run_tty_udev(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<
                         // post-resume commit then fails its atomic test
                         // against the stale state. Re-run after resume.
                         info!(
-                            ?node, 
+                            ?node,
                             "tty session paused; deferring drm device change",
                         );
                         if !state.pending_tty_device_changes
@@ -486,11 +488,10 @@ pub fn run_tty_udev(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<
             if crate::backend::tty::render_error_is_config_caused(err.as_ref()) {
                 error!(error = ?err, "tty render iteration failed on a config-caused effect error; continuing");
                 if state.config_error_report.is_none() {
-                    state.config_error_report = Some(
-                        crate::config_error::ConfigErrorReport::runtime(format!(
+                    state.config_error_report =
+                        Some(crate::config_error::ConfigErrorReport::runtime(format!(
                             "rendering failed because of an effect in the config: {err}"
-                        )),
-                    );
+                        )));
                 }
             } else {
                 error!(error = ?err, "tty render iteration failed; shutting down");

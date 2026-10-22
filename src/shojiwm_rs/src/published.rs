@@ -55,7 +55,6 @@ impl Watched {
     }
 }
 
-
 struct CompositionSlot {
     /// The snapshot it was evaluated for; a change re-evaluates.
     output: WaylandOutputSnapshot,
@@ -97,7 +96,9 @@ fn caught<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
 
 /// `COMPOSITOR.effect.background_effect`, resolved and watched from now on.
 pub(crate) fn background_effect() -> Option<BackgroundEffectConfig> {
-    let watched = STATE.with(|state| state.borrow_mut().background.take()).unwrap_or_else(Watched::new);
+    let watched = STATE
+        .with(|state| state.borrow_mut().background.take())
+        .unwrap_or_else(Watched::new);
     let config = resolve_background(&watched);
     STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -157,7 +158,9 @@ fn enabled_outputs() -> Vec<WaylandOutputSnapshot> {
 
 fn publish_compositions(messages: &mut Vec<HostMessage>) {
     let compose = with_registry(|registry| registry.output_composition.clone());
-    let identity = compose.as_ref().map(|compose| Rc::as_ptr(compose) as *const () as usize);
+    let identity = compose
+        .as_ref()
+        .map(|compose| Rc::as_ptr(compose) as *const () as usize);
     let stale = STATE.with(|state| {
         let mut state = state.borrow_mut();
         if state.composition_fn == identity {
@@ -193,16 +196,16 @@ fn publish_compositions(messages: &mut Vec<HostMessage>) {
                         old.watched.dispose();
                     }
                     CompositionSlot {
-                    output: output.clone(),
-                    watched: Watched::new(),
-                    plan: None,
+                        output: output.clone(),
+                        watched: Watched::new(),
+                        plan: None,
                     }
                 }
             };
             if slot.watched.dirty.get() {
-                let stack = slot.watched.track(|| {
-                    caught("COMPOSITOR.rendering.composition", || compose(&output))
-                });
+                let stack = slot
+                    .watched
+                    .track(|| caught("COMPOSITOR.rendering.composition", || compose(&output)));
                 slot.plan = stack.and_then(|stack| match stack.compile() {
                     Ok(plan) => Some(plan),
                     Err(error) => {
@@ -211,7 +214,12 @@ fn publish_compositions(messages: &mut Vec<HostMessage>) {
                     }
                 });
             }
-            STATE.with(|state| state.borrow_mut().compositions.insert(output.name.clone(), slot));
+            STATE.with(|state| {
+                state
+                    .borrow_mut()
+                    .compositions
+                    .insert(output.name.clone(), slot)
+            });
         }
     }
 
@@ -234,7 +242,9 @@ fn publish_frame_pacing(messages: &mut Vec<HostMessage>) {
     let mut config = FramePacingConfig::default();
     if let Some(pacing) = pacing {
         for output in enabled_outputs() {
-            if let Some(value) = untrack(|| caught("COMPOSITOR.rendering.frame_pacing", || pacing(&output))) {
+            if let Some(value) =
+                untrack(|| caught("COMPOSITOR.rendering.frame_pacing", || pacing(&output)))
+            {
                 config.outputs.insert(output.name, value);
             }
         }

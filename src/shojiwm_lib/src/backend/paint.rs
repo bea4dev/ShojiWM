@@ -11,10 +11,14 @@ use std::{collections::HashMap, sync::Mutex};
 use smithay::{
     backend::renderer::{
         element::{Element, Id, Kind, RenderElement, UnderlyingStorage},
-        gles::{GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType},
+        gles::{
+            GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType,
+        },
         utils::{CommitCounter, OpaqueRegions},
     },
-    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform, user_data::UserDataMap},
+    utils::{
+        Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform, user_data::UserDataMap,
+    },
 };
 
 use crate::{
@@ -33,7 +37,8 @@ const PRELUDE: &str = include_str!("paint_prelude.glsl");
 const BUILTIN_BOX: &str = include_str!("paint_builtin_box.frag");
 const BUILTIN_SHADOW: &str = include_str!("paint_builtin_shadow.frag");
 /// Stand-in for a user paint shader that fails to build: the built-in look.
-const FALLBACK_PAINT: &str = "vec4 paint_main(PaintContext ctx) {\n    return shoji_default_paint(ctx);\n}\n";
+const FALLBACK_PAINT: &str =
+    "vec4 paint_main(PaintContext ctx) {\n    return shoji_default_paint(ctx);\n}\n";
 
 pub(crate) fn wrap_paint_source(source: &str) -> String {
     format!(
@@ -76,7 +81,11 @@ fn builtin_uniform_names() -> Vec<UniformName<'static>> {
     ];
     vec4.into_iter()
         .map(|name| UniformName::new(name, UniformType::_4f))
-        .chain(float.into_iter().map(|name| UniformName::new(name, UniformType::_1f)))
+        .chain(
+            float
+                .into_iter()
+                .map(|name| UniformName::new(name, UniformType::_1f)),
+        )
         .chain(std::iter::once(UniformName::new(
             "shoji_shadow_offset",
             UniformType::_2f,
@@ -131,7 +140,10 @@ fn program_for(
                 key.push_str(&value.shape_key());
             }
             if cached_shader_is_outdated(&key, &module.path)
-                && let Some(cache) = renderer.egl_context().user_data().get::<PaintProgramCache>()
+                && let Some(cache) = renderer
+                    .egl_context()
+                    .user_data()
+                    .get::<PaintProgramCache>()
             {
                 cache.0.lock().unwrap().remove(&key);
             }
@@ -167,8 +179,8 @@ fn builtin_program(
     if let Some(program) = cached_program(renderer, &key) {
         return Ok(program);
     }
-    let program =
-        renderer.compile_custom_pixel_shader(wrap_paint_source(source), &builtin_uniform_names())?;
+    let program = renderer
+        .compile_custom_pixel_shader(wrap_paint_source(source), &builtin_uniform_names())?;
     store_program(renderer, key, program.clone());
     Ok(program)
 }
@@ -210,7 +222,10 @@ fn clip_uniforms(
         rect: PxRect::default(),
         radius: [0; 4],
     });
-    uniforms.push(Uniform::new(format!("{prefix}_rect"), rect_relative(clip.rect, node)));
+    uniforms.push(Uniform::new(
+        format!("{prefix}_rect"),
+        rect_relative(clip.rect, node),
+    ));
     uniforms.push(Uniform::new(format!("{prefix}_radius"), edges(clip.radius)));
 }
 
@@ -227,10 +242,22 @@ fn uniforms_for_item(item: &PaintItem) -> Vec<Uniform<'static>> {
         Uniform::new("shoji_hole", if g.hole { 1.0f32 } else { 0.0 }),
         Uniform::new("shoji_scale", g.scale as f32),
         Uniform::new("shoji_background", premultiplied(item.background)),
-        Uniform::new("shoji_border_color_top", premultiplied(item.border_colors[0])),
-        Uniform::new("shoji_border_color_right", premultiplied(item.border_colors[1])),
-        Uniform::new("shoji_border_color_bottom", premultiplied(item.border_colors[2])),
-        Uniform::new("shoji_border_color_left", premultiplied(item.border_colors[3])),
+        Uniform::new(
+            "shoji_border_color_top",
+            premultiplied(item.border_colors[0]),
+        ),
+        Uniform::new(
+            "shoji_border_color_right",
+            premultiplied(item.border_colors[1]),
+        ),
+        Uniform::new(
+            "shoji_border_color_bottom",
+            premultiplied(item.border_colors[2]),
+        ),
+        Uniform::new(
+            "shoji_border_color_left",
+            premultiplied(item.border_colors[3]),
+        ),
         Uniform::new("shoji_opacity", item.opacity),
     ];
     clip_uniforms(&mut uniforms, "shoji_clip", g.clip, g.node);
@@ -240,8 +267,14 @@ fn uniforms_for_item(item: &PaintItem) -> Vec<Uniform<'static>> {
         PaintProgram::Box { fill, border } => (fill, border),
         _ => (false, false),
     };
-    uniforms.push(Uniform::new("shoji_box_fill", if fill { 1.0f32 } else { 0.0 }));
-    uniforms.push(Uniform::new("shoji_box_border", if border { 1.0f32 } else { 0.0 }));
+    uniforms.push(Uniform::new(
+        "shoji_box_fill",
+        if fill { 1.0f32 } else { 0.0 },
+    ));
+    uniforms.push(Uniform::new(
+        "shoji_box_border",
+        if border { 1.0f32 } else { 0.0 },
+    ));
 
     let shadow = match item.program {
         PaintProgram::Shadow(shadow) => Some(shadow),
@@ -249,7 +282,9 @@ fn uniforms_for_item(item: &PaintItem) -> Vec<Uniform<'static>> {
     };
     uniforms.push(Uniform::new(
         "shoji_shadow_color",
-        shadow.map(|shadow| premultiplied(shadow.color)).unwrap_or([0.0; 4]),
+        shadow
+            .map(|shadow| premultiplied(shadow.color))
+            .unwrap_or([0.0; 4]),
     ));
     uniforms.push(Uniform::new(
         "shoji_shadow_offset",
@@ -267,7 +302,11 @@ fn uniforms_for_item(item: &PaintItem) -> Vec<Uniform<'static>> {
     ));
     uniforms.push(Uniform::new(
         "shoji_shadow_inset",
-        if shadow.is_some_and(|shadow| shadow.inset) { 1.0f32 } else { 0.0 },
+        if shadow.is_some_and(|shadow| shadow.inset) {
+            1.0f32
+        } else {
+            0.0
+        },
     ));
 
     if item.is_custom() {
@@ -300,7 +339,11 @@ impl LayoutToOutput {
         let output_scale = output_scale.x.abs().max(0.0001);
         let ratio = output_scale / frame.scale.max(0.0001);
         Self {
-            ratio: if (ratio - 1.0).abs() < 1e-9 { 1.0 } else { ratio },
+            ratio: if (ratio - 1.0).abs() < 1e-9 {
+                1.0
+            } else {
+                ratio
+            },
             offset: (
                 round_half_up((frame.origin_x - root.x as f64) * output_scale),
                 round_half_up((frame.origin_y - root.y as f64) * output_scale),
@@ -412,8 +455,9 @@ pub(crate) fn paint_element(
         return Ok(None);
     }
     let rect = cached.rect;
-    let visible = Rectangle::<i32, Logical>::new((rect.x, rect.y).into(), (rect.width, rect.height).into())
-        .overlaps(output_geo);
+    let visible =
+        Rectangle::<i32, Logical>::new((rect.x, rect.y).into(), (rect.width, rect.height).into())
+            .overlaps(output_geo);
     if !visible {
         return Ok(None);
     }
@@ -559,7 +603,12 @@ mod tests {
     impl Pixels {
         fn at(&self, x: i32, y: i32) -> [u8; 4] {
             let offset = ((y * OUT + x) * 4) as usize;
-            [self.0[offset], self.0[offset + 1], self.0[offset + 2], self.0[offset + 3]]
+            [
+                self.0[offset],
+                self.0[offset + 1],
+                self.0[offset + 2],
+                self.0[offset + 3],
+            ]
         }
     }
 
@@ -624,12 +673,21 @@ mod tests {
     ) -> Option<Pixels> {
         let size = Size::<i32, Physical>::from((OUT, OUT));
         let mut buffer: GlesRenderbuffer = renderer
-            .create_buffer(Fourcc::Abgr8888, size.to_logical(1).to_buffer(1, Transform::Normal))
+            .create_buffer(
+                Fourcc::Abgr8888,
+                size.to_logical(1).to_buffer(1, Transform::Normal),
+            )
             .ok()?;
         let mut fb = renderer.bind(&mut buffer).ok()?;
         let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
         tracker
-            .render_output(renderer, &mut fb, 0, elements, Color32F::new(0.0, 0.0, 0.0, 0.0))
+            .render_output(
+                renderer,
+                &mut fb,
+                0,
+                elements,
+                Color32F::new(0.0, 0.0, 0.0, 0.0),
+            )
             .ok()?;
         let mapping = renderer
             .copy_framebuffer(
@@ -689,12 +747,32 @@ mod tests {
         let (x0, y0) = (20, 20);
         assert_eq!(pixels.at(x0 - 1, y0 + 10), [0, 0, 0, 0], "outside");
         assert_eq!(pixels.at(x0, y0 + 10), [255, 0, 0, 255], "border column 0");
-        assert_eq!(pixels.at(x0 + 1, y0 + 10), [255, 0, 0, 255], "border column 1");
+        assert_eq!(
+            pixels.at(x0 + 1, y0 + 10),
+            [255, 0, 0, 255],
+            "border column 1"
+        );
         assert_eq!(pixels.at(x0 + 2, y0 + 10), [0, 0, 255, 255], "background");
-        assert_eq!(pixels.at(x0 + 44, y0 + 10), [255, 0, 0, 255], "right border");
-        assert_eq!(pixels.at(x0 + 45, y0 + 10), [0, 0, 0, 0], "past the right edge");
-        assert_eq!(pixels.at(x0 + 10, y0 + 29), [255, 0, 0, 255], "bottom border");
-        assert_eq!(pixels.at(x0 + 10, y0 + 30), [0, 0, 0, 0], "past the bottom edge");
+        assert_eq!(
+            pixels.at(x0 + 44, y0 + 10),
+            [255, 0, 0, 255],
+            "right border"
+        );
+        assert_eq!(
+            pixels.at(x0 + 45, y0 + 10),
+            [0, 0, 0, 0],
+            "past the right edge"
+        );
+        assert_eq!(
+            pixels.at(x0 + 10, y0 + 29),
+            [255, 0, 0, 255],
+            "bottom border"
+        );
+        assert_eq!(
+            pixels.at(x0 + 10, y0 + 30),
+            [0, 0, 0, 0],
+            "past the bottom edge"
+        );
     }
 
     #[test]
@@ -719,7 +797,11 @@ mod tests {
         ) else {
             return;
         };
-        assert_eq!(pixels.at(23, 30), [0, 255, 0, 255], "left side is 4px green");
+        assert_eq!(
+            pixels.at(23, 30),
+            [0, 255, 0, 255],
+            "left side is 4px green"
+        );
         assert_eq!(pixels.at(24, 30), [0, 0, 255, 255]);
         assert_eq!(pixels.at(59, 30), [255, 0, 0, 255], "right side is 1px red");
         assert_eq!(pixels.at(58, 30), [0, 0, 255, 255]);
@@ -751,7 +833,11 @@ mod tests {
         // The very corner pixel of the box lies outside the 10px rounding,
         // so the (spread) shadow shows through there.
         assert_eq!(pixels.at(20, 20)[2], 0, "box corner is cut");
-        assert_eq!(pixels.at(17, 40), [255, 0, 0, 255], "spread shadow left of the box");
+        assert_eq!(
+            pixels.at(17, 40),
+            [255, 0, 0, 255],
+            "spread shadow left of the box"
+        );
         assert_eq!(pixels.at(15, 40), [0, 0, 0, 0], "beyond the spread");
     }
 
@@ -778,7 +864,12 @@ mod tests {
                 ..Default::default()
             })
         };
-        for (scale, stretch, crop) in [(1.0, 1, false), (1.5, 1, false), (1.25, 2, false), (1.5, 1, true)] {
+        for (scale, stretch, crop) in [
+            (1.0, 1, false),
+            (1.5, 1, false),
+            (1.25, 2, false),
+            (1.5, 1, true),
+        ] {
             let Some(skipped) = render_with(node(), scale, stretch, true, crop) else {
                 return;
             };

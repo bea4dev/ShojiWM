@@ -860,7 +860,14 @@ pub fn framebuffer_backdrop_element_for_layer(
         .as_ref()
         .map(|(signature, texture)| (texture.clone(), *signature));
     let element = framebuffer_backdrop_element_for_output_rects_with_popup_source(
-        renderer, state, &[rect], effect, output_geo, scale, alpha, None,
+        renderer,
+        state,
+        &[rect],
+        effect,
+        output_geo,
+        scale,
+        alpha,
+        None,
     )?;
     Ok(element.map(|mut element| {
         element.layer_source = layer_source;
@@ -1099,7 +1106,8 @@ impl EffectPipelineCache {
         dirty_key: u64,
     ) -> Result<(), ShaderEffectError> {
         self.ensure_state(renderer, descriptor, base_size)?;
-        let expected_size = Size::<i32, Buffer>::from(effect_state_size(base_size, descriptor.scale));
+        let expected_size =
+            Size::<i32, Buffer>::from(effect_state_size(base_size, descriptor.scale));
         let expected_format = effect_state_fourcc(descriptor.format);
         let pooled = self.targets.iter().position(|target| {
             target.texture.tex_id() == source.tex_id()
@@ -2663,7 +2671,6 @@ pub(crate) fn append_shader_uniform_values(
     }
 }
 
-
 // ---------------------------------------------------------------------------------------------
 // Config-caused effect failures must never take the session down.
 //
@@ -2740,8 +2747,8 @@ pub fn take_effect_error_update() -> Option<Option<String>> {
     });
     // The same file can fail under several cache keys (one per uniform/texture layout).
     messages.dedup();
-    let mut pipeline_errors =
-        REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow().iter().cloned().collect::<Vec<_>>());
+    let mut pipeline_errors = REPORTED_EFFECT_ERRORS
+        .with(|reported| reported.borrow().iter().cloned().collect::<Vec<_>>());
     pipeline_errors.sort();
     messages.extend(pipeline_errors);
     Some((!messages.is_empty()).then(|| messages.join("\n\n")))
@@ -2897,9 +2904,13 @@ pub(crate) fn compile_shader_or_fallback<P>(
         Ok(source) => match compile(renderer, &source) {
             Ok(program) => {
                 BUILT_SHADERS.with(|built| {
-                    built
-                        .borrow_mut()
-                        .insert(cache_key.to_owned(), BuiltShader { stamp, verified: true })
+                    built.borrow_mut().insert(
+                        cache_key.to_owned(),
+                        BuiltShader {
+                            stamp,
+                            verified: true,
+                        },
+                    )
                 });
                 if FAILED_SHADERS
                     .with(|failed| failed.borrow_mut().remove(cache_key))
@@ -2917,8 +2928,7 @@ pub(crate) fn compile_shader_or_fallback<P>(
         },
         Err(error) => format!("shader {path} could not be read: {error}"),
     };
-    let message =
-        format!("{failure}\nThe effect using it is disabled until the file is fixed.");
+    let message = format!("{failure}\nThe effect using it is disabled until the file is fixed.");
     warn!(%message, "shader failed to build; continuing without it");
     FAILED_SHADERS.with(|failed| {
         failed.borrow_mut().insert(
@@ -3469,54 +3479,54 @@ fn multi_texture_stage_program(
         FALLBACK_TEXTURE_SHADER,
         wrap_multi_texture_stage_source,
         |renderer, source| {
-    let wrapped = wrap_multi_texture_stage_source(source);
-    let program = renderer.with_context(|gl| unsafe {
-        let program = link_program(gl, include_str!("backdrop_blur.vert"), &wrapped)?;
-        let location = |name: &str| {
-            CString::new(name)
-                .ok()
-                .map(|name| gl.GetUniformLocation(program, name.as_ptr()))
-                .unwrap_or(-1)
-        };
-        Ok::<_, GlesError>(Arc::new(MultiTextureStageProgram {
-            program,
-            uniform_tex: location("tex"),
-            uniform_texture_size: location("effect_texture_size_phy_px"),
-            uniform_content_rect: location("effect_content_rect_phy_px"),
-            uniform_frame_rect: location("effect_frame_rect_phy_px"),
-            uniform_frame_shape: [
-                location("effect_frame_radius_phy_px"),
-                location("effect_frame_border_phy_px"),
-                location("effect_clip_rect_phy_px"),
-                location("effect_clip_radius_phy_px"),
-            ],
-            uniform_has_clip: location("effect_has_clip"),
-            uniform_scale: location("effect_scale"),
-            texture_uniforms: stage
-                .textures
-                .keys()
-                .map(|name| (name.clone(), location(name)))
-                .collect(),
-            value_uniforms: stage
-                .uniforms
-                .iter()
-                .map(|(name, value)| {
-                    let location_name = match value {
-                        ShaderUniformValue::FloatArray(_)
-                        | ShaderUniformValue::Vec2Array(_)
-                        | ShaderUniformValue::Vec3Array(_)
-                        | ShaderUniformValue::Vec4Array(_) => format!("{name}[0]"),
-                        _ => name.clone(),
-                    };
-                    (name.clone(), location(&location_name))
-                })
-                .collect(),
-            attrib_vert: gl.GetAttribLocation(program, c"vert".as_ptr()),
-            renderer_context_id: renderer_context_id.clone(),
-            retired_programs: retired_programs.clone(),
-        }))
-    })??;
-    Ok(program)
+            let wrapped = wrap_multi_texture_stage_source(source);
+            let program = renderer.with_context(|gl| unsafe {
+                let program = link_program(gl, include_str!("backdrop_blur.vert"), &wrapped)?;
+                let location = |name: &str| {
+                    CString::new(name)
+                        .ok()
+                        .map(|name| gl.GetUniformLocation(program, name.as_ptr()))
+                        .unwrap_or(-1)
+                };
+                Ok::<_, GlesError>(Arc::new(MultiTextureStageProgram {
+                    program,
+                    uniform_tex: location("tex"),
+                    uniform_texture_size: location("effect_texture_size_phy_px"),
+                    uniform_content_rect: location("effect_content_rect_phy_px"),
+                    uniform_frame_rect: location("effect_frame_rect_phy_px"),
+                    uniform_frame_shape: [
+                        location("effect_frame_radius_phy_px"),
+                        location("effect_frame_border_phy_px"),
+                        location("effect_clip_rect_phy_px"),
+                        location("effect_clip_radius_phy_px"),
+                    ],
+                    uniform_has_clip: location("effect_has_clip"),
+                    uniform_scale: location("effect_scale"),
+                    texture_uniforms: stage
+                        .textures
+                        .keys()
+                        .map(|name| (name.clone(), location(name)))
+                        .collect(),
+                    value_uniforms: stage
+                        .uniforms
+                        .iter()
+                        .map(|(name, value)| {
+                            let location_name = match value {
+                                ShaderUniformValue::FloatArray(_)
+                                | ShaderUniformValue::Vec2Array(_)
+                                | ShaderUniformValue::Vec3Array(_)
+                                | ShaderUniformValue::Vec4Array(_) => format!("{name}[0]"),
+                                _ => name.clone(),
+                            };
+                            (name.clone(), location(&location_name))
+                        })
+                        .collect(),
+                    attrib_vert: gl.GetAttribLocation(program, c"vert".as_ptr()),
+                    renderer_context_id: renderer_context_id.clone(),
+                    retired_programs: retired_programs.clone(),
+                }))
+            })??;
+            Ok(program)
         },
     )?;
     renderer
@@ -3637,9 +3647,7 @@ fn compile_texture_program(
         path,
         FALLBACK_TEXTURE_SHADER,
         wrap,
-        |renderer, source| {
-            Ok(renderer.compile_custom_texture_shader(wrap(source), &uniform_names)?)
-        },
+        |renderer, source| Ok(renderer.compile_custom_texture_shader(wrap(source), &uniform_names)?),
     )?;
     renderer
         .egl_context()
@@ -4418,11 +4426,22 @@ pub(crate) fn apply_overlay_effect(
     // reject instead: a failed transition must never freeze an unchanged screenshot.
     let old_depth = EFFECT_PIPELINE_DEPTH.with(|depth| depth.replace(1));
     let old_stand_in = STAND_IN_SHADER_USED.with(|used| used.replace(false));
-    let result = run_effect_pipeline_inner(renderer, effect, &mut ctx, None, Some(size),
-        Some(cache), BackdropFinishMode::Materialize);
+    let result = run_effect_pipeline_inner(
+        renderer,
+        effect,
+        &mut ctx,
+        None,
+        Some(size),
+        Some(cache),
+        BackdropFinishMode::Materialize,
+    );
     let failed_shader = STAND_IN_SHADER_USED.with(|used| used.replace(old_stand_in));
     EFFECT_PIPELINE_DEPTH.with(|depth| depth.set(old_depth));
-    if failed_shader { Err(ShaderEffectError::OverlayShaderFailed) } else { result }
+    if failed_shader {
+        Err(ShaderEffectError::OverlayShaderFailed)
+    } else {
+        result
+    }
 }
 
 fn apply_effect_pipeline_with_cache(
@@ -4978,7 +4997,11 @@ fn record_render_to_if_dirty(ran: bool) {
         state.1 += 1;
     }
     if state.2.elapsed() >= GPU_TIMING_REPORT_INTERVAL {
-        info!(ran = state.0, skipped = state.1, "renderToIfDirty aggregate");
+        info!(
+            ran = state.0,
+            skipped = state.1,
+            "renderToIfDirty aggregate"
+        );
         *state = (0, 0, Instant::now());
     }
 }
@@ -5195,7 +5218,12 @@ fn run_effect_pipeline_inner(
                     .as_deref()
                     .filter(|_| !render_to_if_dirty_forced())
                     .and_then(|dependencies| {
-                        render_to_dirty_key(dependencies, &ctx.source_signatures, effect, state_size)
+                        render_to_dirty_key(
+                            dependencies,
+                            &ctx.source_signatures,
+                            effect,
+                            state_size,
+                        )
                     });
                 if let Some(dirty_key) = dirty_key
                     && !cache
@@ -5249,7 +5277,12 @@ fn run_effect_pipeline_inner(
                         &rendered,
                         dirty_key,
                     )?,
-                    None => state_cache.commit_state(renderer, target, ctx.state_base_size, &rendered)?,
+                    None => state_cache.commit_state(
+                        renderer,
+                        target,
+                        ctx.state_base_size,
+                        &rendered,
+                    )?,
                 }
                 current
             }
@@ -5425,7 +5458,10 @@ fn effect_context_uniforms(
         Uniform::new("effect_frame_border_phy_px", frame.border),
         Uniform::new("effect_clip_rect_phy_px", clip.rect),
         Uniform::new("effect_clip_radius_phy_px", clip.radius),
-        Uniform::new("effect_has_clip", if frame.clip.is_some() { 1.0f32 } else { 0.0 }),
+        Uniform::new(
+            "effect_has_clip",
+            if frame.clip.is_some() { 1.0f32 } else { 0.0 },
+        ),
         Uniform::new("effect_scale", frame.scale),
     ]
 }
@@ -5475,11 +5511,8 @@ pub(crate) fn unrotate_captured_texture(
         Kind::Unspecified,
     );
     let mut framebuffer = renderer.bind(target)?;
-    let mut damage_tracker = OutputDamageTracker::new(
-        (target_size.w, target_size.h),
-        1.0,
-        Transform::Normal,
-    );
+    let mut damage_tracker =
+        OutputDamageTracker::new((target_size.w, target_size.h), 1.0, Transform::Normal);
     damage_tracker
         .render_output(
             renderer,
@@ -5645,11 +5678,12 @@ fn apply_multi_texture_shader_stage(
                 frame_rect.size.w as f32,
                 frame_rect.size.h as f32,
             );
-            for (location, value) in program
-                .uniform_frame_shape
-                .iter()
-                .zip([frame.radius, frame.border, clip.rect, clip.radius])
-            {
+            for (location, value) in program.uniform_frame_shape.iter().zip([
+                frame.radius,
+                frame.border,
+                clip.rect,
+                clip.radius,
+            ]) {
                 gl.Uniform4f(*location, value[0], value[1], value[2], value[3]);
             }
             gl.Uniform1f(
@@ -6778,7 +6812,6 @@ mod multi_texture_program_tests {
 mod effect_error_tests {
     use super::*;
 
-
     /// The failure of a shader the reloaded config no longer references must leave the overlay.
     /// The cache key is derived from the shader path, so after the config is fixed by pointing
     /// at another file the old key is never requested again.
@@ -6800,10 +6833,15 @@ mod effect_error_tests {
         FAILED_SHADERS.with(|failed| failed.borrow_mut().clear());
         REPORTED_EFFECT_ERRORS.with(|reported| reported.borrow_mut().clear());
 
-        record("stage:/cfg/missing.frag", "shader /cfg/missing.frag could not be read");
+        record(
+            "stage:/cfg/missing.frag",
+            "shader /cfg/missing.frag could not be read",
+        );
         assert_eq!(
             take_effect_error_update(),
-            Some(Some("shader /cfg/missing.frag could not be read".to_owned()))
+            Some(Some(
+                "shader /cfg/missing.frag could not be read".to_owned()
+            ))
         );
         // Nothing changed: no update.
         assert_eq!(take_effect_error_update(), None);
@@ -6822,7 +6860,10 @@ mod effect_error_tests {
         assert!(FAILED_SHADERS.with(|failed| failed.borrow().is_empty()));
 
         // A confirmed failure whose file did not change keeps serving the stand-in.
-        record("stage:/cfg/missing.frag", "shader /cfg/missing.frag could not be read");
+        record(
+            "stage:/cfg/missing.frag",
+            "shader /cfg/missing.frag could not be read",
+        );
         STAND_IN_SHADER_USED.with(|used| used.set(false));
         assert!(!cached_shader_is_outdated(
             "stage:/cfg/missing.frag",
@@ -6841,11 +6882,18 @@ mod effect_error_tests {
         let path = dir.join("effect.frag");
         let path_str = path.to_str().unwrap();
         let key = format!("pixel:{path_str}");
-        std::fs::write(&path, "vec4 shader_main(EffectContext e) { return vec4(0.0); }\n").unwrap();
+        std::fs::write(
+            &path,
+            "vec4 shader_main(EffectContext e) { return vec4(0.0); }\n",
+        )
+        .unwrap();
         BUILT_SHADERS.with(|built| {
             built.borrow_mut().insert(
                 key.clone(),
-                BuiltShader { stamp: shader_file_stamp(path_str), verified: true },
+                BuiltShader {
+                    stamp: shader_file_stamp(path_str),
+                    verified: true,
+                },
             )
         });
 
@@ -6854,8 +6902,11 @@ mod effect_error_tests {
         assert!(!cached_shader_is_outdated(&key, path_str));
 
         // Edited file (the length changes, so the stamp does even within one mtime tick).
-        std::fs::write(&path, "vec4 shader_main(EffectContext e) { return vec4(1.0, 0.0, 0.0, 1.0); }\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "vec4 shader_main(EffectContext e) { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
+        )
+        .unwrap();
         // Not rechecked until a reload.
         assert!(!cached_shader_is_outdated(&key, path_str));
         reset_effect_error_reports();
@@ -6936,19 +6987,32 @@ mod frame_rect_tests {
         let texture = texture.unwrap();
 
         let mapping = renderer
-            .copy_texture(&texture, Rectangle::from_size(size.into()), Fourcc::Abgr8888)
+            .copy_texture(
+                &texture,
+                Rectangle::from_size(size.into()),
+                Fourcc::Abgr8888,
+            )
             .unwrap();
         let bytes = renderer.map_texture(&mapping).unwrap().to_vec();
         let pixel = |x: i32, y: i32| {
             let offset = ((y * size.0 + x) * 4) as usize;
-            (bytes[offset] as f32 / 255.0, bytes[offset + 1] as f32 / 255.0)
+            (
+                bytes[offset] as f32 / 255.0,
+                bytes[offset + 1] as f32 / 255.0,
+            )
         };
         let close = |value: f32, expected: f32| (value - expected).abs() < 0.04;
         // Pixel centres: frame-relative (x + 0.5) / 40, (y + 0.5) / 20.
         let (u, v) = pixel(40, 20);
-        assert!(close(u, 20.5 / 40.0) && close(v, 10.5 / 20.0), "frame centre: {u} {v}");
+        assert!(
+            close(u, 20.5 / 40.0) && close(v, 10.5 / 20.0),
+            "frame centre: {u} {v}"
+        );
         let (u, v) = pixel(20, 10);
-        assert!(close(u, 0.5 / 40.0) && close(v, 0.5 / 20.0), "frame origin: {u} {v}");
+        assert!(
+            close(u, 0.5 / 40.0) && close(v, 0.5 / 20.0),
+            "frame origin: {u} {v}"
+        );
         // Outside the frame the coordinates keep going (clamped by the 8-bit target).
         let (u, _) = pixel(5, 20);
         assert!(close(u, 0.0), "left of the frame: {u}");
@@ -7010,7 +7074,11 @@ mod frame_rect_tests {
         let _ = std::fs::remove_file(&shader_path);
         let texture = texture.unwrap();
         let mapping = renderer
-            .copy_texture(&texture, Rectangle::from_size(size.into()), Fourcc::Abgr8888)
+            .copy_texture(
+                &texture,
+                Rectangle::from_size(size.into()),
+                Fourcc::Abgr8888,
+            )
             .unwrap();
         let bytes = renderer.map_texture(&mapping).unwrap().to_vec();
         let offset = ((20 * size.0 + 40) * 4) as usize;
@@ -7059,7 +7127,11 @@ mod frame_rect_tests {
         let _ = std::fs::remove_file(&shader_path);
         let texture = texture.unwrap();
         let mapping = renderer
-            .copy_texture(&texture, Rectangle::from_size(size.into()), Fourcc::Abgr8888)
+            .copy_texture(
+                &texture,
+                Rectangle::from_size(size.into()),
+                Fourcc::Abgr8888,
+            )
             .unwrap();
         Some(renderer.map_texture(&mapping).unwrap().to_vec())
     }
@@ -7095,7 +7167,11 @@ mod frame_rect_tests {
             return;
         };
         let offset = ((20 * 100 + 40) * 4) as usize;
-        assert_eq!(&bytes[offset..offset + 3], &[8, 3, 25], "radius, border, clip x");
+        assert_eq!(
+            &bytes[offset..offset + 3],
+            &[8, 3, 25],
+            "radius, border, clip x"
+        );
         let scale = bytes[offset + 3] as f32 / 255.0 * 4.0;
         assert!((scale - 1.5).abs() < 0.02, "scale {scale}");
     }

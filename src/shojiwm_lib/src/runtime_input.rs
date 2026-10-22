@@ -389,7 +389,6 @@ fn motion_space_in(
     }
 }
 
-
 pub fn snapshot_for_backend_input_device<D: SmithayInputDevice>(
     devices: &BTreeMap<String, RuntimeInputDeviceSnapshot>,
     device: &D,

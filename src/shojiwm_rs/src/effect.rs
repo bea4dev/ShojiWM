@@ -321,7 +321,9 @@ impl PaintShader {
     }
 
     pub(crate) fn uniform_props(&self) -> impl Iterator<Item = (&str, &Prop<Uniform>)> {
-        self.uniforms.iter().map(|(name, value)| (name.as_str(), value))
+        self.uniforms
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
     }
 
     pub(crate) fn compile(
@@ -433,11 +435,7 @@ pub fn render_to(target: &StateTexture, effect: Effect) -> Stage {
 }
 
 /// Render `effect` into `target` only when one of `depends_on` changed.
-pub fn render_to_if_dirty(
-    target: &StateTexture,
-    depends_on: &[Source],
-    effect: Effect,
-) -> Stage {
+pub fn render_to_if_dirty(target: &StateTexture, depends_on: &[Source], effect: Effect) -> Stage {
     let depends_on = depends_on
         .iter()
         .filter_map(|source| match source {
@@ -445,7 +443,9 @@ pub fn render_to_if_dirty(
             Source::Layer(_) => Some(EffectDependency::LayerSource),
             Source::Popup(_) => Some(EffectDependency::PopupSource),
             _ => {
-                tracing::warn!("render_to_if_dirty: only window, layer and popup sources can be dependencies");
+                tracing::warn!(
+                    "render_to_if_dirty: only window, layer and popup sources can be dependencies"
+                );
                 None
             }
         })
@@ -508,7 +508,10 @@ impl Effect {
     pub fn has_reactive_uniforms(&self) -> bool {
         fn stage(stage: &ShaderStage) -> bool {
             stage.uniforms.iter().any(|(_, value)| !value.is_static())
-                || stage.textures.iter().any(|(_, source)| source_reactive(source))
+                || stage
+                    .textures
+                    .iter()
+                    .any(|(_, source)| source_reactive(source))
         }
         fn source_reactive(source: &Source) -> bool {
             matches!(source, Source::Shader(shader) if stage(shader))
@@ -549,7 +552,9 @@ impl Effect {
 
     pub(crate) fn shader_stages(&self) -> impl Iterator<Item = (usize, &ShaderStage)> {
         let input = match &self.input {
-            Source::Shader(stage) => Some((shojiwm_lib::runtime_api::SHADER_INPUT_STAGE_INDEX, &**stage)),
+            Source::Shader(stage) => {
+                Some((shojiwm_lib::runtime_api::SHADER_INPUT_STAGE_INDEX, &**stage))
+            }
             _ => None,
         };
         input.into_iter().chain(
@@ -566,11 +571,14 @@ impl Effect {
 
 impl ShaderStage {
     pub(crate) fn uniform_props(&self) -> impl Iterator<Item = (&str, &Prop<Uniform>)> {
-        self.uniforms.iter().map(|(name, value)| (name.as_str(), value))
+        self.uniforms
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
     }
 }
 
-pub(crate) type UniformReader<'a> = dyn FnMut(usize, &str, &Prop<Uniform>) -> ShaderUniformValue + 'a;
+pub(crate) type UniformReader<'a> =
+    dyn FnMut(usize, &str, &Prop<Uniform>) -> ShaderUniformValue + 'a;
 
 impl Source {
     fn compile_input(&self, read: &mut UniformReader<'_>) -> EffectInput {
@@ -736,11 +744,21 @@ mod tests {
             .capture_padding(24)
             .invalidate(Invalidate::on_source_damage_box(8))
             .stage(dual_kawase_blur(4, 2))
-            .stage(shader_stage("/shaders/glass.frag").uniform("tint", tint).uniform("depth", 0.2));
+            .stage(
+                shader_stage("/shaders/glass.frag")
+                    .uniform("tint", tint)
+                    .uniform("depth", 0.2),
+            );
         assert!(effect.has_reactive_uniforms());
         let compiled = effect.compile();
         assert_eq!(compiled.capture_padding, 24);
-        assert_eq!(compiled.blur_stage(), Some(BackdropBlur { radius: 4, passes: 2 }));
+        assert_eq!(
+            compiled.blur_stage(),
+            Some(BackdropBlur {
+                radius: 4,
+                passes: 2
+            })
+        );
         let shader = compiled.last_shader_stage().unwrap();
         assert_eq!(shader.uniforms["tint"], ShaderUniformValue::Float(0.5));
         tint.set(1.0);

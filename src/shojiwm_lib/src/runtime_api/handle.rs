@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use super::{
     ConfigRuntime, DecorationRequest, EffectRequest, InputRequest, NullRuntime, ReloadPreparation,
     RuntimeError, RuntimeEvent, RuntimeHost, RuntimeReply, RuntimeRequest, SchedulerTickRequest,
-    WindowRequest,
-    WorkspaceRequest,
+    WindowRequest, WorkspaceRequest,
 };
 use crate::{
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
@@ -25,10 +24,9 @@ use crate::{
         StaticDecorationEvaluator, WaylandLayerSnapshot, WaylandOutputSnapshot,
         WaylandPopupSnapshot, WaylandWindowSnapshot, WindowActivateRequestEventSnapshot,
         WindowDecorationClientSnapshot, WindowDecorationDecisionSnapshot,
-        WindowDecorationModeSnapshot,
-        WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
-        WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
-        WindowMoveEventSnapshot, WindowResizeEventSnapshot,
+        WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
+        WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
+        WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
     },
 };
 
@@ -463,7 +461,11 @@ impl RuntimeHandle {
         self.post(now_ms as f64, RuntimeEvent::GestureSwipe(event));
     }
 
-    pub fn gesture_pinch_async(&mut self, event: crate::ssd::GesturePinchEventSnapshot, now_ms: u64) {
+    pub fn gesture_pinch_async(
+        &mut self,
+        event: crate::ssd::GesturePinchEventSnapshot,
+        now_ms: u64,
+    ) {
         self.post(now_ms as f64, RuntimeEvent::GesturePinch(event));
     }
 
@@ -489,7 +491,11 @@ impl RuntimeHandle {
         event: &crate::runtime_input_grab::InputGrabEventSnapshot,
         now_ms: u64,
     ) -> Result<DecorationPointerMoveAsyncInvocation, RuntimeError> {
-        self.pointer_hook_reply("input grab", now_ms, InputRequest::InputGrab { grab_id, event })
+        self.pointer_hook_reply(
+            "input grab",
+            now_ms,
+            InputRequest::InputGrab { grab_id, event },
+        )
     }
 
     pub fn background_effect_config(

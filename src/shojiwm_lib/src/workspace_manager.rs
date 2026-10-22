@@ -104,7 +104,11 @@ impl ExtWorkspaceGroupHandle {
     ) {
         let (outputs, workspace_ids, can_create) = {
             let inner = self.inner.lock().unwrap();
-            (inner.outputs.clone(), inner.workspaces.clone(), inner.can_create)
+            (
+                inner.outputs.clone(),
+                inner.workspaces.clone(),
+                inner.can_create,
+            )
         };
 
         resource.capabilities(group_capabilities(can_create));
@@ -652,7 +656,9 @@ impl ExtWorkspaceManagerState {
 
         let all_workspaces = self
             .workspaces
-            .values().filter(|&workspace| !workspace.is_removed()).cloned()
+            .values()
+            .filter(|&workspace| !workspace.is_removed())
+            .cloned()
             .collect::<Vec<_>>();
         for group in &update.groups {
             if let Some(handle) = self.groups.get(&group.id) {
@@ -937,7 +943,10 @@ impl ShojiWM {
     /// Send a workspace activation to the runtime's `workspace.event.onActivate`
     /// listeners (with `window_id`, a move of that window to `onMoveWindow`;
     /// with `create_name`, a new workspace to `onCreate`).
-    pub(crate) fn runtime_workspace_activate(&mut self, event: RuntimeWorkspaceActivateRequestSnapshot) {
+    pub(crate) fn runtime_workspace_activate(
+        &mut self,
+        event: RuntimeWorkspaceActivateRequestSnapshot,
+    ) {
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();
         match self.config_runtime.workspace_activate(&event, now_ms) {

@@ -276,7 +276,8 @@ impl SessionLockHandler for ShojiWM {
                 );
             }
         }
-        self.session_lock_surfaces.retain(|_, surface| surface.alive());
+        self.session_lock_surfaces
+            .retain(|_, surface| surface.alive());
         self.session_locker = Some(confirmation.ext_session_lock().clone());
         confirmation.lock();
         self.schedule_redraw();
@@ -322,9 +323,14 @@ impl SessionLockHandler for ShojiWM {
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
         // A client whose lock was refused can still create lock surfaces;
         // they must not replace the lock screen of the client holding it.
-        let holder = self.session_locker.as_ref().and_then(|locker| locker.client());
+        let holder = self
+            .session_locker
+            .as_ref()
+            .and_then(|locker| locker.client());
         if holder.is_none() || holder != surface.wl_surface().client() {
-            tracing::warn!("ignored a lock surface from a client that does not hold the session lock");
+            tracing::warn!(
+                "ignored a lock surface from a client that does not hold the session lock"
+            );
             return;
         }
         let Some(output) = self.output_for_lock_resource(&surface, &output) else {
@@ -541,10 +547,7 @@ impl crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportHandler f
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Buffer>> {
         use crate::wlr_foreign_toplevel::WlrForeignToplevelManagerHandler;
         let window = self.wlr_foreign_toplevel_window(handle)?;
-        crate::backend::image_copy_capture_render::compute_desired_buffer_size(
-            &self.space,
-            &window,
-        )
+        crate::backend::image_copy_capture_render::compute_desired_buffer_size(&self.space, &window)
     }
 
     fn hyprland_toplevel_export_queued(&mut self) {
@@ -1156,7 +1159,9 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
         output
             .and_then(|output| self.output_color.get(output.name().as_str()))
             .filter(|color| matches!(color.mode, crate::color::OutputColorMode::Hdr10 { .. }))
-            .map_or(crate::color::ImageDescription::SRGB, |color| color.description)
+            .map_or(crate::color::ImageDescription::SRGB, |color| {
+                color.description
+            })
     }
 
     fn defer_image_description_info(
@@ -1170,10 +1175,7 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
         // write the object's data through a freed pointer; issue #1). If
         // the client is gone by the time this runs, the sends are no-ops.
         self.loop_handle.insert_idle(move |_state| {
-            crate::protocols::color_management::send_information(
-                &info,
-                &description,
-            );
+            crate::protocols::color_management::send_information(&info, &description);
         });
     }
 }

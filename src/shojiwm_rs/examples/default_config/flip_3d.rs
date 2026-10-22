@@ -19,7 +19,8 @@ use shojiwm_rs::{
 use crate::{
     window_manager::WindowManager,
     window_switcher::{
-        LayoutSession, Pose, SwitcherAction, SwitcherLayout, Viewport, WindowSwitcher, camera_distance, clamp01,
+        LayoutSession, Pose, SwitcherAction, SwitcherLayout, Viewport, WindowSwitcher,
+        camera_distance, clamp01,
     },
 };
 
@@ -51,7 +52,10 @@ const FRONT_MAX_HEIGHT: f64 = 0.5;
 const SCROLL_STEP_PX: f64 = 80.0;
 const SWIPE_STEP_PX: f64 = 140.0;
 
-pub fn create_flip_3d(wm: WindowManager, stack_order: impl Fn(Window) -> i32 + 'static) -> WindowSwitcher {
+pub fn create_flip_3d(
+    wm: WindowManager,
+    stack_order: impl Fn(Window) -> i32 + 'static,
+) -> WindowSwitcher {
     WindowSwitcher::new(Flip3D, wm, stack_order)
 }
 
@@ -125,7 +129,9 @@ impl LayoutSession for FlipSession {
 
     fn on_key(&mut self, event: &InputGrabKeyEvent, selected: i64) -> Option<SwitcherAction> {
         match event.key.as_str() {
-            "Tab" | "ISO_Left_Tab" => Some(flip(selected, if event.modifiers.shift { -1 } else { 1 })),
+            "Tab" | "ISO_Left_Tab" => {
+                Some(flip(selected, if event.modifiers.shift { -1 } else { 1 }))
+            }
             "Right" | "Down" => Some(flip(selected, 1)),
             "Left" | "Up" => Some(flip(selected, -1)),
             _ => None,
@@ -139,7 +145,10 @@ impl LayoutSession for FlipSession {
     fn on_scroll(&mut self, event: &InputGrabScrollEvent, selected: i64) -> SwitcherAction {
         if event.source == "wheel" {
             let clicks = event.discrete_y.unwrap_or(sign(event.delta_y) * 120.0) / 120.0;
-            return flip(selected, sign(clicks) as i64 * clicks.abs().round().max(1.0) as i64);
+            return flip(
+                selected,
+                sign(clicks) as i64 * clicks.abs().round().max(1.0) as i64,
+            );
         }
         self.scroll_remainder += event.delta_y;
         let steps = (self.scroll_remainder / SCROLL_STEP_PX).trunc();

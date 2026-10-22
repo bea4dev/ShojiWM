@@ -39,27 +39,25 @@ use shojiwm_lib::{
         RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent,
     },
     ssd::{
-        GestureSwipeEventSnapshot,
+        GestureSwipeEventSnapshot, PointerMoveEventSnapshot, PopupParentKindSnapshot,
+        SurfacePolicy, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot,
+        WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+        WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
+        WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
+        WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
         window_model::{LayerEdgeSnapshot, LayerExclusiveZoneSnapshot},
-        PointerMoveEventSnapshot, PopupParentKindSnapshot, SurfacePolicy, WaylandLayerSnapshot,
-        WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot,
-        WindowActivateRequestEventSnapshot, WindowDecorationModeSnapshot,
-        WindowDecorationClientSnapshot, WindowDecorationPolicyContextSnapshot,
-        WindowFullscreenRequestEventSnapshot,
-        WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
-        WindowMoveEventSnapshot, WindowResizeEventSnapshot,
     },
 };
 
-pub use shojiwm_lib::frame_pacing::FramePacing;
 pub use shojiwm_lib::cursor::{
     CursorPositionSnapshot, RuntimeCursorPositionTarget as CursorPosition,
 };
+pub use shojiwm_lib::frame_pacing::FramePacing;
+use shojiwm_lib::runtime_pointer_region::PointerRegionSpec;
 pub use shojiwm_lib::runtime_pointer_region::{
     PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionOffset, PointerRegionPhase,
     PointerRegionSize,
 };
-use shojiwm_lib::runtime_pointer_region::PointerRegionSpec;
 
 use crate::{
     effect::{Effect, SurfaceEffects},
@@ -303,7 +301,9 @@ impl CursorController {
     /// });
     /// ```
     pub fn override_kind(&self, kind: Option<&str>) -> Result<(), String> {
-        let kind = kind.map(shojiwm_lib::cursor::CursorOverride::parse).transpose()?;
+        let kind = kind
+            .map(shojiwm_lib::cursor::CursorOverride::parse)
+            .transpose()?;
         runtime::send(HostMessage::CursorOverride(kind));
         Ok(())
     }
@@ -449,13 +449,7 @@ impl KeyController {
     /// A modifier tap (e.g. `"Super"`) that fires only when released within
     /// `within_ms` of being pressed, so holding the modifier for a while (a
     /// drag, a combination never completed) does not trigger it.
-    pub fn bind_tap(
-        &self,
-        id: &str,
-        modifier: &str,
-        within_ms: u32,
-        handler: impl Fn() + 'static,
-    ) {
+    pub fn bind_tap(&self, id: &str, modifier: &str, within_ms: u32, handler: impl Fn() + 'static) {
         self.bind_entry(
             RuntimeKeyBindingEntry {
                 id: id.to_owned(),
@@ -531,7 +525,9 @@ impl PointerController {
     pub fn define_region(&self, id: &str, region: PointerRegion) {
         let spec = region.into_spec(id);
         with_registry(|registry| {
-            registry.pointer_regions.retain(|existing| existing.id != id);
+            registry
+                .pointer_regions
+                .retain(|existing| existing.id != id);
             registry.pointer_regions.push(spec);
             registry.pending.pointer = true;
         });
@@ -539,7 +535,9 @@ impl PointerController {
 
     pub fn remove_region(&self, id: &str) {
         with_registry(|registry| {
-            registry.pointer_regions.retain(|existing| existing.id != id);
+            registry
+                .pointer_regions
+                .retain(|existing| existing.id != id);
             registry.region_handlers.remove(id);
             registry.pending.pointer = true;
         });
@@ -744,7 +742,8 @@ impl InputController {
     /// settings. Re-run whenever devices change.
     pub fn configure(
         &self,
-        factory: impl Fn(&mut RuntimeInputConfig, &BTreeMap<String, RuntimeInputDeviceSnapshot>) + 'static,
+        factory: impl Fn(&mut RuntimeInputConfig, &BTreeMap<String, RuntimeInputDeviceSnapshot>)
+        + 'static,
     ) {
         with_registry(|registry| registry.input_configure = Some(Rc::new(factory)));
         reconfigure_input(true);
@@ -811,8 +810,8 @@ pub struct OutputChangeEvent {
 
 /// One output's entry in a display configuration.
 pub use shojiwm_lib::config::{
-    RuntimeDisplayModePreference as OutputResolution, RuntimeOutputMode as OutputMode,
-    RuntimeHdrConfig as OutputHdr, RuntimeHdrOptions as OutputHdrOptions,
+    RuntimeDisplayModePreference as OutputResolution, RuntimeHdrConfig as OutputHdr,
+    RuntimeHdrOptions as OutputHdrOptions, RuntimeOutputMode as OutputMode,
     RuntimeOutputPositionPreference as OutputPosition, RuntimeOutputTransform as OutputTransform,
     RuntimeSdrGamut as SdrGamut, RuntimeSdrLuminance as SdrLuminance,
 };
@@ -876,7 +875,11 @@ impl OutputController {
     }
 
     pub fn get(&self, name: &str) -> Option<WaylandOutputSnapshot> {
-        untrack(|| runtime::global().outputs.with(|outputs| outputs.get(name).cloned()))
+        untrack(|| {
+            runtime::global()
+                .outputs
+                .with(|outputs| outputs.get(name).cloned())
+        })
     }
 
     /// Names of enabled outputs.
@@ -923,7 +926,11 @@ pub struct OutputPowerOptions {
 
 pub(crate) fn output_logical_rect(output: &WaylandOutputSnapshot) -> Option<Rect> {
     let resolution = output.resolution?;
-    let scale = if output.scale > 0.0 { output.scale } else { 1.0 };
+    let scale = if output.scale > 0.0 {
+        output.scale
+    } else {
+        1.0
+    };
     let (width, height) = match output.transform {
         shojiwm_lib::ssd::OutputTransformSnapshot::Rotate90
         | shojiwm_lib::ssd::OutputTransformSnapshot::Rotate270
@@ -987,14 +994,27 @@ impl WorkspaceController {
     }
 
     /// A bar asked to activate a workspace.
-    pub fn on_activate(&self, listener: impl Fn(&RuntimeWorkspaceActivateRequestSnapshot) + 'static) {
-        with_registry(|registry| registry.listeners.workspace_activate.push(Rc::new(listener)));
+    pub fn on_activate(
+        &self,
+        listener: impl Fn(&RuntimeWorkspaceActivateRequestSnapshot) + 'static,
+    ) {
+        with_registry(|registry| {
+            registry
+                .listeners
+                .workspace_activate
+                .push(Rc::new(listener))
+        });
     }
 
     /// A client (KDE's Pager or taskbar) asked to move a window to a
     /// workspace. The workspace ids are the `virtual_desktops` ids.
     pub fn on_move_window(&self, listener: impl Fn(&RuntimeWorkspaceMoveWindowEvent) + 'static) {
-        with_registry(|registry| registry.listeners.workspace_move_window.push(Rc::new(listener)));
+        with_registry(|registry| {
+            registry
+                .listeners
+                .workspace_move_window
+                .push(Rc::new(listener))
+        });
     }
 
     /// A bar asked to create a workspace (ext-workspace `create_workspace`).
@@ -1016,12 +1036,18 @@ impl LayerController {
     }
 
     pub fn list(&self) -> Vec<WaylandLayerSnapshot> {
-        untrack(|| runtime::global().layers.with(|layers| layers.values().cloned().collect()))
+        untrack(|| {
+            runtime::global()
+                .layers
+                .with(|layers| layers.values().cloned().collect())
+        })
     }
 
     /// The part of `output` not reserved by exclusive zones (tracked).
     pub fn usable_area(&self, output: &str) -> Option<Rect> {
-        let snapshot = runtime::global().outputs.with(|outputs| outputs.get(output).cloned())?;
+        let snapshot = runtime::global()
+            .outputs
+            .with(|outputs| outputs.get(output).cloned())?;
         let area = output_logical_rect(&snapshot)?;
         let (mut top, mut right, mut bottom, mut left) = (0.0, 0.0, 0.0, 0.0);
         runtime::global().layers.with(|layers| {
@@ -1085,8 +1111,11 @@ impl WindowController {
     /// `window.decoration.configure`: server- or client-side decorations.
     pub fn decoration(
         &self,
-        f: impl Fn(&WaylandWindowSnapshot, &WindowDecorationPolicyContextSnapshot) -> WindowDecorationModeSnapshot
-            + 'static,
+        f: impl Fn(
+            &WaylandWindowSnapshot,
+            &WindowDecorationPolicyContextSnapshot,
+        ) -> WindowDecorationModeSnapshot
+        + 'static,
     ) {
         with_registry(|registry| registry.decoration_policy = Some(Rc::new(f)));
     }
@@ -1107,7 +1136,10 @@ impl WindowController {
 
     /// Known windows, oldest first.
     pub fn list(&self) -> Vec<Window> {
-        runtime::all_windows().iter().map(|entry| entry.handle).collect()
+        runtime::all_windows()
+            .iter()
+            .map(|entry| entry.handle)
+            .collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Window> {
@@ -1290,7 +1322,10 @@ impl EventController {
 
     /// Touchpad pinches (begin, update, end or cancel), after the fact.
     /// Nothing else receives pinches.
-    pub fn on_gesture_pinch_async(&self, listener: impl Fn(&shojiwm_lib::ssd::GesturePinchEventSnapshot) + 'static) {
+    pub fn on_gesture_pinch_async(
+        &self,
+        listener: impl Fn(&shojiwm_lib::ssd::GesturePinchEventSnapshot) + 'static,
+    ) {
         add_filtered(|listeners| listeners.gesture_pinch_async.push(Rc::new(listener)));
     }
 }

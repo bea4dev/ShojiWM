@@ -979,10 +979,7 @@ impl ShojiWM {
         // it or anything the handler focuses instead.
         self.note_window_user_input(window);
         let previous = std::mem::replace(&mut self.user_input_in_flight, true);
-        self.request_window_activate(
-            window,
-            crate::ssd::WindowActivateRequestSourceSnapshot::Api,
-        );
+        self.request_window_activate(window, crate::ssd::WindowActivateRequestSourceSnapshot::Api);
         self.user_input_in_flight = previous;
     }
 

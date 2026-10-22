@@ -30,7 +30,9 @@ use crate::backend::visual::{
     PreciseLogicalRect, relative_physical_rect_from_root_precise,
     relative_physical_rect_from_root_snapped_edges,
 };
-use crate::ssd::{DecorationPart, ImageFit, LogicalRect, WindowDecorationState, WindowIconSnapshot};
+use crate::ssd::{
+    DecorationPart, ImageFit, LogicalRect, WindowDecorationState, WindowIconSnapshot,
+};
 
 #[derive(Debug, Clone)]
 pub struct CachedDecorationIcon {
@@ -225,13 +227,7 @@ impl IconRasterizer {
             .map(|buffer| cached_icon_from_buffer(spec, buffer.clone()))
     }
 
-    pub fn handle_async_ready(
-        &mut self,
-        spec_hash: u64,
-        width: i32,
-        height: i32,
-        pixels: Vec<u8>,
-    ) {
+    pub fn handle_async_ready(&mut self, spec_hash: u64, width: i32, height: i32, pixels: Vec<u8>) {
         self.async_in_flight.remove(&spec_hash);
         self.async_missing.remove(&spec_hash);
         self.async_buffers.insert(
@@ -546,9 +542,23 @@ pub(crate) fn memory_icon_element(
 
     let physical = icon
         .rect_precise
-        .map(|rect| relative_physical_rect_from_root_precise(rect, root_rect, root_subpixel, output_geo, scale))
+        .map(|rect| {
+            relative_physical_rect_from_root_precise(
+                rect,
+                root_rect,
+                root_subpixel,
+                output_geo,
+                scale,
+            )
+        })
         .unwrap_or_else(|| {
-            relative_physical_rect_from_root_snapped_edges(icon.rect, root_rect, root_subpixel, output_geo, scale)
+            relative_physical_rect_from_root_snapped_edges(
+                icon.rect,
+                root_rect,
+                root_subpixel,
+                output_geo,
+                scale,
+            )
         });
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -989,7 +999,13 @@ fn load_image_asset(
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase());
     let bytes = fs::read(path).ok()?;
-    decode_image_asset(&bytes, extension.as_deref(), target_width, target_height, fit)
+    decode_image_asset(
+        &bytes,
+        extension.as_deref(),
+        target_width,
+        target_height,
+        fit,
+    )
 }
 
 fn decode_image_asset(

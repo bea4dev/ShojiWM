@@ -201,9 +201,7 @@ impl PaintItem {
         let g = &self.geometry;
         let (rect, radius) = match self.program {
             PaintProgram::Shadow(shadow) if !shadow.inset => (g.node, g.radius),
-            PaintProgram::Box { fill, .. }
-                if !fill || g.hole || self.background.a == 0 =>
-            {
+            PaintProgram::Box { fill, .. } if !fill || g.hole || self.background.a == 0 => {
                 (g.inner, g.inner_radius)
             }
             _ => return None,
@@ -351,7 +349,11 @@ fn scale_len(value: ResolvedLayoutValue, factor: f64) -> i32 {
     }
     let scaled = round_half_up(value.raw() as f64 * factor);
     // A non-zero width stays visible.
-    if value.raw() > 0 { scaled.max(1) } else { scaled.max(0) }
+    if value.raw() > 0 {
+        scaled.max(1)
+    } else {
+        scaled.max(0)
+    }
 }
 
 fn edges_array(edges: ResolvedLayoutEdges, (sx, sy): (f64, f64)) -> [i32; 4] {
@@ -396,14 +398,19 @@ impl PaintClipState {
 /// The clip a node imposes on its descendants (already intersected with the
 /// inherited one by the layout).
 pub(crate) fn children_clip(node: &ComputedDecorationNode) -> Option<ResolvedDecorationClip> {
-    if matches!(node.style.effective_border_fit(&node.kind), BorderFit::FitChildren)
-        && node.style.has_border()
+    if matches!(
+        node.style.effective_border_fit(&node.kind),
+        BorderFit::FitChildren
+    ) && node.style.has_border()
     {
-        return Some(node.resolved_effective_clip.unwrap_or(ResolvedDecorationClip {
-            rect: node.resolved_content_rect,
-            radius: (node.resolved_border_radius - node.resolved_border_width)
-                .max(ResolvedLayoutValue::ZERO),
-        }));
+        return Some(
+            node.resolved_effective_clip
+                .unwrap_or(ResolvedDecorationClip {
+                    rect: node.resolved_content_rect,
+                    radius: (node.resolved_border_radius - node.resolved_border_width)
+                        .max(ResolvedLayoutValue::ZERO),
+                }),
+        );
     }
     node.resolved_effective_clip
 }

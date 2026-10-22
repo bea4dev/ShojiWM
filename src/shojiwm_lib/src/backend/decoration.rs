@@ -163,7 +163,12 @@ fn ordered_paint_elements(
             continue;
         }
         if let Some(element) = crate::backend::paint::paint_element(
-            renderer, to_output, paint_cache, cached, output_geo, alpha,
+            renderer,
+            to_output,
+            paint_cache,
+            cached,
+            output_geo,
+            alpha,
         )? {
             items.push((cached.order, DecorationSceneElements::Paint(element)));
         }
@@ -186,13 +191,12 @@ pub fn popup_elements_for_decoration(
         .into_iter()
         .map(|(order, element)| (order, PopupSceneElement::Decoration(element)))
         .collect::<Vec<_>>();
-    let textures = text::ordered_text_elements_for_part(
-        renderer, decoration, part, output_geo, scale, alpha,
-    )?
-    .into_iter()
-    .chain(crate::backend::icon::ordered_icon_elements_for_part(
-        renderer, decoration, part, output_geo, scale, alpha,
-    )?);
+    let textures =
+        text::ordered_text_elements_for_part(renderer, decoration, part, output_geo, scale, alpha)?
+            .into_iter()
+            .chain(crate::backend::icon::ordered_icon_elements_for_part(
+                renderer, decoration, part, output_geo, scale, alpha,
+            )?);
     items.extend(textures.map(|(order, element)| (order, PopupSceneElement::Texture(element))));
     items.sort_by_key(|(order, _)| *order);
     Ok(items.into_iter().map(|(_, element)| element).collect())
@@ -383,10 +387,7 @@ pub(crate) fn shader_effect_spec_in_root(
     }
 
     let local_rect = Rectangle::new(
-        Point::from((
-            cached.rect.x - root_rect.x,
-            cached.rect.y - root_rect.y,
-        )),
+        Point::from((cached.rect.x - root_rect.x, cached.rect.y - root_rect.y)),
         (cached.rect.width, cached.rect.height).into(),
     );
     let geometry = cached
@@ -455,9 +456,9 @@ pub(crate) fn shader_effect_spec_in_root(
                     )
                 })
                 .or_else(|| {
-                    cached.clip_rect.map(|clip_rect| {
-                        local_clip_from_logical_rects(clip_rect, cached.rect)
-                    })
+                    cached
+                        .clip_rect
+                        .map(|clip_rect| local_clip_from_logical_rects(clip_rect, cached.rect))
                 })
         },
         clip_radius: if gap_disable_decoration_clip_enabled()

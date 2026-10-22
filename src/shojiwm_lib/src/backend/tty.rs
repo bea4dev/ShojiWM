@@ -16,13 +16,7 @@ use smithay::{
     backend::{
         allocator::{Fourcc, format::FormatSet, gbm::GbmAllocator},
         drm::{
-            DrmDevice,
-            DrmDeviceFd, 
-            DrmError,
-            DrmEvent,
-            DrmEventMetadata,
-            DrmEventTime,
-            DrmNode,
+            DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
             compositor::{CursorMoveOutcome, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
@@ -308,9 +302,7 @@ fn sanitize_next_frame_target(
     }
 }
 
-pub(super) fn error_chain_has_permission_denied(
-    error: &(dyn std::error::Error + 'static),
-) -> bool {
+pub(super) fn error_chain_has_permission_denied(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
         if error
@@ -330,22 +322,15 @@ pub(super) fn error_chain_has_permission_denied(
 /// topology changed during sleep — and the surface should be rebuilt rather
 /// than treated as a fatal render failure.
 fn error_chain_has_drm_test_failed(error: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current = Some(
-        error,
-    );
-    while let Some(
-        error,
-    ) = current {
+    let mut current = Some(error);
+    while let Some(error) = current {
         if matches!(
             error.downcast_ref::<DrmError>(),
-            Some(
-                DrmError::TestFailed(_),
-            )
+            Some(DrmError::TestFailed(_),)
         ) {
             return true;
         }
-        current = error
-            .source();
+        current = error.source();
     }
     false
 }
@@ -813,7 +798,10 @@ pub(crate) fn fullscreen_scanout_window(
         None
     };
     if closing_snapshot_count != 0 {
-        return reject("closing-snapshot", format!("closing snapshots on output: {closing_snapshot_count}"));
+        return reject(
+            "closing-snapshot",
+            format!("closing snapshots on output: {closing_snapshot_count}"),
+        );
     }
     // Topmost window that actually renders on this output. If that is not
     // the fullscreen window (e.g. a floating window stacked above it), the
@@ -840,8 +828,8 @@ pub(crate) fn fullscreen_scanout_window(
                 smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
                     if let Some(data) = states
                         .data_map
-                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                    {
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>(
+                    ) {
                         let data = data.lock().unwrap();
                         title = data.title.clone();
                         app_id = data.app_id.clone();
@@ -855,7 +843,10 @@ pub(crate) fn fullscreen_scanout_window(
             .unwrap_or_else(|| "<no toplevel>".to_string())
     };
     let Some(toplevel) = window.toplevel() else {
-        return reject("no-toplevel", format!("topmost window has no xdg toplevel: {}", describe(window)));
+        return reject(
+            "no-toplevel",
+            format!("topmost window has no xdg toplevel: {}", describe(window)),
+        );
     };
     let (fullscreen, pending_fullscreen) = {
         let committed = toplevel.with_committed_state(|state| {
@@ -874,7 +865,11 @@ pub(crate) fn fullscreen_scanout_window(
     };
     if !fullscreen {
         return reject(
-            if pending_fullscreen { "not-committed" } else { "not-fullscreen" },
+            if pending_fullscreen {
+                "not-committed"
+            } else {
+                "not-fullscreen"
+            },
             format!(
                 "topmost window not committed fullscreen (pending_fullscreen={pending_fullscreen}): {}",
                 describe(window)
@@ -885,7 +880,10 @@ pub(crate) fn fullscreen_scanout_window(
     // fullscreen transition (configure sent, buffer not resized yet) the
     // normal pipeline keeps rendering the scene below.
     let Some(geometry) = space.element_geometry(window) else {
-        return reject("no-geometry", format!("fullscreen window has no geometry: {}", describe(window)));
+        return reject(
+            "no-geometry",
+            format!("fullscreen window has no geometry: {}", describe(window)),
+        );
     };
     if geometry.intersection(output_geo) != Some(output_geo) {
         // Everything that feeds the space geometry, so a stuck offset can be
@@ -959,7 +957,10 @@ fn note_fullscreen_fast_path_reject(output_name: &str, reason: Option<(&'static 
     };
     let now = Instant::now();
     let kind = reason.as_ref().map(|(kind, _)| *kind);
-    let detail = reason.as_ref().map(|(_, detail)| detail.as_str()).unwrap_or_default();
+    let detail = reason
+        .as_ref()
+        .map(|(_, detail)| detail.as_str())
+        .unwrap_or_default();
     let (kind_changed, detail_due) = match guard.get(output_name) {
         Some((previous_kind, previous_detail, logged_at)) => (
             *previous_kind != kind,
@@ -1026,7 +1027,6 @@ pub(crate) fn closing_snapshots_on_output(
         })
         .count()
 }
-
 
 /// Latency diagnostic (`SHOJI_LATENCY_TRACE=1`): a pointer input that has been rendered
 /// into a frame and committed, waiting for the page flip that will show it.
@@ -1233,7 +1233,8 @@ impl CrossGpuTarget {
             && (mode.size.w, mode.size.h) != (self.size.w, self.size.h)
         {
             self.size = Size::from((mode.size.w, mode.size.h));
-            self.swapchain.resize(self.size.w as u32, self.size.h as u32);
+            self.swapchain
+                .resize(self.size.w as u32, self.size.h as u32);
         }
     }
 }
@@ -1353,7 +1354,10 @@ fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
         target.commit.increment();
         target.current = Some(slot);
     }
-    let current = target.current.as_ref().expect("cross-gpu buffer was just set");
+    let current = target
+        .current
+        .as_ref()
+        .expect("cross-gpu buffer was just set");
     let texture = scanout_renderer.import_dmabuf(&cross_gpu_slot_dmabuf(current)?, None)?;
     let transform = output.current_transform();
     let element = CrossGpuFrameElement {
@@ -1485,11 +1489,7 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
         }
         for (connector, crtc) in backend.drm_scanner.crtcs() {
             if backend.surfaces.contains_key(&crtc) {
-                crate::color::drm_metadata::reset_inherited_color_state(
-                    device,
-                    crtc,
-                    connector,
-                );
+                crate::color::drm_metadata::reset_inherited_color_state(device, crtc, connector);
                 // The HDR signaling (Colorspace, HDR_OUTPUT_METADATA, max bpc)
                 // is ours, but that master could have changed it too: a
                 // session in SDR clears it, and the PQ-encoded frames would
@@ -1525,11 +1525,7 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
     // still worth keeping — it records which nodes were *known* to need this,
     // which is the difference between a handled race and a silent one.
     let deferred = std::mem::take(&mut state.pending_tty_device_changes);
-    let nodes: Vec<DrmNode> = state
-        .tty_backends
-        .keys()
-        .copied()
-        .collect();
+    let nodes: Vec<DrmNode> = state.tty_backends.keys().copied().collect();
     for node in nodes {
         if deferred.contains(&node) {
             info!(
@@ -1537,17 +1533,8 @@ pub fn resume_tty_session(state: &mut ShojiWM) {
                 "processing deferred drm device change after tty resume",
             );
         }
-        if let Err(
-            err,
-        ) = device_changed(
-            state,
-            node,
-        ) {
-            warn!(
-                ?node,
-                ?err,
-                "failed to rescan drm device after tty resume",
-            );
+        if let Err(err) = device_changed(state, node) {
+            warn!(?node, ?err, "failed to rescan drm device after tty resume",);
         }
     }
     // Connectors that lost their first modeset are invisible to the rescan
@@ -1597,9 +1584,10 @@ pub(crate) fn report_pending_effect_errors(state: &mut ShojiWM) {
     let Some(update) = crate::backend::shader_effect::take_effect_error_update() else {
         return;
     };
-    let showing_effect_error = state.config_error_report.as_ref().is_some_and(|report| {
-        matches!(report.kind, crate::config_error::ConfigErrorKind::Effect)
-    });
+    let showing_effect_error = state
+        .config_error_report
+        .as_ref()
+        .is_some_and(|report| matches!(report.kind, crate::config_error::ConfigErrorKind::Effect));
     match update {
         // Another kind of config error is on screen: it is the more fundamental one, keep it.
         Some(_) if state.config_error_report.is_some() && !showing_effect_error => return,
@@ -1653,9 +1641,7 @@ fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
 /// `SHOJI_RENDER_AHEAD=0` turns render-ahead off everywhere (measurement and fallback).
 fn render_ahead_env_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("SHOJI_RENDER_AHEAD").is_none_or(|value| value != "0")
-    })
+    *ENABLED.get_or_init(|| std::env::var_os("SHOJI_RENDER_AHEAD").is_none_or(|value| value != "0"))
 }
 
 /// Whether the next frame of `surface` may be rendered now, while the previous one's
@@ -1809,7 +1795,10 @@ fn power_off_surface(surface: &mut SurfaceData, session_active: bool) {
 
 fn clear_powered_off_surface(surface: &mut SurfaceData) {
     surface.power_cleared = true;
-    if let Err(err) = surface.drm_output.with_compositor(|compositor| compositor.clear()) {
+    if let Err(err) = surface
+        .drm_output
+        .with_compositor(|compositor| compositor.clear())
+    {
         warn!(output = %surface.output.name(), ?err, "failed to switch output off");
     }
     // Nothing scans these out any more.
@@ -1824,7 +1813,9 @@ fn power_on_surface(surface: &mut SurfaceData) {
         target.reset(&surface.output);
     }
     surface.redraw_state = if surface.frame_pending {
-        TtyRedrawState::WaitingForVBlank { redraw_needed: true }
+        TtyRedrawState::WaitingForVBlank {
+            redraw_needed: true,
+        }
     } else {
         TtyRedrawState::Queued
     };
@@ -1857,7 +1848,11 @@ fn schedule_powered_off_frame_callbacks(
         TimeoutAction::ToDuration(POWERED_OFF_FRAME_CALLBACK_INTERVAL)
     });
     if inserted.is_err() {
-        warn!(?node, ?crtc, "failed to schedule powered-off frame callbacks");
+        warn!(
+            ?node,
+            ?crtc,
+            "failed to schedule powered-off frame callbacks"
+        );
     }
 }
 
@@ -1949,13 +1944,7 @@ pub struct BackendData {
     /// Per-CRTC (window start, count) of recent surface rebuilds after failed
     /// atomic commit tests. Bounds the recovery path: a configuration the
     /// kernel keeps rejecting must not turn into an endless reset loop.
-    surface_reset_attempts: HashMap<
-        crtc::Handle, 
-        (
-            Instant, 
-            u32,
-        ),
-    >,
+    surface_reset_attempts: HashMap<crtc::Handle, (Instant, u32)>,
 }
 
 fn driver_load_error(path: &Path, step: &str, error: &dyn std::fmt::Display) -> std::io::Error {
@@ -1986,9 +1975,8 @@ pub fn device_added(
     // Both steps load the GPU driver's userspace (GBM backend, EGL vendor library). When that
     // fails the bare errno says nothing, while the real reason is usually on stderr from
     // MESA-LOADER / libglvnd: a driver that cannot be loaded into this process.
-    let gbm = Device::new(fd.clone()).map_err(|error| {
-        driver_load_error(path, "create a GBM device", &error)
-    })?;
+    let gbm = Device::new(fd.clone())
+        .map_err(|error| driver_load_error(path, "create a GBM device", &error))?;
 
     let egl = unsafe { EGLDisplay::new(gbm.clone()) }
         .map_err(|error| driver_load_error(path, "initialize EGL", &error))?;
@@ -2064,13 +2052,13 @@ pub fn device_added(
     // visible as the window turning transparent for a frame.
     if state.drm_syncobj_state.is_none() {
         if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&fd) {
-            state.drm_syncobj_state = Some(
-                smithay::wayland::drm_syncobj::DrmSyncobjState::new::<ShojiWM>(
-                    &state.display_handle,
-                    fd.clone(),
-                ),
+            state.drm_syncobj_state = Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<
+                ShojiWM,
+            >(&state.display_handle, fd.clone()));
+            info!(
+                ?node,
+                "initialized linux-drm-syncobj global (explicit sync)"
             );
-            info!(?node, "initialized linux-drm-syncobj global (explicit sync)");
         } else {
             warn!(
                 ?node,
@@ -2126,22 +2114,12 @@ pub fn device_added(
         allocator,
         exporter,
         Some(gbm.clone()),
-        [
-            Format::Abgr2101010,
-            Format::Argb2101010,
-            Format::Argb8888
-        ],
+        [Format::Abgr2101010, Format::Argb2101010, Format::Argb8888],
         render_formats,
     );
 
-    let supports_fp16 = crate::backend::hdr_pipeline::probe_fp16_render_support(
-        &mut renderer
-    );
-    info!(
-        ?node,
-        supports_fp16,
-        "probed fp16 render target support"
-    );
+    let supports_fp16 = crate::backend::hdr_pipeline::probe_fp16_render_support(&mut renderer);
+    info!(?node, supports_fp16, "probed fp16 render target support");
 
     let drm_loop_handle = loop_handle.clone();
     let drm_events = loop_handle.insert_source(drm_events, move |event, metadata, state| {
@@ -2186,7 +2164,12 @@ pub fn device_added(
             // it again (see `PendingConnectorRetry`), and one failing connector must not cost
             // the others on this device.
             if let Err(err) = connector_connected(state, node, crtc, connector.clone()) {
-                warn!(?node, ?crtc, ?err, "connector failed to initialize; queueing retry");
+                warn!(
+                    ?node,
+                    ?crtc,
+                    ?err,
+                    "connector failed to initialize; queueing retry"
+                );
                 queue_connector_retry(state, node, crtc, connector);
             }
         }
@@ -2321,7 +2304,11 @@ mod vblank_grid_tests {
     fn a_late_first_event_is_corrected_by_the_next_on_time_one() {
         let targets = predictions(&[2800.0, 200.0]);
         let expected = 1_000_000.0 + 2.0 * PERIOD_US + 200.0;
-        assert!((targets[1] - expected).abs() < 1.0, "predicted {} us", targets[1]);
+        assert!(
+            (targets[1] - expected).abs() < 1.0,
+            "predicted {} us",
+            targets[1]
+        );
     }
 
     /// Tearing flips from a fullscreen game complete faster than the refresh period. The
@@ -2369,7 +2356,10 @@ mod implicit_sync_tests {
     use super::drivers_take_part_in_implicit_sync as trusted;
 
     fn gpus(drivers: &[Option<&str>]) -> Vec<Option<String>> {
-        drivers.iter().map(|driver| driver.map(str::to_owned)).collect()
+        drivers
+            .iter()
+            .map(|driver| driver.map(str::to_owned))
+            .collect()
     }
 
     #[test]
@@ -2459,11 +2449,15 @@ fn collect_client_buffers_for_hold(
     // between this and the render, so the pointer cannot move in between.
     let cursor_drawn_here = state.cursor_override.is_none()
         && state.config_cursor_override.is_none()
-        && state.space.output_geometry(output).is_some_and(|output_geo| {
-            state.seat.get_pointer().is_some_and(|pointer| {
-                output_geo.to_f64().contains(pointer.current_location())
-            })
-        });
+        && state
+            .space
+            .output_geometry(output)
+            .is_some_and(|output_geo| {
+                state
+                    .seat
+                    .get_pointer()
+                    .is_some_and(|pointer| output_geo.to_f64().contains(pointer.current_location()))
+            });
     let roots = state
         .session_lock_surface_for_output(output)
         .map(|lock_surface| lock_surface.wl_surface().clone())
@@ -2589,8 +2583,7 @@ fn frame_finish(
     // commit deadline subtracts this so its lead time is real, not
     // timestamp-space. Event delivery jitters with dispatch load, so smooth
     // with an EMA rather than trusting single samples.
-    let lead_sample =
-        presentation_clock.saturating_sub(Duration::from(state.clock.now()));
+    let lead_sample = presentation_clock.saturating_sub(Duration::from(state.clock.now()));
     surface.vblank_timestamp_lead = (surface.vblank_timestamp_lead * 7 + lead_sample) / 8;
     // Adapt the cursor commit margin from where fast-path commits actually
     // land. Ratchet only: a miss (landed at least half a period past its
@@ -2649,8 +2642,7 @@ fn frame_finish(
         // scanout timestamp. Negative would mean the event (and this handler)
         // ran before the moment the timestamp refers to — a driver that
         // timestamps the upcoming scanout rather than the completed one.
-        let event_delay_ms =
-            ms(Duration::from(state.clock.now())) - ms(presentation_clock);
+        let event_delay_ms = ms(Duration::from(state.clock.now())) - ms(presentation_clock);
         info!(
             output = %output_name,
             input_to_photon_ms = sub(presentation_clock, in_flight.input.event_time),
@@ -2708,20 +2700,21 @@ fn frame_finish(
         );
     }
     if crate::env_flag!("SHOJI_XDG_POPUP_LATENCY_DEBUG")
-        && let Some(popup_debug) = state.popup_latency_debug.take() {
-            tracing::info!(
-                surface_id = popup_debug.surface_id,
-                created_to_frame_finish_ms = presentation_clock
-                    .checked_sub(popup_debug.created_at)
-                    .map(|delta| delta.as_secs_f64() * 1000.0),
-                commit_to_frame_finish_ms = popup_debug
-                    .committed_at
-                    .and_then(|commit| presentation_clock.checked_sub(commit))
-                    .map(|delta| delta.as_secs_f64() * 1000.0),
-                output = %surface.output.name(),
-                "xdg popup latency: frame finish"
-            );
-        }
+        && let Some(popup_debug) = state.popup_latency_debug.take()
+    {
+        tracing::info!(
+            surface_id = popup_debug.surface_id,
+            created_to_frame_finish_ms = presentation_clock
+                .checked_sub(popup_debug.created_at)
+                .map(|delta| delta.as_secs_f64() * 1000.0),
+            commit_to_frame_finish_ms = popup_debug
+                .committed_at
+                .and_then(|commit| presentation_clock.checked_sub(commit))
+                .map(|delta| delta.as_secs_f64() * 1000.0),
+            output = %surface.output.name(),
+            "xdg popup latency: frame finish"
+        );
+    }
 
     surface.frame_pending = false;
     // The flip is done, so the GPU finished reading these: release them to their clients now.
@@ -2835,13 +2828,7 @@ fn render_queued_surface_after_frame_finish(
             );
         }
         Ok(RenderSurfaceOutcome::CommitFailed) => {
-            if let Err(
-                err,
-            ) = reset_surface_after_commit_failure(
-                state,
-                node,
-                crtc,
-            ) {
+            if let Err(err) = reset_surface_after_commit_failure(state, node, crtc) {
                 // This path was never fatal; stay consistent and let the
                 // main render loop decide when a reset storm ends the session.
                 warn!(
@@ -2870,16 +2857,14 @@ fn render_queued_surface_after_frame_finish(
 /// composites the cursor into the encode pass instead.
 fn hdr_hardware_cursor_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        !std::env::var("SHOJI_HDR_SOFTWARE_CURSOR").is_ok_and(|value| value == "1")
-    })
+    *ENABLED
+        .get_or_init(|| !std::env::var("SHOJI_HDR_SOFTWARE_CURSOR").is_ok_and(|value| value == "1"))
 }
 
 pub fn cursor_fast_path_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("SHOJI_CURSOR_FAST_PATH").is_none_or(|value| value != "0")
-    })
+    *ENABLED
+        .get_or_init(|| std::env::var_os("SHOJI_CURSOR_FAST_PATH").is_none_or(|value| value != "0"))
 }
 
 /// Fixed override for the cursor commit margin (`SHOJI_CURSOR_COMMIT_MARGIN_MS`).
@@ -3016,7 +3001,9 @@ fn submit_deferred_frame(
                 == TtyRedrawState::WaitingForVBlank {
                     redraw_needed: true,
                 };
-            let policy_allows = state.frame_pacing.allows_render_ahead(&surface.output.name());
+            let policy_allows = state
+                .frame_pacing
+                .allows_render_ahead(&surface.output.name());
             if redraw_waiting && render_ahead_allowed(surface, policy_allows) {
                 surface.redraw_state = TtyRedrawState::Queued;
                 render_queued_surface_after_frame_finish(state, loop_handle, node, crtc);
@@ -3348,20 +3335,21 @@ pub fn render_if_needed(
     }
 
     if crate::env_flag!("SHOJI_XDG_POPUP_LATENCY_DEBUG")
-        && let Some(popup_debug) = state.popup_latency_debug {
-            let now = Duration::from(state.clock.now());
-            tracing::info!(
-                surface_id = popup_debug.surface_id,
-                created_to_render_start_ms = now
-                    .checked_sub(popup_debug.created_at)
-                    .map(|delta| delta.as_secs_f64() * 1000.0),
-                commit_to_render_start_ms = popup_debug
-                    .committed_at
-                    .and_then(|commit| now.checked_sub(commit))
-                    .map(|delta| delta.as_secs_f64() * 1000.0),
-                "xdg popup latency: render_if_needed start"
-            );
-        }
+        && let Some(popup_debug) = state.popup_latency_debug
+    {
+        let now = Duration::from(state.clock.now());
+        tracing::info!(
+            surface_id = popup_debug.surface_id,
+            created_to_render_start_ms = now
+                .checked_sub(popup_debug.created_at)
+                .map(|delta| delta.as_secs_f64() * 1000.0),
+            commit_to_render_start_ms = popup_debug
+                .committed_at
+                .and_then(|commit| now.checked_sub(commit))
+                .map(|delta| delta.as_secs_f64() * 1000.0),
+            "xdg popup latency: render_if_needed start"
+        );
+    }
 
     trace!(
         backend_count = state.tty_backends.len(),
@@ -3410,11 +3398,7 @@ pub fn render_if_needed(
                     // sleep. Rebuild the surface instead of exiting the
                     // session; only a repeated reset storm propagates as
                     // fatal.
-                    reset_surface_after_commit_failure(
-                        state,
-                        node,
-                        crtc,
-                    )?;
+                    reset_surface_after_commit_failure(state, node, crtc)?;
                 }
                 RenderSurfaceOutcome::Processed => {
                     let output_name = state
@@ -4291,8 +4275,7 @@ fn render_surface(
         // backend already does — keep the previous decorations for this frame —
         // and surface the failure through the config-error overlay so it is
         // legible and recoverable in place.
-        if let Err(err) =
-            state.refresh_window_decorations_for_output(Some(output.name().as_str()))
+        if let Err(err) = state.refresh_window_decorations_for_output(Some(output.name().as_str()))
         {
             warn!(
                 output = %output.name(),
@@ -4449,8 +4432,7 @@ fn render_surface(
         let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
         let has_visible_x11_chrome = output_has_visible_x11_chrome(state, &output);
         let mut extra_damage = state.pending_decoration_damage.clone();
-        if crate::env_flag!("SHOJI_TRANSFORM_SNAPSHOT_DEBUG") && !extra_damage.is_empty()
-        {
+        if crate::env_flag!("SHOJI_TRANSFORM_SNAPSHOT_DEBUG") && !extra_damage.is_empty() {
             tracing::info!(
                 output = %output.name(),
                 pending_decoration_damage_count = extra_damage.len(),
@@ -4504,13 +4486,19 @@ fn render_surface(
         // Windows the plan picks by id are sampled too, possibly hidden ones.
         let selected = composition_plan.selected_window_ids();
         let mut windows = windows_top_to_bottom_for_output.clone();
-        windows.extend(composition_all_windows.iter().map(|(window, _)| window).filter(|window| {
-            !windows_top_to_bottom_for_output.contains(window)
-                && state
-                    .window_decorations
-                    .get(*window)
-                    .is_some_and(|decoration| selected.contains(&decoration.snapshot.id))
-        }).cloned());
+        windows.extend(
+            composition_all_windows
+                .iter()
+                .map(|(window, _)| window)
+                .filter(|window| {
+                    !windows_top_to_bottom_for_output.contains(window)
+                        && state
+                            .window_decorations
+                            .get(*window)
+                            .is_some_and(|decoration| selected.contains(&decoration.snapshot.id))
+                })
+                .cloned(),
+        );
         collect_client_buffers_for_hold(state, &output, &windows)
     };
     let captured_blink_damage = {
@@ -4744,11 +4732,7 @@ fn render_surface(
                 space,
                 window_decorations,
                 &windows_top_to_bottom,
-                closing_snapshots_on_output(
-                    &closing_snapshots,
-                    output.name().as_str(),
-                    output_geo,
-                ),
+                closing_snapshots_on_output(&closing_snapshots, output.name().as_str(), output_geo),
                 &output,
                 output_geo,
                 scale,
@@ -4833,7 +4817,9 @@ fn render_surface(
         if composition_windows.is_empty() {
             state.composition_windows.remove(output.name().as_str());
         } else {
-            state.composition_windows.insert(output.name(), composition_windows);
+            state
+                .composition_windows
+                .insert(output.name(), composition_windows);
         }
         let mut built = built?;
         for snapshot in live_window_snapshots
@@ -4938,9 +4924,15 @@ fn render_surface(
             content_for_capture.extend(content_elements);
         }
         if !state.session_lock_active {
-            state.output_overlays.render(&mut *renderer, &output,
-                (output_geo.size.w, output_geo.size.h), scale, &mut content_for_capture,
-                overlay_below_layers, TtyRenderElements::Snapshot);
+            state.output_overlays.render(
+                &mut *renderer,
+                &output,
+                (output_geo.size.w, output_geo.size.h),
+                scale,
+                &mut content_for_capture,
+                overlay_below_layers,
+                TtyRenderElements::Snapshot,
+            );
             // Drag views: above everything but the cursor.
             let drag_elements = crate::backend::dnd::drag_elements(
                 &mut *renderer,
@@ -4952,16 +4944,14 @@ fn render_surface(
             );
             content_for_capture.splice(
                 0..0,
-                drag_elements
-                    .into_iter()
-                    .map(|element| match element {
-                        crate::backend::dnd::DragElement::Texture(element) => {
-                            TtyRenderElements::TransformedSnapshot(element)
-                        }
-                        crate::backend::dnd::DragElement::Backdrop(element) => {
-                            TtyRenderElements::TransformedDecoration(element)
-                        }
-                    }),
+                drag_elements.into_iter().map(|element| match element {
+                    crate::backend::dnd::DragElement::Texture(element) => {
+                        TtyRenderElements::TransformedSnapshot(element)
+                    }
+                    crate::backend::dnd::DragElement::Backdrop(element) => {
+                        TtyRenderElements::TransformedDecoration(element)
+                    }
+                }),
             );
         }
         // The element count for diagnostics — final elements is built below
@@ -5106,12 +5096,7 @@ fn render_surface(
             .map(TtyRenderElements::Blink)
             .collect();
         let fps_overlay_elements: Vec<TtyRenderElements> = fps_counter
-            .render_elements(
-                &mut *renderer,
-                output.name().as_str(),
-                output_geo,
-                scale,
-            )
+            .render_elements(&mut *renderer, output.name().as_str(), output_geo, scale)
             .into_iter()
             .map(TtyRenderElements::Text)
             .collect();
@@ -5173,37 +5158,37 @@ fn render_surface(
                 } else {
                     Fourcc::Abgr8888
                 };
-                (crate::backend::hdr_pipeline::OutputEncoding::Icc(lut), format)
+                (
+                    crate::backend::hdr_pipeline::OutputEncoding::Icc(lut),
+                    format,
+                )
             }),
         };
         if let Some((encoding, intermediate_format)) = output_encoding {
-            let output_name = output
-                .name();
+            let output_name = output.name();
             // A cross-GPU output gets its frame as one texture from the render
             // GPU and cannot use planes of its own; it keeps the software cursor.
-            let hdr_cursor_elements = if surface.cross_gpu.is_none() && hdr_hardware_cursor_enabled() {
-                let cursor = elements
-                    .iter()
-                    .filter_map(|element| match element {
-                        TtyRenderElements::Cursor(cursor) => Some(cursor),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                state
-                    .hdr_cursor_caches
-                    .entry(output_name.clone())
-                    .or_default()
-                    .convert(&mut *renderer, &cursor, scale, &encoding)
-            } else {
-                None
-            };
+            let hdr_cursor_elements =
+                if surface.cross_gpu.is_none() && hdr_hardware_cursor_enabled() {
+                    let cursor = elements
+                        .iter()
+                        .filter_map(|element| match element {
+                            TtyRenderElements::Cursor(cursor) => Some(cursor),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    state
+                        .hdr_cursor_caches
+                        .entry(output_name.clone())
+                        .or_default()
+                        .convert(&mut *renderer, &cursor, scale, &encoding)
+                } else {
+                    None
+                };
             if hdr_cursor_elements.is_some() {
                 elements.retain(|element| !matches!(element, TtyRenderElements::Cursor(_)));
             }
-            let mut pipeline = state.hdr_pipelines
-                .remove(
-                    &output_name
-                );
+            let mut pipeline = state.hdr_pipelines.remove(&output_name);
             // The scene's renderer, i.e. the render GPU's for a cross-GPU output:
             // the element textures live there.
             match crate::backend::hdr_pipeline::render_hdr_pipeline(
@@ -5215,11 +5200,7 @@ fn render_surface(
                 encoding,
                 intermediate_format,
             ) {
-                Ok(
-                    Some(
-                        (encode_element, stage1_states)
-                    )
-                ) => {
+                Ok(Some((encode_element, stage1_states))) => {
                     elements = hdr_cursor_elements
                         .into_iter()
                         .flatten()
@@ -5233,12 +5214,8 @@ fn render_surface(
                     // as presented on this output.
                     hdr_stage1_states = Some(stage1_states);
                 }
-                Ok(
-                    None
-                ) => {}
-                Err(
-                    err
-                ) => {
+                Ok(None) => {}
+                Err(err) => {
                     // Fall through with the raw element list: the frame shows
                     // unconverted colors but stays visible.
                     warn!(
@@ -5248,21 +5225,11 @@ fn render_surface(
                     );
                 }
             }
-            if let Some(
-                pipeline
-            ) = pipeline {
-                state.hdr_pipelines
-                    .insert(
-                        output_name,
-                        pipeline,
-                    );
+            if let Some(pipeline) = pipeline {
+                state.hdr_pipelines.insert(output_name, pipeline);
             }
         } else {
-            state.hdr_pipelines
-                .remove(
-                    output.name()
-                        .as_str()
-                );
+            state.hdr_pipelines.remove(output.name().as_str());
             state.hdr_cursor_caches.remove(output.name().as_str());
         }
 
@@ -5359,169 +5326,165 @@ fn render_surface(
         let render_frame_result: Result<TtyRenderFrameResult, Box<dyn std::error::Error>> =
             if let Some(scanout_renderer) = cross_gpu_scanout_renderer.as_deref_mut()
                 && let Some(target) = surface.cross_gpu.as_mut()
-        {
-            timescope::scope!("tty render_frame cross-gpu");
-            render_cross_gpu_frame(
-                target,
-                renderer,
-                scanout_renderer,
-                &mut surface.drm_output,
-                &output,
-                &elements,
-                frame_clear_color.into(),
-                frame_flags,
-            )
-        } else {
-            timescope::scope!("tty render_frame");
-            crate::backend::shader_effect::with_gpu_timing_renderer_span(
-                &mut *renderer,
-                "tty-render-frame",
-                (output_geo.size.w, output_geo.size.h),
-                |renderer| {
-                    if direct_scanout_debug_enabled()
-                        && let Some(root_id) = fullscreen_root_element_id.as_ref()
-                        && let Some(element) =
-                            elements.iter().find(|element| element.id() == root_id)
-                    {
-                        let src = element.src();
-                        let geometry = element.geometry(scale);
-                        let transform = element.transform();
-                        let storage =
-                            describe_underlying_storage(element.underlying_storage(renderer));
-                        fullscreen_root_buffer_details = Some(format!(
-                            "element={} id={:?} src={src:?} geometry={geometry:?} \
+            {
+                timescope::scope!("tty render_frame cross-gpu");
+                render_cross_gpu_frame(
+                    target,
+                    renderer,
+                    scanout_renderer,
+                    &mut surface.drm_output,
+                    &output,
+                    &elements,
+                    frame_clear_color.into(),
+                    frame_flags,
+                )
+            } else {
+                timescope::scope!("tty render_frame");
+                crate::backend::shader_effect::with_gpu_timing_renderer_span(
+                    &mut *renderer,
+                    "tty-render-frame",
+                    (output_geo.size.w, output_geo.size.h),
+                    |renderer| {
+                        if direct_scanout_debug_enabled()
+                            && let Some(root_id) = fullscreen_root_element_id.as_ref()
+                            && let Some(element) =
+                                elements.iter().find(|element| element.id() == root_id)
+                        {
+                            let src = element.src();
+                            let geometry = element.geometry(scale);
+                            let transform = element.transform();
+                            let storage =
+                                describe_underlying_storage(element.underlying_storage(renderer));
+                            fullscreen_root_buffer_details = Some(format!(
+                                "element={} id={:?} src={src:?} geometry={geometry:?} \
                          transform={transform:?} storage=[{storage}]",
-                            tty_render_element_name(element),
-                            element.id(),
-                        ));
-                    }
-                    if crate::backend::shader_effect::gpu_element_timing_debug_enabled() {
-                        let profiled_elements = elements
-                            .iter()
-                            .map(ProfiledTtyRenderElement::new)
-                            .collect::<Vec<_>>();
-                        surface
-                            .drm_output
-                            .render_frame(
-                                renderer,
-                                &profiled_elements,
-                                frame_clear_color,
-                                frame_flags,
-                            )
-                            .map(|result| {
-                                // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
-                                // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
-                                // so smithay cannot attach a fence to the atomic commit. When
-                                // needs_sync() is true the page flip would be submitted before
-                                // the GPU finishes rendering, causing the display to scan out a
-                                // partially-rendered buffer and producing visible microstutter
-                                // during scroll/animation. Block on the swapchain sync point
-                                // manually before queue_frame commits the flip.
-                                if result.needs_sync()
-                                    && let PrimaryPlaneElement::Swapchain(ref element) =
-                                        result.primary_element
+                                tty_render_element_name(element),
+                                element.id(),
+                            ));
+                        }
+                        if crate::backend::shader_effect::gpu_element_timing_debug_enabled() {
+                            let profiled_elements = elements
+                                .iter()
+                                .map(ProfiledTtyRenderElement::new)
+                                .collect::<Vec<_>>();
+                            surface
+                                .drm_output
+                                .render_frame(
+                                    renderer,
+                                    &profiled_elements,
+                                    frame_clear_color,
+                                    frame_flags,
+                                )
+                                .map(|result| {
+                                    // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                                    // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                                    // so smithay cannot attach a fence to the atomic commit. When
+                                    // needs_sync() is true the page flip would be submitted before
+                                    // the GPU finishes rendering, causing the display to scan out a
+                                    // partially-rendered buffer and producing visible microstutter
+                                    // during scroll/animation. Block on the swapchain sync point
+                                    // manually before queue_frame commits the flip.
+                                    if result.needs_sync()
+                                        && let PrimaryPlaneElement::Swapchain(ref element) =
+                                            result.primary_element
                                     {
                                         let _ = element.sync.wait();
                                     }
-                                let primary_scanout = matches!(
-                                    result.primary_element,
-                                    PrimaryPlaneElement::Element(_)
-                                );
-                                let primary_plane_kind = match &result.primary_element {
-                                    PrimaryPlaneElement::Element(_) => "element",
-                                    PrimaryPlaneElement::Swapchain(_) => "swapchain",
-                                };
-                                let overlay_details = if direct_scanout_debug_enabled() {
-                                    result
-                                        .overlay_elements
-                                        .iter()
-                                        .map(|element| {
-                                            format!(
-                                                "id={:?} geo={:?} alpha={:.3}",
-                                                element.id(),
-                                                element.geometry(scale),
-                                                element.alpha(),
-                                            )
-                                        })
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
-                                TtyRenderFrameResult {
-                                    is_empty: result.is_empty,
-                                    primary_scanout,
-                                    primary_plane_kind,
-                                    overlay_plane_count: result.overlay_elements.len(),
-                                    overlay_details,
-                                    cursor_plane_assigned: result.cursor_element.is_some(),
-                                    states: result.states,
-                                }
-                            })
-                    } else {
-                        surface
-                            .drm_output
-                            .render_frame(renderer, &elements, frame_clear_color, frame_flags)
-                            .map(|result| {
-                                // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
-                                // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
-                                // so smithay cannot attach a fence to the atomic commit. When
-                                // needs_sync() is true the page flip would be submitted before
-                                // the GPU finishes rendering, causing the display to scan out a
-                                // partially-rendered buffer and producing visible microstutter
-                                // during scroll/animation. Block on the swapchain sync point
-                                // manually before queue_frame commits the flip.
-                                if result.needs_sync()
-                                    && let PrimaryPlaneElement::Swapchain(ref element) =
-                                        result.primary_element
+                                    let primary_scanout = matches!(
+                                        result.primary_element,
+                                        PrimaryPlaneElement::Element(_)
+                                    );
+                                    let primary_plane_kind = match &result.primary_element {
+                                        PrimaryPlaneElement::Element(_) => "element",
+                                        PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                                    };
+                                    let overlay_details = if direct_scanout_debug_enabled() {
+                                        result
+                                            .overlay_elements
+                                            .iter()
+                                            .map(|element| {
+                                                format!(
+                                                    "id={:?} geo={:?} alpha={:.3}",
+                                                    element.id(),
+                                                    element.geometry(scale),
+                                                    element.alpha(),
+                                                )
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    TtyRenderFrameResult {
+                                        is_empty: result.is_empty,
+                                        primary_scanout,
+                                        primary_plane_kind,
+                                        overlay_plane_count: result.overlay_elements.len(),
+                                        overlay_details,
+                                        cursor_plane_assigned: result.cursor_element.is_some(),
+                                        states: result.states,
+                                    }
+                                })
+                        } else {
+                            surface
+                                .drm_output
+                                .render_frame(renderer, &elements, frame_clear_color, frame_flags)
+                                .map(|result| {
+                                    // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                                    // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                                    // so smithay cannot attach a fence to the atomic commit. When
+                                    // needs_sync() is true the page flip would be submitted before
+                                    // the GPU finishes rendering, causing the display to scan out a
+                                    // partially-rendered buffer and producing visible microstutter
+                                    // during scroll/animation. Block on the swapchain sync point
+                                    // manually before queue_frame commits the flip.
+                                    if result.needs_sync()
+                                        && let PrimaryPlaneElement::Swapchain(ref element) =
+                                            result.primary_element
                                     {
                                         let _ = element.sync.wait();
                                     }
-                                let primary_scanout = matches!(
-                                    result.primary_element,
-                                    PrimaryPlaneElement::Element(_)
-                                );
-                                let primary_plane_kind = match &result.primary_element {
-                                    PrimaryPlaneElement::Element(_) => "element",
-                                    PrimaryPlaneElement::Swapchain(_) => "swapchain",
-                                };
-                                let overlay_details = if direct_scanout_debug_enabled() {
-                                    result
-                                        .overlay_elements
-                                        .iter()
-                                        .map(|element| {
-                                            format!(
-                                                "id={:?} geo={:?} alpha={:.3}",
-                                                element.id(),
-                                                element.geometry(scale),
-                                                element.alpha(),
-                                            )
-                                        })
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
-                                TtyRenderFrameResult {
-                                    is_empty: result.is_empty,
-                                    primary_scanout,
-                                    primary_plane_kind,
-                                    overlay_plane_count: result.overlay_elements.len(),
-                                    overlay_details,
-                                    cursor_plane_assigned: result.cursor_element.is_some(),
-                                    states: result.states,
-                                }
-                            })
-                    }
-                },
-            )
-            .map_err(Into::into)
-        };
+                                    let primary_scanout = matches!(
+                                        result.primary_element,
+                                        PrimaryPlaneElement::Element(_)
+                                    );
+                                    let primary_plane_kind = match &result.primary_element {
+                                        PrimaryPlaneElement::Element(_) => "element",
+                                        PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                                    };
+                                    let overlay_details = if direct_scanout_debug_enabled() {
+                                        result
+                                            .overlay_elements
+                                            .iter()
+                                            .map(|element| {
+                                                format!(
+                                                    "id={:?} geo={:?} alpha={:.3}",
+                                                    element.id(),
+                                                    element.geometry(scale),
+                                                    element.alpha(),
+                                                )
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    TtyRenderFrameResult {
+                                        is_empty: result.is_empty,
+                                        primary_scanout,
+                                        primary_plane_kind,
+                                        overlay_plane_count: result.overlay_elements.len(),
+                                        overlay_details,
+                                        cursor_plane_assigned: result.cursor_element.is_some(),
+                                        states: result.states,
+                                    }
+                                })
+                        }
+                    },
+                )
+                .map_err(Into::into)
+            };
         let result = match render_frame_result {
-            Ok(
-                result,
-            ) => result,
-            Err(
-                err,
-            ) => {
+            Ok(result) => result,
+            Err(err) => {
                 if error_chain_has_drm_test_failed(err.as_ref())
                     || error_chain_has_rejected_commit(err.as_ref())
                     || error_chain_has_busy_commit(err.as_ref())
@@ -5531,9 +5494,7 @@ fn render_surface(
                         ?err,
                         "tty render_frame was rejected by the kernel; requesting surface reset",
                     );
-                    return Ok(
-                        RenderSurfaceOutcome::CommitFailed,
-                    );
+                    return Ok(RenderSurfaceOutcome::CommitFailed);
                 }
                 return Err(err);
             }
@@ -5932,7 +5893,9 @@ fn render_surface(
                         - surface.last_cursor_hotspot.to_f64())
                     .to_physical(scale)
                     .to_i32_round();
-                    let _ = surface.drm_output.update_cursor_position(cursor_location, None);
+                    let _ = surface
+                        .drm_output
+                        .update_cursor_position(cursor_location, None);
                 }
                 // `should_tear` selects an immediate (async) page flip when the fullscreen
                 // direct-scanout tearing fast path is active, and a normal vblank-synced flip
@@ -5974,9 +5937,7 @@ fn render_surface(
                                 ?err,
                                 "tty queue_frame was rejected by the kernel; requesting surface reset",
                             );
-                            return Ok(
-                                RenderSurfaceOutcome::CommitFailed,
-                            );
+                            return Ok(RenderSurfaceOutcome::CommitFailed);
                         }
                         return Err(Box::new(err));
                     }
@@ -6103,23 +6064,23 @@ fn render_surface(
                     redraw_needed: true,
                 };
             } else {
-            let generation = surface.frame_callback_timer_generation.wrapping_add(1);
-            surface.frame_callback_timer_generation = generation;
-            surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
-                queued: false,
-                generation,
-            };
-            if animation_gap_debug_enabled() {
-                info!(
-                    output = %output.name(),
+                let generation = surface.frame_callback_timer_generation.wrapping_add(1);
+                surface.frame_callback_timer_generation = generation;
+                surface.redraw_state = TtyRedrawState::WaitingForEstimatedVBlank {
+                    queued: false,
                     generation,
-                    frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
-                    frame_callback_timer_armed = surface.frame_callback_timer_armed,
-                    next_frame_target = ?surface.next_frame_target,
-                    "animation gap: tty estimated-vblank armed"
-                );
-            }
-            schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
+                };
+                if animation_gap_debug_enabled() {
+                    info!(
+                        output = %output.name(),
+                        generation,
+                        frame_duration_ms = surface.frame_duration.as_secs_f64() * 1000.0,
+                        frame_callback_timer_armed = surface.frame_callback_timer_armed,
+                        next_frame_target = ?surface.next_frame_target,
+                        "animation gap: tty estimated-vblank armed"
+                    );
+                }
+                schedule_estimated_vblank_callback(loop_handle, state, node, crtc, frame_time);
             }
         }
 
@@ -6430,7 +6391,11 @@ fn window_surface_source_elements_for_window(
         window_render::surface_elements(window, renderer, physical_location, output_scale, alpha)
     } else {
         window_render::root_surface_elements(
-            window, renderer, physical_location, output_scale, alpha,
+            window,
+            renderer,
+            physical_location,
+            output_scale,
+            alpha,
         )
     };
     unclipped_window_surface_elements(window, renderer, elements, output_scale, visual)
@@ -6456,9 +6421,8 @@ fn subsurface_groups_for_window(
     let smithay::desktop::WindowSurface::Wayland(surface) = window.underlying_surface() else {
         return SubsurfaceGroups::default();
     };
-    let root_id = smithay::backend::renderer::element::Id::from_wayland_resource(
-        surface.wl_surface(),
-    );
+    let root_id =
+        smithay::backend::renderer::element::Id::from_wayland_resource(surface.wl_surface());
     let mut elements =
         window_render::surface_elements(window, renderer, physical_location, output_scale, alpha);
     // Paint order puts subsurfaces placed above the root before it. Without a root buffer
@@ -6567,7 +6531,12 @@ fn subsurface_effect_elements(
         group,
     )
     .inspect_err(|error| {
-        warn!(window_id, placement, ?error, "failed to build subsurface window effect");
+        warn!(
+            window_id,
+            placement,
+            ?error,
+            "failed to build subsurface window effect"
+        );
     })
 }
 
@@ -6747,13 +6716,9 @@ fn ssd_popup_scene_elements(
                     Relocate::Relative,
                 ))
             }
-            decoration::PopupSceneElement::Texture(element) => {
-                TtyRenderElements::RelocatedText(RelocateRenderElement::from_element(
-                    element,
-                    root_origin,
-                    Relocate::Relative,
-                ))
-            }
+            decoration::PopupSceneElement::Texture(element) => TtyRenderElements::RelocatedText(
+                RelocateRenderElement::from_element(element, root_origin, Relocate::Relative),
+            ),
         }));
     }
     elements
@@ -9499,14 +9464,16 @@ fn collect_backdrop_item_damage(
                 windows.iter().cloned(),
                 window_source_damage,
             )),
-            BackdropItem::Layers { surfaces, upper } => entries.extend(collect_layer_source_damage(
-                surfaces.iter().cloned(),
-                if *upper {
-                    upper_layer_source_damage
-                } else {
-                    lower_layer_source_damage
-                },
-            )),
+            BackdropItem::Layers { surfaces, upper } => {
+                entries.extend(collect_layer_source_damage(
+                    surfaces.iter().cloned(),
+                    if *upper {
+                        upper_layer_source_damage
+                    } else {
+                        lower_layer_source_damage
+                    },
+                ))
+            }
             BackdropItem::Composited(_) => {}
         }
     }
@@ -9533,7 +9500,11 @@ fn backdrop_items_capture_scene(
     let mut scene = Vec::new();
     for item in items {
         match item {
-            BackdropItem::Windows { windows, output_origin, force_visible } => {
+            BackdropItem::Windows {
+                windows,
+                output_origin,
+                force_visible,
+            } => {
                 for window in windows {
                     if let Ok(mut elements) = window_scene_elements_for_capture(
                         renderer,
@@ -9566,10 +9537,12 @@ fn backdrop_items_capture_scene(
                 }
             }
             BackdropItem::Composited(composited) => {
-                scene.push(match composited.capture_element(renderer, capture_origin_physical, scale) {
-                    CompositedElement::Texture(element) => TtyRenderElements::Snapshot(element),
-                    CompositedElement::Solid(element) => TtyRenderElements::Blink(element),
-                });
+                scene.push(
+                    match composited.capture_element(renderer, capture_origin_physical, scale) {
+                        CompositedElement::Texture(element) => TtyRenderElements::Snapshot(element),
+                        CompositedElement::Solid(element) => TtyRenderElements::Blink(element),
+                    },
+                );
             }
         }
     }
@@ -9783,58 +9756,55 @@ fn configured_background_effect_elements_for_layer(
             .get(&stable_key)
             .filter(|existing| existing.signature == signature)
             .cloned()
-        {
-            for rect in rects {
-                let rect_key = format!(
-                    "{}:{}:{}:{}:{}",
-                    stable_key, rect.x, rect.y, rect.width, rect.height
+    {
+        for rect in rects {
+            let rect_key = format!(
+                "{}:{}:{}:{}:{}",
+                stable_key, rect.x, rect.y, rect.width, rect.height
+            );
+            let rect_local = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((rect.x - output_geo.loc.x, rect.y - output_geo.loc.y)),
+                (rect.width, rect.height).into(),
+            );
+            if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
+                tracing::info!(
+                    layer_surface = ?layer_surface.wl_surface().id(),
+                    output = %output.name(),
+                    rect = ?rect,
+                    rect_local = ?rect_local,
+                    captured_local_rect = ?captured_local_rect,
+                    from_cache = true,
+                    "backdrop debug: layer effect element"
                 );
-                let rect_local = smithay::utils::Rectangle::new(
-                    smithay::utils::Point::from((
-                        rect.x - output_geo.loc.x,
-                        rect.y - output_geo.loc.y,
-                    )),
-                    (rect.width, rect.height).into(),
-                );
-                if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
-                    tracing::info!(
-                        layer_surface = ?layer_surface.wl_surface().id(),
-                        output = %output.name(),
-                        rect = ?rect,
-                        rect_local = ?rect_local,
-                        captured_local_rect = ?captured_local_rect,
-                        from_cache = true,
-                        "backdrop debug: layer effect element"
-                    );
-                }
-                elements.push(TtyRenderElements::Backdrop(
-                    crate::backend::shader_effect::backdrop_shader_element(
-                        renderer,
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.id.clone())
-                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.commit_counter)
-                            .unwrap_or_default(),
-                        existing.texture.clone(),
-                        rect_local,
-                        rect_local,
-                        captured_local_rect,
-                        &backdrop_effect,
-                        alpha,
-                        scale.x as f32,
-                        None,
-                        0.0,
-                        format!("layer-top:{}:{}", output.name(), rect_key),
-                    )?,
-                ));
             }
-            return Ok(elements);
+            elements.push(TtyRenderElements::Backdrop(
+                crate::backend::shader_effect::backdrop_shader_element(
+                    renderer,
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.id.clone())
+                        .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.commit_counter)
+                        .unwrap_or_default(),
+                    existing.texture.clone(),
+                    rect_local,
+                    rect_local,
+                    captured_local_rect,
+                    &backdrop_effect,
+                    alpha,
+                    scale.x as f32,
+                    None,
+                    0.0,
+                    format!("layer-top:{}:{}", output.name(), rect_key),
+                )?,
+            ));
         }
+        return Ok(elements);
+    }
     let backdrop_texture = if backdrop_effect.uses_backdrop_input() {
         let mut backdrop_scene: Vec<TtyRenderElements> = Vec::new();
         // Upper layers below this one render above every toplevel window, so
@@ -9922,8 +9892,7 @@ fn configured_background_effect_elements_for_layer(
         )?;
         // The signature (element ids, commit counters, geometry) is what
         // `renderToIfDirty({ dependsOn: [layerSource()] })` compares.
-        let signature =
-            crate::backend::snapshot::render_element_scene_signature(&scene, scale);
+        let signature = crate::backend::snapshot::render_element_scene_signature(&scene, scale);
         capture_scene_texture_for_effect(
             renderer,
             "tty-layer-top-source",
@@ -9935,7 +9904,9 @@ fn configured_background_effect_elements_for_layer(
     } else {
         None
     };
-    let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+    let layer_source_signature = layer_source_capture
+        .as_ref()
+        .map(|(_, signature)| *signature);
     let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
     // Layer source capture can legitimately come up empty (first frame after
     // the surface maps, zero-sized geometry during animations, capture
@@ -10283,47 +10254,47 @@ fn lower_layer_scene_elements(
                     .get(&stable_key)
                     .filter(|existing| existing.signature == signature)
                     .cloned()
-                {
-                    for rect in rects {
-                        let rect_key = format!(
-                            "{}:{}:{}:{}:{}",
-                            stable_key, rect.x, rect.y, rect.width, rect.height
-                        );
-                        let rect_local = smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                rect.x - output_geo.loc.x,
-                                rect.y - output_geo.loc.y,
-                            )),
-                            (rect.width, rect.height).into(),
-                        );
-                        elements.push(TtyRenderElements::Backdrop(
-                            crate::backend::shader_effect::backdrop_shader_element(
-                                renderer,
-                                existing
-                                    .sub_elements
-                                    .get(&rect_key)
-                                    .map(|entry| entry.id.clone())
-                                    .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                                existing
-                                    .sub_elements
-                                    .get(&rect_key)
-                                    .map(|entry| entry.commit_counter)
-                                    .unwrap_or_default(),
-                                existing.texture.clone(),
-                                rect_local,
-                                rect_local,
-                                captured_local_rect,
-                                &backdrop_effect,
-                                1.0,
-                                scale.x as f32,
-                                None,
-                                0.0,
-                                format!("layer-lower:{}:{}", output.name(), rect_key),
-                            )?,
-                        ));
-                    }
-                    continue;
+            {
+                for rect in rects {
+                    let rect_key = format!(
+                        "{}:{}:{}:{}:{}",
+                        stable_key, rect.x, rect.y, rect.width, rect.height
+                    );
+                    let rect_local = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::from((
+                            rect.x - output_geo.loc.x,
+                            rect.y - output_geo.loc.y,
+                        )),
+                        (rect.width, rect.height).into(),
+                    );
+                    elements.push(TtyRenderElements::Backdrop(
+                        crate::backend::shader_effect::backdrop_shader_element(
+                            renderer,
+                            existing
+                                .sub_elements
+                                .get(&rect_key)
+                                .map(|entry| entry.id.clone())
+                                .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                            existing
+                                .sub_elements
+                                .get(&rect_key)
+                                .map(|entry| entry.commit_counter)
+                                .unwrap_or_default(),
+                            existing.texture.clone(),
+                            rect_local,
+                            rect_local,
+                            captured_local_rect,
+                            &backdrop_effect,
+                            1.0,
+                            scale.x as f32,
+                            None,
+                            0.0,
+                            format!("layer-lower:{}:{}", output.name(), rect_key),
+                        )?,
+                    ));
                 }
+                continue;
+            }
             let backdrop_scene = backdrop_items_capture_scene(
                 renderer,
                 space,
@@ -10420,7 +10391,9 @@ fn lower_layer_scene_elements(
             } else {
                 None
             };
-            let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+            let layer_source_signature = layer_source_capture
+                .as_ref()
+                .map(|(_, signature)| *signature);
             let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
             // Skip the effect this frame when the layer source could not be
             // captured (empty scene / zero-sized geometry); running the
@@ -10573,12 +10546,11 @@ fn log_motion_trace_frame(state: &ShojiWM, output: &Output, frame_tick: Option<(
     let mut windows = state
         .window_decorations
         .values()
-        .filter(|decoration| {
-            decoration.managed_window.visible && !decoration.managed_window.idle
-        })
+        .filter(|decoration| decoration.managed_window.visible && !decoration.managed_window.idle)
         .filter_map(|decoration| {
             let rect = decoration.managed_window.rect.as_ref()?;
-            let root_x = decoration.layout.root.rect.x as f64 + decoration.root_subpixel_offset.left;
+            let root_x =
+                decoration.layout.root.rect.x as f64 + decoration.root_subpixel_offset.left;
             Some(format!(
                 "{}:ts={:.3}:root={:.3}:phys={:.2}",
                 decoration.snapshot.id,
@@ -10689,8 +10661,8 @@ fn upper_layer_scene_elements(
             .and_then(|effects| effects.behind.as_ref())
             .filter(|effect| effect.effect.is_backdrop());
         let effect_config = configured_background_effect;
-        if let Some(custom_background) = custom_background
-            .filter(|slot| slot.effect.supports_layer_framebuffer_backdrop())
+        if let Some(custom_background) =
+            custom_background.filter(|slot| slot.effect.supports_layer_framebuffer_backdrop())
         {
             // Sampled from the frame being composited, so it shows everything
             // drawn below the layer (other effects included), unlike a
@@ -10792,7 +10764,9 @@ fn custom_background_framebuffer_effect_elements_for_layer(
     slot: &crate::ssd::WindowEffectSlot,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let Some(rect) = layer_surface_logical_rect(output, layer_surface)
-        .and_then(|rect| window_render::layer_effect_region_bounds(layer_surface, rect, slot.region))
+        .and_then(|rect| {
+            window_render::layer_effect_region_bounds(layer_surface, rect, slot.region)
+        })
         .map(|rect| expand_logical_rect(rect, slot.outsets))
     else {
         return Ok(Vec::new());
@@ -11512,46 +11486,40 @@ fn window_scene_elements_for_capture(
                 }
             }
             elements.extend(transform_clipped_elements(clipped_elements, visual_state));
-            elements.extend(
-                transform_window_elements(
-                    raw_elements,
-                    visual_state,
-                    TtyRenderElements::Window,
-                    TtyRenderElements::TransformedWindow,
-                ),
-            );
+            elements.extend(transform_window_elements(
+                raw_elements,
+                visual_state,
+                TtyRenderElements::Window,
+                TtyRenderElements::TransformedWindow,
+            ));
         } else {
-            elements.extend(
-                transform_window_elements(
-                    window_render::surface_elements(
-                        window,
-                        renderer,
-                        physical_location,
-                        scale,
-                        visual_state.opacity,
-                    ),
-                    visual_state,
-                    TtyRenderElements::Window,
-                    TtyRenderElements::TransformedWindow,
+            elements.extend(transform_window_elements(
+                window_render::surface_elements(
+                    window,
+                    renderer,
+                    physical_location,
+                    scale,
+                    visual_state.opacity,
                 ),
-            );
+                visual_state,
+                TtyRenderElements::Window,
+                TtyRenderElements::TransformedWindow,
+            ));
         }
     }
 
-    elements.extend(
-        transform_window_elements(
-            window_render::popup_elements(
-                window,
-                renderer,
-                physical_location,
-                scale,
-                visual_state.opacity,
-            ),
-            visual_state,
-            TtyRenderElements::Window,
-            TtyRenderElements::TransformedWindow,
+    elements.extend(transform_window_elements(
+        window_render::popup_elements(
+            window,
+            renderer,
+            physical_location,
+            scale,
+            visual_state.opacity,
         ),
-    );
+        visual_state,
+        TtyRenderElements::Window,
+        TtyRenderElements::TransformedWindow,
+    ));
 
     Ok(elements)
 }
@@ -11661,13 +11629,15 @@ pub(crate) fn capture_live_snapshot_for_close(
     let backend_node = state
         .tty_render_node
         .filter(|node| state.tty_backends.contains_key(node))
-        .or_else(|| state.tty_backends.iter().find_map(|(node, backend)| {
-            backend
-                .surfaces
-                .values()
-                .any(|surface| surface.output.name() == output_name)
-                .then_some(*node)
-        }))
+        .or_else(|| {
+            state.tty_backends.iter().find_map(|(node, backend)| {
+                backend
+                    .surfaces
+                    .values()
+                    .any(|surface| surface.output.name() == output_name)
+                    .then_some(*node)
+            })
+        })
         .or_else(|| state.tty_backends.keys().next().copied());
     let Some(backend_node) = backend_node else {
         return Ok(false);
@@ -12002,20 +11972,20 @@ fn closing_decoration_elements(
         output_geo,
         scale,
         visual.opacity,
-    )
-        && let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual) {
-            elements.extend(transformed);
-        }
+    ) && let Ok(transformed) = transform_text_elements(icon_elements, root_origin, visual)
+    {
+        elements.extend(transformed);
+    }
     if let Ok(text_elements) = crate::backend::text::text_elements_for_decoration(
         renderer,
         decoration,
         output_geo,
         scale,
         visual.opacity,
-    )
-        && let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual) {
-            elements.extend(transformed);
-        }
+    ) && let Ok(transformed) = transform_text_elements(text_elements, root_origin, visual)
+    {
+        elements.extend(transformed);
+    }
     let mut decoration = decoration.clone();
     if let Ok(background_elements) = decoration::background_elements_for_window(
         renderer,
@@ -12023,12 +11993,11 @@ fn closing_decoration_elements(
         output_geo,
         scale,
         visual.opacity,
-    )
-        && let Ok(transformed) =
-            transform_decoration_elements(background_elements, root_origin, visual)
-        {
-            elements.extend(transformed);
-        }
+    ) && let Ok(transformed) =
+        transform_decoration_elements(background_elements, root_origin, visual)
+    {
+        elements.extend(transformed);
+    }
     elements
 }
 
@@ -12359,18 +12328,10 @@ fn connector_connected(
     // re-resolves with the real values once the display config lands.
     let hdr_luminance_override = output_hdr_luminance_override(state, &output_name);
     let color_state = {
-        let backend = state.tty_backends
-            .get(&node)
-            .unwrap();
+        let backend = state.tty_backends.get(&node).unwrap();
         let device = backend.drm_output_manager.device();
-        let edid_hdr = crate::color::drm_metadata::read_edid_hdr(
-            device,
-            &connector
-        );
-        let hdmi_link = crate::color::drm_metadata::read_edid_hdmi_link(
-            device,
-            &connector,
-        );
+        let edid_hdr = crate::color::drm_metadata::read_edid_hdr(device, &connector);
+        let hdmi_link = crate::color::drm_metadata::read_edid_hdmi_link(device, &connector);
         let color_mode = if hdr_render_supports_fp16(state, node) {
             crate::color::resolve_output_mode(
                 &output_name,
@@ -12391,11 +12352,7 @@ fn connector_connected(
         };
         // Whatever the previous DRM master left in the colour pipeline would
         // otherwise apply under every frame (see reset_inherited_color_state).
-        crate::color::drm_metadata::reset_inherited_color_state(
-            device,
-            crtc,
-            &connector,
-        );
+        crate::color::drm_metadata::reset_inherited_color_state(device, crtc, &connector);
         let hdr_metadata_blob = match color_mode {
             crate::color::OutputColorMode::Hdr10 { .. } => {
                 match crate::color::drm_metadata::apply_hdr_connector_state(
@@ -12417,19 +12374,11 @@ fn connector_connected(
             crate::color::OutputColorMode::Sdr => {
                 // Clear leftovers from a previous session so the sink drops
                 // out of HDR mode.
-                crate::color::drm_metadata::reset_hdr_connector_state(
-                    device,
-                    &connector
-                );
+                crate::color::drm_metadata::reset_hdr_connector_state(device, &connector);
                 None
             }
         };
-        crate::color::OutputColorState::new(
-            color_mode,
-            edid_hdr,
-            hdmi_link,
-            hdr_metadata_blob
-        )
+        crate::color::OutputColorState::new(color_mode, edid_hdr, hdmi_link, hdr_metadata_blob)
     };
     info!(
         output = %output_name,
@@ -12437,12 +12386,7 @@ fn connector_connected(
         edid_hdr = ?color_state.edid_hdr,
         "resolved output color mode"
     );
-    state
-        .output_color
-        .insert(
-            output_name.clone(),
-            color_state
-        );
+    state.output_color.insert(output_name.clone(), color_state);
 
     let available_modes = connector
         .modes()
@@ -12662,23 +12606,17 @@ fn connector_disconnected(
     let Some(surface) = backend.surfaces.remove(&crtc) else {
         return;
     };
-    if let Some(
-        color_state
-    ) = state.output_color.remove(
-        &output_name
-    )
-        && let Some(
-            blob
-        ) = color_state.hdr_metadata_blob {
-            // The kernel only frees property blobs when the DRM fd closes,
-            // and this device stays open across hotplugs — destroy explicitly
-            // so replug cycles don't leak blobs.
-            crate::color::drm_metadata::destroy_metadata_blob(
-                backend.drm_output_manager
-                    .device(),
-                blob,
-            );
-        }
+    if let Some(color_state) = state.output_color.remove(&output_name)
+        && let Some(blob) = color_state.hdr_metadata_blob
+    {
+        // The kernel only frees property blobs when the DRM fd closes,
+        // and this device stays open across hotplugs — destroy explicitly
+        // so replug cycles don't leak blobs.
+        crate::color::drm_metadata::destroy_metadata_blob(
+            backend.drm_output_manager.device(),
+            blob,
+        );
+    }
     let output = surface.output;
     state.space.unmap_output(&output);
     state.remove_output_global(&output);
@@ -12808,22 +12746,10 @@ fn reset_surface_after_commit_failure(
     let now = Instant::now();
     let entry = backend
         .surface_reset_attempts
-        .entry(
-            crtc,
-        )
-        .or_insert(
-            (
-                now, 
-                0,
-            ),
-        );
-    if now.duration_since(
-        entry.0,
-    ) > RESET_WINDOW {
-        *entry = (
-            now,
-            0,
-        );
+        .entry(crtc)
+        .or_insert((now, 0));
+    if now.duration_since(entry.0) > RESET_WINDOW {
+        *entry = (now, 0);
     }
     entry.1 += 1;
     if entry.1 > MAX_RESETS_PER_WINDOW {
@@ -12839,9 +12765,7 @@ fn reset_surface_after_commit_failure(
         .crtcs()
         .find(|(_, scanned_crtc)| *scanned_crtc == crtc)
         .map(|(info, _)| info.clone());
-    let Some(
-        connector,
-    ) = connector else {
+    let Some(connector) = connector else {
         // The scanner no longer maps a connector to this CRTC — the surface
         // is left over from a change that never fully applied. A rescan emits
         // the missing disconnect/connect events through the hotplug path.
@@ -12850,10 +12774,7 @@ fn reset_surface_after_commit_failure(
             ?crtc,
             "no connector mapped to failing crtc; rescanning device"
         );
-        return device_changed(
-            state,
-            node,
-        );
+        return device_changed(state, node);
     };
 
     info!(
@@ -12866,21 +12787,8 @@ fn reset_surface_after_commit_failure(
         ),
         "resetting tty surface after failed atomic commit test"
     );
-    connector_disconnected(
-        state,
-        node,
-        crtc,
-        connector
-            .clone(),
-    );
-    if let Err(
-        err,
-    ) = connector_connected(
-        state,
-        node,
-        crtc,
-        connector,
-    ) {
+    connector_disconnected(state, node, crtc, connector.clone());
+    if let Err(err) = connector_connected(state, node, crtc, connector) {
         // Leave this output disconnected rather than killing the session:
         // other outputs keep working, and a later hotplug event retries.
         warn!(
@@ -13053,48 +12961,30 @@ fn hdr_render_supports_fp16(state: &crate::state::ShojiWM, node: DrmNode) -> boo
 /// a live switch: the connector properties persist across smithay's
 /// commits (legacy SET_PROPERTY), and the render path re-reads
 /// `output_color` every frame to engage or drop the PQ encode pass.
-pub fn refresh_tty_output_color_modes(
-    state: &mut crate::state::ShojiWM
-) {
+pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
     let mut changed_outputs = Vec::new();
     let icc_changed = refresh_output_icc_profiles(state);
     for (&node, backend) in state.tty_backends.iter() {
         let connectors = backend
             .drm_scanner
             .crtcs()
-            .map(
-                |(info, crtc)| (
-                    info
-                        .clone(),
-                    crtc,
-                )
-            ).collect::<Vec<_>>();
+            .map(|(info, crtc)| (info.clone(), crtc))
+            .collect::<Vec<_>>();
         for (connector, crtc) in connectors {
-            if !backend.surfaces.contains_key(
-                &crtc
-            ) {
+            if !backend.surfaces.contains_key(&crtc) {
                 continue;
             }
             let output_name = format!(
                 "{}-{}",
-                connector
-                    .interface()
-                    .as_str(),
-                connector
-                    .interface_id(),
+                connector.interface().as_str(),
+                connector.interface_id(),
             );
-            let Some(current) = state.output_color
-                .get(
-                    &output_name
-                )
-                .copied() else {
+            let Some(current) = state.output_color.get(&output_name).copied() else {
                 continue;
             };
             let hdr_requested = state
                 .runtime_output_configs
-                .get(
-                    &output_name
-                )
+                .get(&output_name)
                 .and_then(|config| config.hdr.as_ref())
                 .is_some_and(|hdr| hdr.enabled())
                 || crate::color::hdr_output_requested_via_env(&output_name);
@@ -13103,8 +12993,7 @@ pub fn refresh_tty_output_color_modes(
                 crate::color::resolve_output_mode(
                     &output_name,
                     hdr_requested,
-                    current.edid_hdr
-                        .as_ref(),
+                    current.edid_hdr.as_ref(),
                     hdr_luminance_override,
                 )
             } else {
@@ -13130,31 +13019,18 @@ pub fn refresh_tty_output_color_modes(
             }
 
             let device = backend.drm_output_manager.device();
-            crate::color::drm_metadata::reset_inherited_color_state(
-                device,
-                crtc,
-                &connector,
-            );
+            crate::color::drm_metadata::reset_inherited_color_state(device, crtc, &connector);
             if let Some(blob) = current.hdr_metadata_blob {
-                crate::color::drm_metadata::destroy_metadata_blob(
-                    device,
-                    blob,
-                );
+                crate::color::drm_metadata::destroy_metadata_blob(device, blob);
             }
-            let (
-                mode,
-                hdr_metadata_blob
-            ) = match desired_mode {
+            let (mode, hdr_metadata_blob) = match desired_mode {
                 crate::color::OutputColorMode::Hdr10 { .. } => {
                     match crate::color::drm_metadata::apply_hdr_connector_state(
                         device,
                         &connector,
                         &desired_mode,
                     ) {
-                        Ok(blob) => (
-                            desired_mode,
-                            blob,
-                        ),
+                        Ok(blob) => (desired_mode, blob),
                         Err(error) => {
                             warn!(
                                 output = %output_name,
@@ -13162,25 +13038,15 @@ pub fn refresh_tty_output_color_modes(
                                 "failed to apply HDR connector state; staying SDR"
                             );
                             crate::color::drm_metadata::reset_hdr_connector_state(
-                                device,
-                                &connector,
+                                device, &connector,
                             );
-                            (
-                                crate::color::OutputColorMode::Sdr,
-                                None,
-                            )
+                            (crate::color::OutputColorMode::Sdr, None)
                         }
                     }
                 }
                 crate::color::OutputColorMode::Sdr => {
-                    crate::color::drm_metadata::reset_hdr_connector_state(
-                        device,
-                        &connector,
-                    );
-                    (
-                        crate::color::OutputColorMode::Sdr,
-                        None,
-                    )
+                    crate::color::drm_metadata::reset_hdr_connector_state(device, &connector);
+                    (crate::color::OutputColorMode::Sdr, None)
                 }
             };
             if mode == current.mode {
@@ -13192,23 +13058,24 @@ pub fn refresh_tty_output_color_modes(
                 "output color mode changed by runtime display config"
             );
             changed_outputs.push(output_name.clone());
-            state.output_color
-                .insert(
-                    output_name,
-                    crate::color::OutputColorState::new(
-                        mode,
-                        current.edid_hdr,
-                        current.hdmi_link,
-                        hdr_metadata_blob
-                    ),
-                );
+            state.output_color.insert(
+                output_name,
+                crate::color::OutputColorState::new(
+                    mode,
+                    current.edid_hdr,
+                    current.hdmi_link,
+                    hdr_metadata_blob,
+                ),
+            );
         }
     }
     announce_output_icc_profiles(state);
     if !changed_outputs.is_empty() || icc_changed {
         for output in state.space.outputs() {
             if changed_outputs.contains(&output.name()) {
-                state.color_management_state.output_description_changed(output);
+                state
+                    .color_management_state
+                    .output_description_changed(output);
             }
         }
         // Force a full repaint on every output so the first frame after the
@@ -13216,15 +13083,14 @@ pub fn refresh_tty_output_color_modes(
         // `output_color` per frame.
         for output in state.space.outputs() {
             if let Some(geometry) = state.space.output_geometry(output) {
-                state.pending_decoration_damage
-                    .push(
-                        crate::ssd::LogicalRect::new(
-                            geometry.loc.x,
-                            geometry.loc.y,
-                            geometry.size.w,
-                            geometry.size.h,
-                        )
-                    );
+                state
+                    .pending_decoration_damage
+                    .push(crate::ssd::LogicalRect::new(
+                        geometry.loc.x,
+                        geometry.loc.y,
+                        geometry.size.w,
+                        geometry.size.h,
+                    ));
             }
         }
         state.schedule_redraw();
@@ -13250,9 +13116,12 @@ fn refresh_output_icc_profiles(state: &mut crate::state::ShojiWM) -> bool {
         }
     }
     let changed = desired.len() != state.output_icc.len()
-        || desired
-            .iter()
-            .any(|(name, lut)| state.output_icc.get(name).is_none_or(|current| current.id != lut.id));
+        || desired.iter().any(|(name, lut)| {
+            state
+                .output_icc
+                .get(name)
+                .is_none_or(|current| current.id != lut.id)
+        });
     if changed {
         state.output_icc = desired;
     }
@@ -13367,7 +13236,9 @@ pub fn apply_tty_output_mode(
                 // A committed frame is still waiting for its flip. Rendering now would put a
                 // second frame in flight, which `frame_pending` and `held_client_buffers` both
                 // assume never happens; `frame_finish` redraws once it has flipped.
-                surface.redraw_state = TtyRedrawState::WaitingForVBlank { redraw_needed: true };
+                surface.redraw_state = TtyRedrawState::WaitingForVBlank {
+                    redraw_needed: true,
+                };
             } else {
                 surface.redraw_state = TtyRedrawState::Queued;
             }
@@ -13787,8 +13658,7 @@ struct TtyScene<'a> {
         &'a mut HashMap<String, crate::backend::snapshot::LiveWindowSnapshot>,
     complete_window_snapshot_trackers:
         &'a mut HashMap<String, smithay::backend::renderer::damage::OutputDamageTracker>,
-    closing_window_snapshots:
-        &'a HashMap<String, crate::backend::snapshot::ClosingWindowSnapshot>,
+    closing_window_snapshots: &'a HashMap<String, crate::backend::snapshot::ClosingWindowSnapshot>,
     closing_snapshots: &'a [crate::backend::snapshot::ClosingWindowSnapshot],
     snapshot_dirty_window_ids: &'a mut std::collections::HashSet<String>,
     transform_snapshot_window_ids: &'a mut std::collections::HashSet<String>,
@@ -14036,8 +13906,12 @@ impl crate::backend::composition::CompositionScene for TtyScene<'_> {
             popup_effect_cache: self.state.popup_effect_cache,
             popup_framebuffer_effect_states: self.state.popup_framebuffer_effect_states,
         };
-        self.scope_caches
-            .enter(scope, self.output.name().as_str(), self.window_decorations, &mut layers);
+        self.scope_caches.enter(
+            scope,
+            self.output.name().as_str(),
+            self.window_decorations,
+            &mut layers,
+        );
     }
 
     fn leave_scope(&mut self, scope: &str) {
@@ -14048,8 +13922,12 @@ impl crate::backend::composition::CompositionScene for TtyScene<'_> {
             popup_effect_cache: self.state.popup_effect_cache,
             popup_framebuffer_effect_states: self.state.popup_framebuffer_effect_states,
         };
-        self.scope_caches
-            .leave(scope, self.output.name().as_str(), self.window_decorations, &mut layers);
+        self.scope_caches.leave(
+            scope,
+            self.output.name().as_str(),
+            self.window_decorations,
+            &mut layers,
+        );
     }
 
     fn texture(&self, element: TextureRenderElement<GlesTexture>) -> TtyRenderElements {
@@ -14105,8 +13983,10 @@ fn tty_window_stack_elements(
     let renderer: &mut GlesRenderer = renderer;
     let output: &Output = output;
     let space: &smithay::desktop::Space<smithay::desktop::Window> = space;
-    let window_decorations: &mut HashMap<smithay::desktop::Window, crate::ssd::WindowDecorationState> =
-        window_decorations;
+    let window_decorations: &mut HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    > = window_decorations;
     let windows_ready_for_decoration: &mut std::collections::HashSet<String> =
         windows_ready_for_decoration;
     let live_window_snapshots: &mut HashMap<String, crate::backend::snapshot::LiveWindowSnapshot> =
@@ -14123,8 +14003,10 @@ fn tty_window_stack_elements(
         String,
         smithay::backend::renderer::damage::OutputDamageTracker,
     > = complete_window_snapshot_trackers;
-    let closing_window_snapshots: &HashMap<String, crate::backend::snapshot::ClosingWindowSnapshot> =
-        closing_window_snapshots;
+    let closing_window_snapshots: &HashMap<
+        String,
+        crate::backend::snapshot::ClosingWindowSnapshot,
+    > = closing_window_snapshots;
     let snapshot_dirty_window_ids: &mut std::collections::HashSet<String> =
         snapshot_dirty_window_ids;
     let transform_snapshot_window_ids: &mut std::collections::HashSet<String> =
@@ -14173,10 +14055,8 @@ fn tty_window_stack_elements(
                     scale,
                     1.0,
                 );
-                scene_elements
-                    .extend(popup_elements.into_iter().map(TtyRenderElements::Window));
-                scene_elements
-                    .extend(surface_elements.into_iter().map(TtyRenderElements::Window));
+                scene_elements.extend(popup_elements.into_iter().map(TtyRenderElements::Window));
+                scene_elements.extend(surface_elements.into_iter().map(TtyRenderElements::Window));
                 continue;
             }
             let window_started_at = Instant::now();
@@ -14261,8 +14141,7 @@ fn tty_window_stack_elements(
             // id (another workspace, a minimized window) shows it as it would look
             // shown, untransformed at its rect.
             let visual_state = match window_decorations.get(window).filter(|decoration| {
-                force_visible
-                    && decoration.managed_window_hidden_on_output(output.name().as_str())
+                force_visible && decoration.managed_window_hidden_on_output(output.name().as_str())
             }) {
                 Some(decoration) => window_visual_state(
                     decoration.layout.root.rect,
@@ -14276,32 +14155,31 @@ fn tty_window_stack_elements(
                 scale.x * visual_state.scale.x.max(0.0),
                 scale.y * visual_state.scale.y.max(0.0),
             ));
-            let client_physical_geometry =
-                window_decorations.get(window).and_then(|decoration| {
-                    decoration.content_clip.map(|clip| {
-                        let root_origin = root_physical_origin_precise(
+            let client_physical_geometry = window_decorations.get(window).and_then(|decoration| {
+                decoration.content_clip.map(|clip| {
+                    let root_origin = root_physical_origin_precise(
+                        decoration.layout.root.rect,
+                        decoration.root_subpixel_offset,
+                        output_geo,
+                        scale,
+                    );
+                    let local_geometry =
+                        crate::backend::visual::relative_physical_rect_from_root_precise(
+                            clip.rect_precise,
                             decoration.layout.root.rect,
                             decoration.root_subpixel_offset,
                             output_geo,
                             scale,
                         );
-                        let local_geometry =
-                            crate::backend::visual::relative_physical_rect_from_root_precise(
-                                clip.rect_precise,
-                                decoration.layout.root.rect,
-                                decoration.root_subpixel_offset,
-                                output_geo,
-                                scale,
-                            );
-                        smithay::utils::Rectangle::new(
-                            smithay::utils::Point::from((
-                                root_origin.x + local_geometry.loc.x,
-                                root_origin.y + local_geometry.loc.y,
-                            )),
-                            local_geometry.size,
-                        )
-                    })
-                });
+                    smithay::utils::Rectangle::new(
+                        smithay::utils::Point::from((
+                            root_origin.x + local_geometry.loc.x,
+                            root_origin.y + local_geometry.loc.y,
+                        )),
+                        local_geometry.size,
+                    )
+                })
+            });
             let physical_location = client_physical_geometry
                 .map(|geometry| geometry.loc)
                 .unwrap_or(preliminary_physical_location);
@@ -14510,38 +14388,37 @@ fn tty_window_stack_elements(
                 if let Some(effect_config) = state.configured_background_effect.as_ref()
                     && (use_full_window_snapshot
                         || !effect_config.effect.supports_framebuffer_backdrop())
-                    {
-                        backdrop_items.extend(
-                            configured_background_effect_elements_for_window(
-                                &mut *renderer,
-                                space,
-                                window_decorations,
-                                &state.window_commit_times,
-                                &state.window_source_damage,
-                                &state.lower_layer_source_damage,
-                                &state.upper_layer_source_damage,
-                                &output,
-                                output_geo,
-                                scale,
-                                &windows_top_to_bottom,
-                                below,
-                                force_visible,
-                                _window_index,
-                                window,
-                                if use_full_window_snapshot {
-                                    1.0
-                                } else {
-                                    visual_state.opacity
-                                },
-                                effect_config,
-                                false,
-                            )
-                            .into_iter()
-                            .map(|(order, element)| (order, element, true)),
-                        );
-                    }
-                window_timing.backdrop_ms =
-                    backdrop_started_at.elapsed().as_secs_f64() * 1000.0;
+                {
+                    backdrop_items.extend(
+                        configured_background_effect_elements_for_window(
+                            &mut *renderer,
+                            space,
+                            window_decorations,
+                            &state.window_commit_times,
+                            &state.window_source_damage,
+                            &state.lower_layer_source_damage,
+                            &state.upper_layer_source_damage,
+                            &output,
+                            output_geo,
+                            scale,
+                            &windows_top_to_bottom,
+                            below,
+                            force_visible,
+                            _window_index,
+                            window,
+                            if use_full_window_snapshot {
+                                1.0
+                            } else {
+                                visual_state.opacity
+                            },
+                            effect_config,
+                            false,
+                        )
+                        .into_iter()
+                        .map(|(order, element)| (order, element, true)),
+                    );
+                }
+                window_timing.backdrop_ms = backdrop_started_at.elapsed().as_secs_f64() * 1000.0;
                 let background_started_at = Instant::now();
                 for (order, element, render_as_backdrop) in backdrop_items.drain(..) {
                     if let Some(root_origin) = root_origin {
@@ -14553,9 +14430,7 @@ fn tty_window_stack_elements(
                         if crate::env_flag!("SHOJI_GAP_READBACK_DEBUG")
                             && !use_full_window_snapshot
                             && let Some(first_geometry) = items.first().map(|item| {
-                                smithay::backend::renderer::element::Element::geometry(
-                                    item, scale,
-                                )
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
                             })
                         {
                             log_gap_readback_edge_probes(
@@ -14604,9 +14479,7 @@ fn tty_window_stack_elements(
                         if let Some(root_origin) = root_origin {
                             ordered_backdrop_elements.extend(
                                 transform_decoration_elements(
-                                    vec![decoration::DecorationSceneElements::Backdrop(
-                                        element,
-                                    )],
+                                    vec![decoration::DecorationSceneElements::Backdrop(element)],
                                     root_origin,
                                     composition_visual,
                                 )?
@@ -14641,40 +14514,32 @@ fn tty_window_stack_elements(
                     ordered_background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in ordered_background_items {
                         if let Some(root_origin) = root_origin {
-                            let render_as_backdrop = matches!(
-                                element,
-                                decoration::DecorationSceneElements::Backdrop(_)
-                            );
-                            let debug_stable = if crate::env_flag!("SHOJI_GAP_DEBUG")
-                            {
+                            let render_as_backdrop =
+                                matches!(element, decoration::DecorationSceneElements::Backdrop(_));
+                            let debug_stable = if crate::env_flag!("SHOJI_GAP_DEBUG") {
                                 decoration_state
                                     .buffers
                                     .iter()
                                     .find(|buffer| buffer.order == order)
-                                    .map(|buffer| {
-                                        (buffer.stable_key.clone(), buffer.source_kind)
-                                    })
+                                    .map(|buffer| (buffer.stable_key.clone(), buffer.source_kind))
                             } else {
                                 None
                             };
-                            let pre_transform_geometry = if std::env::var_os("SHOJI_GAP_DEBUG")
-                                .is_some()
-                            {
-                                Some(smithay::backend::renderer::element::Element::geometry(
-                                    &element, scale,
-                                ))
-                            } else {
-                                None
-                            };
+                            let pre_transform_geometry =
+                                if std::env::var_os("SHOJI_GAP_DEBUG").is_some() {
+                                    Some(smithay::backend::renderer::element::Element::geometry(
+                                        &element, scale,
+                                    ))
+                                } else {
+                                    None
+                                };
                             let items = transform_decoration_elements(
                                 vec![element],
                                 root_origin,
                                 composition_visual,
                             )?;
-                            if let (
-                                Some((stable_key, source_kind)),
-                                Some(pre_transform_geometry),
-                            ) = (debug_stable, pre_transform_geometry)
+                            if let (Some((stable_key, source_kind)), Some(pre_transform_geometry)) =
+                                (debug_stable, pre_transform_geometry)
                             {
                                 let post_transform_geometry = items.first().map(|item| {
                                     smithay::backend::renderer::element::Element::geometry(
@@ -14779,14 +14644,13 @@ fn tty_window_stack_elements(
                         } else {
                             None
                         };
-                        let pre_transform_geometry =
-                            if crate::env_flag!("SHOJI_GAP_DEBUG") {
-                                Some(smithay::backend::renderer::element::Element::geometry(
-                                    &element, scale,
-                                ))
-                            } else {
-                                None
-                            };
+                        let pre_transform_geometry = if crate::env_flag!("SHOJI_GAP_DEBUG") {
+                            Some(smithay::backend::renderer::element::Element::geometry(
+                                &element, scale,
+                            ))
+                        } else {
+                            None
+                        };
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
@@ -14796,9 +14660,7 @@ fn tty_window_stack_elements(
                             (debug_stable, pre_transform_geometry)
                         {
                             let post_transform_geometry = items.first().map(|item| {
-                                smithay::backend::renderer::element::Element::geometry(
-                                    item, scale,
-                                )
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
                             });
                             debug_ui_pre_geometries.push((
                                 order,
@@ -14830,11 +14692,9 @@ fn tty_window_stack_elements(
                             );
                         }
                         if use_full_window_snapshot {
-                            snapshot_ui_items
-                                .extend(items.into_iter().map(|item| (order, item)));
+                            snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {
-                            ordered_ui_elements
-                                .extend(items.into_iter().map(|item| (order, item)));
+                            ordered_ui_elements.extend(items.into_iter().map(|item| (order, item)));
                         }
                     }
                 }
@@ -14870,14 +14730,13 @@ fn tty_window_stack_elements(
                         } else {
                             None
                         };
-                        let pre_transform_geometry =
-                            if crate::env_flag!("SHOJI_GAP_DEBUG") {
-                                Some(smithay::backend::renderer::element::Element::geometry(
-                                    &element, scale,
-                                ))
-                            } else {
-                                None
-                            };
+                        let pre_transform_geometry = if crate::env_flag!("SHOJI_GAP_DEBUG") {
+                            Some(smithay::backend::renderer::element::Element::geometry(
+                                &element, scale,
+                            ))
+                        } else {
+                            None
+                        };
                         let items = transform_text_elements(
                             vec![element],
                             root_origin,
@@ -14887,9 +14746,7 @@ fn tty_window_stack_elements(
                             (debug_stable, pre_transform_geometry)
                         {
                             let post_transform_geometry = items.first().map(|item| {
-                                smithay::backend::renderer::element::Element::geometry(
-                                    item, scale,
-                                )
+                                smithay::backend::renderer::element::Element::geometry(item, scale)
                             });
                             debug_ui_pre_geometries.push((
                                 order,
@@ -14921,11 +14778,9 @@ fn tty_window_stack_elements(
                             );
                         }
                         if use_full_window_snapshot {
-                            snapshot_ui_items
-                                .extend(items.into_iter().map(|item| (order, item)));
+                            snapshot_ui_items.extend(items.into_iter().map(|item| (order, item)));
                         } else {
-                            ordered_ui_elements
-                                .extend(items.into_iter().map(|item| (order, item)));
+                            ordered_ui_elements.extend(items.into_iter().map(|item| (order, item)));
                         }
                     }
                 }
@@ -14936,17 +14791,12 @@ fn tty_window_stack_elements(
                 snapshot_ui_items.sort_by_key(|(order, _)| *order);
                 snapshot_backdrop_items.sort_by_key(|(order, _)| *order);
                 if crate::env_flag!("SHOJI_TRANSFORM_SNAPSHOT_DEBUG") {
-                    let first_backdrop =
-                        ordered_backdrop_elements.first().map(|(_, element)| {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
-                        });
+                    let first_backdrop = ordered_backdrop_elements.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     let first_snapshot_backdrop =
                         snapshot_backdrop_items.first().map(|(_, element)| {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
                         });
                     let first_ui = ordered_ui_elements.first().map(|(_, element)| {
                         smithay::backend::renderer::element::Element::geometry(element, scale)
@@ -14969,12 +14819,9 @@ fn tty_window_stack_elements(
                     );
                 }
                 if crate::env_flag!("SHOJI_GAP_DEBUG") {
-                    let first_backdrop =
-                        ordered_backdrop_elements.first().map(|(_, element)| {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
-                        });
+                    let first_backdrop = ordered_backdrop_elements.first().map(|(_, element)| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     let first_fill = debug_background_geometries
                         .iter()
                         .filter(|(_, stable_key, source_kind, geometry)| {
@@ -15084,8 +14931,7 @@ fn tty_window_stack_elements(
                     );
                 }
                 let _client_end_len = snapshot_scene.len();
-                snapshot_scene
-                    .extend(snapshot_ui_items.into_iter().map(|(_, element)| element));
+                snapshot_scene.extend(snapshot_ui_items.into_iter().map(|(_, element)| element));
                 snapshot_scene.extend(
                     snapshot_backdrop_items
                         .into_iter()
@@ -15247,14 +15093,10 @@ fn tty_window_stack_elements(
                     let first_geometry = clipped.first().map(|element| match element {
                         window_render::WindowClipElement::Clipped(element)
                         | window_render::WindowClipElement::ColorConverted(element) => {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
                         }
                         window_render::WindowClipElement::Raw(element) => {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
                         }
                     });
                     let window_geometry = window.geometry();
@@ -15264,7 +15106,7 @@ fn tty_window_stack_elements(
                     let edge_delta = if let (Some(decoration), Some(first_geometry)) =
                         (window_decorations.get(window), first_geometry)
                     {
-                let snap_scale = Scale::from((
+                        let snap_scale = Scale::from((
                             scale.x * visual_state.scale.x.max(0.0),
                             scale.y * visual_state.scale.y.max(0.0),
                         ));
@@ -15282,9 +15124,8 @@ fn tty_window_stack_elements(
                             );
                         let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
                         let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
-                        let expected_right = ((snapped_clip.x + snapped_clip.width) as f64
-                            * scale.x)
-                            .round() as i32;
+                        let expected_right =
+                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
                         let expected_bottom = ((snapped_clip.y + snapped_clip.height) as f64
                             * scale.y)
                             .round() as i32;
@@ -15400,22 +15241,21 @@ fn tty_window_stack_elements(
                                     (
                                         client.loc.x - fill.loc.x,
                                         client.loc.y - (fill.loc.y + fill.size.h),
-                                        (client.loc.x + client.size.w)
-                                            - (fill.loc.x + fill.size.w),
+                                        (client.loc.x + client.size.w) - (fill.loc.x + fill.size.w),
                                         client.size.w - fill.size.w,
                                     )
                                 })
                             });
                         let content_clip_physical =
-                        window_decorations.get(window).and_then(|decoration| {
-                            let content_clip = decoration.content_clip?;
-                            let root_origin = root_physical_origin_precise(
-                                decoration.layout.root.rect,
-                                decoration.root_subpixel_offset,
-                                output_geo,
-                                scale,
-                            );
-                            let local_geometry =
+                            window_decorations.get(window).and_then(|decoration| {
+                                let content_clip = decoration.content_clip?;
+                                let root_origin = root_physical_origin_precise(
+                                    decoration.layout.root.rect,
+                                    decoration.root_subpixel_offset,
+                                    output_geo,
+                                    scale,
+                                );
+                                let local_geometry =
                                 crate::backend::visual::relative_physical_rect_from_root_precise(
                                     content_clip.rect_precise,
                                     decoration.layout.root.rect,
@@ -15423,14 +15263,14 @@ fn tty_window_stack_elements(
                                     output_geo,
                                     scale,
                                 );
-                            Some(smithay::utils::Rectangle::new(
-                                smithay::utils::Point::from((
-                                    root_origin.x + local_geometry.loc.x,
-                                    root_origin.y + local_geometry.loc.y,
-                                )),
-                                local_geometry.size,
-                            ))
-                        });
+                                Some(smithay::utils::Rectangle::new(
+                                    smithay::utils::Point::from((
+                                        root_origin.x + local_geometry.loc.x,
+                                        root_origin.y + local_geometry.loc.y,
+                                    )),
+                                    local_geometry.size,
+                                ))
+                            });
                         let frame_key = format!("{}:{}", output.name(), window_id);
                         let previous_client_state = previous_client_frame_state(
                             &frame_key,
@@ -15488,14 +15328,8 @@ fn tty_window_stack_elements(
                                 .filter_map(|(order, fill_key, source_kind, geometry)| {
                                     let fill_base = fill_key.strip_suffix(":fill")?;
                                     (ui_key.starts_with(fill_base)
-                                        && ui_key.as_bytes().get(fill_base.len())
-                                            == Some(&b'/'))
-                                    .then_some((
-                                        *order,
-                                        fill_key.clone(),
-                                        *source_kind,
-                                        *geometry,
-                                    ))
+                                        && ui_key.as_bytes().get(fill_base.len()) == Some(&b'/'))
+                                    .then_some((*order, fill_key.clone(), *source_kind, *geometry))
                                 })
                                 .max_by_key(|(_, fill_key, _, _)| fill_key.len())
                         };
@@ -15601,9 +15435,7 @@ fn tty_window_stack_elements(
                     );
                     if crate::env_flag!("SHOJI_GAP_DEBUG") {
                         let first_geometry = raw_elements.first().map(|element| {
-                            smithay::backend::renderer::element::Element::geometry(
-                                element, scale,
-                            )
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
                         });
                         let first_src = raw_elements.first().map(|element| {
                             smithay::backend::renderer::element::Element::src(element)
@@ -15695,17 +15527,18 @@ fn tty_window_stack_elements(
                 if crate::env_flag!("SHOJI_GAP_READBACK_DEBUG")
                     && let Some(first_geometry) = transformed.first().map(|element| {
                         smithay::backend::renderer::element::Element::geometry(element, scale)
-                    }) {
-                        log_gap_readback_edge_probes(
-                            &mut *renderer,
-                            scale,
-                            &transformed,
-                            first_geometry,
-                            "client",
-                            &output.name(),
-                            &window_id,
-                        );
-                    }
+                    })
+                {
+                    log_gap_readback_edge_probes(
+                        &mut *renderer,
+                        scale,
+                        &transformed,
+                        first_geometry,
+                        "client",
+                        &output.name(),
+                        &window_id,
+                    );
+                }
                 transformed
             } else {
                 let surfaces = window_render::surface_elements(
@@ -15772,17 +15605,18 @@ fn tty_window_stack_elements(
                 if crate::env_flag!("SHOJI_GAP_READBACK_DEBUG")
                     && let Some(first_geometry) = transformed.first().map(|element| {
                         smithay::backend::renderer::element::Element::geometry(element, scale)
-                    }) {
-                        log_gap_readback_edge_probes(
-                            &mut *renderer,
-                            scale,
-                            &transformed,
-                            first_geometry,
-                            "client",
-                            &output.name(),
-                            &window_id,
-                        );
-                    }
+                    })
+                {
+                    log_gap_readback_edge_probes(
+                        &mut *renderer,
+                        scale,
+                        &transformed,
+                        first_geometry,
+                        "client",
+                        &output.name(),
+                        &window_id,
+                    );
+                }
                 transformed
             };
             window_timing.client_phase_ms =
@@ -15821,8 +15655,7 @@ fn tty_window_stack_elements(
                 );
                 current_window_elements.extend(popup_elements);
             }
-            window_timing.popup_phase_ms =
-                popup_phase_started_at.elapsed().as_secs_f64() * 1000.0;
+            window_timing.popup_phase_ms = popup_phase_started_at.elapsed().as_secs_f64() * 1000.0;
             if output_render_debug_enabled() {
                 let title = window_decorations
                     .get(window)
@@ -16073,27 +15906,26 @@ fn tty_window_stack_elements(
                 );
             }
 
-            let (subsurfaces_above, subsurfaces_below, client_elements) =
-                if separate_subsurfaces {
-                    let groups = subsurface_groups_for_window(
-                        window,
-                        &mut *renderer,
-                        physical_location,
-                        scale,
-                        visual_state,
-                        visual_state.opacity,
-                    );
-                    let client_elements = client_elements
-                        .into_iter()
-                        .filter(|element| {
-                            !groups.ids.contains(
-                                smithay::backend::renderer::element::Element::id(element),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    // Each group: its (replaced) subsurfaces, then its behind effect.
-                    let mut render_group = |group: Vec<TtyRenderElements>,
-                                            placements: [&'static str; 2]| {
+            let (subsurfaces_above, subsurfaces_below, client_elements) = if separate_subsurfaces {
+                let groups = subsurface_groups_for_window(
+                    window,
+                    &mut *renderer,
+                    physical_location,
+                    scale,
+                    visual_state,
+                    visual_state.opacity,
+                );
+                let client_elements = client_elements
+                    .into_iter()
+                    .filter(|element| {
+                        !groups
+                            .ids
+                            .contains(smithay::backend::renderer::element::Element::id(element))
+                    })
+                    .collect::<Vec<_>>();
+                // Each group: its (replaced) subsurfaces, then its behind effect.
+                let mut render_group =
+                    |group: Vec<TtyRenderElements>, placements: [&'static str; 2]| {
                         let Some(decoration) = window_decorations.get_mut(window) else {
                             return group;
                         };
@@ -16132,18 +15964,18 @@ fn tty_window_stack_elements(
                         elements.extend(behind);
                         elements
                     };
-                    let above = render_group(
-                        groups.above,
-                        ["replace-subsurfaces-above", "behind-subsurfaces-above"],
-                    );
-                    let below = render_group(
-                        groups.below,
-                        ["replace-subsurfaces-below", "behind-subsurfaces-below"],
-                    );
-                    (above, below, client_elements)
-                } else {
-                    (Vec::new(), Vec::new(), client_elements)
-                };
+                let above = render_group(
+                    groups.above,
+                    ["replace-subsurfaces-above", "behind-subsurfaces-above"],
+                );
+                let below = render_group(
+                    groups.below,
+                    ["replace-subsurfaces-below", "behind-subsurfaces-below"],
+                );
+                (above, below, client_elements)
+            } else {
+                (Vec::new(), Vec::new(), client_elements)
+            };
             // Subsurfaces below the root belong between the client and its SSD.
             let client_element_count = client_elements.len();
             let mut original_window_body_elements: Vec<TtyRenderElements> = Vec::new();
@@ -16240,7 +16072,9 @@ fn tty_window_stack_elements(
                 // Drawing them again here bypasses the shader's visibility mask.
                 if !separate_subsurfaces
                     && !matches!(
-                        replace_effect_slot.as_ref().map(|effect| &effect.effect.input),
+                        replace_effect_slot
+                            .as_ref()
+                            .map(|effect| &effect.effect.input),
                         Some(EffectInput::WindowSource(WindowSourceInclude::Full))
                     )
                 {
@@ -16385,31 +16219,31 @@ fn tty_window_stack_elements(
                 .cloned();
             let behind_effects = behind_effect_slot.as_ref().and_then(|effect| {
                 let decoration = window_decorations.get(window)?;
-                let (rect, source_elements): (_, &[TtyRenderElements]) =
-                    match &effect.effect.input {
-                        EffectInput::WindowSource(WindowSourceInclude::Full) => (
-                            transformed_root_rect(
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &full_window_source_elements,
+                let (rect, source_elements): (_, &[TtyRenderElements]) = match &effect.effect.input
+                {
+                    EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                        EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
-                            transformed_rect(
-                                decoration.client_rect,
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &root_surface_source_elements,
+                        &full_window_source_elements,
+                    ),
+                    EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                        transformed_rect(
+                            decoration.client_rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                        _ => (
-                            transformed_root_rect(
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &current_window_elements,
+                        &root_surface_source_elements,
+                    ),
+                    _ => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                    };
+                        &current_window_elements,
+                    ),
+                };
                 let signature =
                     window_effect_signature("behind", rect, effect, scale, source_elements);
                 let (element_id, commit_counter) =
@@ -16421,23 +16255,23 @@ fn tty_window_stack_elements(
                         )
                     })?;
                 window_effect_elements(
-                &mut *renderer,
-                &output,
-                output_geo,
-                scale,
-                &window_id,
-                "behind",
-                element_id,
-                commit_counter,
-                rect,
-                effect,
-                window_effect_frame_shape(window_decorations.get(window), effect),
-                source_elements,
-            )
-            .inspect_err(|error| {
-                warn!(window_id = %window_id, ?error, "failed to build window behind effect");
-            })
-            .ok()
+                    &mut *renderer,
+                    &output,
+                    output_geo,
+                    scale,
+                    &window_id,
+                    "behind",
+                    element_id,
+                    commit_counter,
+                    rect,
+                    effect,
+                    window_effect_frame_shape(window_decorations.get(window), effect),
+                    source_elements,
+                )
+                .inspect_err(|error| {
+                    warn!(window_id = %window_id, ?error, "failed to build window behind effect");
+                })
+                .ok()
             });
             let in_front_effect_slot = window_decorations
                 .get(window)
@@ -16446,31 +16280,31 @@ fn tty_window_stack_elements(
                 .cloned();
             let in_front_effects = in_front_effect_slot.as_ref().and_then(|effect| {
                 let decoration = window_decorations.get(window)?;
-                let (rect, source_elements): (_, &[TtyRenderElements]) =
-                    match &effect.effect.input {
-                        EffectInput::WindowSource(WindowSourceInclude::Full) => (
-                            transformed_root_rect(
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &full_window_source_elements,
+                let (rect, source_elements): (_, &[TtyRenderElements]) = match &effect.effect.input
+                {
+                    EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                        EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
-                            transformed_rect(
-                                decoration.client_rect,
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &root_surface_source_elements,
+                        &full_window_source_elements,
+                    ),
+                    EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                        transformed_rect(
+                            decoration.client_rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                        _ => (
-                            transformed_root_rect(
-                                decoration.layout.root.rect,
-                                decoration.visual_transform,
-                            ),
-                            &current_window_elements,
+                        &root_surface_source_elements,
+                    ),
+                    _ => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
                         ),
-                    };
+                        &current_window_elements,
+                    ),
+                };
                 let signature =
                     window_effect_signature("in-front", rect, effect, scale, source_elements);
                 let (element_id, commit_counter) =
@@ -16560,24 +16394,23 @@ fn tty_window_stack_elements(
 
             if primary
                 && let Some(decoration) = window_decorations.get(window)
-                && let Some(live_snapshot) =
-                    live_window_snapshots.get_mut(&decoration.snapshot.id)
+                && let Some(live_snapshot) = live_window_snapshots.get_mut(&decoration.snapshot.id)
             {
                 snapshot::retarget_snapshot_rect(live_snapshot, decoration.client_rect);
             }
             let should_seed_close_snapshot = primary
                 && window_decorations
-                .get(window)
-                .map(|decoration| {
-                    live_window_snapshots
-                        .get(&decoration.snapshot.id)
-                        .map(|snapshot| {
-                            snapshot.rect.width != decoration.client_rect.width
-                                || snapshot.rect.height != decoration.client_rect.height
-                        })
-                        .unwrap_or(true)
-                })
-                .unwrap_or(false);
+                    .get(window)
+                    .map(|decoration| {
+                        live_window_snapshots
+                            .get(&decoration.snapshot.id)
+                            .map(|snapshot| {
+                                snapshot.rect.width != decoration.client_rect.width
+                                    || snapshot.rect.height != decoration.client_rect.height
+                            })
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(false);
             if should_seed_close_snapshot {
                 let snapshot_capture_started_at = Instant::now();
                 timescope::scope!("tty live snapshot capture");

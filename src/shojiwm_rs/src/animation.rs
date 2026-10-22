@@ -284,9 +284,12 @@ impl Clock {
     /// start), the wall clock otherwise.
     fn base_ms(&self, output: Option<&str>) -> f64 {
         match output {
-            Some(name) if self.frame_outputs.contains(name) => {
-                self.output_ms.get(name).copied().unwrap_or(self.wall_ms).max(self.wall_ms)
-            }
+            Some(name) if self.frame_outputs.contains(name) => self
+                .output_ms
+                .get(name)
+                .copied()
+                .unwrap_or(self.wall_ms)
+                .max(self.wall_ms),
             _ => self.wall_ms,
         }
     }
@@ -364,7 +367,9 @@ pub(crate) fn tick(output: Option<&str>, frame_outputs: &[String], now_ms: f64) 
         let mut clock = clock.borrow_mut();
         let clock = &mut *clock;
         if frame_outputs.len() != clock.frame_outputs.len()
-            || frame_outputs.iter().any(|name| !clock.frame_outputs.contains(name))
+            || frame_outputs
+                .iter()
+                .any(|name| !clock.frame_outputs.contains(name))
         {
             clock.frame_outputs = frame_outputs.iter().cloned().collect();
             let frame = &clock.frame_outputs;
@@ -372,7 +377,12 @@ pub(crate) fn tick(output: Option<&str>, frame_outputs: &[String], now_ms: f64) 
         }
         let tick_ms = match output {
             Some(name) => {
-                let time = clock.output_ms.get(name).copied().unwrap_or(now_ms).max(now_ms);
+                let time = clock
+                    .output_ms
+                    .get(name)
+                    .copied()
+                    .unwrap_or(now_ms)
+                    .max(now_ms);
                 clock.output_ms.insert(name.to_owned(), time);
                 time
             }
@@ -422,7 +432,8 @@ fn run_due_polls(tick_output: Option<&str>, tick_ms: f64) {
             None => Some(tick_ms),
             Some(output) => {
                 let bound = output.resolve();
-                let frame_driven = CLOCK.with(|clock| clock.borrow().is_frame_driven(bound.as_deref()));
+                let frame_driven =
+                    CLOCK.with(|clock| clock.borrow().is_frame_driven(bound.as_deref()));
                 if frame_driven {
                     (bound.as_deref() == tick_output).then_some(tick_ms)
                 } else {
@@ -748,7 +759,11 @@ impl TimerHandle {
 /// catching up with a double step on the next one. At 16 ms it fires on
 /// every frame.
 fn whole_ms(delay_ms: f64) -> f64 {
-    if delay_ms.is_finite() { delay_ms.floor().max(1.0) } else { 1.0 }
+    if delay_ms.is_finite() {
+        delay_ms.floor().max(1.0)
+    } else {
+        1.0
+    }
 }
 
 fn add_timer(
@@ -817,7 +832,12 @@ pub fn create_poll(
     f: impl Fn(&PollHandle) + 'static,
 ) -> PollHandle {
     let interval_ms = whole_ms(interval_ms);
-    add_timer(interval_ms, Some(interval_ms), Some(output.into()), Rc::new(f))
+    add_timer(
+        interval_ms,
+        Some(interval_ms),
+        Some(output.into()),
+        Rc::new(f),
+    )
 }
 
 /// Run `f` every `interval_ms` on every enabled output, each on its own
@@ -858,15 +878,21 @@ pub(crate) fn sync_output_poll_groups() {
         })
     });
     type Group = (u64, f64, GroupCallback, Vec<(String, TimerHandle)>);
-    let groups: Vec<Group> =
-        CLOCK.with(|clock| {
-            clock
-                .borrow()
-                .groups
-                .iter()
-                .map(|group| (group.id, group.interval_ms, group.callback.clone(), group.members.clone()))
-                .collect()
-        });
+    let groups: Vec<Group> = CLOCK.with(|clock| {
+        clock
+            .borrow()
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.id,
+                    group.interval_ms,
+                    group.callback.clone(),
+                    group.members.clone(),
+                )
+            })
+            .collect()
+    });
     for (id, interval_ms, callback, members) in groups {
         let mut next = Vec::new();
         for (name, member) in members {
@@ -882,11 +908,18 @@ pub(crate) fn sync_output_poll_groups() {
             }
             let callback = callback.clone();
             let output = name.clone();
-            let poll = create_poll(interval_ms, name.as_str(), move |handle| callback(handle, &output));
+            let poll = create_poll(interval_ms, name.as_str(), move |handle| {
+                callback(handle, &output)
+            });
             next.push((name.clone(), poll));
         }
         CLOCK.with(|clock| {
-            if let Some(group) = clock.borrow_mut().groups.iter_mut().find(|group| group.id == id) {
+            if let Some(group) = clock
+                .borrow_mut()
+                .groups
+                .iter_mut()
+                .find(|group| group.id == id)
+            {
                 group.members = next;
             }
         });
@@ -898,27 +931,38 @@ pub(crate) fn sync_output_poll_groups() {
 /// animation on that clock runs, i.e. every frame.
 pub(crate) fn schedule() -> shojiwm_lib::runtime_api::RuntimeSchedule {
     let mut schedule = shojiwm_lib::runtime_api::RuntimeSchedule::default();
-    type Pending = (Vec<(f64, Option<PollOutput>)>, Vec<Option<OutputResolver>>, Vec<String>);
+    type Pending = (
+        Vec<(f64, Option<PollOutput>)>,
+        Vec<Option<OutputResolver>>,
+        Vec<String>,
+    );
     let (timers, animations, frame_outputs): Pending = CLOCK.with(|clock| {
-            let clock = clock.borrow();
-            (
-                clock.timers.iter().map(|timer| (timer.due_ms, timer.output.clone())).collect(),
-                clock
-                    .animations
-                    .iter()
-                    .flatten()
-                    .filter(|entry| entry.borrow().timeline.is_some())
-                    .map(|entry| entry.borrow().output.clone())
-                    .collect(),
-                clock.frame_outputs.iter().cloned().collect(),
-            )
-        });
-    let due = |output: Option<String>, at_ms: f64, schedule: &mut shojiwm_lib::runtime_api::RuntimeSchedule| {
+        let clock = clock.borrow();
+        (
+            clock
+                .timers
+                .iter()
+                .map(|timer| (timer.due_ms, timer.output.clone()))
+                .collect(),
+            clock
+                .animations
+                .iter()
+                .flatten()
+                .filter(|entry| entry.borrow().timeline.is_some())
+                .map(|entry| entry.borrow().output.clone())
+                .collect(),
+            clock.frame_outputs.iter().cloned().collect(),
+        )
+    });
+    let due = |output: Option<String>,
+               at_ms: f64,
+               schedule: &mut shojiwm_lib::runtime_api::RuntimeSchedule| {
         match output {
             // Work bound to no output runs on any tick: the next frame of
             // every rendering output, or a timer tick when none renders.
             None if frame_outputs.is_empty() => {
-                schedule.timer_due_ms = Some(schedule.timer_due_ms.map_or(at_ms, |due| due.min(at_ms)));
+                schedule.timer_due_ms =
+                    Some(schedule.timer_due_ms.map_or(at_ms, |due| due.min(at_ms)));
             }
             None => {
                 for name in &frame_outputs {
@@ -931,7 +975,8 @@ pub(crate) fn schedule() -> shojiwm_lib::runtime_api::RuntimeSchedule {
                 *entry = entry.min(at_ms);
             }
             Some(_) => {
-                schedule.timer_due_ms = Some(schedule.timer_due_ms.map_or(at_ms, |due| due.min(at_ms)));
+                schedule.timer_due_ms =
+                    Some(schedule.timer_due_ms.map_or(at_ms, |due| due.min(at_ms)));
             }
         }
     };
@@ -942,7 +987,8 @@ pub(crate) fn schedule() -> shojiwm_lib::runtime_api::RuntimeSchedule {
             Some(output) => match output.resolve() {
                 Some(name) => due(Some(name), due_ms, &mut schedule),
                 None => {
-                    schedule.timer_due_ms = Some(schedule.timer_due_ms.map_or(due_ms, |due| due.min(due_ms)));
+                    schedule.timer_due_ms =
+                        Some(schedule.timer_due_ms.map_or(due_ms, |due| due.min(due_ms)));
                 }
             },
         }
@@ -1013,7 +1059,10 @@ mod tests {
             set_interval(frame, move || fired.set(fired.get() + 1));
         }
         // Predicted presentation times wobble by a fraction of a millisecond.
-        for (index, jitter) in [0.0, -0.3, 0.2, -0.4, 0.1, -0.2, 0.3, -0.1].into_iter().enumerate() {
+        for (index, jitter) in [0.0, -0.3, 0.2, -0.4, 0.1, -0.2, 0.3, -0.1]
+            .into_iter()
+            .enumerate()
+        {
             let now = (index + 1) as f64 * frame + jitter;
             tick(None, &[], now);
             assert_eq!(fired.get(), index + 1, "frame {index} was skipped");
@@ -1047,7 +1096,9 @@ mod tests {
         let runs = Rc::new(RefCell::new(Vec::new()));
         for name in ["A", "B"] {
             let runs = runs.clone();
-            create_poll(1.0, name, move |handle| runs.borrow_mut().push((name, handle.now_ms())));
+            create_poll(1.0, name, move |handle| {
+                runs.borrow_mut().push((name, handle.now_ms()))
+            });
         }
         let frames = ["A".to_owned(), "B".to_owned()];
         tick(Some("A"), &frames, 16.0);

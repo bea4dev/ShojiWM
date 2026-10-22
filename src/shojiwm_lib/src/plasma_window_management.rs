@@ -144,7 +144,9 @@ impl PlasmaWindowHandle {
     /// changes must be sent.
     fn has_resources(&self) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        inner.resources.retain(|resource| resource.upgrade().is_ok());
+        inner
+            .resources
+            .retain(|resource| resource.upgrade().is_ok());
         !inner.resources.is_empty()
     }
 
@@ -351,7 +353,10 @@ impl PlasmaWindowManagementState {
         }
     }
 
-    fn find_handle(&self, matches: impl Fn(&PlasmaWindowHandle) -> bool) -> Option<PlasmaWindowHandle> {
+    fn find_handle(
+        &self,
+        matches: impl Fn(&PlasmaWindowHandle) -> bool,
+    ) -> Option<PlasmaWindowHandle> {
         self.handles
             .iter()
             .find(|handle| !handle.is_closed() && matches(handle))
@@ -409,7 +414,9 @@ impl ShojiWM {
         handle.close();
         let state = &mut self.plasma_window_management_state;
         let count = state.handles.len();
-        state.handles.retain(|candidate| !candidate.same_as(&handle));
+        state
+            .handles
+            .retain(|candidate| !candidate.same_as(&handle));
         if state.handles.len() != count {
             state.windows_changed();
         }
@@ -437,7 +444,11 @@ impl ShojiWM {
         // own windows (and every window, until the config sends desktops)
         // are on all of them.
         let desktops = &self.plasma_virtual_desktop_state;
-        let desktop = if shell_window { None } else { desktops.desktop_of(&snapshot.id) };
+        let desktop = if shell_window {
+            None
+        } else {
+            desktops.desktop_of(&snapshot.id)
+        };
         // An idle window is minimized, or on another workspace. On the
         // active desktop (or with no desktops) idle means minimized; on
         // another desktop only the config knows.
@@ -450,7 +461,11 @@ impl ShojiWM {
             _ => idle,
         };
 
-        let mut flags = if desktop.is_some() { 0 } else { flag::ON_ALL_DESKTOPS };
+        let mut flags = if desktop.is_some() {
+            0
+        } else {
+            flag::ON_ALL_DESKTOPS
+        };
         let mut set = |bit: u32, on: bool| {
             if on {
                 flags |= bit;
@@ -617,13 +632,19 @@ impl Dispatch<OrgKdePlasmaWindowManagement, ()> for ShojiWM {
     ) {
         use org_kde_plasma_window_management::Request;
         match request {
-            Request::GetWindow { id, internal_window_id } => {
+            Request::GetWindow {
+                id,
+                internal_window_id,
+            } => {
                 let handle = state
                     .plasma_window_management_state
                     .find_handle(|handle| handle.internal_id() == internal_window_id);
                 state.init_plasma_window(id, handle, data_init);
             }
-            Request::GetWindowByUuid { id, internal_window_uuid } => {
+            Request::GetWindowByUuid {
+                id,
+                internal_window_uuid,
+            } => {
                 let handle = state
                     .plasma_window_management_state
                     .find_handle(|handle| handle.uuid() == internal_window_uuid);
@@ -720,7 +741,10 @@ impl Dispatch<OrgKdePlasmaWindow, PlasmaWindowHandle> for ShojiWM {
             return;
         };
         match request {
-            Request::SetState { flags, state: wanted } => {
+            Request::SetState {
+                flags,
+                state: wanted,
+            } => {
                 state.plasma_window_set_state(&window, flags, wanted);
             }
             Request::Close => state.close_window_from_taskbar(&window),
@@ -728,7 +752,13 @@ impl Dispatch<OrgKdePlasmaWindow, PlasmaWindowHandle> for ShojiWM {
             // an empty icon and falls back to the app's .desktop icon.
             Request::GetIcon { fd } => drop(fd),
             // The taskbar entry (`window.minimizedGeometry` in the config).
-            Request::SetMinimizedGeometry { panel, x, y, width, height } => {
+            Request::SetMinimizedGeometry {
+                panel,
+                x,
+                y,
+                width,
+                height,
+            } => {
                 let rect = (x as i32, y as i32, width as i32, height as i32);
                 if handle.set_minimized_geometry(&panel, Some(rect)) {
                     state.plasma_minimized_geometry_changed(&window);

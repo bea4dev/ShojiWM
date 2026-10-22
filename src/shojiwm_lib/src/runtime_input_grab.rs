@@ -17,7 +17,9 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use smithay::input::keyboard::Keycode;
 
-use crate::ssd::{GestureSwipeEventSnapshot, PointerModifierStateSnapshot, PointerMovePointSnapshot};
+use crate::ssd::{
+    GestureSwipeEventSnapshot, PointerModifierStateSnapshot, PointerMovePointSnapshot,
+};
 
 /// Sent by the runtime to start (`active`) or end a grab. Ids are chosen by
 /// the runtime; starting a new grab replaces the current one.
@@ -45,7 +47,11 @@ pub enum InputGrabStateSnapshot {
 
 /// One input event delivered to the grab.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum InputGrabEventSnapshot {
     Key {
         /// xkb keysym name, unshifted Latin layout first (`"Tab"`, `"a"`,

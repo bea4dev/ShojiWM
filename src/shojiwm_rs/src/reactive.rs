@@ -22,13 +22,7 @@
 //! recompute lazily when read, and observers whose memo inputs turned out
 //! unchanged are not notified at all.
 
-use std::{
-    any::Any,
-    cell::RefCell,
-    fmt,
-    marker::PhantomData,
-    rc::Rc,
-};
+use std::{any::Any, cell::RefCell, fmt, marker::PhantomData, rc::Rc};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct NodeId {
@@ -57,7 +51,10 @@ enum Kind {
     /// Recomputes into its slot; returns whether the value changed.
     Memo(MemoCompute),
     /// Re-runs `run` inside `scope`, which is cleared before every run.
-    Effect { run: Rc<dyn Fn()>, scope: ScopeId },
+    Effect {
+        run: Rc<dyn Fn()>,
+        scope: ScopeId,
+    },
     /// A computation evaluated by someone else (the view serializer). It is
     /// only told that it went stale.
     Observer(Rc<dyn Fn()>),
@@ -431,10 +428,11 @@ fn clear_scope(id: ScopeId) {
         untrack(cleanup);
     }
     for node in nodes {
-        let effect_scope = with_runtime(|runtime| match runtime.node(node).map(|node| &node.kind) {
-            Some(Kind::Effect { scope, .. }) => Some(*scope),
-            _ => None,
-        });
+        let effect_scope =
+            with_runtime(|runtime| match runtime.node(node).map(|node| &node.kind) {
+                Some(Kind::Effect { scope, .. }) => Some(*scope),
+                _ => None,
+            });
         with_runtime(|runtime| runtime.dispose_node(node));
         if let Some(scope) = effect_scope {
             dispose_scope(scope);
@@ -540,16 +538,17 @@ impl Scope {
     }
 
     pub fn is_alive(self) -> bool {
-        with_runtime(|runtime| runtime.scopes.get(self.id.index, self.id.generation).is_some())
+        with_runtime(|runtime| {
+            runtime
+                .scopes
+                .get(self.id.index, self.id.generation)
+                .is_some()
+        })
     }
 
     /// Run `f` with this scope owning what it creates.
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
-        with_tracking(
-            with_runtime(|runtime| runtime.observer),
-            Some(self.id),
-            f,
-        )
+        with_tracking(with_runtime(|runtime| runtime.observer), Some(self.id), f)
     }
 
     pub fn signal<T: 'static>(self, value: T) -> Signal<T> {
@@ -799,7 +798,8 @@ pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
         *current = Some(next);
         true
     });
-    let id = with_runtime(|runtime| runtime.create_node(Kind::Memo(compute), Some(slot), State::Dirty));
+    let id =
+        with_runtime(|runtime| runtime.create_node(Kind::Memo(compute), Some(slot), State::Dirty));
     Memo {
         id,
         _marker: PhantomData,

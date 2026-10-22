@@ -25,10 +25,9 @@
 
 use smithay::{
     backend::renderer::{
-        Bind, Color32F, Offscreen,
+        Bind, Color32F, ImportMem, Offscreen,
         damage::OutputDamageTracker,
         element::{Element, Id, Kind, RenderElement, RenderElementStates},
-        ImportMem,
         gles::{
             GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
             UniformType, UniformValue, ffi,
@@ -46,44 +45,18 @@ use smithay::backend::allocator::Fourcc;
 /// Smithay only gates the texture allocation on GLES 3.0; actual
 /// renderability additionally needs GL_EXT_color_buffer_half_float, which
 /// surfaces as a framebuffer-completeness failure on bind.
-pub fn probe_fp16_render_support(
-    renderer: &mut GlesRenderer
-) -> bool {
-    let size = Size::<i32, Buffer>::from(
-        (
-            16, 
-            16,
-        )
-    );
-    match Offscreen::<GlesTexture>::create_buffer(
-        renderer, 
-        Fourcc::Abgr16161616f,
-        size
-    ) {
-        Ok(
-            mut texture
-        ) => match renderer
-            .bind(
-                &mut texture
-            ) {
+pub fn probe_fp16_render_support(renderer: &mut GlesRenderer) -> bool {
+    let size = Size::<i32, Buffer>::from((16, 16));
+    match Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr16161616f, size) {
+        Ok(mut texture) => match renderer.bind(&mut texture) {
             Ok(_) => true,
-            Err(
-                error
-            ) => {
-                info!(
-                    ?error, 
-                    "fp16 render targets unsupported (bind failed)"
-                );
+            Err(error) => {
+                info!(?error, "fp16 render targets unsupported (bind failed)");
                 false
             }
         },
-        Err(
-            error
-        ) => {
-            info!(
-                ?error, 
-                "fp16 render targets unsupported (alloc failed)"
-            );
+        Err(error) => {
+            info!(?error, "fp16 render targets unsupported (alloc failed)");
             false
         }
     }
@@ -95,21 +68,11 @@ pub fn probe_fp16_render_support(
 pub(crate) fn sdr_reference_nits() -> f32 {
     static NITS: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *NITS.get_or_init(|| {
-        std::env::var(
-            "SHOJI_SDR_NITS"
-        )
+        std::env::var("SHOJI_SDR_NITS")
             .ok()
-            .and_then(|value| value
-                .trim()
-                .parse::<f32>()
-                .ok())
-            .filter(|nits| (10.0..=1000.0)
-                .contains(
-                    nits
-                ))
-            .unwrap_or(
-                203.0
-            )
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|nits| (10.0..=1000.0).contains(nits))
+            .unwrap_or(203.0)
     })
 }
 
@@ -180,9 +143,7 @@ pub enum OutputEncoding {
 /// back; anything older gets a full re-encode.
 const ENCODE_DAMAGE_HISTORY: usize = 8;
 
-struct HdrEncodeProgram(
-    GlesTexProgram
-);
+struct HdrEncodeProgram(GlesTexProgram);
 
 struct IccEncodeProgram(GlesTexProgram);
 
@@ -217,9 +178,7 @@ fn ensure_icc_program(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gle
         .clone())
 }
 
-fn ensure_encode_program(
-    renderer: &mut GlesRenderer
-) -> Result<GlesTexProgram, GlesError> {
+fn ensure_encode_program(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     if renderer
         .egl_context()
         .user_data()
@@ -227,36 +186,18 @@ fn ensure_encode_program(
         .is_none()
     {
         let program = renderer.compile_custom_texture_shader(
-            include_str!(
-                "output_encode.frag"
-            ),
+            include_str!("output_encode.frag"),
             &[
-                UniformName::new(
-                    "sdr_nits", 
-                    UniformType::_1f
-                ),
-                UniformName::new(
-                    "sdr_gamma",
-                    UniformType::_1f
-                ),
-                UniformName::new(
-                    "peak_nits",
-                    UniformType::_1f
-                ),
-                UniformName::new(
-                    "compositing_to_bt2020",
-                    UniformType::Matrix3x3
-                ),
+                UniformName::new("sdr_nits", UniformType::_1f),
+                UniformName::new("sdr_gamma", UniformType::_1f),
+                UniformName::new("peak_nits", UniformType::_1f),
+                UniformName::new("compositing_to_bt2020", UniformType::Matrix3x3),
             ],
         )?;
         renderer
             .egl_context()
             .user_data()
-            .insert_if_missing(
-                || HdrEncodeProgram(
-                    program
-                )
-            );
+            .insert_if_missing(|| HdrEncodeProgram(program));
     }
     Ok(renderer
         .egl_context()
@@ -318,20 +259,11 @@ pub fn render_hdr_pipeline<E>(
 where
     E: RenderElement<GlesRenderer>,
 {
-    let Some(
-        mode
-    ) = output
-        .current_mode() else {
-        return Ok(
-            None
-        );
+    let Some(mode) = output.current_mode() else {
+        return Ok(None);
     };
-    let scale: Scale<f64> = output
-        .current_scale()
-        .fractional_scale()
-        .into();
-    let transform = output
-        .current_transform();
+    let scale: Scale<f64> = output.current_scale().fractional_scale().into();
+    let transform = output.current_transform();
     // The intermediate is the *upright* scene, like the capture mirror: it is
     // rendered with Transform::Normal at the transformed-orientation size, and
     // the DRM pass applies the output transform once when it draws the encode
@@ -339,34 +271,18 @@ where
     // and flipped outputs twice.
     let size = transform.transform_size(mode.size);
 
-    let recreate = pipeline
-        .as_ref()
-        .is_none_or(|pipeline| {
+    let recreate = pipeline.as_ref().is_none_or(|pipeline| {
         pipeline.size != size
             || pipeline.scale != scale
             || pipeline.transform != transform
             || pipeline.format != format
     });
     if recreate {
-        let buffer_size = size
-            .to_logical(1)
-            .to_buffer(
-                1,
-                Transform::Normal
-            );
-        let texture =
-            Offscreen::<GlesTexture>::create_buffer(
-                renderer,
-                format,
-                buffer_size
-            )?;
+        let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+        let texture = Offscreen::<GlesTexture>::create_buffer(renderer, format, buffer_size)?;
         *pipeline = Some(HdrPipeline {
             texture,
-            damage_tracker: OutputDamageTracker::new(
-                size,
-                scale,
-                Transform::Normal
-            ),
+            damage_tracker: OutputDamageTracker::new(size, scale, Transform::Normal),
             size,
             scale,
             transform,
@@ -378,11 +294,7 @@ where
             contents_valid: false,
         });
     }
-    let pipeline = pipeline
-        .as_mut()
-        .expect(
-            "pipeline was just created"
-        );
+    let pipeline = pipeline.as_mut().expect("pipeline was just created");
 
     let (program, lut) = match &encoding {
         OutputEncoding::Pq(_) => (ensure_encode_program(renderer)?, None),
@@ -403,7 +315,10 @@ where
             }
             (
                 ensure_icc_program(renderer)?,
-                pipeline.icc_lut.as_ref().map(|(_, texture)| texture.clone()),
+                pipeline
+                    .icc_lut
+                    .as_ref()
+                    .map(|(_, texture)| texture.clone()),
             )
         }
     };
@@ -412,40 +327,25 @@ where
     // redraws once the texture holds the previous frame.
     let age = if pipeline.contents_valid { 1 } else { 0 };
     let render_result = {
-        let mut target = renderer.bind(
-            &mut pipeline.texture
-        )?;
-        pipeline.damage_tracker
-            .render_output(
-                renderer, 
-                &mut target, 
-                age, 
-                elements, 
-                Color32F::new(
-                    clear_color[0], 
-                    clear_color[1], 
-                    clear_color[2], 
-                    clear_color[3], 
-                ), 
-            )
+        let mut target = renderer.bind(&mut pipeline.texture)?;
+        pipeline.damage_tracker.render_output(
+            renderer,
+            &mut target,
+            age,
+            elements,
+            Color32F::new(
+                clear_color[0],
+                clear_color[1],
+                clear_color[2],
+                clear_color[3],
+            ),
+        )
     };
     let (damage, stage1_states) = match render_result {
-        Ok(
-            result
-        ) => (
-            result.damage
-                .cloned(),
-            result.states,
-        ),
-        Err(
-            error
-        ) => {
+        Ok(result) => (result.damage.cloned(), result.states),
+        Err(error) => {
             pipeline.contents_valid = false;
-            return Err(
-                Box::new(
-                    error
-                )
-            );
+            return Err(Box::new(error));
         }
     };
     pipeline.contents_valid = true;
@@ -460,31 +360,20 @@ where
         pipeline.damage.add(damage);
     }
 
-    let buffer_size = size
-        .to_logical(1)
-        .to_buffer(
-            1,
-            Transform::Normal
-        );
-    Ok(Some((HdrEncodeElement {
-        id: pipeline.element_id
-            .clone(),
-        damage: pipeline.damage.snapshot(),
-        texture: pipeline.texture
-            .clone(),
-        program,
-        src: Rectangle::from_size(
-            (
-                buffer_size.w as f64, 
-                buffer_size.h as f64
-            ).into()
-        ),
-        geometry: Rectangle::from_size(
-            size
-        ),
-        encoding,
-        lut,
-    }, stage1_states)))
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+    Ok(Some((
+        HdrEncodeElement {
+            id: pipeline.element_id.clone(),
+            damage: pipeline.damage.snapshot(),
+            texture: pipeline.texture.clone(),
+            program,
+            src: Rectangle::from_size((buffer_size.w as f64, buffer_size.h as f64).into()),
+            geometry: Rectangle::from_size(size),
+            encoding,
+            lut,
+        },
+        stage1_states,
+    )))
 }
 
 /// Fullscreen quad that draws the fp16 intermediate through the PQ encode
@@ -502,15 +391,11 @@ pub struct HdrEncodeElement {
 }
 
 impl Element for HdrEncodeElement {
-    fn id(
-        &self
-    ) -> &Id {
+    fn id(&self) -> &Id {
         &self.id
     }
 
-    fn current_commit(
-        &self
-    ) -> CommitCounter {
+    fn current_commit(&self) -> CommitCounter {
         self.damage.current_commit()
     }
 
@@ -524,39 +409,23 @@ impl Element for HdrEncodeElement {
             .unwrap_or_else(|| DamageSet::from_slice(&[Rectangle::from_size(self.geometry.size)]))
     }
 
-    fn src(
-        &self
-    ) -> Rectangle<f64, Buffer> {
+    fn src(&self) -> Rectangle<f64, Buffer> {
         self.src
     }
 
-    fn geometry(
-        &self, 
-        _scale: Scale<f64>
-    ) -> Rectangle<i32, Physical> {
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.geometry
     }
 
-    fn opaque_regions(
-        &self,
-        _scale: Scale<f64>
-    ) -> OpaqueRegions<i32, Physical> {
-        OpaqueRegions::from_slice(
-            &[Rectangle::from_size(
-                self.geometry.size
-            )]
-        )
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        OpaqueRegions::from_slice(&[Rectangle::from_size(self.geometry.size)])
     }
 
-    fn alpha(
-        &self
-    ) -> f32 {
+    fn alpha(&self) -> f32 {
         1.0
     }
 
-    fn kind(
-        &self
-    ) -> Kind {
+    fn kind(&self) -> Kind {
         Kind::Unspecified
     }
 }
@@ -598,8 +467,16 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
                 gl.BindTexture(ffi::TEXTURE_2D, lut_id);
                 gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
                 gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_S,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_T,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
                 gl.ActiveTexture(ffi::TEXTURE0);
             })?;
         }
@@ -621,13 +498,8 @@ impl RenderElement<GlesRenderer> for HdrEncodeElement {
                 gl.ActiveTexture(ffi::TEXTURE0);
             })?;
         }
-        if let Err(
-            error
-        ) = &result {
-            warn!(
-                ?error,
-                "HDR encode pass draw failed"
-            );
+        if let Err(error) = &result {
+            warn!(?error, "HDR encode pass draw failed");
         }
         result
     }

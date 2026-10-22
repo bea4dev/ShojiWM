@@ -223,9 +223,7 @@ fn color_uniforms(image_description: Option<crate::color::ImageDescription>) -> 
             // BT.2390 operates on PQ signals, so encode the knee here
             // rather than paying four pow() calls per fragment for values
             // that are constant across the surface.
-            let to_pq = |nits: f32| {
-                crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32
-            };
+            let to_pq = |nits: f32| crate::color::colorimetry::pq_inverse_eotf(nits as f64) as f32;
             SurfaceColor {
                 scalars: [
                     transfer,
@@ -242,7 +240,15 @@ fn color_uniforms(image_description: Option<crate::color::ImageDescription>) -> 
             }
         }
         None => SurfaceColor {
-            scalars: [0.0, 0.0, 0.0, 0.0, 0.0, target.headroom, target.encode_gamma],
+            scalars: [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                target.headroom,
+                target.encode_gamma,
+            ],
             src_to_compositing: src_to_compositing(crate::color::ColorPrimaries::Srgb),
         },
     }
@@ -512,12 +518,16 @@ impl ClippedSurfaceElement {
             // below) makes it flip by ±1px with the window's position phase
             // at fractional scales, so the corner mask trembles against the
             // window while it moves.
-            let elem_w_px = (element_rect_precise.width * output_scale_x).round().max(1.0);
-            let elem_h_px = (element_rect_precise.height * output_scale_y).round().max(1.0);
+            let elem_w_px = (element_rect_precise.width * output_scale_x)
+                .round()
+                .max(1.0);
+            let elem_h_px = (element_rect_precise.height * output_scale_y)
+                .round()
+                .max(1.0);
             let logical_per_px_x = element_rect_precise.width.max(0.0001) / elem_w_px;
             let logical_per_px_y = element_rect_precise.height.max(0.0001) / elem_h_px;
-            let left_px = ((clip.mask_rect_precise.x - clip.rect_precise.x) * output_scale_x)
-                .round();
+            let left_px =
+                ((clip.mask_rect_precise.x - clip.rect_precise.x) * output_scale_x).round();
             let top_px =
                 ((clip.mask_rect_precise.y - clip.rect_precise.y) * output_scale_y).round();
             let right_px = (((clip.mask_rect_precise.x + clip.mask_rect_precise.width)
@@ -1221,17 +1231,30 @@ mod tests {
         };
         let expected = to_gl_mat3(&chromaticity_conversion_matrix(BT2020, SRGB));
         let native = PrimariesChromaticities {
-            red: Chromaticity { x: 0.6826, y: 0.3164 },
-            green: Chromaticity { x: 0.2451, y: 0.7139 },
-            blue: Chromaticity { x: 0.1396, y: 0.0439 },
-            white: Chromaticity { x: 0.3125, y: 0.3291 },
+            red: Chromaticity {
+                x: 0.6826,
+                y: 0.3164,
+            },
+            green: Chromaticity {
+                x: 0.2451,
+                y: 0.7139,
+            },
+            blue: Chromaticity {
+                x: 0.1396,
+                y: 0.0439,
+            },
+            white: Chromaticity {
+                x: 0.3125,
+                y: 0.3291,
+            },
         };
         for primaries in [SRGB, native] {
-            let _target = crate::color::RenderColorTargetGuard::new(crate::color::RenderColorTarget {
-                headroom: 3.0,
-                encode_gamma: 2.2,
-                primaries,
-            });
+            let _target =
+                crate::color::RenderColorTargetGuard::new(crate::color::RenderColorTarget {
+                    headroom: 3.0,
+                    encode_gamma: 2.2,
+                    primaries,
+                });
             assert_eq!(color_uniforms(Some(pq_bt2020)).src_to_compositing, expected);
         }
     }

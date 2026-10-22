@@ -1,17 +1,16 @@
 use serde::Deserialize;
 
 use super::{
-    AlignItems, AppIconNode, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
-    BoxShadow, PaintShader,
-    ButtonNode, Color, CompiledEffect, DecorationInteractionHandlers, DecorationNode,
-    DecorationNodeKind, DecorationStateChangeHandler, DecorationStyle, Edges, EffectAlphaMode,
-    EffectInput, EffectInvalidationPolicy, EffectOutsets, EffectRegion, EffectStage, ImageNode, JustifyContent,
-    LabelNode, LayoutDirection, NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents,
-    PopupAlign, PopupCollision, PopupDismissHandlers, PopupHandlers, PopupLayer, PopupMode,
-    PopupNode, PopupPlacement,
-    PositionOffsets, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
-    StylePosition, WindowAction, WindowBorderInteraction, WindowEffectConfig, WindowEffectSlot,
-    WindowResizeHitArea, WindowSourceInclude,
+    AlignItems, AppIconNode, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit,
+    BorderStyle, BoxNode, BoxShadow, ButtonNode, Color, CompiledEffect,
+    DecorationInteractionHandlers, DecorationNode, DecorationNodeKind,
+    DecorationStateChangeHandler, DecorationStyle, Edges, EffectAlphaMode, EffectInput,
+    EffectInvalidationPolicy, EffectOutsets, EffectRegion, EffectStage, ImageNode, JustifyContent,
+    LabelNode, LayoutDirection, NodeTransform, NoiseKind, NoiseStage, Overflow, PaintShader,
+    PointerEvents, PopupAlign, PopupCollision, PopupDismissHandlers, PopupHandlers, PopupLayer,
+    PopupMode, PopupNode, PopupPlacement, PositionOffsets, ShaderEffectNode, ShaderModule,
+    ShaderStage, ShaderUniformValue, StylePosition, WindowAction, WindowBorderInteraction,
+    WindowEffectConfig, WindowEffectSlot, WindowResizeHitArea, WindowSourceInclude,
 };
 
 // boxing left as a follow-up (touches all deserialization/match sites)
@@ -904,7 +903,9 @@ fn decode_effect_outsets(value: Option<WireEffectOutsets>) -> EffectOutsets {
 
 fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, DecorationBridgeError> {
     Ok(match value {
-        WireEffectInput::SnapshotSource => EffectInput::Named(crate::backend::overlay::SNAPSHOT_NAME.into()),
+        WireEffectInput::SnapshotSource => {
+            EffectInput::Named(crate::backend::overlay::SNAPSHOT_NAME.into())
+        }
         WireEffectInput::BackdropSource => EffectInput::Backdrop,
         WireEffectInput::XrayBackdropSource => EffectInput::XrayBackdrop,
         WireEffectInput::WindowSource { include } => {
@@ -1021,7 +1022,9 @@ fn decode_state_texture(
 /// saved earlier under the same name) on clean ones. Reject it when the effect is compiled:
 /// the persistent way out of a conditional side pipeline is its state texture
 /// (`stateSource(target)`).
-fn validate_conditional_render_to_names(effect: &CompiledEffect) -> Result<(), DecorationBridgeError> {
+fn validate_conditional_render_to_names(
+    effect: &CompiledEffect,
+) -> Result<(), DecorationBridgeError> {
     use std::collections::BTreeMap;
 
     fn count_input(input: &EffectInput, gets: &mut BTreeMap<String, usize>) {
@@ -1075,7 +1078,12 @@ fn validate_conditional_render_to_names(effect: &CompiledEffect) -> Result<(), D
         let conditional = unsafe { &*conditional };
         let mut inner_gets = BTreeMap::new();
         let mut inner_saves = Vec::new();
-        walk(conditional, &mut inner_gets, &mut inner_saves, &mut Vec::new());
+        walk(
+            conditional,
+            &mut inner_gets,
+            &mut inner_saves,
+            &mut Vec::new(),
+        );
         for name in inner_saves {
             let total = all_gets.get(&name).copied().unwrap_or(0);
             let inside = inner_gets.get(&name).copied().unwrap_or(0);
@@ -1290,26 +1298,11 @@ impl TryFrom<WireStyle> for DecorationStyle {
             background: value.background.map(|s| parse_color(&s)).transpose()?,
             color: value.color.map(|s| parse_color(&s)).transpose()?,
             opacity: value.opacity,
-            border: value
-                .border
-                .map(parse_border)
-                .transpose()?,
-            border_top: value
-                .border_top
-                .map(parse_border)
-                .transpose()?,
-            border_right: value
-                .border_right
-                .map(parse_border)
-                .transpose()?,
-            border_bottom: value
-                .border_bottom
-                .map(parse_border)
-                .transpose()?,
-            border_left: value
-                .border_left
-                .map(parse_border)
-                .transpose()?,
+            border: value.border.map(parse_border).transpose()?,
+            border_top: value.border_top.map(parse_border).transpose()?,
+            border_right: value.border_right.map(parse_border).transpose()?,
+            border_bottom: value.border_bottom.map(parse_border).transpose()?,
+            border_left: value.border_left.map(parse_border).transpose()?,
             border_fit: value.border_fit.map(parse_border_fit).transpose()?,
             border_radius: value.border_radius,
             visible: value.visible,
@@ -1370,7 +1363,12 @@ fn decode_paint_shader(value: WirePaintShader) -> Result<PaintShader, Decoration
             decode_shader_uniform(uniform).ok_or(DecorationBridgeError::InvalidShaderDescriptor)?;
         uniforms.insert(name, uniform);
     }
-    let clamp = |value: Option<f64>| value.filter(|value| value.is_finite()).unwrap_or(0.0).max(0.0);
+    let clamp = |value: Option<f64>| {
+        value
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0)
+    };
     let outsets = match value.outsets {
         None => Edges::default(),
         Some(WirePaintOutsets::Uniform(value)) => Edges::all(clamp(Some(value))),
@@ -1454,21 +1452,26 @@ fn parse_popup(props: &WireProps) -> Result<PopupNode, DecorationBridgeError> {
     ) -> Result<Option<T>, DecorationBridgeError> {
         value
             .map(|value| {
-                parse(value)
-                    .ok_or_else(|| DecorationBridgeError::InvalidPopupOption(name, value.to_string()))
+                parse(value).ok_or_else(|| {
+                    DecorationBridgeError::InvalidPopupOption(name, value.to_string())
+                })
             })
             .transpose()
     }
     let defaults = PopupNode::default();
     Ok(PopupNode {
         open: props.open.unwrap_or(defaults.open),
-        placement: option("placement", props.placement.as_deref(), |value| match value {
-            "top" => Some(PopupPlacement::Top),
-            "bottom" => Some(PopupPlacement::Bottom),
-            "left" => Some(PopupPlacement::Left),
-            "right" => Some(PopupPlacement::Right),
-            _ => None,
-        })?
+        placement: option(
+            "placement",
+            props.placement.as_deref(),
+            |value| match value {
+                "top" => Some(PopupPlacement::Top),
+                "bottom" => Some(PopupPlacement::Bottom),
+                "left" => Some(PopupPlacement::Left),
+                "right" => Some(PopupPlacement::Right),
+                _ => None,
+            },
+        )?
         .unwrap_or(defaults.placement),
         align: option("align", props.align.as_deref(), |value| match value {
             "start" => Some(PopupAlign::Start),
@@ -1477,12 +1480,19 @@ fn parse_popup(props: &WireProps) -> Result<PopupNode, DecorationBridgeError> {
             _ => None,
         })?
         .unwrap_or(defaults.align),
-        offset: props.offset.filter(|offset| offset.is_finite()).unwrap_or(defaults.offset),
-        collision: option("collision", props.collision.as_deref(), |value| match value {
-            "flip" => Some(PopupCollision::Flip),
-            "none" => Some(PopupCollision::None),
-            _ => None,
-        })?
+        offset: props
+            .offset
+            .filter(|offset| offset.is_finite())
+            .unwrap_or(defaults.offset),
+        collision: option(
+            "collision",
+            props.collision.as_deref(),
+            |value| match value {
+                "flip" => Some(PopupCollision::Flip),
+                "none" => Some(PopupCollision::None),
+                _ => None,
+            },
+        )?
         .unwrap_or(defaults.collision),
         layer: option("layer", props.layer.as_deref(), |value| match value {
             "top" => Some(PopupLayer::Top),
@@ -2135,7 +2145,9 @@ mod tests {
             FIELD_STATE_SOURCE,
         ))
         .expect("conditional render-to should deserialize");
-        let effect: CompiledEffect = wire.try_into().expect("conditional render-to should decode");
+        let effect: CompiledEffect = wire
+            .try_into()
+            .expect("conditional render-to should decode");
         let EffectStage::RenderTo { depends_on, .. } = &effect.pipeline[0] else {
             panic!("expected render-to stage");
         };

@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn resolves_relative_paths_against_the_root() {
         set_root(PathBuf::from("/config/pkg"));
-        assert_eq!(resolve("./src/effect/a.frag"), "/config/pkg/src/effect/a.frag");
+        assert_eq!(
+            resolve("./src/effect/a.frag"),
+            "/config/pkg/src/effect/a.frag"
+        );
         assert_eq!(resolve("../x.svg"), "/config/x.svg");
         assert_eq!(resolve("/abs/y.svg"), "/abs/y.svg");
     }

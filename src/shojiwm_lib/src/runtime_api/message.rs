@@ -17,17 +17,17 @@ use crate::{
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
-        BackgroundEffectConfig, DecorationNode, ShaderUniformValue, DecorationCachedEvaluationResult, DecorationEvaluationResult,
-        DecorationHandlerInvocation, DecorationKeyBindingInvocation,
+        BackgroundEffectConfig, DecorationCachedEvaluationResult, DecorationEvaluationResult,
+        DecorationHandlerInvocation, DecorationKeyBindingInvocation, DecorationNode,
         DecorationPointerMoveAsyncInvocation, DecorationSchedulerTick,
         DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
         DecorationWindowStateRequestInvocation, GestureSwipeEventSnapshot,
         LayerEffectEvaluationResult, PointerMoveEventSnapshot, PopupEffectEvaluationResult,
-        WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot,
-        WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
-        WindowDecorationDecisionSnapshot, WindowDecorationPolicyContextSnapshot, WindowFullscreenRequestEventSnapshot,
-        WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
-        WindowMoveEventSnapshot, WindowResizeEventSnapshot,
+        ShaderUniformValue, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot,
+        WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowDecorationClientSnapshot,
+        WindowDecorationDecisionSnapshot, WindowDecorationPolicyContextSnapshot,
+        WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
+        WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
     },
 };
 
@@ -127,7 +127,9 @@ pub enum WindowRequest<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum InputRequest<'a> {
-    KeyBinding { binding_id: &'a str },
+    KeyBinding {
+        binding_id: &'a str,
+    },
     PointerMove(&'a PointerMoveEventSnapshot),
     GestureSwipe(&'a GestureSwipeEventSnapshot),
     /// The pointer entered, left or pressed against a `defineRegion` region.
@@ -258,4 +260,3 @@ impl CompositionPatch {
         }
     }
 }
-

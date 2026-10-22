@@ -12,8 +12,7 @@ use crate::picker::{PickResult, PickerHandle};
 use crate::pipewire_stream::{self, StreamHandle, StreamSpec};
 use crate::sources::{self, OutputInfo, SourceInfo, SourceKind, ThumbnailUpdate, ToplevelInfo};
 use crate::toplevel_stream::{
-    self, CaptureSourceSpec, StreamHandle as ToplevelStreamHandle,
-    StreamSpec as ToplevelStreamSpec,
+    self, CaptureSourceSpec, StreamHandle as ToplevelStreamHandle, StreamSpec as ToplevelStreamSpec,
 };
 
 /// SourceTypes bitmask values from the portal spec.
@@ -70,10 +69,7 @@ struct Inner {
 impl Inner {
     /// Tear down everything a session owns. Dropping the stream handle stops
     /// the capture thread and removes the PipeWire node.
-    fn cleanup_session(
-        &self,
-        session_key: &str,
-    ) {
+    fn cleanup_session(&self, session_key: &str) {
         // Remove the session FIRST, the stream second. Start() does the
         // opposite (insert stream, then verify the session still exists), so
         // every interleaving of a Close racing a Start ends with the stream
@@ -83,35 +79,12 @@ impl Inner {
         // ordering the freshly started stream could land in the map after
         // cleanup had already run, leaving an unowned PipeWire node that
         // delivered zero frames to the app forever.
-        self.sessions
-            .lock()
-            .unwrap()
-            .remove(
-                session_key,
-            );
-        let stream = self.streams
-            .lock()
-            .unwrap()
-            .remove(
-                session_key,
-            );
-        let had_stream = stream
-            .is_some();
-        drop(
-            stream,
-        );
-        self.cursor_visibility
-            .lock()
-            .unwrap()
-            .remove(
-                session_key,
-            );
-        self.persist_modes
-            .lock()
-            .unwrap()
-            .remove(
-                session_key,
-            );
+        self.sessions.lock().unwrap().remove(session_key);
+        let stream = self.streams.lock().unwrap().remove(session_key);
+        let had_stream = stream.is_some();
+        drop(stream);
+        self.cursor_visibility.lock().unwrap().remove(session_key);
+        self.persist_modes.lock().unwrap().remove(session_key);
         tracing::info!(session_key, had_stream, "session closed and cleaned up");
     }
 }
@@ -519,8 +492,10 @@ impl ScreenCast {
                 // stream instead: the compositor renders its output captures
                 // upright at the as-displayed size.
                 let (logical_w, logical_h) = out.logical_mode_size();
-                let use_screencopy =
-                    matches!(out.transform, wayland_client::protocol::wl_output::Transform::Normal);
+                let use_screencopy = matches!(
+                    out.transform,
+                    wayland_client::protocol::wl_output::Transform::Normal
+                );
                 let (node_id, handle) = if use_screencopy {
                     let spec = StreamSpec {
                         output_name: out.name.clone(),
@@ -576,25 +551,19 @@ impl ScreenCast {
                 // capture shows 0x0 forever. Verify AFTER inserting: if the
                 // session is gone, either cleanup_session already dropped our
                 // insert or we drop it here, and the app gets "cancelled".
-                if !self.inner.sessions.lock().unwrap().contains_key(&session_key) {
-                    drop(
-                        self.inner.streams
-                            .lock()
-                            .unwrap()
-                            .remove(
-                                &session_key,
-                            ),
-                    );
+                if !self
+                    .inner
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .contains_key(&session_key)
+                {
+                    drop(self.inner.streams.lock().unwrap().remove(&session_key));
                     tracing::warn!(
                         session_key,
                         "session closed during Start; dropped fresh stream and cancelled",
                     );
-                    return Ok(
-                        (
-                            1, 
-                            HashMap::new(),
-                        ),
-                    );
+                    return Ok((1, HashMap::new()));
                 }
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();
@@ -642,33 +611,21 @@ impl ScreenCast {
                     .streams
                     .lock()
                     .unwrap()
-                    .insert(
-                        session_key.
-                            clone(), 
-                        AnyStreamHandle::Toplevel(
-                            handle_owned,
-                        ),
-                    );
+                    .insert(session_key.clone(), AnyStreamHandle::Toplevel(handle_owned));
                 // Same closed-during-Start guard as the Output arm above.
-                if !self.inner.sessions.lock().unwrap().contains_key(&session_key) {
-                    drop(
-                        self.inner.streams
-                            .lock()
-                            .unwrap()
-                            .remove(
-                                &session_key,
-                            ),
-                    );
+                if !self
+                    .inner
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .contains_key(&session_key)
+                {
+                    drop(self.inner.streams.lock().unwrap().remove(&session_key));
                     tracing::warn!(
                         session_key,
                         "session closed during Start; dropped fresh stream and cancelled",
                     );
-                    return Ok(
-                        (
-                            1,
-                            HashMap::new(),
-                        ),
-                    );
+                    return Ok((1, HashMap::new()));
                 }
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();

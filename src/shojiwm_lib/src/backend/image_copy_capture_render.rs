@@ -561,7 +561,9 @@ pub fn process_hyprland_toplevel_exports(
         entry.frame.flags(HyprlandExportFlags::empty());
         if !entry.ignore_damage {
             for rect in damage {
-                let rect = rect.intersection(Rectangle::from_size(size)).unwrap_or_default();
+                let rect = rect
+                    .intersection(Rectangle::from_size(size))
+                    .unwrap_or_default();
                 if rect.is_empty() {
                     continue;
                 }
@@ -574,11 +576,9 @@ pub fn process_hyprland_toplevel_exports(
             }
         }
         let secs = presented.as_secs();
-        entry.frame.ready(
-            (secs >> 32) as u32,
-            secs as u32,
-            presented.subsec_nanos(),
-        );
+        entry
+            .frame
+            .ready((secs >> 32) as u32, secs as u32, presented.subsec_nanos());
     }
     state.pending = waiting;
 }

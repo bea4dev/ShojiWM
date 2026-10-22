@@ -21,7 +21,9 @@ use shojiwm_rs::prelude::*;
 
 use crate::{
     window_manager::WindowManager,
-    window_switcher::{LayoutSession, Pose, SwitcherAction, SwitcherLayout, Viewport, WindowSwitcher, flat_pose},
+    window_switcher::{
+        LayoutSession, Pose, SwitcherAction, SwitcherLayout, Viewport, WindowSwitcher, flat_pose,
+    },
 };
 
 /// How far the desktop dims behind the grid.
@@ -33,7 +35,10 @@ const GAP: f64 = 40.0;
 /// Windows are never drawn larger than this.
 const MAX_SCALE: f64 = 1.0;
 
-pub fn create_window_grid(wm: WindowManager, stack_order: impl Fn(Window) -> i32 + 'static) -> WindowSwitcher {
+pub fn create_window_grid(
+    wm: WindowManager,
+    stack_order: impl Fn(Window) -> i32 + 'static,
+) -> WindowSwitcher {
     WindowSwitcher::new(WindowGrid, wm, stack_order)
 }
 
@@ -166,7 +171,9 @@ impl LayoutSession for GridSession {
     }
 
     fn on_pointer_motion(&mut self, hit: Option<usize>, _selected: i64) -> SwitcherAction {
-        hit.map_or(SwitcherAction::None, |index| SwitcherAction::Select(index as i64))
+        hit.map_or(SwitcherAction::None, |index| {
+            SwitcherAction::Select(index as i64)
+        })
     }
 
     fn on_scroll(&mut self, event: &InputGrabScrollEvent, selected: i64) -> SwitcherAction {
@@ -191,12 +198,15 @@ impl LayoutSession for GridSession {
 /// Where the grid goes: the output's usable area (clear of bars), padded.
 fn grid_area(viewport: &Viewport) -> Rect {
     let output = &viewport.output;
-    let usable = COMPOSITOR.layer.usable_area(&output.name).unwrap_or(Rect::new(
-        output.position.x as f64,
-        output.position.y as f64,
-        viewport.width,
-        viewport.height,
-    ));
+    let usable = COMPOSITOR
+        .layer
+        .usable_area(&output.name)
+        .unwrap_or(Rect::new(
+            output.position.x as f64,
+            output.position.y as f64,
+            viewport.width,
+            viewport.height,
+        ));
     Rect::new(
         usable.x - output.position.x as f64 + PADDING,
         usable.y - output.position.y as f64 + PADDING,
@@ -242,7 +252,11 @@ fn layout_grid(sizes: &[(f64, f64)], area: Rect) -> Vec<Cell> {
         .collect();
     let row_heights: Vec<f64> = rows
         .iter()
-        .map(|row| row.iter().map(|&index| sizes[index].1 * scales[index]).fold(0.0, f64::max))
+        .map(|row| {
+            row.iter()
+                .map(|&index| sizes[index].1 * scales[index])
+                .fold(0.0, f64::max)
+        })
         .collect();
     let total_height = row_heights.iter().sum::<f64>() + (rows.len() - 1) as f64 * GAP;
     let mut cells = vec![
@@ -256,7 +270,10 @@ fn layout_grid(sizes: &[(f64, f64)], area: Rect) -> Vec<Cell> {
     ];
     let mut top = area.y + (area.height - total_height) / 2.0;
     for (row_index, row) in rows.iter().enumerate() {
-        let widths: Vec<f64> = row.iter().map(|&index| sizes[index].0 * scales[index]).collect();
+        let widths: Vec<f64> = row
+            .iter()
+            .map(|&index| sizes[index].0 * scales[index])
+            .collect();
         let row_width = widths.iter().sum::<f64>() + (row.len() - 1) as f64 * GAP;
         let mut left = area.x + (area.width - row_width) / 2.0;
         for (column, &index) in row.iter().enumerate() {
@@ -288,7 +305,10 @@ mod tests {
         let cells = layout_grid(&[(400.0, 300.0); 3], area);
         // Two columns fit 400×300 windows unscaled; the third sits centred
         // on its own row.
-        assert_eq!(cells.iter().map(|cell| cell.row).collect::<Vec<_>>(), [0, 0, 1]);
+        assert_eq!(
+            cells.iter().map(|cell| cell.row).collect::<Vec<_>>(),
+            [0, 0, 1]
+        );
         assert!(cells.iter().all(|cell| cell.scale == 1.0));
         assert_eq!(cells[2].center_x, 500.0);
         assert_eq!(cells[0].center_x + cells[1].center_x, 1000.0);

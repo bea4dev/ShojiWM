@@ -9,10 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use smithay::reexports::calloop::{
-    Interest, LoopHandle, Mode, PostAction,
-    generic::Generic,
-};
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, generic::Generic};
 use tracing::{debug, warn};
 
 use crate::state::ShojiWM;
@@ -36,7 +33,11 @@ impl Backlight {
     /// two are equal.
     pub fn fraction(&self) -> Option<f32> {
         let read = |name: &str| -> Option<f32> {
-            std::fs::read_to_string(self.path.join(name)).ok()?.trim().parse().ok()
+            std::fs::read_to_string(self.path.join(name))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
         };
         let max = read("max_brightness").filter(|max| *max > 0.0)?;
         let level = read("actual_brightness").or_else(|| read("brightness"))?;
@@ -83,7 +84,10 @@ fn connector_of(backlight: &Path) -> Option<String> {
     let name = device.file_name()?.to_str()?;
     let rest = name.strip_prefix("card")?;
     let (index, connector) = rest.split_once('-')?;
-    index.chars().all(|c| c.is_ascii_digit()).then(|| connector.to_owned())
+    index
+        .chars()
+        .all(|c| c.is_ascii_digit())
+        .then(|| connector.to_owned())
 }
 
 /// Watch for backlight changes. The kernel sends a `change` uevent for every

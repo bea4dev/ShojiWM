@@ -155,17 +155,23 @@ impl IpcServer {
                                     let Ok(line) = line else {
                                         break;
                                     };
-                                    let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
+                                    let Ok(message) = serde_json::from_str::<Value>(line.trim())
+                                    else {
                                         continue;
                                     };
-                                    let Some(method) = message.get("method").and_then(Value::as_str) else {
+                                    let Some(method) =
+                                        message.get("method").and_then(Value::as_str)
+                                    else {
                                         continue;
                                     };
                                     sender.send(Request {
                                         client: client.clone(),
                                         id: message.get("id").filter(|id| !id.is_null()).cloned(),
                                         method: method.to_owned(),
-                                        params: message.get("params").cloned().unwrap_or(Value::Null),
+                                        params: message
+                                            .get("params")
+                                            .cloned()
+                                            .unwrap_or(Value::Null),
                                     });
                                 }
                                 client.alive.store(false, Ordering::Relaxed);
@@ -184,7 +190,11 @@ impl IpcServer {
 
     /// Answer `method`; the result (or error) goes back to the caller when
     /// it sent an `id`.
-    pub fn handle(&self, method: &str, handler: impl Fn(&Value) -> Result<Value, String> + 'static) {
+    pub fn handle(
+        &self,
+        method: &str,
+        handler: impl Fn(&Value) -> Result<Value, String> + 'static,
+    ) {
         self.handlers
             .borrow_mut()
             .insert(method.to_owned(), Rc::new(handler));
@@ -208,7 +218,12 @@ impl IpcServer {
     pub fn client_count(&self) -> usize {
         self.clients
             .lock()
-            .map(|clients| clients.iter().filter(|client| client.alive.load(Ordering::Relaxed)).count())
+            .map(|clients| {
+                clients
+                    .iter()
+                    .filter(|client| client.alive.load(Ordering::Relaxed))
+                    .count()
+            })
             .unwrap_or(0)
     }
 

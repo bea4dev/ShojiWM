@@ -29,42 +29,40 @@ pub use bridge::{
 pub use evaluator::{
     DecorationCachedEvaluationResult, DecorationEvaluationError, DecorationEvaluationResult,
     DecorationEvaluator, DecorationGestureSwipeAsyncInvocation, DecorationHandlerInvocation,
-    DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation,
-    DecorationSchedulerTick, DecorationWindowMoveInvocation,
-    DecorationWindowResizeInvocation, DecorationWindowStateRequestInvocation,
-    LayerEffectEvaluationResult, PopupEffectEvaluationResult,
-    RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment, RuntimePopupEffectAssignment,
-    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
-    validate_layer_effect_config, validate_popup_effect_config,
-};
-pub use integration::{
-    CachedDecorationBuffer, ContentClip, EffectEvaluationCacheEntry,
-    WindowDecorationState,
+    DecorationKeyBindingInvocation, DecorationPointerMoveAsyncInvocation, DecorationSchedulerTick,
+    DecorationWindowMoveInvocation, DecorationWindowResizeInvocation,
+    DecorationWindowStateRequestInvocation, LayerEffectEvaluationResult,
+    PopupEffectEvaluationResult, RuntimeEventConfigUpdate, RuntimeLayerEffectAssignment,
+    RuntimePopupEffectAssignment, RuntimeWindowAction, StaticDecorationEvaluator,
+    evaluate_dynamic_decoration, validate_layer_effect_config, validate_popup_effect_config,
 };
 #[cfg(test)]
 pub(crate) use integration::paint_buffers_for_layout;
+pub use integration::{
+    CachedDecorationBuffer, ContentClip, EffectEvaluationCacheEntry, WindowDecorationState,
+};
 pub(crate) use integration::{IconSource, StandaloneDecoration};
 pub use interaction::DecorationInteractionSnapshot;
-pub(crate) use popup_input::PopupInputState;
 pub use popup::{
     DecorationPart, PopupAlign, PopupCollision, PopupDismissHandlers, PopupDismissReason,
     PopupHandlers, PopupInfo, PopupLayer, PopupMode, PopupNode, PopupPlacement, PopupScopes,
     set_popup_viewports,
 };
+pub(crate) use popup_input::PopupInputState;
 pub use window_model::{
-    GesturePinchEventSnapshot, GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, LayerKindSnapshot, LayerPositionSnapshot,
+    GesturePinchEventSnapshot, GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+    HdmiLinkSnapshot, LayerKindSnapshot, LayerPositionSnapshot,
     ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
     ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
     ManagedWindowPointSnapshot, ManagedWindowRectAnimationSnapshot, ManagedWindowRectSnapshot,
-    HdmiLinkSnapshot, ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
+    ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
     OutputPositionSnapshot, OutputSubpixelSnapshot, OutputTransformSnapshot,
-    PointerHitTargetSnapshot,
-    PointerModifierStateSnapshot,
-    PointerMoveEventSnapshot, PointerMovePointSnapshot, PopupParentKindSnapshot, TransformOrigin,
-    WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
-    WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowActivateRequestSourceSnapshot,
-    WindowDecorationClientSnapshot, WindowDecorationDecisionSnapshot,
-    WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot, WindowDecorationPolicyReasonSnapshot,
+    PointerHitTargetSnapshot, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
+    PointerMovePointSnapshot, PopupParentKindSnapshot, TransformOrigin, WaylandLayerSnapshot,
+    WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
+    WindowActivateRequestEventSnapshot, WindowActivateRequestSourceSnapshot,
+    WindowDecorationClientSnapshot, WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
+    WindowDecorationPolicyContextSnapshot, WindowDecorationPolicyReasonSnapshot,
     WindowDecorationProtocolSnapshot, WindowDecorationStateSnapshot,
     WindowFullscreenRequestEventSnapshot, WindowIconSnapshot, WindowMaximizeRequestEventSnapshot,
     WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowMovePhaseSnapshot,
@@ -365,11 +363,17 @@ impl ComputedDecorationTree {
     /// innermost one only; inside an interactive popup it is every node of
     /// the chain down to it, the popup's ancestors included (see
     /// `ssd::popup`).
-    pub fn interaction_targets_at_precise(&self, x: f64, y: f64) -> Vec<DecorationInteractionTarget> {
+    pub fn interaction_targets_at_precise(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> Vec<DecorationInteractionTarget> {
         let point = self.root.frame.layout_point(x, y);
         match popup::popup_hit(&self.root, point) {
             Some(hit) => popup::hover_chain(&hit, point),
-            None => find_interaction_target(&self.root, point).into_iter().collect(),
+            None => find_interaction_target(&self.root, point)
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -918,15 +922,13 @@ pub enum DecorationNodeKind {
     Popup(PopupNode),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImageFit {
     #[default]
     Contain,
     Cover,
     Fill,
 }
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppIconNode {
@@ -1194,9 +1196,7 @@ pub enum EffectAlphaMode {
 
 /// How the compositor treats the opaque region a client declared on its
 /// surface (`wl_surface.set_opaque_region`).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OpaqueRegionPolicy {
     /// Honor the declaration: opaque areas can occlude elements below and be
@@ -1212,9 +1212,7 @@ pub enum OpaqueRegionPolicy {
 }
 
 /// Per-surface rendering policy resolved by `COMPOSITOR.rendering.surfacePolicy`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfacePolicy {
     #[serde(default)]
@@ -1998,7 +1996,6 @@ impl ResolvedLayoutEdges {
             left: ResolvedLayoutValue::from_logical(edges.left, scale),
         }
     }
-
 }
 
 /// A rect in root-local physical pixels (see `LayoutFrame`).
@@ -2427,10 +2424,8 @@ fn layout_box_children(
     };
     let parent_stable_id = node.stable_id.as_deref().unwrap_or("<none>");
 
-    for (flow_position, ((index, child), main_size)) in flow_children
-        .into_iter()
-        .zip(allocated)
-        .enumerate()
+    for (flow_position, ((index, child), main_size)) in
+        flow_children.into_iter().zip(allocated).enumerate()
     {
         let margin = child.style.resolved_margin(scale);
         let margin_main_start = direction.main_start_margin_resolved(margin);
@@ -2809,8 +2804,11 @@ impl DecorationNode {
     ) -> Option<(ResolvedLayoutValue, ResolvedLayoutValue)> {
         match &self.kind {
             DecorationNodeKind::Label(label) => {
-                let font_size =
-                    self.style.font_size.unwrap_or(DEFAULT_LABEL_FONT_SIZE).max(1.0) as f32;
+                let font_size = self
+                    .style
+                    .font_size
+                    .unwrap_or(DEFAULT_LABEL_FONT_SIZE)
+                    .max(1.0) as f32;
                 let line_height = self
                     .style
                     .line_height
@@ -2951,11 +2949,7 @@ impl DecorationNode {
         let mut width = ResolvedLayoutValue::ZERO;
         let mut height = ResolvedLayoutValue::ZERO;
 
-        for child in self
-            .children
-            .iter()
-            .filter(|child| !child.is_out_of_flow())
-        {
+        for child in self.children.iter().filter(|child| !child.is_out_of_flow()) {
             let margin = child.style.resolved_margin(scale);
             width = width.max(
                 child.preferred_main_size_resolved(LayoutDirection::Row, window_slot_size, scale)
@@ -3113,7 +3107,13 @@ fn kind_layout_equivalent(left: &DecorationNodeKind, right: &DecorationNodeKind)
         (DecorationNodeKind::WindowSlot, DecorationNodeKind::WindowSlot) => true,
         // `open` only toggles visibility: a closed popup is laid out too.
         (DecorationNodeKind::Popup(left), DecorationNodeKind::Popup(right)) => {
-            PopupNode { open: true, ..*left } == PopupNode { open: true, ..*right }
+            PopupNode {
+                open: true,
+                ..*left
+            } == PopupNode {
+                open: true,
+                ..*right
+            }
         }
         _ => false,
     }
@@ -4350,11 +4350,23 @@ mod tests {
             width: Some(100.0),
             min_height: Some(10.0),
             flex_grow: Some(1.0),
-            padding: Edges { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 },
+            padding: Edges {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            },
             gap: Some(6.0),
-            inset: PositionOffsets { top: Some(8.0), left: Some(-2.0), ..Default::default() },
+            inset: PositionOffsets {
+                top: Some(8.0),
+                left: Some(-2.0),
+                ..Default::default()
+            },
             opacity: Some(0.5),
-            border: Some(BorderStyle { width: 1.0, color: Color::rgba(0, 0, 0, 255) }),
+            border: Some(BorderStyle {
+                width: 1.0,
+                color: Color::rgba(0, 0, 0, 255),
+            }),
             border_radius: Some(12.0),
             font_size: Some(13.0),
             line_height: Some(17.0),
@@ -4366,7 +4378,12 @@ mod tests {
                 color: Color::rgba(0, 0, 0, 64),
                 inset: false,
             }],
-            transform: Some(NodeTransform { translate_x: 4.0, translate_y: 0.0, scale_x: 0.5, scale_y: 0.5 }),
+            transform: Some(NodeTransform {
+                translate_x: 4.0,
+                translate_y: 0.0,
+                scale_x: 0.5,
+                scale_y: 0.5,
+            }),
             ..Default::default()
         };
         style.scale_lengths(1.5);
@@ -4374,7 +4391,15 @@ mod tests {
         assert_eq!(style.min_height, Some(15.0));
         assert_eq!(style.height, None);
         assert_eq!(style.flex_grow, Some(1.0));
-        assert_eq!(style.padding, Edges { top: 1.5, right: 3.0, bottom: 4.5, left: 6.0 });
+        assert_eq!(
+            style.padding,
+            Edges {
+                top: 1.5,
+                right: 3.0,
+                bottom: 4.5,
+                left: 6.0
+            }
+        );
         assert_eq!(style.gap, Some(9.0));
         assert_eq!(style.inset.top, Some(12.0));
         assert_eq!(style.inset.left, Some(-3.0));
@@ -4385,7 +4410,10 @@ mod tests {
         assert_eq!(style.font_size, Some(19.5));
         assert_eq!(style.line_height, Some(25.5));
         let shadow = style.box_shadow[0];
-        assert_eq!((shadow.offset_y, shadow.blur, shadow.spread), (3.0, 12.0, -1.5));
+        assert_eq!(
+            (shadow.offset_y, shadow.blur, shadow.spread),
+            (3.0, 12.0, -1.5)
+        );
         let transform = style.transform.unwrap();
         assert_eq!((transform.translate_x, transform.scale_x), (6.0, 0.5));
     }
@@ -4933,7 +4961,10 @@ mod tests {
             layout.hit_test_at(-8.0, 30.0),
             DecorationHitTestResult::Resize(ResizeEdges::LEFT)
         );
-        assert_eq!(layout.hit_test_at(-8.5, 30.0), DecorationHitTestResult::Outside);
+        assert_eq!(
+            layout.hit_test_at(-8.5, 30.0),
+            DecorationHitTestResult::Outside
+        );
         assert_eq!(
             layout.hit_test(LogicalPoint::new(1, 30)),
             DecorationHitTestResult::Resize(ResizeEdges::LEFT)
@@ -4973,19 +5004,21 @@ mod tests {
                     inset_width: Some(8),
                 }),
             })
-            .with_children(vec![DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                direction: LayoutDirection::Column,
-            }))
             .with_children(vec![
                 DecorationNode::new(DecorationNodeKind::Box(BoxNode {
-                    direction: LayoutDirection::Row,
+                    direction: LayoutDirection::Column,
                 }))
-                .with_style(DecorationStyle {
-                    height: Some(30.0),
-                    ..Default::default()
-                }),
-                DecorationNode::new(DecorationNodeKind::WindowSlot),
-            ])]);
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+                        direction: LayoutDirection::Row,
+                    }))
+                    .with_style(DecorationStyle {
+                        height: Some(30.0),
+                        ..Default::default()
+                    }),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]),
+            ]);
 
         let layout = DecorationTree::new(root)
             .layout(LogicalRect::new(0, 0, 200, 100))
@@ -5059,11 +5092,12 @@ mod tests {
                             height: Some(20.0),
                             ..Default::default()
                         }),
-                    DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
-                        width: Some(11.0),
-                        height: Some(20.0),
-                        ..Default::default()
-                    }),
+                    DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default()))
+                        .with_style(DecorationStyle {
+                            width: Some(11.0),
+                            height: Some(20.0),
+                            ..Default::default()
+                        }),
                     DecorationNode::new(DecorationNodeKind::WindowSlot),
                 ]),
             ]);
@@ -5200,11 +5234,13 @@ mod tests {
                     color: Some(Color::WHITE),
                     ..Default::default()
                 }),
-            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
-                width: Some(11.0),
-                height: Some(20.0),
-                ..Default::default()
-            }),
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(
+                DecorationStyle {
+                    width: Some(11.0),
+                    height: Some(20.0),
+                    ..Default::default()
+                },
+            ),
             DecorationNode::new(DecorationNodeKind::WindowSlot),
         ]);
 
@@ -5224,11 +5260,13 @@ mod tests {
                     color: Some(Color::BLACK),
                     ..Default::default()
                 }),
-            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
-                width: Some(11.0),
-                height: Some(20.0),
-                ..Default::default()
-            }),
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(
+                DecorationStyle {
+                    width: Some(11.0),
+                    height: Some(20.0),
+                    ..Default::default()
+                },
+            ),
             DecorationNode::new(DecorationNodeKind::WindowSlot),
         ]);
 
@@ -5373,11 +5411,13 @@ mod tests {
             ..Default::default()
         })
         .with_children(vec![
-            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(DecorationStyle {
-                width: Some(16.0),
-                height: Some(16.0),
-                ..Default::default()
-            }),
+            DecorationNode::new(DecorationNodeKind::AppIcon(AppIconNode::default())).with_style(
+                DecorationStyle {
+                    width: Some(16.0),
+                    height: Some(16.0),
+                    ..Default::default()
+                },
+            ),
             DecorationNode::new(DecorationNodeKind::Label(LabelNode {
                 text: "A very long title that should shrink before the chrome breaks".into(),
             }))
@@ -5483,7 +5523,10 @@ mod tests {
                 DecorationNode::new(DecorationNodeKind::Box(BoxNode {
                     direction: LayoutDirection::Column,
                 }))
-                .with_children(vec![titlebar, DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+                .with_children(vec![
+                    titlebar,
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]),
             ]);
         let tree = DecorationTree::new(root);
 
@@ -5662,16 +5705,17 @@ mod tests {
         });
         button.stable_id = Some("button".into());
         if with_popup {
-            let mut tooltip = DecorationNode::new(DecorationNodeKind::Popup(popup)).with_children(
-                vec![DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_style(
-                    DecorationStyle {
-                        width: Some(60.0),
-                        height: Some(16.0),
-                        background: Some(Color::rgba(0, 0, 0, 255)),
-                        ..Default::default()
-                    },
-                )],
-            );
+            let mut tooltip =
+                DecorationNode::new(DecorationNodeKind::Popup(popup)).with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_style(
+                        DecorationStyle {
+                            width: Some(60.0),
+                            height: Some(16.0),
+                            background: Some(Color::rgba(0, 0, 0, 255)),
+                            ..Default::default()
+                        },
+                    ),
+                ]);
             tooltip.stable_id = Some("tooltip".into());
             tooltip.children[0].stable_id = Some("tooltip-body".into());
             button.push_child(tooltip);
@@ -5704,7 +5748,10 @@ mod tests {
                 })
                 .with_children(vec![
                     DecorationNode::new(DecorationNodeKind::Box(BoxNode::default())).with_children(
-                        vec![titlebar, DecorationNode::new(DecorationNodeKind::WindowSlot)],
+                        vec![
+                            titlebar,
+                            DecorationNode::new(DecorationNodeKind::WindowSlot),
+                        ],
                     ),
                 ]),
         )
@@ -5732,7 +5779,10 @@ mod tests {
         let without = popup_tree(popup, false).layout(window).expect("layout");
 
         let button = find_by_id(&layout.root, "button").unwrap();
-        assert_eq!(button.rect, find_by_id(&without.root, "button").unwrap().rect);
+        assert_eq!(
+            button.rect,
+            find_by_id(&without.root, "button").unwrap().rect
+        );
         let tooltip = find_by_id(&layout.root, "tooltip").unwrap();
         assert_eq!(
             tooltip.rect,
@@ -5745,7 +5795,10 @@ mod tests {
         // The window keeps its size and its input.
         assert_eq!(layout.bounds_rect(), without.bounds_rect());
         let inside_tooltip = LogicalPoint::new(tooltip.rect.x + 10, tooltip.rect.y + 8);
-        assert_eq!(layout.hit_test(inside_tooltip), without.hit_test(inside_tooltip));
+        assert_eq!(
+            layout.hit_test(inside_tooltip),
+            without.hit_test(inside_tooltip)
+        );
         assert_eq!(
             layout.hit_test(LogicalPoint::new(button.rect.x + 10, button.rect.y + 10)),
             DecorationHitTestResult::Action(WindowAction::Maximize)
@@ -5759,7 +5812,10 @@ mod tests {
             .iter()
             .partition(|buffer| scopes.layer_of(&buffer.stable_key) == Some(PopupLayer::Top));
         assert_eq!(popup_buffers.len(), 1);
-        assert_eq!(popup_buffers[0].owner_node_id.as_deref(), Some("tooltip-body"));
+        assert_eq!(
+            popup_buffers[0].owner_node_id.as_deref(),
+            Some("tooltip-body")
+        );
         assert!(popup_buffers[0].paint.geometry.clip.is_none());
         assert!(popup_buffers[0].paint.geometry.rounded_clip.is_none());
         assert!(!window_buffers.is_empty());
@@ -5840,7 +5896,11 @@ mod tests {
             PopupPlacement::Right,
             PopupLayer::Window,
         )))
-        .with_children(vec![sized(DecorationNodeKind::Box(BoxNode::default()), 30.0, 30.0)]);
+        .with_children(vec![sized(
+            DecorationNodeKind::Box(BoxNode::default()),
+            30.0,
+            30.0,
+        )]);
         submenu.stable_id = Some("submenu".into());
         let item = hoverable(
             sized(
@@ -5859,7 +5919,8 @@ mod tests {
             PopupLayer::Top,
         )))
         .with_children(vec![
-            sized(DecorationNodeKind::Box(BoxNode::default()), 80.0, 40.0).with_children(vec![item]),
+            sized(DecorationNodeKind::Box(BoxNode::default()), 80.0, 40.0)
+                .with_children(vec![item]),
         ]);
         menu.stable_id = Some("menu".into());
         let anchor = hoverable(
@@ -5921,7 +5982,10 @@ mod tests {
         .with_children(vec![
             DecorationNode::new(DecorationNodeKind::WindowSlot),
             absolute(
-                hoverable(sized(DecorationNodeKind::Box(BoxNode::default()), 30.0, 20.0), "chip"),
+                hoverable(
+                    sized(DecorationNodeKind::Box(BoxNode::default()), 30.0, 20.0),
+                    "chip",
+                ),
                 10.0,
             ),
             absolute(
@@ -5940,8 +6004,14 @@ mod tests {
             .expect("layout");
         let chip = find_by_id(&layout.root, "chip").unwrap().rect;
         let (x, y) = center(chip);
-        assert!(layout.takes_input_over_client_at(x, y), "a node with handlers in the client area");
-        assert!(layout.takes_input_over_client_at(170.0, 120.0), "a button in the client area");
+        assert!(
+            layout.takes_input_over_client_at(x, y),
+            "a node with handlers in the client area"
+        );
+        assert!(
+            layout.takes_input_over_client_at(170.0, 120.0),
+            "a button in the client area"
+        );
         // The frame only wraps the client: it is hovered there, but a hole in
         // the client's input region still falls through.
         let ids = layout
@@ -5978,7 +6048,10 @@ mod tests {
             DecorationHitTestResult::Action(WindowAction::Minimize)
         );
         let below_item = (menu.x as f64 + 70.0, menu.y as f64 + 35.0);
-        assert_eq!(layout.hit_test_at(below_item.0, below_item.1), DecorationHitTestResult::Popup);
+        assert_eq!(
+            layout.hit_test_at(below_item.0, below_item.1),
+            DecorationHitTestResult::Popup
+        );
         // Inside the menu the anchor stays hovered (DOM `:hover`); outside,
         // only the innermost node is.
         assert_eq!(ids(center(item)), ["item", "anchor"]);

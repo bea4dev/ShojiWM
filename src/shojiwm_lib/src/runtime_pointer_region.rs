@@ -531,11 +531,14 @@ mod tests {
         tracker.update(&outputs, at(50.0, 0.0));
         assert!(
             tracker
-                .update(&outputs, PointerRegionMotion {
-                    position: (50.0, 0.0).into(),
-                    push: (0.0, -30.0).into(),
-                    button_held: false,
-                })
+                .update(
+                    &outputs,
+                    PointerRegionMotion {
+                        position: (50.0, 0.0).into(),
+                        push: (0.0, -30.0).into(),
+                        button_held: false,
+                    }
+                )
                 .is_empty()
         );
         assert_eq!(

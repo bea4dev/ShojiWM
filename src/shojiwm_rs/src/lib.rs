@@ -88,7 +88,7 @@ pub use compositor::COMPOSITOR;
 /// Everything a reactive config usually needs.
 pub mod prelude {
     pub use crate::{
-        COMPOSITOR, ConfigBuilder, run_config,
+        COMPOSITOR, ConfigBuilder,
         animation::{
             Animation, AnimationOptions, Easing, PollHandle, PollOutput, Repeat, TimerHandle,
             create_poll, create_poll_for_each_output, cubic_bezier, now_ms, set_interval,
@@ -96,10 +96,10 @@ pub mod prelude {
         },
         compositor::{
             Command, CursorPosition, CursorPositionSnapshot, DisableEvent, EnableEvent,
-            FramePacing, HotCorner, HotCornerOptions,
-            InputChangeEvent, OutputChangeEvent, OutputConfig, OutputContext, OutputPower,
-            OutputPowerOptions, PointerRegion, PointerRegionAnchor, PointerRegionEventSnapshot,
-            PointerRegionOffset, PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,
+            FramePacing, HotCorner, HotCornerOptions, InputChangeEvent, OutputChangeEvent,
+            OutputConfig, OutputContext, OutputPower, OutputPowerOptions, PointerRegion,
+            PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionOffset,
+            PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,
         },
         dnd::{
             DragAction, DragActions, DragDevice, DragEnd, DragEndKind, DragIconInfo, DragPoint,
@@ -107,11 +107,10 @@ pub mod prelude {
         },
         effect::{
             Effect, Include, Invalidate, PaintShader, ShaderStage, Source, Stage, StateTexture,
-            SurfaceEffect,
-            SurfaceEffects, Uniform, backdrop_source, blend, dual_kawase_blur, image_source,
-            layer_source, noise, paint_shader, popup_source, render_to, render_to_if_dirty, save,
-            saved, shader_input, shader_stage, state_source, state_texture, unit, window_source,
-            xray_backdrop_source,
+            SurfaceEffect, SurfaceEffects, Uniform, backdrop_source, blend, dual_kawase_blur,
+            image_source, layer_source, noise, paint_shader, popup_source, render_to,
+            render_to_if_dirty, save, saved, shader_input, shader_stage, state_source,
+            state_texture, unit, window_source, xray_backdrop_source,
         },
         input_grab::{
             InputGrab, InputGrabCancelReason, InputGrabKeyEvent, InputGrabOptions,
@@ -129,18 +128,20 @@ pub mod prelude {
             Get, Memo, Prop, ReadSignal, Scope, Signal, batch, derive, effect, memo, on_cleanup,
             signal, untrack,
         },
+        run_config,
         style::{Border, FontWeight, Style, Transform2D, hex, inset_shadow, rgba, shadow},
         view::{
             AppIcon, Button, Child, ClientWindow, Composition, Direction, Element, Flex, Image,
-            Label, ManagedTransform, ManagedWindow, Popup, PopupTrigger, Rect, ShaderEffect, WindowBorder,
+            Label, ManagedTransform, ManagedWindow, Popup, PopupTrigger, Rect, ShaderEffect,
+            WindowBorder,
         },
         window::{AnimationMode, ManagedAnimation, Window, WindowStateKey},
         window_stack::{Placement, WindowStack},
     };
     pub use shojiwm_lib::ssd::{
         AlignItems, BlendMode, BoxShadow, Color, EffectRegion, ImageFit, JustifyContent, Overflow,
-        PointerEvents, PopupAlign, PopupCollision, PopupDismissReason, PopupLayer, PopupPlacement, PopupMode,
-        StylePosition, WindowAction,
+        PointerEvents, PopupAlign, PopupCollision, PopupDismissReason, PopupLayer, PopupMode,
+        PopupPlacement, StylePosition, WindowAction,
     };
 }
 
@@ -239,7 +240,13 @@ mod tests {
         runtime.enable().unwrap();
         assert!(matches!(host.pop(), Some(HostMessage::ProcessActions(_))));
         assert!(runtime.invoke_key_binding("any", 0).unwrap().invoked);
-        assert!(runtime.scheduler_tick(0.0).unwrap().next_poll_in_ms.is_none());
+        assert!(
+            runtime
+                .scheduler_tick(0.0)
+                .unwrap()
+                .next_poll_in_ms
+                .is_none()
+        );
     }
 
     /// A runtime whose new config takes a while to build: `prepare_reload`
@@ -304,7 +311,10 @@ mod tests {
         };
         let mut runtime = RuntimeHandle::new("slow", Box::new(runtime), host.clone());
 
-        assert_eq!(runtime.prepare_reload().unwrap(), ReloadPreparation::Pending);
+        assert_eq!(
+            runtime.prepare_reload().unwrap(),
+            ReloadPreparation::Pending
+        );
         // The old config keeps answering while the build runs.
         assert!(!runtime.invoke_key_binding("any", 0).unwrap().invoked);
 

@@ -15,74 +15,30 @@
 
 use std::sync::{
     Mutex,
-    atomic::{
-        AtomicBool,
-        Ordering
-    },
+    atomic::{AtomicBool, Ordering},
 };
 
 use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
-    wp_color_management_output_v1::{
-        self,
-        WpColorManagementOutputV1
-    },
-    wp_color_management_surface_feedback_v1::{
-        self,
-        WpColorManagementSurfaceFeedbackV1
-    },
-    wp_color_management_surface_v1::{
-        self,
-        WpColorManagementSurfaceV1
-    },
+    wp_color_management_output_v1::{self, WpColorManagementOutputV1},
+    wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
+    wp_color_management_surface_v1::{self, WpColorManagementSurfaceV1},
     wp_color_manager_v1::{
-        self,
-        Feature,
-        Primaries,
-        RenderIntent,
-        TransferFunction,
-        WpColorManagerV1,
+        self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
     },
-    wp_image_description_creator_icc_v1::{
-        self,
-        WpImageDescriptionCreatorIccV1
-    },
-    wp_image_description_creator_params_v1::{
-        self,
-        WpImageDescriptionCreatorParamsV1
-    },
-    wp_image_description_info_v1::{
-        self,
-        WpImageDescriptionInfoV1
-    },
-    wp_image_description_v1::{
-        self,
-        WpImageDescriptionV1
-    },
+    wp_image_description_creator_icc_v1::{self, WpImageDescriptionCreatorIccV1},
+    wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
+    wp_image_description_info_v1::{self, WpImageDescriptionInfoV1},
+    wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 use smithay::reexports::wayland_server::{
-    Client,
-    DataInit,
-    Dispatch,
-    DisplayHandle,
-    GlobalDispatch,
-    New,
-    Resource,
-    WEnum,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
     backend::ClientId,
-    protocol::{wl_output::WlOutput,
-               wl_surface::WlSurface},
+    protocol::{wl_output::WlOutput, wl_surface::WlSurface},
 };
-use smithay::wayland::compositor::{
-    SurfaceData,
-    with_states,
-};
+use smithay::wayland::compositor::{SurfaceData, with_states};
 
 use crate::color::{
-    ColorPrimaries,
-    ImageDescription,
-    Luminances,
-    TransferCharacteristics,
-    hdr_experiment_enabled,
+    ColorPrimaries, ImageDescription, Luminances, TransferCharacteristics, hdr_experiment_enabled,
 };
 
 const VERSION: u32 = 1;
@@ -150,10 +106,7 @@ pub struct ColorSurfaceData {
     description: Mutex<Option<ImageDescription>>,
 }
 
-fn with_color_surface_data<T>(
-    surface: &WlSurface,
-    f: impl FnOnce(&ColorSurfaceData) -> T,
-) -> T {
+fn with_color_surface_data<T>(surface: &WlSurface, f: impl FnOnce(&ColorSurfaceData) -> T) -> T {
     with_states(surface, |states| {
         states
             .data_map
@@ -379,35 +332,15 @@ fn protocol_tf(tf: TransferCharacteristics) -> TransferFunction {
 /// Send the full information event burst, ending with the `done` destructor
 /// event. Only call this *outside* the dispatch that created `info` — see
 /// [`ColorManagementHandler::defer_image_description_info`].
-pub fn send_information(
-    info: &WpImageDescriptionInfoV1,
-    description: &ImageDescription
-) {
+pub fn send_information(info: &WpImageDescriptionInfoV1, description: &ImageDescription) {
     let chroma = description.primaries.chromaticities();
     let (r_x, r_y) = chroma.red.to_protocol();
     let (g_x, g_y) = chroma.green.to_protocol();
     let (b_x, b_y) = chroma.blue.to_protocol();
     let (w_x, w_y) = chroma.white.to_protocol();
-    info.primaries(
-        r_x,
-        r_y,
-        g_x,
-        g_y,
-        b_x,
-        b_y,
-        w_x,
-        w_y
-    );
-    info.primaries_named(
-        protocol_primaries(
-            description.primaries
-        )
-    );
-    info.tf_named(
-        protocol_tf(
-            description.tf
-        )
-    );
+    info.primaries(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+    info.primaries_named(protocol_primaries(description.primaries));
+    info.tf_named(protocol_tf(description.tf));
     let luminances = description.effective_luminances();
     info.luminances(
         (luminances.min * 10000.0).round() as u32,
@@ -440,14 +373,8 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         let hdr = hdr_experiment_enabled();
-        let manager = data_init.init(
-            manager,
-            ColorManagerData { hdr },
-        );
-        send_supported(
-            &manager,
-            hdr,
-        );
+        let manager = data_init.init(manager, ColorManagerData { hdr });
+        send_supported(&manager, hdr);
     }
 }
 
@@ -465,31 +392,15 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_color_manager_v1::Request::GetOutput {
-                id,
-                output
-            } => {
-                let object = data_init.init(
-                    id,
-                    ColorOutputData {
-                        output
-                    }
-                );
+            wp_color_manager_v1::Request::GetOutput { id, output } => {
+                let object = data_init.init(id, ColorOutputData { output });
                 state.color_management_state().outputs.push(object);
             }
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
                 // Always init to consume the id, even on the error path.
-                let already_present = with_color_surface_data(
-                    &surface,
-                    |data| {
-                    data
-                        .has_surface_object
-                        .swap(
-                            true,
-                            Ordering::Relaxed
-                        )
-                }
-                );
+                let already_present = with_color_surface_data(&surface, |data| {
+                    data.has_surface_object.swap(true, Ordering::Relaxed)
+                });
                 data_init.init(
                     id,
                     ColorSurfaceObjData {
@@ -503,19 +414,11 @@ where
                     );
                 }
             }
-            wp_color_manager_v1::Request::GetSurfaceFeedback {
-                id,
-                surface
-            } => {
+            wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
                 let preferred = surface
                     .is_alive()
                     .then(|| identity_of(&state.surface_preferred_description(&surface)));
-                let object = data_init.init(
-                    id,
-                    FeedbackData {
-                        surface
-                    }
-                );
+                let object = data_init.init(id, FeedbackData { surface });
                 if let Some(identity) = preferred {
                     state
                         .color_management_state()
@@ -524,10 +427,7 @@ where
                 }
             }
             wp_color_manager_v1::Request::CreateIccCreator { obj } => {
-                data_init.init(
-                    obj,
-                    ()
-                );
+                data_init.init(obj, ());
                 manager.post_error(
                     wp_color_manager_v1::Error::UnsupportedFeature,
                     "icc_v2_v4 is not supported",
@@ -608,16 +508,9 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_color_management_output_v1::Request::GetImageDescription {
-                image_description,
-            } => {
+            wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
                 let description = state.output_image_description(&data.output);
-                init_ready_description(
-                    data_init,
-                    image_description,
-                    description,
-                    true,
-                );
+                init_ready_description(data_init, image_description, description, true);
             }
             wp_color_management_output_v1::Request::Destroy => {}
             _ => {}
@@ -692,11 +585,7 @@ where
                 with_color_surface_data(&data.surface, |surface_data| {
                     *surface_data.description.lock().unwrap() = Some(description);
                 });
-                ANY_SURFACE_TAGGED
-                    .store(
-                        true, 
-                        Ordering::Relaxed,
-                    );
+                ANY_SURFACE_TAGGED.store(true, Ordering::Relaxed);
             }
             wp_color_management_surface_v1::Request::UnsetImageDescription => {
                 if data.surface.is_alive() {
@@ -745,29 +634,21 @@ where
                 image_description,
             } => {
                 if !data.surface.is_alive() {
-                    data_init
-                        .init(
-                            image_description,
-                            ImageDescriptionData {
-                                description: None,
-                                allow_information: false,
-                            },
-                        );
+                    data_init.init(
+                        image_description,
+                        ImageDescriptionData {
+                            description: None,
+                            allow_information: false,
+                        },
+                    );
                     feedback.post_error(
                         wp_color_management_surface_feedback_v1::Error::Inert,
                         "the wl_surface has been destroyed",
                     );
                     return;
                 }
-                let description = state.surface_preferred_description(
-                    &data.surface
-                );
-                init_ready_description(
-                    data_init,
-                    image_description,
-                    description,
-                    true,
-                );
+                let description = state.surface_preferred_description(&data.surface);
+                init_ready_description(data_init, image_description, description, true);
             }
             wp_color_management_surface_feedback_v1::Request::Destroy => {}
             _ => {}
@@ -855,10 +736,7 @@ where
         match request {
             Request::SetTfNamed { tf } => {
                 let WEnum::Value(named) = tf else {
-                    creator.post_error(
-                        Error::InvalidTf,
-                        "invalid transfer function"
-                    );
+                    creator.post_error(Error::InvalidTf, "invalid transfer function");
                     return;
                 };
                 let mapped = match named {
@@ -872,26 +750,17 @@ where
                     _ => None,
                 };
                 let Some(mapped) = mapped else {
-                    creator.post_error(
-                        Error::InvalidTf,
-                        "unsupported transfer function"
-                    );
+                    creator.post_error(Error::InvalidTf, "unsupported transfer function");
                     return;
                 };
                 let mut params = data.params.lock().unwrap();
                 if params.tf.replace(mapped).is_some() {
-                    creator.post_error(
-                        Error::AlreadySet,
-                        "transfer function already set"
-                    );
+                    creator.post_error(Error::AlreadySet, "transfer function already set");
                 }
             }
             Request::SetPrimariesNamed { primaries } => {
                 let WEnum::Value(named) = primaries else {
-                    creator.post_error(
-                        Error::InvalidPrimariesNamed,
-                        "invalid primaries"
-                    );
+                    creator.post_error(Error::InvalidPrimariesNamed, "invalid primaries");
                     return;
                 };
                 let mapped = match named {
@@ -900,20 +769,12 @@ where
                     _ => None,
                 };
                 let Some(mapped) = mapped else {
-                    creator.post_error(
-                        Error::InvalidPrimariesNamed,
-                        "unsupported primaries"
-                    );
+                    creator.post_error(Error::InvalidPrimariesNamed, "unsupported primaries");
                     return;
                 };
-                let mut params = data.params
-                    .lock()
-                    .unwrap();
+                let mut params = data.params.lock().unwrap();
                 if params.primaries.replace(mapped).is_some() {
-                    creator.post_error(
-                        Error::AlreadySet,
-                        "primaries already set"
-                    );
+                    creator.post_error(Error::AlreadySet, "primaries already set");
                 }
             }
             Request::SetLuminances {
@@ -922,10 +783,8 @@ where
                 reference_lum,
             } => {
                 if !data.hdr {
-                    creator.post_error(
-                        Error::UnsupportedFeature,
-                        "set_luminances is not supported",
-                    );
+                    creator
+                        .post_error(Error::UnsupportedFeature, "set_luminances is not supported");
                     return;
                 }
                 let luminances = Luminances {
@@ -934,55 +793,31 @@ where
                     reference: reference_lum as f32,
                 };
                 if luminances.max <= luminances.min || luminances.reference <= luminances.min {
-                    creator.post_error(
-                        Error::InvalidLuminance,
-                        "invalid luminance ordering"
-                    );
+                    creator.post_error(Error::InvalidLuminance, "invalid luminance ordering");
                     return;
                 }
-                let mut params = data.params
-                    .lock()
-                    .unwrap();
+                let mut params = data.params.lock().unwrap();
                 if params.luminances.replace(luminances).is_some() {
-                    creator.post_error(
-                        Error::AlreadySet,
-                        "luminances already set"
-                    );
+                    creator.post_error(Error::AlreadySet, "luminances already set");
                 }
             }
             Request::SetMaxCll { max_cll } => {
-                let mut params = data.params
-                    .lock()
-                    .unwrap();
+                let mut params = data.params.lock().unwrap();
                 if params.max_cll.replace(max_cll).is_some() {
-                    creator.post_error(
-                        Error::AlreadySet,
-                        "max_cll already set"
-                    );
+                    creator.post_error(Error::AlreadySet, "max_cll already set");
                 }
             }
             Request::SetMaxFall { max_fall } => {
-                let mut params = data.params
-                    .lock()
-                    .unwrap();
+                let mut params = data.params.lock().unwrap();
                 if params.max_fall.replace(max_fall).is_some() {
-                    creator.post_error(
-                        Error::AlreadySet,
-                        "max_fall already set"
-                    );
+                    creator.post_error(Error::AlreadySet, "max_fall already set");
                 }
             }
             Request::SetTfPower { .. } => {
-                creator.post_error(
-                    Error::UnsupportedFeature,
-                    "set_tf_power is not supported"
-                );
+                creator.post_error(Error::UnsupportedFeature, "set_tf_power is not supported");
             }
             Request::SetPrimaries { .. } => {
-                creator.post_error(
-                    Error::UnsupportedFeature,
-                    "set_primaries is not supported"
-                );
+                creator.post_error(Error::UnsupportedFeature, "set_primaries is not supported");
             }
             Request::SetMasteringDisplayPrimaries { .. } => {
                 creator.post_error(
@@ -999,10 +834,7 @@ where
             Request::Create { image_description } => {
                 let params = *data.params.lock().unwrap();
                 match (params.primaries, params.tf) {
-                    (
-                        Some(primaries),
-                        Some(tf)
-                    ) => {
+                    (Some(primaries), Some(tf)) => {
                         init_ready_description(
                             data_init,
                             image_description,
@@ -1059,11 +891,7 @@ where
                     // created `info`) or wayland-backend writes the new
                     // object's data through a freed pointer afterwards.
                     Some(description) if data.allow_information => {
-                        state
-                            .defer_image_description_info(
-                                info,
-                                *description,
-                            );
+                        state.defer_image_description_info(info, *description);
                     }
                     _ => {
                         description_obj.post_error(

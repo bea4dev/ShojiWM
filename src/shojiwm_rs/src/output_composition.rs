@@ -56,9 +56,9 @@ use shojiwm_lib::{
 
 use crate::window::Window;
 
-pub use shojiwm_lib::backend::composition::LayerKind as LayerName;
 /// The compiled plan types the compositor consumes.
 pub use shojiwm_lib::backend::composition as plan;
+pub use shojiwm_lib::backend::composition::LayerKind as LayerName;
 
 /// Column-major 4x4 matrix (16 numbers).
 pub type Mat4 = [f64; 16];
@@ -560,7 +560,9 @@ impl Transform3D {
     }
 
     pub fn translate(self, x: f64, y: f64, z: f64) -> Self {
-        self.multiply([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0])
+        self.multiply([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0,
+        ])
     }
 
     /// Scale X and Y; Z stays (like the TypeScript `scale(x)`).
@@ -569,22 +571,30 @@ impl Transform3D {
     }
 
     pub fn scale_xyz(self, x: f64, y: f64, z: f64) -> Self {
-        self.multiply([x, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 0.0, z, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.multiply([
+            x, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 0.0, z, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
     }
 
     pub fn rotate_x(self, degrees: f64) -> Self {
         let (s, c) = degrees.to_radians().sin_cos();
-        self.multiply([1.0, 0.0, 0.0, 0.0, 0.0, c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.multiply([
+            1.0, 0.0, 0.0, 0.0, 0.0, c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
     }
 
     pub fn rotate_y(self, degrees: f64) -> Self {
         let (s, c) = degrees.to_radians().sin_cos();
-        self.multiply([c, 0.0, -s, 0.0, 0.0, 1.0, 0.0, 0.0, s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.multiply([
+            c, 0.0, -s, 0.0, 0.0, 1.0, 0.0, 0.0, s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
     }
 
     pub fn rotate_z(self, degrees: f64) -> Self {
         let (s, c) = degrees.to_radians().sin_cos();
-        self.multiply([c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.multiply([
+            c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ])
     }
 }
 
@@ -598,10 +608,22 @@ pub fn perspective(fov_y: f64, aspect: f64, near: f64, far: f64) -> Mat4 {
     let f = 1.0 / (fov_y.to_radians() / 2.0).tan();
     let depth = 1.0 / (near - far);
     [
-        f / aspect, 0.0, 0.0, 0.0, //
-        0.0, f, 0.0, 0.0, //
-        0.0, 0.0, (far + near) * depth, -1.0, //
-        0.0, 0.0, 2.0 * far * near * depth, 0.0,
+        f / aspect,
+        0.0,
+        0.0,
+        0.0, //
+        0.0,
+        f,
+        0.0,
+        0.0, //
+        0.0,
+        0.0,
+        (far + near) * depth,
+        -1.0, //
+        0.0,
+        0.0,
+        2.0 * far * near * depth,
+        0.0,
     ]
 }
 
@@ -631,17 +653,33 @@ pub fn look_at_up(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
     let x = normalize(cross(up, z));
     let y = cross(z, x);
     [
-        x[0], y[0], z[0], 0.0, //
-        x[1], y[1], z[1], 0.0, //
-        x[2], y[2], z[2], 0.0, //
-        -dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0,
+        x[0],
+        y[0],
+        z[0],
+        0.0, //
+        x[1],
+        y[1],
+        z[1],
+        0.0, //
+        x[2],
+        y[2],
+        z[2],
+        0.0, //
+        -dot(x, eye),
+        -dot(y, eye),
+        -dot(z, eye),
+        1.0,
     ]
 }
 
 /// Logical size of an output (its resolution over its scale), `(width,
 /// height)`; `(0, 0)` without a mode.
 pub fn output_logical_size(output: &WaylandOutputSnapshot) -> (f64, f64) {
-    let scale = if output.scale > 0.0 { output.scale } else { 1.0 };
+    let scale = if output.scale > 0.0 {
+        output.scale
+    } else {
+        1.0
+    };
     output
         .resolution
         .map(|resolution| {
@@ -843,10 +881,18 @@ struct PlanBuilder {
 
 impl PlanBuilder {
     fn texture_index(&mut self, texture: &RenderTexture) -> Result<usize, String> {
-        if let Some((_, index)) = self.indices.iter().find(|(spec, _)| Rc::ptr_eq(spec, &texture.0)) {
+        if let Some((_, index)) = self
+            .indices
+            .iter()
+            .find(|(spec, _)| Rc::ptr_eq(spec, &texture.0))
+        {
             return Ok(*index);
         }
-        if self.building.iter().any(|spec| Rc::ptr_eq(spec, &texture.0)) {
+        if self
+            .building
+            .iter()
+            .any(|spec| Rc::ptr_eq(spec, &texture.0))
+        {
             return Err("A render texture cannot show itself".to_owned());
         }
         self.building.push(texture.0.clone());
@@ -858,7 +904,10 @@ impl PlanBuilder {
         self.textures.push(TextureSpec {
             key: spec.key.clone().unwrap_or_else(|| format!("#{index}")),
             width: spec.width.map(|width| finite(width, "width")).transpose()?,
-            height: spec.height.map(|height| finite(height, "height")).transpose()?,
+            height: spec
+                .height
+                .map(|height| finite(height, "height"))
+                .transpose()?,
             scale: spec.scale.map(|scale| finite(scale, "scale")).transpose()?,
             clear_color: spec.clear_color.premultiplied(),
             nodes,
@@ -968,8 +1017,14 @@ mod tests {
             height: 100.0,
             transform: IDENTITY,
         }];
-        assert_eq!(pick_plane(&camera, (800.0, 600.0), &planes, 400.0, 300.0), Some(0));
-        assert_eq!(pick_plane(&camera, (800.0, 600.0), &planes, 10.0, 10.0), None);
+        assert_eq!(
+            pick_plane(&camera, (800.0, 600.0), &planes, 400.0, 300.0),
+            Some(0)
+        );
+        assert_eq!(
+            pick_plane(&camera, (800.0, 600.0), &planes, 10.0, 10.0),
+            None
+        );
     }
 
     #[test]

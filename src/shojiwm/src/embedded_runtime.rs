@@ -32,7 +32,8 @@ struct TestRuntimeDir(PathBuf);
 impl TestRuntimeDir {
     fn new(bridge_id: u32) -> std::io::Result<Self> {
         use std::os::unix::fs::DirBuilderExt;
-        let path = std::env::temp_dir().join(format!("shoji-test-{}-{bridge_id}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("shoji-test-{}-{bridge_id}", std::process::id()));
         std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         TEST_RUNTIME_DIR.with(|dir| *dir.borrow_mut() = Some(path.clone()));
         Ok(Self(path))
@@ -58,6 +59,7 @@ use rustyscript::{
 };
 use serde::{Deserialize, Serialize};
 
+use shojiwm_lib::runtime_input::RuntimeInputDeviceSnapshot;
 use shojiwm_lib::ssd::{
     BackgroundEffectConfig, CompiledEffect, DecorationNode, EffectInput, EffectStage,
     OpaqueRegionPolicy, ShaderStage, SurfacePolicy, WindowEffectConfig,
@@ -69,7 +71,6 @@ use shojiwm_lib::ssd::{
         WindowResizeEventSnapshot, WindowTransform,
     },
 };
-use shojiwm_lib::runtime_input::RuntimeInputDeviceSnapshot;
 
 /// Composition requests cross the CppGC bridge as V8 values instead of JSON
 /// frames. Ownership moves into the request envelope, so large snapshots are
@@ -593,7 +594,9 @@ fn op_shoji_environment() -> HashMap<String, String> {
         let mut environment: HashMap<String, String> = environment;
         TEST_RUNTIME_DIR.with(|dir| {
             let dir = dir.borrow();
-            let dir = dir.as_ref().expect("test runtime must isolate its IPC environment");
+            let dir = dir
+                .as_ref()
+                .expect("test runtime must isolate its IPC environment");
             environment.insert("XDG_RUNTIME_DIR".into(), dir.to_string_lossy().into_owned());
             environment.insert("WAYLAND_DISPLAY".into(), "test".into());
             environment.remove("SHOJI_RUNTIME_WAKE_PID");
@@ -719,7 +722,10 @@ fn op_shoji_input_grab(id: u32, active: bool) {
         && let Some(host) = slot.as_ref()
     {
         host.send(shojiwm_lib::runtime_api::HostMessage::InputGrab(
-            shojiwm_lib::runtime_input_grab::RuntimeInputGrabUpdate { id: u64::from(id), active },
+            shojiwm_lib::runtime_input_grab::RuntimeInputGrabUpdate {
+                id: u64::from(id),
+                active,
+            },
         ));
     }
 }
@@ -1197,16 +1203,18 @@ impl ShojiRuntimeBridge {
         #[serde] pacing: HashMap<String, shojiwm_lib::frame_pacing::FramePacing>,
     ) {
         if let Ok(mut slot) = self.schedule.lock() {
-            slot.frame_pacing = Some(shojiwm_lib::frame_pacing::FramePacingConfig {
-                outputs: pacing,
-            });
+            slot.frame_pacing =
+                Some(shojiwm_lib::frame_pacing::FramePacingConfig { outputs: pacing });
         }
     }
 
     // `COMPOSITOR.rendering.composition` for every output; published like the schedule.
     fn publish_output_compositions(
         &self,
-        #[serde] compositions: HashMap<String, shojiwm_lib::backend::composition::OutputComposition>,
+        #[serde] compositions: HashMap<
+            String,
+            shojiwm_lib::backend::composition::OutputComposition,
+        >,
     ) {
         if let Ok(mut slot) = self.schedule.lock() {
             slot.output_compositions = Some(compositions);
@@ -1219,29 +1227,47 @@ impl ShojiRuntimeBridge {
         &self,
         #[serde] effect: Option<WireCompiledEffect>,
     ) -> Result<(), std::io::Error> {
-        let effect = effect
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(|error: shojiwm_lib::ssd::DecorationBridgeError| {
+        let effect = effect.map(TryInto::try_into).transpose().map_err(
+            |error: shojiwm_lib::ssd::DecorationBridgeError| {
                 std::io::Error::other(error.to_string())
-            })?;
+            },
+        )?;
         if let Ok(mut slot) = self.schedule.lock() {
             slot.background_effect = Some(effect);
         }
         Ok(())
     }
 
-    fn create_overlay(&self, #[string] output: String, #[string] placement: String,
-        max_duration: f64, #[serde] effect: WireCompiledEffect, persistent: bool) -> Result<u32, std::io::Error>
-    {
+    fn create_overlay(
+        &self,
+        #[string] output: String,
+        #[string] placement: String,
+        max_duration: f64,
+        #[serde] effect: WireCompiledEffect,
+        persistent: bool,
+    ) -> Result<u32, std::io::Error> {
         let effect = decode_overlay_effect(effect)?;
-        let host = WAKE_HOST.lock().ok().and_then(|host| host.clone()).unwrap_or_default();
-        shojiwm_lib::backend::overlay::create(&self.overlay_owner, output, placement, max_duration, effect, persistent, host)
+        let host = WAKE_HOST
+            .lock()
+            .ok()
+            .and_then(|host| host.clone())
+            .unwrap_or_default();
+        shojiwm_lib::backend::overlay::create(
+            &self.overlay_owner,
+            output,
+            placement,
+            max_duration,
+            effect,
+            persistent,
+            host,
+        )
     }
 
     #[async_method]
     async fn wait_overlay(&self, id: u32) -> Result<(), std::io::Error> {
-        shojiwm_lib::backend::overlay::get(&self.overlay_owner, id)?.wait(false).await
+        shojiwm_lib::backend::overlay::get(&self.overlay_owner, id)?
+            .wait(false)
+            .await
     }
 
     #[async_method]
@@ -1252,7 +1278,11 @@ impl ShojiRuntimeBridge {
         Ok(())
     }
 
-    fn update_overlay(&self, id: u32, #[serde] effect: WireCompiledEffect) -> Result<(), std::io::Error> {
+    fn update_overlay(
+        &self,
+        id: u32,
+        #[serde] effect: WireCompiledEffect,
+    ) -> Result<(), std::io::Error> {
         if let Ok(control) = shojiwm_lib::backend::overlay::get(&self.overlay_owner, id) {
             control.update(decode_overlay_effect(effect)?)?;
         }
@@ -1261,7 +1291,9 @@ impl ShojiRuntimeBridge {
 
     #[fast]
     fn dispose_overlay(&self, id: u32) {
-        if let Ok(control) = shojiwm_lib::backend::overlay::get(&self.overlay_owner, id) { control.dispose(); }
+        if let Ok(control) = shojiwm_lib::backend::overlay::get(&self.overlay_owner, id) {
+            control.dispose();
+        }
     }
 
     #[async_method]
@@ -1328,7 +1360,6 @@ impl ShojiRuntimeBridge {
         });
         set_pending_native_response(&self.pending_native_response, response)
     }
-
 
     #[fast]
     fn add_scheduler_dirty_window(
@@ -1470,9 +1501,11 @@ impl ShojiRuntimeBridge {
                 tiled: flags & (1 << 6) != 0,
                 allow_tearing,
                 z_index: (flags & (1 << 11) != 0).then_some(fields[14] as i32),
-                surface_policy: (flags & (1 << 12) != 0).then_some(shojiwm_lib::ssd::SurfacePolicy {
-                    opaque_region: shojiwm_lib::ssd::OpaqueRegionPolicy::Ignore,
-                }),
+                surface_policy: (flags & (1 << 12) != 0).then_some(
+                    shojiwm_lib::ssd::SurfacePolicy {
+                        opaque_region: shojiwm_lib::ssd::OpaqueRegionPolicy::Ignore,
+                    },
+                ),
                 transform: WindowTransform {
                     origin: TransformOrigin {
                         x: fields[3],
@@ -1611,12 +1644,10 @@ impl ShojiRuntimeBridge {
                             },
                         )?;
                         if node.stable_id.as_deref() != Some(patch.node_id.as_str()) {
-                            return Err(std::io::Error::other(
-                                format!(
-                                    "composition patch id mismatch: envelope={}, node={:?}",
-                                    patch.node_id, node.stable_id
-                                ),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "composition patch id mismatch: envelope={}, node={:?}",
+                                patch.node_id, node.stable_id
+                            )));
                         }
                         Ok(if patch.keep_children {
                             NativeCompositionPatch::ReplaceProps {
@@ -2393,7 +2424,9 @@ fn native_shader_uniform_value(
     }
     match value_len {
         1 => Ok(shojiwm_lib::ssd::ShaderUniformValue::Float(values[0])),
-        2 => Ok(shojiwm_lib::ssd::ShaderUniformValue::Vec2([values[0], values[1]])),
+        2 => Ok(shojiwm_lib::ssd::ShaderUniformValue::Vec2([
+            values[0], values[1],
+        ])),
         3 => Ok(shojiwm_lib::ssd::ShaderUniformValue::Vec3([
             values[0], values[1], values[2],
         ])),
@@ -2473,7 +2506,9 @@ fn op_shoji_cursor_set_position(
     #[serde] target: shojiwm_lib::cursor::RuntimeCursorPositionTarget,
 ) {
     if let Some(host) = isolate_host(state) {
-        host.send(shojiwm_lib::runtime_api::HostMessage::CursorPosition(target));
+        host.send(shojiwm_lib::runtime_api::HostMessage::CursorPosition(
+            target,
+        ));
     }
 }
 
@@ -3367,7 +3402,10 @@ fn run_runtime(
     // in V8's own arena instead of returning them to the OS. Hint V8 to
     // shrink its heap before `runtime` drops here, so this isolate's peak
     // doesn't linger past its own teardown.
-    runtime.deno_runtime().v8_isolate().low_memory_notification();
+    runtime
+        .deno_runtime()
+        .v8_isolate()
+        .low_memory_notification();
 
     result
 }

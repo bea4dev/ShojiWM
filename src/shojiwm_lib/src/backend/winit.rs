@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{
+        egl::EGLDevice,
         renderer::{
             ImportDma, ImportMemWl, Texture,
             damage::OutputDamageTracker,
@@ -15,7 +16,6 @@ use smithay::{
             element::utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             gles::{GlesRenderer, GlesTexture},
         },
-        egl::EGLDevice,
         winit::{self, WinitEvent},
     },
     desktop::{WindowSurface, layer_map_for_output},
@@ -32,7 +32,6 @@ use smithay::{
 use tracing::{info, trace, warn};
 
 use crate::{
-    state::ShojiWM,
     backend::visual::{
         WindowVisualState, is_identity_visual_geometry, requires_full_window_snapshot,
         root_physical_origin, root_physical_origin_precise, transformed_root_rect,
@@ -41,6 +40,7 @@ use crate::{
     backend::{damage, damage_blink, decoration, snapshot, window as window_render},
     presentation::{take_presentation_feedback, update_primary_scanout_output},
     ssd::PopupLayer,
+    state::ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
 
@@ -936,19 +936,28 @@ fn init_winit_dmabuf(backend: &mut winit::WinitGraphicsBackend<GlesRenderer>, st
     let render_node = EGLDevice::device_for_display(renderer.egl_context().display())
         .and_then(|device| device.try_get_render_node());
     let feedback = match render_node {
-        Ok(Some(node)) => match DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build() {
-            Ok(feedback) => Some((node, feedback)),
-            Err(error) => {
-                warn!(?node, ?error, "failed to build winit dmabuf feedback; offering dmabuf v3");
-                None
+        Ok(Some(node)) => {
+            match DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build() {
+                Ok(feedback) => Some((node, feedback)),
+                Err(error) => {
+                    warn!(
+                        ?node,
+                        ?error,
+                        "failed to build winit dmabuf feedback; offering dmabuf v3"
+                    );
+                    None
+                }
             }
-        },
+        }
         Ok(None) => {
             warn!("winit renderer has no render node; offering dmabuf v3");
             None
         }
         Err(error) => {
-            warn!(?error, "failed to query the winit EGL device; offering dmabuf v3");
+            warn!(
+                ?error,
+                "failed to query the winit EGL device; offering dmabuf v3"
+            );
             None
         }
     };
@@ -1847,13 +1856,9 @@ fn ssd_popup_scene_elements(
                     Relocate::Relative,
                 ))
             }
-            decoration::PopupSceneElement::Texture(element) => {
-                WinitRenderElements::RelocatedText(RelocateRenderElement::from_element(
-                    element,
-                    root_origin,
-                    Relocate::Relative,
-                ))
-            }
+            decoration::PopupSceneElement::Texture(element) => WinitRenderElements::RelocatedText(
+                RelocateRenderElement::from_element(element, root_origin, Relocate::Relative),
+            ),
         }));
     }
     elements
@@ -2885,7 +2890,11 @@ fn backdrop_items_capture_scene(
     let mut scene = Vec::new();
     for item in items {
         match item {
-            BackdropItem::Windows { windows, output_origin, force_visible } => {
+            BackdropItem::Windows {
+                windows,
+                output_origin,
+                force_visible,
+            } => {
                 for window in windows {
                     scene.extend(window_scene_elements_for_capture(
                         renderer,
@@ -2913,10 +2922,14 @@ fn backdrop_items_capture_scene(
                 }
             }
             BackdropItem::Composited(composited) => {
-                scene.push(match composited.capture_element(renderer, capture_origin_physical, scale) {
-                    CompositedElement::Texture(element) => WinitRenderElements::Snapshot(element),
-                    CompositedElement::Solid(element) => WinitRenderElements::Blink(element),
-                });
+                scene.push(
+                    match composited.capture_element(renderer, capture_origin_physical, scale) {
+                        CompositedElement::Texture(element) => {
+                            WinitRenderElements::Snapshot(element)
+                        }
+                        CompositedElement::Solid(element) => WinitRenderElements::Blink(element),
+                    },
+                );
             }
         }
     }
@@ -3109,47 +3122,47 @@ fn lower_layer_scene_elements(
                 .get(&stable_key)
                 .filter(|existing| existing.signature == signature)
                 .cloned()
-            {
-                for rect in rects {
-                    let rect_key = format!(
-                        "{}:{}:{}:{}:{}",
-                        layer_id, rect.x, rect.y, rect.width, rect.height
-                    );
-                    let rect_local = Rectangle::new(
-                        smithay::utils::Point::from((
-                            rect.x - output_geo.loc.x,
-                            rect.y - output_geo.loc.y,
-                        )),
-                        (rect.width, rect.height).into(),
-                    );
-                    if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
-                        renderer,
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.id.clone())
-                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.commit_counter)
-                            .unwrap_or_default(),
-                        existing.texture.clone(),
-                        rect_local,
-                        rect_local,
-                        captured_local_rect,
-                        &config.effect,
-                        1.0,
-                        scale.x as f32,
-                        None,
-                        0.0,
-                        format!("layer-lower:{}:{}", output.name(), rect_key),
-                    ) {
-                        elements.push(WinitRenderElements::Backdrop(element));
-                    }
+        {
+            for rect in rects {
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    layer_id, rect.x, rect.y, rect.width, rect.height
+                );
+                let rect_local = Rectangle::new(
+                    smithay::utils::Point::from((
+                        rect.x - output_geo.loc.x,
+                        rect.y - output_geo.loc.y,
+                    )),
+                    (rect.width, rect.height).into(),
+                );
+                if let Ok(element) = crate::backend::shader_effect::backdrop_shader_element(
+                    renderer,
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.id.clone())
+                        .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.commit_counter)
+                        .unwrap_or_default(),
+                    existing.texture.clone(),
+                    rect_local,
+                    rect_local,
+                    captured_local_rect,
+                    &config.effect,
+                    1.0,
+                    scale.x as f32,
+                    None,
+                    0.0,
+                    format!("layer-lower:{}:{}", output.name(), rect_key),
+                ) {
+                    elements.push(WinitRenderElements::Backdrop(element));
                 }
-                continue;
             }
+            continue;
+        }
         let mut backdrop_scene: Vec<WinitRenderElements> = Vec::new();
         for lower_layer in lower_layers.iter().skip(index + 1) {
             backdrop_scene.extend(layer_surface_scene_elements_for_capture(
@@ -3261,7 +3274,9 @@ fn lower_layer_scene_elements(
                 .map(|texture| (texture, signature))
             })
             .flatten();
-        let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+        let layer_source_signature = layer_source_capture
+            .as_ref()
+            .map(|(_, signature)| *signature);
         let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
         // Skip the effect this frame when the layer source could not be
         // captured (empty scene / zero-sized geometry); running the pipeline
@@ -3635,60 +3650,60 @@ fn configured_background_effect_elements_for_layer(
             .get(&stable_key)
             .filter(|existing| existing.signature == signature)
             .cloned()
-        {
-            return rects
-                .into_iter()
-                .filter_map(|rect| {
-                    let rect_key = format!(
-                        "{}:{}:{}:{}:{}",
-                        layer_id, rect.x, rect.y, rect.width, rect.height
+    {
+        return rects
+            .into_iter()
+            .filter_map(|rect| {
+                let rect_key = format!(
+                    "{}:{}:{}:{}:{}",
+                    layer_id, rect.x, rect.y, rect.width, rect.height
+                );
+                let rect_local = Rectangle::new(
+                    smithay::utils::Point::from((
+                        rect.x - output_geo.loc.x,
+                        rect.y - output_geo.loc.y,
+                    )),
+                    (rect.width, rect.height).into(),
+                );
+                if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
+                    tracing::info!(
+                        layer_surface = ?layer_surface.wl_surface().id(),
+                        output = %output.name(),
+                        rect = ?rect,
+                        rect_local = ?rect_local,
+                        captured_local_rect = ?captured_local_rect,
+                        from_cache = true,
+                        "backdrop debug: layer effect element"
                     );
-                    let rect_local = Rectangle::new(
-                        smithay::utils::Point::from((
-                            rect.x - output_geo.loc.x,
-                            rect.y - output_geo.loc.y,
-                        )),
-                        (rect.width, rect.height).into(),
-                    );
-                    if crate::env_flag!("SHOJI_FIREFOX_BACKDROP_DEBUG") {
-                        tracing::info!(
-                            layer_surface = ?layer_surface.wl_surface().id(),
-                            output = %output.name(),
-                            rect = ?rect,
-                            rect_local = ?rect_local,
-                            captured_local_rect = ?captured_local_rect,
-                            from_cache = true,
-                            "backdrop debug: layer effect element"
-                        );
-                    }
-                    crate::backend::shader_effect::backdrop_shader_element(
-                        renderer,
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.id.clone())
-                            .unwrap_or_else(smithay::backend::renderer::element::Id::new),
-                        existing
-                            .sub_elements
-                            .get(&rect_key)
-                            .map(|entry| entry.commit_counter)
-                            .unwrap_or_default(),
-                        existing.texture.clone(),
-                        rect_local,
-                        rect_local,
-                        captured_local_rect,
-                        &config.effect,
-                        alpha,
-                        scale.x as f32,
-                        None,
-                        0.0,
-                        format!("layer-lower:{}:{}", output.name(), rect_key),
-                    )
-                    .ok()
-                    .map(WinitRenderElements::Backdrop)
-                })
-                .collect();
-        }
+                }
+                crate::backend::shader_effect::backdrop_shader_element(
+                    renderer,
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.id.clone())
+                        .unwrap_or_else(smithay::backend::renderer::element::Id::new),
+                    existing
+                        .sub_elements
+                        .get(&rect_key)
+                        .map(|entry| entry.commit_counter)
+                        .unwrap_or_default(),
+                    existing.texture.clone(),
+                    rect_local,
+                    rect_local,
+                    captured_local_rect,
+                    &config.effect,
+                    alpha,
+                    scale.x as f32,
+                    None,
+                    0.0,
+                    format!("layer-lower:{}:{}", output.name(), rect_key),
+                )
+                .ok()
+                .map(WinitRenderElements::Backdrop)
+            })
+            .collect();
+    }
     let layer_source_capture = config
         .effect
         .uses_layer_source_input()
@@ -3712,8 +3727,7 @@ fn configured_background_effect_elements_for_layer(
                 layer_surface,
                 false,
             );
-            let signature =
-                crate::backend::snapshot::render_element_scene_signature(&scene, scale);
+            let signature = crate::backend::snapshot::render_element_scene_signature(&scene, scale);
             capture_scene_texture_for_effect(
                 renderer,
                 "winit-layer-top-source",
@@ -3724,7 +3738,9 @@ fn configured_background_effect_elements_for_layer(
             .map(|texture| (texture, signature))
         })
         .flatten();
-    let layer_source_signature = layer_source_capture.as_ref().map(|(_, signature)| *signature);
+    let layer_source_signature = layer_source_capture
+        .as_ref()
+        .map(|(_, signature)| *signature);
     let layer_source_texture = layer_source_capture.map(|(texture, _)| texture);
     // Skip the effect this frame when the layer source could not be captured
     // (empty scene / zero-sized geometry); running the pipeline without it
@@ -4069,7 +4085,9 @@ fn custom_background_framebuffer_effect_elements_for_layer(
     slot: &crate::ssd::WindowEffectSlot,
 ) -> Vec<WinitRenderElements> {
     let Some(rect) = layer_surface_logical_rect(output, layer_surface)
-        .and_then(|rect| window_render::layer_effect_region_bounds(layer_surface, rect, slot.region))
+        .and_then(|rect| {
+            window_render::layer_effect_region_bounds(layer_surface, rect, slot.region)
+        })
         .map(|rect| expand_effect_rect(rect, slot.outsets))
     else {
         return Vec::new();
@@ -4748,46 +4766,40 @@ fn window_scene_elements_for_capture(
                 }
             }
             elements.extend(transform_clipped_elements(clipped_elements, visual_state));
-            elements.extend(
-                transform_window_elements(
-                    raw_elements,
-                    visual_state,
-                    WinitRenderElements::Window,
-                    WinitRenderElements::TransformedWindow,
-                ),
-            );
+            elements.extend(transform_window_elements(
+                raw_elements,
+                visual_state,
+                WinitRenderElements::Window,
+                WinitRenderElements::TransformedWindow,
+            ));
         } else {
-            elements.extend(
-                transform_window_elements(
-                    window_render::surface_elements(
-                        window,
-                        renderer,
-                        physical_location,
-                        scale,
-                        visual_state.opacity,
-                    ),
-                    visual_state,
-                    WinitRenderElements::Window,
-                    WinitRenderElements::TransformedWindow,
+            elements.extend(transform_window_elements(
+                window_render::surface_elements(
+                    window,
+                    renderer,
+                    physical_location,
+                    scale,
+                    visual_state.opacity,
                 ),
-            );
+                visual_state,
+                WinitRenderElements::Window,
+                WinitRenderElements::TransformedWindow,
+            ));
         }
     }
 
-    elements.extend(
-        transform_window_elements(
-            window_render::popup_elements(
-                window,
-                renderer,
-                physical_location,
-                scale,
-                visual_state.opacity,
-            ),
-            visual_state,
-            WinitRenderElements::Window,
-            WinitRenderElements::TransformedWindow,
+    elements.extend(transform_window_elements(
+        window_render::popup_elements(
+            window,
+            renderer,
+            physical_location,
+            scale,
+            visual_state.opacity,
         ),
-    );
+        visual_state,
+        WinitRenderElements::Window,
+        WinitRenderElements::TransformedWindow,
+    ));
 
     elements
 }
@@ -4893,11 +4905,12 @@ fn capture_live_snapshot_for_window(
             .insert(snapshot_id.clone(), snapshot);
         if has_client_content
             && let Some(snapshot) = state.live_window_snapshots.get(&snapshot_id)
-                && let Ok(complete_snapshot) = snapshot::duplicate_snapshot(renderer, snapshot) {
-                    state
-                        .complete_window_snapshots
-                        .insert(snapshot_id, complete_snapshot);
-                }
+            && let Ok(complete_snapshot) = snapshot::duplicate_snapshot(renderer, snapshot)
+        {
+            state
+                .complete_window_snapshots
+                .insert(snapshot_id, complete_snapshot);
+        }
     }
 
     Ok(())
@@ -4984,16 +4997,25 @@ mod tests {
     #[test]
     fn framebuffer_flip_composes_with_the_configured_transform() {
         // The common case: no user transform, only the GL flip.
-        assert_eq!(winit_render_transform(Transform::Normal), Transform::Flipped180);
+        assert_eq!(
+            winit_render_transform(Transform::Normal),
+            Transform::Flipped180
+        );
         // Flipping twice cancels out.
-        assert_eq!(winit_render_transform(Transform::Flipped180), Transform::Normal);
+        assert_eq!(
+            winit_render_transform(Transform::Flipped180),
+            Transform::Normal
+        );
         for transform in ALL_TRANSFORMS {
             assert_eq!(compose_transforms(transform, Transform::Normal), transform);
             assert_eq!(compose_transforms(Transform::Normal, transform), transform);
             // Composing with the flip is a bijection, so every configured
             // transform renders differently.
             let flipped = winit_render_transform(transform);
-            assert_eq!(compose_transforms(WINIT_FRAMEBUFFER_FLIP, flipped), transform);
+            assert_eq!(
+                compose_transforms(WINIT_FRAMEBUFFER_FLIP, flipped),
+                transform
+            );
         }
     }
 }
@@ -5195,7 +5217,7 @@ impl crate::backend::composition::CompositionScene for WinitScene<'_> {
                     .iter()
                     .filter_map(|window| {
                         self.state
-                        .window_decorations
+                            .window_decorations
                             .get(window)
                             .map(|decoration| decoration.snapshot.id.clone())
                     })
@@ -5277,23 +5299,15 @@ fn winit_window_stack_elements(
                 if window != fullscreen_window {
                     continue;
                 }
-                let Some(window_location) =
-                    state.space.element_location(window)
-                else {
+                let Some(window_location) = state.space.element_location(window) else {
                     continue;
                 };
-                let physical_location = (window_location - output_geo.loc)
-                    .to_physical_precise_round(scale);
+                let physical_location =
+                    (window_location - output_geo.loc).to_physical_precise_round(scale);
                 scene_elements.extend(
-                    window_render::popup_elements(
-                        window,
-                        renderer,
-                        physical_location,
-                        scale,
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(WinitRenderElements::Window),
+                    window_render::popup_elements(window, renderer, physical_location, scale, 1.0)
+                        .into_iter()
+                        .map(WinitRenderElements::Window),
                 );
                 scene_elements.extend(
                     window_render::surface_elements(
@@ -5323,8 +5337,7 @@ fn winit_window_stack_elements(
                     .window_decorations
                     .get(window)
                     .is_some_and(|decoration| {
-                        !decoration
-                            .managed_window_allows_render_on_output(output.name().as_str())
+                        !decoration.managed_window_allows_render_on_output(output.name().as_str())
                     })
             {
                 continue;
@@ -5356,8 +5369,7 @@ fn winit_window_stack_elements(
             // id (another workspace, a minimized window) shows it as it would look
             // shown, untransformed at its rect.
             let visual_state = match state.window_decorations.get(window).filter(|decoration| {
-                force_visible
-                    && decoration.managed_window_hidden_on_output(output.name().as_str())
+                force_visible && decoration.managed_window_hidden_on_output(output.name().as_str())
             }) {
                 Some(decoration) => window_visual_state(
                     decoration.layout.root.rect,
@@ -5371,10 +5383,8 @@ fn winit_window_stack_elements(
                 scale.x * visual_state.scale.x.max(0.0),
                 scale.y * visual_state.scale.y.max(0.0),
             ));
-            let client_physical_geometry = state
-                .window_decorations
-                .get(window)
-                .and_then(|decoration| {
+            let client_physical_geometry =
+                state.window_decorations.get(window).and_then(|decoration| {
                     decoration.content_clip.map(|clip| {
                         let root_origin = root_physical_origin_precise(
                             decoration.layout.root.rect,
@@ -5402,26 +5412,14 @@ fn winit_window_stack_elements(
             let physical_location = client_physical_geometry
                 .map(|geometry| geometry.loc)
                 .unwrap_or(preliminary_physical_location);
-            let direct_surface_count = window_render::surface_elements(
-                window,
-                renderer,
-                physical_location,
-                scale,
-                1.0,
-            )
-            .len();
+            let direct_surface_count =
+                window_render::surface_elements(window, renderer, physical_location, scale, 1.0)
+                    .len();
             if direct_surface_count == 0 {
-                if primary
-                    && let Some(decoration) =
-                    state.window_decorations.get(window).cloned()
-                {
+                if primary && let Some(decoration) = state.window_decorations.get(window).cloned() {
                     let now_ms = Duration::from(state.clock.now()).as_millis() as u64;
                     if state
-                        .promote_window_to_closing_snapshot(
-                            &window_id,
-                            &decoration,
-                            now_ms,
-                        )
+                        .promote_window_to_closing_snapshot(&window_id, &decoration, now_ms)
                         .unwrap_or(false)
                     {
                         continue;
@@ -5432,25 +5430,20 @@ fn winit_window_stack_elements(
             let has_backdrop_source = direct_surface_count > 0
                 || state.live_window_snapshots.contains_key(&window_id)
                 || state.complete_window_snapshots.contains_key(&window_id);
-            let decoration_ready =
-                state.windows_ready_for_decoration.contains(&window_id);
+            let decoration_ready = state.windows_ready_for_decoration.contains(&window_id);
             if !has_backdrop_source {
                 continue;
             }
-            let use_full_window_snapshot =
-                requires_full_window_snapshot(visual_state);
-            let used_transform_snapshot_last_frame = state
-                .transform_snapshot_window_ids
-                .contains(&window_id);
+            let use_full_window_snapshot = requires_full_window_snapshot(visual_state);
+            let used_transform_snapshot_last_frame =
+                state.transform_snapshot_window_ids.contains(&window_id);
             let snapshot_id = state
                 .window_decorations
                 .get(window)
                 .map(|decoration| decoration.snapshot.id.clone());
-            let window_has_snapshot_damage = snapshot_id.as_ref().is_some_and(
-                |snapshot_id| {
-                    state.snapshot_dirty_window_ids.contains(snapshot_id)
-                },
-            );
+            let window_has_snapshot_damage = snapshot_id
+                .as_ref()
+                .is_some_and(|snapshot_id| state.snapshot_dirty_window_ids.contains(snapshot_id));
             // Only the output's own frame tracks how a window was drawn last
             // time; a render texture showing it too must not flip that state.
             if primary
@@ -5482,19 +5475,16 @@ fn winit_window_stack_elements(
             } else {
                 visual_state
             };
-            let root_origin = state.window_decorations.get(window).map(
-                |decoration| {
-                    root_physical_origin_precise(
-                        decoration.layout.root.rect,
-                        decoration.root_subpixel_offset,
-                        output_geo,
-                        scale,
-                    )
-                },
-            );
+            let root_origin = state.window_decorations.get(window).map(|decoration| {
+                root_physical_origin_precise(
+                    decoration.layout.root.rect,
+                    decoration.root_subpixel_offset,
+                    output_geo,
+                    scale,
+                )
+            });
             let mut ordered_ui_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
-            let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> =
-                Vec::new();
+            let mut ordered_backdrop_elements: Vec<(usize, WinitRenderElements)> = Vec::new();
             if decoration_ready {
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     renderer,
@@ -5520,9 +5510,7 @@ fn winit_window_stack_elements(
                     && state
                         .configured_background_effect
                         .as_ref()
-                        .is_some_and(|config| {
-                            config.effect.supports_framebuffer_backdrop()
-                        });
+                        .is_some_and(|config| config.effect.supports_framebuffer_backdrop());
                 if !use_configured_framebuffer_backdrop {
                     backdrop_items.extend(
                         configured_background_effect_elements_for_window(
@@ -5587,9 +5575,7 @@ fn winit_window_stack_elements(
                         }
                     }
                 }
-                if let Some(decoration_state) =
-                    state.window_decorations.get_mut(window)
-                {
+                if let Some(decoration_state) = state.window_decorations.get_mut(window) {
                     let mut background_items = decoration::ordered_background_elements_for_window_with_framebuffer_backdrops(
                         renderer,
                         decoration_state,
@@ -5609,14 +5595,15 @@ fn winit_window_stack_elements(
                     background_items.sort_by_key(|(order, _)| *order);
                     for (order, element) in background_items {
                         if let Some(root_origin) = root_origin {
-                            let render_as_backdrop = matches!(
-                                element,
-                                decoration::DecorationSceneElements::Backdrop(_)
-                            );
-                            let transformed =
-                                transform_decoration_elements(vec![element], root_origin, composition_visual)
-                                    .into_iter()
-                                    .map(|item| (order, item));
+                            let render_as_backdrop =
+                                matches!(element, decoration::DecorationSceneElements::Backdrop(_));
+                            let transformed = transform_decoration_elements(
+                                vec![element],
+                                root_origin,
+                                composition_visual,
+                            )
+                            .into_iter()
+                            .map(|item| (order, item));
                             if render_as_backdrop {
                                 ordered_backdrop_elements.extend(transformed);
                             } else {
@@ -5687,34 +5674,36 @@ fn winit_window_stack_elements(
 
             let client_elements = if let Some(content_clip) = content_clip {
                 if crate::env_flag!("SHOJI_GAP_DEBUG")
-                    && let Some(decoration) = state.window_decorations.get(window) {
-                        let snapshot_title = decoration.snapshot.title.clone();
-                        let snapshot_app_id = decoration.snapshot.app_id.clone();
-                        let snap_scale = smithay::utils::Scale::from((
-                            scale.x * visual_state.scale.x.max(0.0),
-                            scale.y * visual_state.scale.y.max(0.0),
+                    && let Some(decoration) = state.window_decorations.get(window)
+                {
+                    let snapshot_title = decoration.snapshot.title.clone();
+                    let snapshot_app_id = decoration.snapshot.app_id.clone();
+                    let snap_scale = smithay::utils::Scale::from((
+                        scale.x * visual_state.scale.x.max(0.0),
+                        scale.y * visual_state.scale.y.max(0.0),
+                    ));
+                    let border_width = (decoration.layout.root.rect.x
+                        + decoration.layout.root.rect.width)
+                        - (content_clip.rect.loc.x + content_clip.rect.size.w);
+                    let border_rect = Some(crate::ssd::LogicalRect::new(
+                        content_clip.rect.loc.x - border_width,
+                        content_clip.rect.loc.y - border_width,
+                        content_clip.rect.size.w + border_width * 2,
+                        content_clip.rect.size.h + border_width * 2,
+                    ));
+                    let snapped_inner =
+                        Some(crate::backend::visual::snapped_logical_rect_relative(
+                            crate::ssd::LogicalRect::new(
+                                content_clip.rect.loc.x,
+                                content_clip.rect.loc.y,
+                                content_clip.rect.size.w,
+                                content_clip.rect.size.h,
+                            ),
+                            output_geo.loc,
+                            snap_scale,
                         ));
-                        let border_width = (decoration.layout.root.rect.x + decoration.layout.root.rect.width)
-                            - (content_clip.rect.loc.x + content_clip.rect.size.w);
-                        let border_rect = Some(crate::ssd::LogicalRect::new(
-                            content_clip.rect.loc.x - border_width,
-                            content_clip.rect.loc.y - border_width,
-                            content_clip.rect.size.w + border_width * 2,
-                            content_clip.rect.size.h + border_width * 2,
-                        ));
-                        let snapped_inner = Some(
-                            crate::backend::visual::snapped_logical_rect_relative(
-                                crate::ssd::LogicalRect::new(
-                                    content_clip.rect.loc.x,
-                                    content_clip.rect.loc.y,
-                                    content_clip.rect.size.w,
-                                    content_clip.rect.size.h,
-                                ),
-                                output_geo.loc,
-                                snap_scale,
-                            )
-                        );
-                        let snapped_clip = crate::backend::visual::snapped_logical_rect_relative_with_mode(
+                    let snapped_clip =
+                        crate::backend::visual::snapped_logical_rect_relative_with_mode(
                             crate::ssd::LogicalRect::new(
                                 content_clip.rect.loc.x,
                                 content_clip.rect.loc.y,
@@ -5725,35 +5714,33 @@ fn winit_window_stack_elements(
                             snap_scale,
                             content_clip.snap_mode,
                         );
-                        let expected_left =
-                            (snapped_clip.x as f64 * scale.x).round() as i32;
-                        let expected_top =
-                            (snapped_clip.y as f64 * scale.y).round() as i32;
-                        let expected_right =
-                            ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
-                        let expected_bottom =
-                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
-                        tracing::info!(
-                            output = %output.name(),
-                            window_id = %window_id,
-                            title = %snapshot_title,
-                            app_id = ?snapshot_app_id,
-                            window_location = ?window_location,
-                            output_scale = scale.x,
-                            window_scale_x = visual_state.scale.x,
-                            window_scale_y = visual_state.scale.y,
-                            physical_location = ?physical_location,
-                            border_rect = ?border_rect,
-                            snapped_inner = ?snapped_inner,
-                            content_clip = ?content_clip,
-                            snapped_clip = ?snapped_clip,
-                            expected_left,
-                            expected_top,
-                            expected_right,
-                            expected_bottom,
-                            "gap debug winit border/client geometry"
-                        );
-                    }
+                    let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
+                    let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
+                    let expected_right =
+                        ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
+                    let expected_bottom =
+                        ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                    tracing::info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        title = %snapshot_title,
+                        app_id = ?snapshot_app_id,
+                        window_location = ?window_location,
+                        output_scale = scale.x,
+                        window_scale_x = visual_state.scale.x,
+                        window_scale_y = visual_state.scale.y,
+                        physical_location = ?physical_location,
+                        border_rect = ?border_rect,
+                        snapped_inner = ?snapped_inner,
+                        content_clip = ?content_clip,
+                        snapped_clip = ?snapped_clip,
+                        expected_left,
+                        expected_top,
+                        expected_right,
+                        expected_bottom,
+                        "gap debug winit border/client geometry"
+                    );
+                }
                 let clipped = window_render::clipped_surface_elements(
                     window,
                     renderer,
@@ -5761,7 +5748,11 @@ fn winit_window_stack_elements(
                     client_physical_geometry,
                     output_geo.loc,
                     scale,
-                    if use_full_window_snapshot { scale } else { snap_scale },
+                    if use_full_window_snapshot {
+                        scale
+                    } else {
+                        snap_scale
+                    },
                     if use_full_window_snapshot {
                         1.0
                     } else {
@@ -5774,23 +5765,27 @@ fn winit_window_stack_elements(
                     warn!(?error, "failed to build clipped surface elements");
                 })
                 .unwrap_or_default();
-                let bypass_clip =
-                    crate::env_flag!("SHOJI_GAP_BYPASS_CLIP");
+                let bypass_clip = crate::env_flag!("SHOJI_GAP_BYPASS_CLIP");
                 if crate::env_flag!("SHOJI_GAP_DEBUG") {
-                    let first_geometry = clipped
-                        .first()
-                        .map(|element| match element {
-                            window_render::WindowClipElement::Clipped(element)
-                            | window_render::WindowClipElement::ColorConverted(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
-                            window_render::WindowClipElement::Raw(element) => smithay::backend::renderer::element::Element::geometry(element, scale),
-                        });
+                    let first_geometry = clipped.first().map(|element| match element {
+                        window_render::WindowClipElement::Clipped(element)
+                        | window_render::WindowClipElement::ColorConverted(element) => {
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
+                        }
+                        window_render::WindowClipElement::Raw(element) => {
+                            smithay::backend::renderer::element::Element::geometry(element, scale)
+                        }
+                    });
                     let window_geometry = window.geometry();
                     let decoration_client_rect = state
                         .window_decorations
                         .get(window)
                         .map(|decoration| decoration.client_rect);
                     let snapshot = state.window_decorations.get(window).map(|decoration| {
-                        (decoration.snapshot.title.clone(), decoration.snapshot.app_id.clone())
+                        (
+                            decoration.snapshot.title.clone(),
+                            decoration.snapshot.app_id.clone(),
+                        )
                     });
                     let edge_delta = if let (Some(_decoration), Some(first_geometry)) =
                         (state.window_decorations.get(window), first_geometry)
@@ -5805,14 +5800,13 @@ fn winit_window_stack_elements(
                             output_geo.loc,
                             snap_scale,
                         );
-                        let expected_left =
-                            (snapped_clip.x as f64 * scale.x).round() as i32;
-                        let expected_top =
-                            (snapped_clip.y as f64 * scale.y).round() as i32;
+                        let expected_left = (snapped_clip.x as f64 * scale.x).round() as i32;
+                        let expected_top = (snapped_clip.y as f64 * scale.y).round() as i32;
                         let expected_right =
                             ((snapped_clip.x + snapped_clip.width) as f64 * scale.x).round() as i32;
-                        let expected_bottom =
-                            ((snapped_clip.y + snapped_clip.height) as f64 * scale.y).round() as i32;
+                        let expected_bottom = ((snapped_clip.y + snapped_clip.height) as f64
+                            * scale.y)
+                            .round() as i32;
                         Some((
                             first_geometry.loc.x - expected_left,
                             first_geometry.loc.y - expected_top,
@@ -5882,12 +5876,9 @@ fn winit_window_stack_elements(
                     let ignore_opaque = state
                         .window_decorations
                         .get(window)
-                        .and_then(|decoration| {
-                            decoration.managed_window.surface_policy
-                        })
+                        .and_then(|decoration| decoration.managed_window.surface_policy)
                         .is_some_and(|policy| {
-                            policy.opaque_region
-                                == crate::ssd::OpaqueRegionPolicy::Ignore
+                            policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
                         });
                     clipped
                         .into_iter()
@@ -5919,9 +5910,9 @@ fn winit_window_stack_elements(
                     },
                 );
                 if crate::env_flag!("SHOJI_GAP_DEBUG") {
-                    let first_geometry = surfaces
-                        .first()
-                        .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+                    let first_geometry = surfaces.first().map(|element| {
+                        smithay::backend::renderer::element::Element::geometry(element, scale)
+                    });
                     let window_geometry = window.geometry();
                     let decoration_client_rect = state
                         .window_decorations
@@ -5943,20 +5934,14 @@ fn winit_window_stack_elements(
                     let ignore_opaque = state
                         .window_decorations
                         .get(window)
-                        .and_then(|decoration| {
-                            decoration.managed_window.surface_policy
-                        })
+                        .and_then(|decoration| decoration.managed_window.surface_policy)
                         .is_some_and(|policy| {
-                            policy.opaque_region
-                                == crate::ssd::OpaqueRegionPolicy::Ignore
+                            policy.opaque_region == crate::ssd::OpaqueRegionPolicy::Ignore
                         });
                     // Tagged non-sRGB surfaces need the color conversion even
                     // without a clip.
                     window_render::color_converted_surface_elements(
-                        window,
-                        renderer,
-                        surfaces,
-                        scale,
+                        window, renderer, surfaces, scale,
                     )
                     .inspect_err(|error| {
                         warn!(?error, "failed to color convert window surface elements");
@@ -6007,22 +5992,18 @@ fn winit_window_stack_elements(
                 WinitRenderElements::TransformedWindow,
             );
             if use_full_window_snapshot {
-                let full_rect = state.window_decorations.get(window).map(
-                    |decoration| {
-                        window_render::snapshot_bounds(
-                            window,
-                            window_location,
-                            decoration.layout.root.rect,
-                            decoration.content_clip,
-                        )
-                    },
-                );
+                let full_rect = state.window_decorations.get(window).map(|decoration| {
+                    window_render::snapshot_bounds(
+                        window,
+                        window_location,
+                        decoration.layout.root.rect,
+                        decoration.content_clip,
+                    )
+                });
                 let mut snapshot_scene = Vec::new();
                 snapshot_scene.extend(popup_elements);
                 snapshot_scene.extend(client_elements);
-                snapshot_scene.extend(
-                    ordered_ui_elements.into_iter().map(|(_, element)| element),
-                );
+                snapshot_scene.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
                 snapshot_scene.extend(
                     ordered_backdrop_elements
                         .into_iter()
@@ -6041,19 +6022,16 @@ fn winit_window_stack_elements(
                                 .get(&window_id)
                                 .cloned()
                                 .filter(|snapshot| {
-                                    snapshot.scene_signature
-                                        == snapshot_scene_signature
+                                    snapshot.scene_signature == snapshot_scene_signature
                                 })
-                            {
-                                existing.rect = full_rect;
-                                state.complete_window_snapshots.insert(
-                                    window_id.clone(),
-                                    existing.clone(),
-                                );
-                                return Some(existing);
-                            }
-                        let existing_complete =
-                            state.complete_window_snapshots.remove(&window_id);
+                        {
+                            existing.rect = full_rect;
+                            state
+                                .complete_window_snapshots
+                                .insert(window_id.clone(), existing.clone());
+                            return Some(existing);
+                        }
+                        let existing_complete = state.complete_window_snapshots.remove(&window_id);
                         let tracker = state
                             .complete_window_snapshot_trackers
                             .entry(window_id.clone())
@@ -6077,10 +6055,9 @@ fn winit_window_stack_elements(
                         .flatten()
                         .map(|mut snapshot| {
                             snapshot.scene_signature = snapshot_scene_signature;
-                            state.complete_window_snapshots.insert(
-                                window_id.clone(),
-                                snapshot.clone(),
-                            );
+                            state
+                                .complete_window_snapshots
+                                .insert(window_id.clone(), snapshot.clone());
                             snapshot
                         })
                     })
@@ -6105,10 +6082,8 @@ fn winit_window_stack_elements(
                     // composition (effect elements cannot ride
                     // the window animation transform).
                     drop(popup_elements);
-                    let configured_popup_effects =
-                        state.configured_popup_effects.clone();
-                    let configured_background_effect =
-                        state.configured_background_effect.clone();
+                    let configured_popup_effects = state.configured_popup_effects.clone();
+                    let configured_background_effect = state.configured_background_effect.clone();
                     scene_elements.extend(composed_window_popup_scene_elements(
                         renderer,
                         &output,
@@ -6126,9 +6101,7 @@ fn winit_window_stack_elements(
                     scene_elements.extend(popup_elements);
                 }
                 scene_elements.extend(client_elements);
-                scene_elements.extend(
-                    ordered_ui_elements.into_iter().map(|(_, element)| element),
-                );
+                scene_elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
                 scene_elements.extend(
                     ordered_backdrop_elements
                         .into_iter()
@@ -6142,31 +6115,26 @@ fn winit_window_stack_elements(
 
             if primary
                 && let Some(decoration) = state.window_decorations.get(window)
-                && let Some(live_snapshot) = state
-                    .live_window_snapshots
-                    .get_mut(&decoration.snapshot.id)
+                && let Some(live_snapshot) =
+                    state.live_window_snapshots.get_mut(&decoration.snapshot.id)
             {
-                snapshot::retarget_snapshot_rect(
-                    live_snapshot,
-                    decoration.client_rect,
-                );
+                snapshot::retarget_snapshot_rect(live_snapshot, decoration.client_rect);
             }
             let should_refresh_snapshot = primary
                 && state
-                .window_decorations
-                .get(window)
-                .map(|decoration| {
-                    state
-                        .live_window_snapshots
-                        .get(&decoration.snapshot.id)
-                        .map(|snapshot| {
-                            snapshot.rect.width != decoration.client_rect.width
-                                || snapshot.rect.height
-                                    != decoration.client_rect.height
-                        })
-                        .unwrap_or(true)
-                })
-                .unwrap_or(false);
+                    .window_decorations
+                    .get(window)
+                    .map(|decoration| {
+                        state
+                            .live_window_snapshots
+                            .get(&decoration.snapshot.id)
+                            .map(|snapshot| {
+                                snapshot.rect.width != decoration.client_rect.width
+                                    || snapshot.rect.height != decoration.client_rect.height
+                            })
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(false);
             if should_refresh_snapshot
                 && capture_live_snapshot_for_window(
                     renderer,
@@ -6178,17 +6146,16 @@ fn winit_window_stack_elements(
                     0,
                 )
                 .is_ok()
-                    && let Some(window_id) = state
-                        .window_decorations
-                        .get(window)
-                        .map(|decoration| decoration.snapshot.id.clone())
-                    {
-                        state.snapshot_dirty_window_ids.remove(&window_id);
-                    }
+                && let Some(window_id) = state
+                    .window_decorations
+                    .get(window)
+                    .map(|decoration| decoration.snapshot.id.clone())
+            {
+                state.snapshot_dirty_window_ids.remove(&window_id);
+            }
             if let Some(snapshot_id) = snapshot_id.as_ref() {
                 state.snapshot_dirty_window_ids.remove(snapshot_id);
             }
-
         }
     }
 }
@@ -6273,7 +6240,15 @@ fn debug_dump_presented_frame(size: smithay::utils::Size<i32, smithay::utils::Ph
         let mut previous = 0;
         (dump.get)(READ_FRAMEBUFFER_BINDING, &mut previous);
         (dump.bind)(READ_FRAMEBUFFER, 0);
-        (dump.read)(0, 0, size.w, size.h, 0x1908, 0x1401, pixels.as_mut_ptr().cast());
+        (dump.read)(
+            0,
+            0,
+            size.w,
+            size.h,
+            0x1908,
+            0x1401,
+            pixels.as_mut_ptr().cast(),
+        );
         (dump.bind)(READ_FRAMEBUFFER, previous as u32);
     }
     let step = dump.step;
@@ -6286,7 +6261,9 @@ fn debug_dump_presented_frame(size: smithay::utils::Size<i32, smithay::utils::Ph
         }
     }
     if dump.dedup {
-        let mut previous = PREVIOUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut previous = PREVIOUS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if *previous == out {
             return;
         }

@@ -43,7 +43,9 @@ struct App {
 
 impl App {
     fn stamp(&self) -> String {
-        let elapsed = self.start.map_or(0.0, |start| start.elapsed().as_secs_f64());
+        let elapsed = self
+            .start
+            .map_or(0.0, |start| start.elapsed().as_secs_f64());
         format!("[{elapsed:7.3}s]")
     }
 
@@ -271,7 +273,9 @@ fn main() {
     };
     queue.roundtrip(&mut app).expect("roundtrip registry");
     queue.roundtrip(&mut app).expect("roundtrip outputs");
-    let (name, version) = app.manager_global.expect("no zwlr_foreign_toplevel_manager_v1");
+    let (name, version) = app
+        .manager_global
+        .expect("no zwlr_foreign_toplevel_manager_v1");
     registry.bind::<ZwlrForeignToplevelManagerV1, _, _>(name, version, &qh, ());
 
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -303,7 +307,11 @@ fn main() {
                         println!(
                             "{} >>> sent {} to {target}",
                             app.stamp(),
-                            if set { "set_minimized" } else { "unset_minimized" }
+                            if set {
+                                "set_minimized"
+                            } else {
+                                "unset_minimized"
+                            }
                         );
                     }
                     None => println!("{} >>> no toplevel with app_id {target:?}", app.stamp()),

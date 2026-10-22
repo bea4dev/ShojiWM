@@ -1,5 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DisplayModePreference {
     #[default]
     Auto,
@@ -9,7 +8,6 @@ pub enum DisplayModePreference {
         refresh_mhz: Option<i32>,
     },
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct DisplayConfig {
@@ -262,9 +260,11 @@ pub fn tty_output_names_match(candidate: &str, actual: &str) -> bool {
 
 fn normalize_tty_output_name(name: &str) -> &str {
     if let Some((prefix, rest)) = name.split_once('-')
-        && prefix.starts_with("card") && prefix[4..].chars().all(|ch| ch.is_ascii_digit()) {
-            return rest;
-        }
+        && prefix.starts_with("card")
+        && prefix[4..].chars().all(|ch| ch.is_ascii_digit())
+    {
+        return rest;
+    }
     name
 }
 
@@ -324,12 +324,10 @@ mod tests {
     /// Absent and `null` both mean "keep the detected layout".
     #[test]
     fn runtime_output_config_subpixel_absent_or_null_is_none() {
-        let absent: RuntimeOutputConfig =
-            serde_json::from_str(r#"{"mode":"extend"}"#).unwrap();
+        let absent: RuntimeOutputConfig = serde_json::from_str(r#"{"mode":"extend"}"#).unwrap();
         assert_eq!(absent.subpixel, None);
         let null: RuntimeOutputConfig =
-            serde_json::from_str(r#"{"mode":"mirror","source":"eDP-1","subpixel":null}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"mode":"mirror","source":"eDP-1","subpixel":null}"#).unwrap();
         assert_eq!(null.subpixel, None);
     }
 
@@ -341,13 +339,19 @@ mod tests {
             Subpixel::VerticalBgr,
         );
         assert_eq!(
-            resolve_output_subpixel(Some(RuntimeOutputSubpixel::HorizontalRgb), Subpixel::Unknown),
+            resolve_output_subpixel(
+                Some(RuntimeOutputSubpixel::HorizontalRgb),
+                Subpixel::Unknown
+            ),
             Subpixel::HorizontalRgb,
         );
         // An explicit "unknown" still overrides a kernel report the user
         // knows to be wrong.
         assert_eq!(
-            resolve_output_subpixel(Some(RuntimeOutputSubpixel::Unknown), Subpixel::HorizontalBgr),
+            resolve_output_subpixel(
+                Some(RuntimeOutputSubpixel::Unknown),
+                Subpixel::HorizontalBgr
+            ),
             Subpixel::Unknown,
         );
     }
@@ -439,7 +443,9 @@ mod tests {
         };
         assert_eq!(
             sdr("eDP-1"),
-            Some(RuntimeSdrLuminance::Keyword(RuntimeSdrLuminanceKeyword::Backlight))
+            Some(RuntimeSdrLuminance::Keyword(
+                RuntimeSdrLuminanceKeyword::Backlight
+            ))
         );
         assert_eq!(sdr("DP-1"), Some(RuntimeSdrLuminance::Nits(300.0)));
     }
