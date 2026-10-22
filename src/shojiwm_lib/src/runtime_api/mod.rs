@@ -119,6 +119,14 @@ pub trait RuntimeLauncher {
     /// Construct the runtime. Must not block on loading the config; that
     /// happens in [`ConfigRuntime::preload`].
     fn launch(&self, context: LaunchContext) -> Box<dyn ConfigRuntime>;
+
+    /// Whether the session starts locked: nothing but session-lock surfaces
+    /// is drawn, and input reaches only them, until a locker
+    /// (ext-session-lock) locks and then unlocks. With automatic login this
+    /// makes the lock screen the login screen.
+    fn start_locked(&self) -> bool {
+        false
+    }
 }
 
 /// Everything a launcher gets to build its runtime from.
@@ -179,6 +187,11 @@ impl RuntimeBoot {
 
     pub fn launch(&self, host: RuntimeHost) -> RuntimeHandle {
         self.launch_with_display(host, None)
+    }
+
+    /// See [`RuntimeLauncher::start_locked`].
+    pub fn start_locked(&self) -> bool {
+        self.launcher.start_locked()
     }
 
     /// [`launch`](Self::launch) for a compositor listening on `wayland_display`.

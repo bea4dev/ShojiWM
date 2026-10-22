@@ -49,6 +49,7 @@ pub struct ConfigBuilder {
     name: &'static str,
     setup: Rc<dyn Fn()>,
     asset_root: Option<PathBuf>,
+    start_locked: bool,
 }
 
 impl ConfigBuilder {
@@ -57,6 +58,7 @@ impl ConfigBuilder {
             name: "rust",
             setup: Rc::new(setup),
             asset_root: None,
+            start_locked: false,
         }
     }
 
@@ -69,6 +71,14 @@ impl ConfigBuilder {
     /// Directory relative shader and image paths are resolved against.
     pub fn asset_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.asset_root = Some(root.into());
+        self
+    }
+
+    /// Start with the session locked: nothing is drawn but session-lock
+    /// surfaces until a locker locks and unlocks (the config starts one).
+    /// With automatic login, the lock screen becomes the login screen.
+    pub fn start_locked(mut self, locked: bool) -> Self {
+        self.start_locked = locked;
         self
     }
 
@@ -89,6 +99,10 @@ impl RuntimeLauncher for ConfigBuilder {
             self.asset_root.clone(),
             context,
         ))
+    }
+
+    fn start_locked(&self) -> bool {
+        self.start_locked
     }
 }
 
