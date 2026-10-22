@@ -1382,8 +1382,9 @@ pub fn init_winit(
                             };
                             timing.render_elapsed_ms =
                                 render_started_at.elapsed().as_secs_f64() * 1000.0;
-                            debug_dump_presented_frame(size);
                             if let Ok(render_output_result) = render_output_result {
+                                // Only a frame that renders is submitted, so only it is dumped.
+                                debug_dump_presented_frame(size);
                                 let output_states = &render_output_result.states;
                                 let composition_states = if state.session_lock_active {
                                     Default::default()
@@ -6198,35 +6199,84 @@ fn winit_window_stack_elements(
 /// which renders the scene again with its own damage tracker, this is what the
 /// window shows, so it catches glitches of the damage tracking itself.
 ///
+/// Every submitted frame is written, unchanged ones too (a frame that repeats
+/// is a dropped frame, as the window shows it); `SHOJI_FRAME_DUMP_DEDUP=1`
+/// skips a frame equal to the previous one, for long recordings.
+///
 /// It reads with raw GL on the context the render left current: going through
 /// the renderer would make the context current without the window surface,
 /// and the next swap fails.
 fn debug_dump_presented_frame(size: smithay::utils::Size<i32, smithay::utils::Physical>) {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    static FRAME: AtomicUsize = AtomicUsize::new(0);
-    let Some(dir) = std::env::var_os("SHOJI_FRAME_DUMP") else { return };
-    let dir = std::path::PathBuf::from(dir);
-    if !dir.join("on").exists() {
-        return;
-    }
+    use std::sync::{Mutex, OnceLock};
+
     type ReadPixels = unsafe extern "C" fn(i32, i32, i32, i32, u32, u32, *mut std::ffi::c_void);
     type BindFramebuffer = unsafe extern "C" fn(u32, u32);
     type GetIntegerv = unsafe extern "C" fn(u32, *mut i32);
+
+    struct FrameDump {
+        dir: std::path::PathBuf,
+        step: usize,
+        dedup: bool,
+        read: ReadPixels,
+        bind: BindFramebuffer,
+        get: GetIntegerv,
+    }
+
+    static DUMP: OnceLock<Option<FrameDump>> = OnceLock::new();
+    static FRAME: AtomicUsize = AtomicUsize::new(0);
+    static PREVIOUS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+    let Some(dump) = DUMP.get_or_init(|| {
+        let dir = std::path::PathBuf::from(std::env::var_os("SHOJI_FRAME_DUMP")?);
+        let proc = |name: &str| {
+            // SAFETY: called on the render thread, after the window's EGL
+            // context was created.
+            let address = unsafe { smithay::backend::egl::get_proc_address(name) };
+            if address.is_null() {
+                warn!(name, "frame dump disabled: GL function not found");
+            }
+            (!address.is_null()).then_some(address)
+        };
+        let (read, bind, get) = (
+            proc("glReadPixels")?,
+            proc("glBindFramebuffer")?,
+            proc("glGetIntegerv")?,
+        );
+        Some(FrameDump {
+            dir,
+            step: std::env::var("SHOJI_FRAME_DUMP_STEP")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2usize)
+                .max(1),
+            dedup: std::env::var_os("SHOJI_FRAME_DUMP_DEDUP")
+                .is_some_and(|value| value != "0" && !value.is_empty()),
+            // SAFETY: non-null addresses of these GL entry points, with their
+            // C signatures.
+            read: unsafe { std::mem::transmute::<*const std::ffi::c_void, ReadPixels>(read) },
+            bind: unsafe { std::mem::transmute::<*const std::ffi::c_void, BindFramebuffer>(bind) },
+            get: unsafe { std::mem::transmute::<*const std::ffi::c_void, GetIntegerv>(get) },
+        })
+    }) else {
+        return;
+    };
+    if !dump.dir.join("on").exists() {
+        return;
+    }
+
     let (w, h) = (size.w as usize, size.h as usize);
     let mut pixels = vec![0u8; w * h * 4];
     unsafe {
-        let read: ReadPixels = std::mem::transmute(smithay::backend::egl::get_proc_address("glReadPixels"));
-        let bind: BindFramebuffer = std::mem::transmute(smithay::backend::egl::get_proc_address("glBindFramebuffer"));
-        let get: GetIntegerv = std::mem::transmute(smithay::backend::egl::get_proc_address("glGetIntegerv"));
         const READ_FRAMEBUFFER: u32 = 0x8CA8;
         const READ_FRAMEBUFFER_BINDING: u32 = 0x8CAA;
         let mut previous = 0;
-        get(READ_FRAMEBUFFER_BINDING, &mut previous);
-        bind(READ_FRAMEBUFFER, 0);
-        read(0, 0, size.w, size.h, 0x1908, 0x1401, pixels.as_mut_ptr().cast());
-        bind(READ_FRAMEBUFFER, previous as u32);
+        (dump.get)(READ_FRAMEBUFFER_BINDING, &mut previous);
+        (dump.bind)(READ_FRAMEBUFFER, 0);
+        (dump.read)(0, 0, size.w, size.h, 0x1908, 0x1401, pixels.as_mut_ptr().cast());
+        (dump.bind)(READ_FRAMEBUFFER, previous as u32);
     }
-    let step = std::env::var("SHOJI_FRAME_DUMP_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(2usize).max(1);
+    let step = dump.step;
     let (sw, sh) = (w / step, h / step);
     let mut out = vec![0u8; sw * sh * 4];
     for y in 0..sh {
@@ -6235,7 +6285,14 @@ fn debug_dump_presented_frame(size: smithay::utils::Size<i32, smithay::utils::Ph
             out[(y * sw + x) * 4..(y * sw + x) * 4 + 4].copy_from_slice(&pixels[src..src + 4]);
         }
     }
+    if dump.dedup {
+        let mut previous = PREVIOUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *previous == out {
+            return;
+        }
+        previous.clone_from(&out);
+    }
     let n = FRAME.fetch_add(1, Ordering::Relaxed);
-    let _ = std::fs::write(dir.join("size"), format!("{sw} {sh}"));
-    let _ = std::fs::write(dir.join(format!("{n:05}.rgba")), out);
+    let _ = std::fs::write(dump.dir.join("size"), format!("{sw} {sh}"));
+    let _ = std::fs::write(dump.dir.join(format!("{n:05}.rgba")), out);
 }
