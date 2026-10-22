@@ -24,7 +24,8 @@ COMPOSITOR.cursor.configure({
 `configure()` はShojiWMを再起動せずに反映され、同時に次の処理を行います。
 
 - 後から起動するプロセス向けに `XCURSOR_THEME` と `XCURSOR_SIZE` を設定する
-- これらの変数をsystemdおよびD-Busのactivation environmentへ公開する
+- TTYセッション、または `SHOJI_PUBLISH_ACTIVATION_ENV=1` でnestedでの公開を
+  有効にした場合、これらの変数をsystemdおよびD-Busのactivation environmentへ公開する
 - ShojiWMがデコードしたカーソル画像とGPUバッファのキャッシュを破棄する
 - 次の再描画から新しいnamed cursorを使用する
 

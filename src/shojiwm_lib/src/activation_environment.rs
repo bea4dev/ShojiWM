@@ -1,4 +1,7 @@
-use std::process::{Command, Output};
+use std::{
+    ffi::OsStr,
+    process::{Command, Output},
+};
 
 use tracing::{debug, warn};
 
@@ -20,10 +23,17 @@ const ACTIVATION_ENV_KEYS: &[&str] = &[
     "XDG_MENU_PREFIX",
 ];
 
+const PUBLISH_ENV: &str = "SHOJI_PUBLISH_ACTIVATION_ENV";
+
+pub(crate) fn disable_by_default() {
+    let current = std::env::var_os(PUBLISH_ENV);
+    if let Some(value) = nested_default(current.as_deref()) {
+        crate::process_env::set_var(PUBLISH_ENV, value);
+    }
+}
+
 pub fn publish_activation_environment(reason: &'static str) {
-    if std::env::var_os("SHOJI_PUBLISH_ACTIVATION_ENV")
-        .is_some_and(|value| value == "0" || value == "off")
-    {
+    if publication_disabled(std::env::var_os(PUBLISH_ENV).as_deref()) {
         return;
     }
 
@@ -36,9 +46,7 @@ pub fn publish_activation_environment(reason: &'static str) {
 }
 
 pub fn publish_activation_environment_keys(reason: &'static str, keys: &[&str]) {
-    if std::env::var_os("SHOJI_PUBLISH_ACTIVATION_ENV")
-        .is_some_and(|value| value == "0" || value == "off")
-    {
+    if publication_disabled(std::env::var_os(PUBLISH_ENV).as_deref()) {
         return;
     }
 
@@ -104,9 +112,7 @@ pub fn publish_activation_environment_keys(reason: &'static str, keys: &[&str]) 
 /// D-Bus activation environment can only be overwritten, so it gets an empty
 /// value, which X11 and Wayland client libraries treat like an unset one.
 pub fn withdraw_activation_environment_keys(reason: &'static str, keys: &[&str]) {
-    if std::env::var_os("SHOJI_PUBLISH_ACTIVATION_ENV")
-        .is_some_and(|value| value == "0" || value == "off")
-    {
+    if publication_disabled(std::env::var_os(PUBLISH_ENV).as_deref()) {
         return;
     }
 
@@ -215,4 +221,40 @@ pub fn apply_runtime_env_updates(updates: RuntimeEnvUpdates, reason: &'static st
 
 fn is_valid_env_key(key: &str) -> bool {
     !key.is_empty() && !key.contains('=') && !key.contains('\0')
+}
+
+fn nested_default(current: Option<&OsStr>) -> Option<&'static str> {
+    current.is_none().then_some("off")
+}
+
+fn publication_disabled(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| {
+        value.is_empty()
+            || value == "0"
+            || value.to_str().is_some_and(|value| {
+                value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false")
+            })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{nested_default, publication_disabled};
+    use std::ffi::OsStr;
+
+    #[test]
+    fn nested_sessions_disable_publication_only_when_unconfigured() {
+        assert_eq!(nested_default(None), Some("off"));
+        assert_eq!(nested_default(Some(OsStr::new("1"))), None);
+        assert_eq!(nested_default(Some(OsStr::new("off"))), None);
+    }
+
+    #[test]
+    fn false_values_disable_publication() {
+        for value in ["", "0", "off", "OFF", "false", "FALSE"] {
+            assert!(publication_disabled(Some(OsStr::new(value))));
+        }
+        assert!(!publication_disabled(None));
+        assert!(!publication_disabled(Some(OsStr::new("1"))));
+    }
 }

@@ -93,6 +93,7 @@ fn tty_maintenance_debug_enabled() -> bool {
 }
 
 fn run_winit(runtime: crate::runtime_api::RuntimeBoot) -> Result<(), Box<dyn std::error::Error>> {
+    crate::activation_environment::disable_by_default();
     let mut event_loop: EventLoop<ShojiWM> = EventLoop::try_new()?;
     let display: Display<ShojiWM> = Display::new()?;
     let mut state = ShojiWM::new(&mut event_loop, display, &runtime);

@@ -19,6 +19,10 @@ sidebar_position: 1
 - **`--tty`** は実機の TTY 上で **DRM/KMS バックエンド**を使います。デフォルトの winit
   バックエンドは現状不安定なので、`--tty` を推奨します。
 
+nested バックエンドは、ユーザーの systemd または D-Bus activation environment を
+置き換えません。nested セッションにその環境を管理させる場合に限り、
+`SHOJI_PUBLISH_ACTIVATION_ENV=1` を設定してください。
+
 空いている仮想端末（例: `Ctrl`+`Alt`+`F3`）に切り替えてログインし、リポジトリに `cd` してから
 実行します。
 

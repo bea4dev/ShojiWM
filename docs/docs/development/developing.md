@@ -19,6 +19,10 @@ independent and complementary:
 - **`--tty`** uses the **DRM/KMS backend** on a real TTY. The default winit
   backend is currently unreliable, so prefer `--tty`.
 
+The nested backend does not replace the user systemd or D-Bus activation
+environment. Set `SHOJI_PUBLISH_ACTIVATION_ENV=1` only when the nested session
+is intended to own that environment.
+
 Switch to a free virtual terminal (e.g. `Ctrl`+`Alt`+`F3`), log in, `cd` into the
 repository, and run:
 
