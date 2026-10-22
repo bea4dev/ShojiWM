@@ -68,6 +68,7 @@ COMPOSITOR.window.composition = (window) => (
 | `input` | キーボード・ポインター・タッチパッドのデバイス設定 | [入力デバイス](./input.md) |
 | `key` / `pointer` | キーボードショートカットとポインターのモディファイア | [キーバインドとポインター](./keybindings-and-pointer.md) |
 | `process` / `env` | プログラムの起動と環境変数 | [プロセスと環境変数](./processes-and-env.md) |
+| `session` | ロックした状態での起動（ロック画面をログイン画面に） | [プロセスと環境変数](./processes-and-env.md#ロックした状態で起動する) |
 | `window` | ウィンドウごとの装飾（合成関数） | [ウィンドウの合成](./window-composition.md) |
 | `effect` | GPU エフェクト：背景ブラー、ウィンドウ／レイヤー／ポップアップごとのシェーダー | [エフェクト](./effects.md) |
 | `rendering` | 出力の組み立て方（`composition`: 並べ替え・レンダーテクスチャ・3D）とフレームペーシング | [出力の合成と 3D](./output-composition.md)、[出力](./outputs.md) |

@@ -318,6 +318,13 @@ pub struct ShojiWM {
     pub active_idle_inhibit_labels: Vec<String>,
     pub session_lock_state: SessionLockManagerState,
     pub session_lock_active: bool,
+    /// The lock object holding the current lock. While it is alive no other
+    /// client may lock (ext-session-lock-v1), which is what keeps a second
+    /// client from locking and then unlocking someone else's lock. `None` while
+    /// unlocked, and while started locked until the first locker takes over.
+    /// The config's first enable ran; `start_session_locked` no longer applies.
+    pub initial_config_enabled: bool,
+    pub session_locker: Option<smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1>,
     pub session_lock_surfaces: HashMap<String, LockSurface>,
     /// Live capture sessions, kept alive so dropping doesn't auto-send
     /// `stopped` to clients. Keyed by source id.
@@ -1787,6 +1794,8 @@ impl ShojiWM {
             // Started locked (a login screen made of the lock screen): only
             // lock surfaces are drawn until a locker locks and unlocks.
             session_lock_active: runtime.start_locked(),
+            session_locker: None,
+            initial_config_enabled: false,
             session_lock_surfaces: HashMap::new(),
             image_copy_capture_sessions: std::collections::HashMap::new(),
             image_copy_capture_pending: Vec::new(),
@@ -3059,6 +3068,7 @@ impl ShojiWM {
                     }
                 }
                 HostMessage::DragView(command) => self.apply_drag_view_command(command),
+                HostMessage::StartLocked => self.start_session_locked(),
                 HostMessage::BackgroundEffect(config) => {
                     if self.configured_background_effect != config {
                         self.configured_background_effect = config;
@@ -3314,10 +3324,26 @@ impl ShojiWM {
         info!(runtime = self.config_runtime.name(), "hot reloaded config");
     }
 
+    /// `COMPOSITOR.session.startLocked`: lock before the first client runs.
+    /// Only the first config load gets here early enough (no client request
+    /// is dispatched before it); a hot reload must not lock a running session
+    /// with no locker in sight.
+    fn start_session_locked(&mut self) {
+        if self.initial_config_enabled {
+            info!("startLocked only applies when the compositor starts; ignored on reload");
+            return;
+        }
+        if !self.session_lock_active {
+            info!("session starts locked (config)");
+            self.session_lock_active = true;
+        }
+    }
+
     pub fn enable_initial_decoration_runtime(&mut self) {
         self.sync_runtime_display_state();
         let lifecycle_result = self.config_runtime.enable();
         self.drain_runtime_host_messages();
+        self.initial_config_enabled = true;
         if let Err(error) = lifecycle_result {
             warn!(?error, "failed to run initial config lifecycle");
             self.config_error_report =

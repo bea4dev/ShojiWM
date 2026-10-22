@@ -79,6 +79,31 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
   COMPOSITOR.process.spawn({command: ['kitty', '--title', 'My Terminal']});
   ```
 
+## ロックした状態で起動する
+
+`COMPOSITOR.session.startLocked = true` を指定すると、セッションがロックされた状態で
+コンポジターが起動します。ロッカーがロックして解除するまで、ext-session-lock の
+サーフェス以外は描画されず、入力もそこにしか届きません。自動ログインと組み合わせると、
+デスクトップを一瞬も見せずにロック画面をログイン画面として使えます。
+
+ShojiWM 自身はロック画面を描かないので、設定からロッカーを起動してください。
+ext-session-lock に対応したクライアントなら何でも使えます（Quickshell の
+`WlSessionLock`、hyprlock、swaylock など）。
+
+```ts
+COMPOSITOR.session.startLocked = true;
+COMPOSITOR.process.once('locker', { command: ['hyprlock'] });
+```
+
+- 設定のトップレベルで指定してください。設定の初回読み込み時に一度だけ読まれ、
+  ホットリロードで動作中のセッションがロックされることはありません。
+- ロッカーが接続するまで画面は黒いままです。
+- 設定の読み込みに失敗した場合はロッカーも起動しないため、ロックせずに起動します。
+- ロッカーが現れない場合でも、ロック中に `Ctrl+Alt+F<n>` で別の VT に切り替えられます。
+- ロックを保持できるクライアントは 1 つだけです。他のクライアントのロック要求は拒否され、
+  解除もできません。ロッカーが落ちた場合は、新しいロッカーが引き継ぐまでロックが続きます。
+- Rust 設定では `ConfigBuilder::start_locked(true)` で同じことができます。
+
 ## 環境変数
 
 `COMPOSITOR.env` は、コンポジターが起動するプロセスが継承する環境を管理します。変更は

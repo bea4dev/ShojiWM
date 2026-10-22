@@ -637,6 +637,8 @@ struct RuntimeLifecycleEnableResponse {
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
     process_actions: Option<Vec<RuntimeProcessAction>>,
+    #[serde(rename = "startLocked", default)]
+    start_locked: bool,
     error: Option<String>,
 }
 
@@ -1164,6 +1166,7 @@ impl EmbeddedDecorationEvaluator {
             event_config: response.event_config,
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
+            start_locked: response.start_locked,
             ..RuntimeConfigDelta::default()
         });
         Ok(DecorationHandlerInvocation {
@@ -2988,6 +2991,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
             debug_config: response.debug_config,
+            ..RuntimeConfigDelta::default()
         });
         Ok(DecorationSchedulerTick {
             dirty: response.dirty.unwrap_or(false),
@@ -3276,6 +3280,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
             debug_config: response.debug_config,
+            ..RuntimeConfigDelta::default()
         });
         Ok(DecorationKeyBindingInvocation {
             invoked: response.invoked.unwrap_or(false),
@@ -6565,6 +6570,41 @@ COMPOSITOR.workspace.event.onCreate((event) => {
             create_name: Some("5".into()),
         };
         assert!(evaluator.workspace_activate(&create, 0).unwrap().invoked);
+        std::fs::remove_dir_all(test_dir).ok();
+    }
+
+    #[test]
+    fn embedded_runtime_requests_start_locked_before_processes() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-start-locked-test-{}", std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(&config_path, r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text="start locked test" />;
+COMPOSITOR.session.startLocked = true;
+COMPOSITOR.process.once("locker", { command: ["true"] });
+"#).unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"), &config_path,
+        ).with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("initial", None).unwrap();
+
+        let messages: Vec<_> = std::iter::from_fn(|| evaluator.host.pop()).collect();
+        let start_locked = messages
+            .iter()
+            .position(|message| matches!(message, HostMessage::StartLocked))
+            .expect("startLocked was not sent");
+        let process_config = messages
+            .iter()
+            .position(|message| matches!(message, HostMessage::Process(_)))
+            .expect("process.once was not sent");
+        assert!(start_locked < process_config);
         std::fs::remove_dir_all(test_dir).ok();
     }
 

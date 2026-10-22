@@ -55,6 +55,31 @@ enum KeyboardAction {
     DismissPopup,
 }
 
+/// The VT `Ctrl+Alt+F<n>` switches to, if this key is one of them.
+fn vt_switch_target(
+    modifiers: &smithay::input::keyboard::ModifiersState,
+    handle: &smithay::input::keyboard::KeysymHandle<'_>,
+) -> Option<i32> {
+    if !modifiers.ctrl || !modifiers.alt || modifiers.shift || modifiers.logo {
+        return None;
+    }
+    match handle.raw_latin_sym_or_raw_current_sym()?.raw() {
+        keysyms::KEY_F1 => Some(1),
+        keysyms::KEY_F2 => Some(2),
+        keysyms::KEY_F3 => Some(3),
+        keysyms::KEY_F4 => Some(4),
+        keysyms::KEY_F5 => Some(5),
+        keysyms::KEY_F6 => Some(6),
+        keysyms::KEY_F7 => Some(7),
+        keysyms::KEY_F8 => Some(8),
+        keysyms::KEY_F9 => Some(9),
+        keysyms::KEY_F10 => Some(10),
+        keysyms::KEY_F11 => Some(11),
+        keysyms::KEY_F12 => Some(12),
+        _ => None,
+    }
+}
+
 fn compositor_pointer_grab_start_data(
     focus: Option<(WlSurface, Point<f64, Logical>)>,
     button: u32,
@@ -283,18 +308,38 @@ impl ShojiWM {
         event: &I::KeyboardKeyEvent,
         serial: Serial,
     ) {
-        let _ = self.seat.get_keyboard().unwrap().input(
+        let pressed = event.state() == KeyState::Pressed;
+        let vt = self.seat.get_keyboard().unwrap().input(
             self,
             event.key_code(),
             event.state(),
             serial,
             Event::time_msec(event),
-            |data, modifiers, _handle| {
+            |data, modifiers, handle| {
                 data.current_keyboard_modifiers = *modifiers;
-                FilterResult::<KeyboardAction>::Forward
+                // VT switching stays available: it shows another VT, not the
+                // session, and it is the way out when the locker never shows
+                // up (e.g. a session started locked whose locker failed).
+                match vt_switch_target(modifiers, &handle).filter(|_| pressed) {
+                    Some(vt) => FilterResult::Intercept(vt),
+                    None => FilterResult::Forward,
+                }
             },
         );
+        if let Some(vt) = vt {
+            self.change_vt(vt);
+        }
         let _ = self.display_handle.flush_clients();
+    }
+
+    fn change_vt(&mut self, vt: i32) {
+        if let Some(ref mut session) = self.tty_session {
+            if let Err(err) = session.change_vt(vt) {
+                warn!(?err, vt, "failed to change VT");
+            }
+        } else {
+            debug!(vt, "ignoring VT change req (no tty  session)")
+        }
     }
 
     fn forward_locked_pointer_motion(
@@ -1174,26 +1219,7 @@ impl ShojiWM {
                             } else if matches!(
                                 key_phase,
                                 crate::runtime_key_binding::RuntimeKeyBindingPhase::Press,
-                            ) && modifiers.ctrl
-                                && modifiers.alt
-                                && !modifiers.shift
-                                && !modifiers.logo
-                                && let Some(raw) = handle.raw_latin_sym_or_raw_current_sym()
-                                && let Some(vt) = match raw.raw() {
-                                    keysyms::KEY_F1 => Some(1),
-                                    keysyms::KEY_F2 => Some(2),
-                                    keysyms::KEY_F3 => Some(3),
-                                    keysyms::KEY_F4 => Some(4),
-                                    keysyms::KEY_F5 => Some(5),
-                                    keysyms::KEY_F6 => Some(6),
-                                    keysyms::KEY_F7 => Some(7),
-                                    keysyms::KEY_F8 => Some(8),
-                                    keysyms::KEY_F9 => Some(9),
-                                    keysyms::KEY_F10 => Some(10),
-                                    keysyms::KEY_F11 => Some(11),
-                                    keysyms::KEY_F12 => Some(12),
-                                    _ => None,
-                                }
+                            ) && let Some(vt) = vt_switch_target(modifiers, &handle)
                             {
                                 FilterResult::Intercept(KeyboardAction::ChangeVt(vt))
                             } else {
@@ -1214,15 +1240,7 @@ impl ShojiWM {
                     KeyboardAction::LogMarker(digit) => {
                         tracing::info!(marker = digit, "log marker");
                     }
-                    KeyboardAction::ChangeVt(vt) => {
-                        if let Some(ref mut session) = self.tty_session {
-                            if let Err(err) = session.change_vt(vt) {
-                                warn!(?err, vt, "failed to change VT");
-                            }
-                        } else {
-                            debug!(vt, "ignoring VT change req (no tty  session)")
-                        }
-                    }
+                    KeyboardAction::ChangeVt(vt) => self.change_vt(vt),
                     KeyboardAction::Forward => {}
                 }
 

@@ -79,6 +79,34 @@ Every method takes a spec with a `command`, plus optional `cwd` and `env`:
   COMPOSITOR.process.spawn({command: ['kitty', '--title', 'My Terminal']});
   ```
 
+## Starting locked
+
+`COMPOSITOR.session.startLocked = true` starts the compositor with the session
+already locked: nothing but ext-session-lock surfaces is drawn, and input
+reaches only them, until a locker locks and then unlocks. With automatic login,
+the lock screen becomes the login screen and the desktop never shows first.
+
+ShojiWM does not draw a lock screen itself, so start a locker from the config —
+any ext-session-lock client works (Quickshell's `WlSessionLock`, hyprlock,
+swaylock, ...):
+
+```ts
+COMPOSITOR.session.startLocked = true;
+COMPOSITOR.process.once('locker', { command: ['hyprlock'] });
+```
+
+- Set it at the top level of the config. It is read once, when the config first
+  loads; a hot reload never locks a running session.
+- Until the locker connects, the screen stays black.
+- A config that fails to load starts unlocked, since its locker would not start
+  either.
+- If the locker never shows up, `Ctrl+Alt+F<n>` still switches to another VT
+  while locked.
+- Only one client can hold the lock. Another client that asks to lock is
+  refused, and so cannot unlock it. If the locker dies, the session stays
+  locked until a new locker takes over.
+- A Rust config does the same with `ConfigBuilder::start_locked(true)`.
+
 ## Environment variables
 
 `COMPOSITOR.env` manages the environment inherited by processes the compositor

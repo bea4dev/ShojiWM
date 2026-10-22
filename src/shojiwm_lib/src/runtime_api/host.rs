@@ -82,6 +82,10 @@ pub enum HostMessage {
     CursorOverride(Option<crate::cursor::CursorOverride>),
     /// Show, move, restyle or dispose of a drag view (`drag.show()`).
     DragView(crate::dnd::DragViewCommand),
+    /// Start the session locked (`COMPOSITOR.session.startLocked`), like
+    /// [`RuntimeLauncher::start_locked`](super::RuntimeLauncher::start_locked).
+    /// Honored only while the config first loads, before any client runs.
+    StartLocked,
 }
 
 /// When a runtime that keeps a clock per output (see `SchedulerTickRequest`)
@@ -110,6 +114,7 @@ pub struct RuntimeConfigDelta {
     pub process_config: Option<RuntimeProcessConfigUpdate>,
     pub debug_config: Option<RuntimeDebugConfigUpdate>,
     pub process_actions: Vec<RuntimeProcessAction>,
+    pub start_locked: bool,
 }
 
 impl RuntimeConfigDelta {
@@ -123,6 +128,7 @@ impl RuntimeConfigDelta {
             && self.process_config.is_none()
             && self.debug_config.is_none()
             && self.process_actions.is_empty()
+            && !self.start_locked
     }
 
     pub fn publish(self, host: &RuntimeHost) {
@@ -130,6 +136,10 @@ impl RuntimeConfigDelta {
             return;
         }
         let mut messages = Vec::new();
+        // Before anything that could start a client (process config/actions).
+        if self.start_locked {
+            messages.push(HostMessage::StartLocked);
+        }
         messages.extend(self.display_config.map(HostMessage::Display));
         messages.extend(self.workspace_config.map(HostMessage::Workspace));
         messages.extend(self.key_binding_config.map(HostMessage::KeyBindings));

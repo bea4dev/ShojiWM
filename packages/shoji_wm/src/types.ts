@@ -3360,6 +3360,18 @@ export interface CompositorDefinition {
    * ```
    */
   pointer: PointerController;
+  /**
+   * Session-wide settings.
+   * セッション全体の設定。
+   *
+   * @example Start locked: the lock screen doubles as the login screen
+   * / ロックした状態で起動（ロック画面をログイン画面として使う）
+   * ```ts
+   * COMPOSITOR.session.startLocked = true;
+   * COMPOSITOR.process.once("locker", { command: ["hyprlock"] });
+   * ```
+   */
+  session: SessionController;
   runtime: RuntimeController;
   /**
    * Per-window scene-tree composition. Assign a function to control what chrome
@@ -3415,6 +3427,33 @@ export interface CompositorDefinition {
 }
 
 export interface PreloadController {}
+
+export interface SessionController {
+  /**
+   * Start with the session locked: nothing but ext-session-lock surfaces is
+   * drawn, and input reaches only them, until a locker (Quickshell's
+   * `WlSessionLock`, hyprlock, swaylock, ...) locks and then unlocks. The
+   * config has to start that locker itself. With automatic login this makes
+   * the lock screen the login screen. Default `false`.
+   *
+   * Read once, when the config first loads (set it at the top level of the
+   * config); a hot reload does not lock. A config that fails to load starts
+   * unlocked, since its locker would not start either. `Ctrl+Alt+F<n>` still
+   * switches VTs while locked, in case the locker never shows up.
+   *
+   * セッションをロックした状態で起動します。ロッカー（Quickshell の
+   * `WlSessionLock`、hyprlock、swaylock など）がロックして解除するまで、
+   * ext-session-lock のサーフェス以外は描画されず、入力もそこにしか届きません。
+   * ロッカーは設定側で起動してください。自動ログインと組み合わせると
+   * ロック画面がログイン画面になります。既定値は `false`。
+   *
+   * 設定の初回読み込み時に一度だけ読まれます（設定のトップレベルで指定して
+   * ください）。ホットリロードではロックしません。設定の読み込みに失敗した
+   * 場合はロッカーも起動しないため、ロックせずに起動します。ロッカーが現れない
+   * ときのため、ロック中も `Ctrl+Alt+F<n>` で VT を切り替えられます。
+   */
+  startLocked: boolean;
+}
 
 /**
  * Debug knobs. Toggles here are surfaced into compositor overlays / logs and

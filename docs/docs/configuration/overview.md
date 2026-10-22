@@ -68,6 +68,7 @@ own page in this section:
 | `input` | Keyboard, pointer, and touchpad device settings | [Input devices](./input.md) |
 | `key`, `pointer` | Keyboard shortcuts and pointer modifiers | [Keybindings & Pointer](./keybindings-and-pointer.md) |
 | `process`, `env` | Spawning programs and environment variables | [Processes & Environment](./processes-and-env.md) |
+| `session` | Starting the session locked (lock screen as login screen) | [Processes & Environment](./processes-and-env.md#starting-locked) |
 | `window` | Per-window decoration (the composition function) | [Window composition](./window-composition.md) |
 | `effect` | GPU effects: background blur, per-window/layer/popup shaders | [Effects](./effects.md) |
 | `rendering` | How each output is put together (`composition`: reordering, render textures, 3D) and frame pacing | [Output composition](./output-composition.md), [Outputs](./outputs.md) |

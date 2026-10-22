@@ -1,7 +1,11 @@
 //! Debug helper: lock the session via ext-session-lock-v1 for a few seconds
 //! and then unlock, the way swaylock/hyprlock do (minus the password).
 //!
-//!   WAYLAND_DISPLAY=wayland-2 session-lock-test [seconds]
+//!   WAYLAND_DISPLAY=wayland-2 session-lock-test [seconds] [--unlock-anyway]
+//!
+//! `--unlock-anyway` sends `unlock_and_destroy` even when the compositor
+//! refused the lock (`finished`), the way a hostile client would try to
+//! unlock someone else's lock.
 //!
 //! One lock surface (a blank shm buffer) is created per wl_output so the
 //! compositor goes through its normal lock-surface focus path.
@@ -191,11 +195,14 @@ fn main() {
         queue.dispatch_pending(&mut app).expect("dispatch");
         std::thread::sleep(Duration::from_millis(20));
     }
-    if app.finished {
+    let unlock_anyway = std::env::args().any(|arg| arg == "--unlock-anyway");
+    if app.finished && !unlock_anyway {
         std::process::exit(1);
     }
     println!("{} unlock_and_destroy", app.stamp());
     lock.unlock_and_destroy();
-    queue.roundtrip(&mut app).expect("roundtrip unlock");
-    println!("{} done", app.stamp());
+    match queue.roundtrip(&mut app) {
+        Ok(_) => println!("{} done", app.stamp()),
+        Err(error) => println!("{} disconnected: {error}", app.stamp()),
+    }
 }

@@ -324,6 +324,7 @@ import {
   invokeKeyBinding,
   managedWindowOnlyDirtyIds,
   takePendingDebugConfig,
+  sessionStartLocked,
   takePendingCursorConfig,
   takePendingDisplayConfig,
   takePendingKeyBindingConfig,
@@ -1174,6 +1175,7 @@ interface LifecycleEnableSuccess {
   eventConfig?: RuntimeEventConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
+  startLocked?: boolean;
 }
 
 interface LifecycleDisableSuccess {
@@ -1743,6 +1745,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           eventConfig,
           processConfig,
           processActions,
+          startLocked: sessionStartLocked(),
         });
       } else if (request.kind === "workspaceActivate") {
         const runtimeConfig = await loadRuntimeConfig();

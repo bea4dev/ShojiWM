@@ -213,6 +213,7 @@ import { INPUT_CONTROLLER, installInputDeviceChangeEmitter } from "./input";
 import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
 import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
+import { SESSION_CONTROLLER } from "./session";
 import { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 import { CURSOR_CONTROLLER, takePendingCursorConfig } from "./cursor";
 import { DND_CONTROLLER } from "./dnd";
@@ -441,6 +442,7 @@ export {
   resolveWindowDecorationDecision,
 } from "./window-decoration";
 export { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
+export { SESSION_CONTROLLER, sessionStartLocked } from "./session";
 export { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 export {
   CURSOR_CONTROLLER,
@@ -1173,6 +1175,7 @@ function createCompositorDefinition(): CompositorDefinition {
     process: PROCESS_CONTROLLER,
     key: KEY_BINDING_CONTROLLER,
     pointer: POINTER_CONTROLLER,
+    session: SESSION_CONTROLLER,
     input: INPUT_CONTROLLER,
     cursor: CURSOR_CONTROLLER,
     dnd: DND_CONTROLLER,
