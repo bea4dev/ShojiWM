@@ -76,8 +76,9 @@ COMPOSITOR.key.bind('reload', 'Super+Ctrl+R', () => {
 ```
 
 コマンドは `SHOJIWM_SOCKET` が指すソケット経由で実行中のコンポジターに伝わります。
-ShojiWM は起動するすべてのプロセス（と systemd/D-Bus のアクティベーション環境）に
-この変数を渡します。未設定の場合は `WAYLAND_DISPLAY` からソケットを求めます。
+ShojiWM は起動するすべてのプロセスにこの変数を渡します。TTYセッション、または
+`SHOJI_PUBLISH_ACTIVATION_ENV=1` でnestedでの公開を有効にした場合は、systemd/D-Busの
+アクティベーション環境にも渡します。未設定の場合は `WAYLAND_DISPLAY` からソケットを求めます。
 
 ## ポインター
 

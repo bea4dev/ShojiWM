@@ -25,7 +25,9 @@ outputs.
 Calling `configure()` takes effect without restarting ShojiWM and also:
 
 - sets `XCURSOR_THEME` and `XCURSOR_SIZE` for processes started afterwards;
-- publishes those variables to the systemd and D-Bus activation environments;
+- publishes those variables to the systemd and D-Bus activation environments
+  in TTY sessions, or when nested publication is enabled with
+  `SHOJI_PUBLISH_ACTIVATION_ENV=1`;
 - discards ShojiWM's decoded cursor and GPU buffer caches; and
 - schedules the new named cursor for the next redraw.
 

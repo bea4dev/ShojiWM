@@ -83,9 +83,10 @@ COMPOSITOR.key.bind('reload', 'Super+Ctrl+R', () => {
 ```
 
 The command talks to the running compositor over the socket named by
-`SHOJIWM_SOCKET`, which ShojiWM exports to everything it starts (and to the
-systemd/D-Bus activation environment). Without it, the socket is derived from
-`WAYLAND_DISPLAY`.
+`SHOJIWM_SOCKET`, which ShojiWM exports to everything it starts. It also exports
+the socket to the systemd/D-Bus activation environment in TTY sessions, or when
+nested publication is enabled with `SHOJI_PUBLISH_ACTIVATION_ENV=1`. Without it,
+the socket is derived from `WAYLAND_DISPLAY`.
 
 ## Pointer
 
