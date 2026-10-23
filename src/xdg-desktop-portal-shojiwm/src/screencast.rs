@@ -10,18 +10,12 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::picker::{PickResult, PickerHandle};
 use crate::pipewire_stream::{self, StreamHandle, StreamSpec};
-use crate::sources::{self, OutputInfo, SourceInfo, SourceKind, ThumbnailUpdate, ToplevelInfo};
+use crate::sources::{
+    self, OutputInfo, SourceInfo, SourceKind, SourceUpdate, ToplevelInfo, source_types,
+};
 use crate::toplevel_stream::{
     self, CaptureSourceSpec, StreamHandle as ToplevelStreamHandle, StreamSpec as ToplevelStreamSpec,
 };
-
-/// SourceTypes bitmask values from the portal spec.
-#[allow(dead_code)]
-mod source_types {
-    pub const MONITOR: u32 = 1 << 0;
-    pub const WINDOW: u32 = 1 << 1;
-    pub const VIRTUAL: u32 = 1 << 2;
-}
 
 /// CursorMode bitmask values from the portal spec.
 #[allow(dead_code)]
@@ -53,17 +47,16 @@ enum AnyStreamHandle {
 /// its own stream and bookkeeping.
 struct Inner {
     picker: PickerHandle,
-    sessions: Mutex<HashMap<String, Selection>>,
+    sessions: Mutex<HashMap<String, SessionState>>,
     streams: Mutex<HashMap<String, AnyStreamHandle>>,
-    /// Per-session `cursor_mode & EMBEDDED != 0`. Filled by SelectSources,
-    /// consumed by Start to configure the streaming pipeline.
-    cursor_visibility: Mutex<HashMap<String, bool>>,
-    /// Per-session `persist_mode` requested at SelectSources. When non-zero,
-    /// Start returns `restore_data` so the portal frontend can hand the app a
-    /// restore token — that's what lets Chromium's repeated Go Live sessions
-    /// (and OBS on relaunch) skip the picker after the first approval.
-    persist_modes: Mutex<HashMap<String, u32>>,
-    thumbnail_tx: tokio::sync::mpsc::UnboundedSender<ThumbnailUpdate>,
+    thumbnail_tx: tokio::sync::mpsc::Sender<SourceUpdate>,
+}
+
+struct SessionState {
+    selection: Option<Selection>,
+    cursor_visible: bool,
+    persist_mode: u32,
+    cancelled: tokio::sync::watch::Sender<bool>,
 }
 
 impl Inner {
@@ -79,13 +72,23 @@ impl Inner {
         // ordering the freshly started stream could land in the map after
         // cleanup had already run, leaving an unowned PipeWire node that
         // delivered zero frames to the app forever.
-        self.sessions.lock().unwrap().remove(session_key);
+        if let Some(session) = self.sessions.lock().unwrap().remove(session_key) {
+            session.cancelled.send_replace(true);
+        }
+        self.picker.cancel(session_key);
         let stream = self.streams.lock().unwrap().remove(session_key);
         let had_stream = stream.is_some();
         drop(stream);
-        self.cursor_visibility.lock().unwrap().remove(session_key);
-        self.persist_modes.lock().unwrap().remove(session_key);
         tracing::info!(session_key, had_stream, "session closed and cleaned up");
+    }
+
+    fn set_selection(&self, session_key: &str, selection: Selection) -> bool {
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions.get_mut(session_key) else {
+            return false;
+        };
+        session.selection = Some(selection);
+        true
     }
 }
 
@@ -129,9 +132,8 @@ const RESTORE_VERSION: u32 = 1;
 
 /// Encode a selection as the `v` payload of restore_data. Flat `(ssss)`:
 /// ("output", connector_name, "", "") or
-/// ("toplevel", identifier, app_id, title). Toplevel identifiers are not
-/// stable across compositor restarts, so app_id+title are carried as a
-/// fallback match key.
+/// ("toplevel", identifier, app_id, title). Keep the blob shape compatible,
+/// but require another pick if the original identifier no longer exists.
 fn encode_restore_data(selection: &Selection) -> Value<'static> {
     let data = match selection {
         Selection::Output(out) => Value::from((
@@ -178,8 +180,6 @@ fn append_restore_results(
 struct RestoreRequest {
     kind: String,
     key: String,
-    app_id: String,
-    title: String,
 }
 
 fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
@@ -216,8 +216,6 @@ fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
     Some(RestoreRequest {
         kind: field_str(0)?,
         key: field_str(1)?,
-        app_id: field_str(2)?,
-        title: field_str(3)?,
     })
 }
 
@@ -232,35 +230,12 @@ fn match_restore(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<Sel
             }
             _ => None,
         }),
-        "toplevel" => {
-            let toplevels: Vec<&ToplevelInfo> = sources
-                .iter()
-                .filter_map(|s| match &s.kind {
-                    SourceKind::Toplevel(top) => Some(top),
-                    _ => None,
-                })
-                .collect();
-            // Identifier is exact within a compositor run; app_id+title is
-            // the cross-restart fallback; a unique app_id match handles
-            // title drift (documents, web pages).
-            if let Some(top) = toplevels.iter().find(|t| t.identifier == request.key) {
-                return Some(Selection::Toplevel((*top).clone()));
+        "toplevel" => sources.iter().find_map(|s| match &s.kind {
+            SourceKind::Toplevel(top) if !request.key.is_empty() && top.identifier == request.key => {
+                Some(Selection::Toplevel(top.clone()))
             }
-            if !request.app_id.is_empty()
-                && let Some(top) = toplevels
-                    .iter()
-                    .find(|t| t.app_id == request.app_id && t.title == request.title)
-            {
-                return Some(Selection::Toplevel((*top).clone()));
-            }
-            if !request.app_id.is_empty() {
-                let mut by_app = toplevels.iter().filter(|t| t.app_id == request.app_id);
-                if let (Some(top), None) = (by_app.next(), by_app.next()) {
-                    return Some(Selection::Toplevel((*top).clone()));
-                }
-            }
-            None
-        }
+            _ => None,
+        }),
         _ => None,
     }
 }
@@ -268,15 +243,13 @@ fn match_restore(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<Sel
 impl ScreenCast {
     pub fn new(
         picker: PickerHandle,
-        thumbnail_tx: tokio::sync::mpsc::UnboundedSender<ThumbnailUpdate>,
+        thumbnail_tx: tokio::sync::mpsc::Sender<SourceUpdate>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 picker,
                 sessions: Mutex::new(HashMap::new()),
                 streams: Mutex::new(HashMap::new()),
-                cursor_visibility: Mutex::new(HashMap::new()),
-                persist_modes: Mutex::new(HashMap::new()),
                 thumbnail_tx,
             }),
         }
@@ -290,9 +263,6 @@ impl ScreenCast {
         4
     }
 
-    /// We now advertise both MONITOR and WINDOW. WINDOW capture is wired
-    /// through the picker but Start for WINDOW currently fails (Phase 5d
-    /// migrates the streaming pipeline to ext-image-copy-capture-v1).
     #[zbus(property, name = "AvailableSourceTypes")]
     fn available_source_types(&self) -> u32 {
         source_types::MONITOR | source_types::WINDOW
@@ -325,10 +295,25 @@ impl ScreenCast {
             session_key: session_handle.to_string(),
             inner: self.inner.clone(),
         };
-        server
+        {
+            let mut sessions = self.inner.sessions.lock().unwrap();
+            if sessions.contains_key(session_handle.as_str()) {
+                return Err(zbus::fdo::Error::InvalidArgs("session already exists".into()));
+            }
+            sessions.insert(session_handle.to_string(), SessionState {
+                selection: None,
+                cursor_visible: true,
+                persist_mode: 0,
+                cancelled: tokio::sync::watch::channel(false).0,
+            });
+        }
+        if let Err(error) = server
             .at(&session_handle, session)
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(format!("export session object: {e}",)))?;
+        {
+            self.inner.cleanup_session(session_handle.as_str());
+            return Err(zbus::fdo::Error::Failed(format!("export session object: {error}")));
+        }
         Ok((0, HashMap::new()))
     }
 
@@ -350,20 +335,20 @@ impl ScreenCast {
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(cursor_modes::EMBEDDED);
         let cursor_visible = cursor_mode & cursor_modes::EMBEDDED != 0;
-        self.inner
-            .cursor_visibility
-            .lock()
-            .unwrap()
-            .insert(session_handle.to_string(), cursor_visible);
         let persist_mode = options
             .get("persist_mode")
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0);
-        self.inner
-            .persist_modes
-            .lock()
-            .unwrap()
-            .insert(session_handle.to_string(), persist_mode);
+        let session_key = session_handle.to_string();
+        let mut cancelled = {
+            let mut sessions = self.inner.sessions.lock().unwrap();
+            let Some(session) = sessions.get_mut(&session_key) else {
+                return Ok((1, HashMap::new()));
+            };
+            session.cursor_visible = cursor_visible;
+            session.persist_mode = persist_mode;
+            session.cancelled.subscribe()
+        };
         let restore_request = options.get("restore_data").and_then(decode_restore_data);
         tracing::info!(
             %handle, %session_handle, %app_id, requested_types = requested, cursor_mode, cursor_visible,
@@ -375,75 +360,46 @@ impl ScreenCast {
         // round-robin until the returned handle is dropped.
         let (init_tx, init_rx) = tokio::sync::oneshot::channel();
         let thumbnail_tx = self.inner.thumbnail_tx.clone();
-        let _stream_guard = tokio::task::spawn_blocking(move || {
-            sources::start_thumbnail_stream(init_tx, thumbnail_tx)
-        })
-        .await
-        .map_err(|e| zbus::fdo::Error::Failed(format!("thumbnail thread join: {e}")))?;
-
-        let sources_initial = init_rx.await.unwrap_or_default();
-        let filtered: Vec<SourceInfo> = sources_initial
-            .into_iter()
-            .filter(|s| match &s.kind {
-                SourceKind::Output(_) => requested & source_types::MONITOR != 0,
-                SourceKind::Toplevel(_) => requested & source_types::WINDOW != 0,
-            })
-            .collect();
-        tracing::info!(count = filtered.len(), "enumerated sources");
-
-        // A valid restore_data blob that still matches a live source skips
-        // the picker entirely — this is what keeps Chromium's Go Live (which
-        // opens several sessions back-to-back) down to a single dialog.
-        if let Some(request) = restore_request {
-            if let Some(selection) = match_restore(&request, &filtered) {
-                tracing::info!(
-                    %session_handle,
-                    ?selection,
-                    "restore_data matched a live source; skipping picker",
-                );
-                drop(_stream_guard);
-                self.inner
-                    .sessions
-                    .lock()
-                    .unwrap()
-                    .insert(session_handle.to_string(), selection);
+        let stream_guard = sources::start_thumbnail_stream(
+            session_key.clone(), requested, init_tx, thumbnail_tx,
+        );
+        let picker_cancelled = cancelled.clone();
+        let choose = async {
+            let sources = init_rx.await.unwrap_or_default();
+            tracing::info!(count = sources.len(), "enumerated sources");
+            if let Some(request) = restore_request
+                && let Some(selection) = match_restore(&request, &sources)
+            {
+                tracing::info!(%session_handle, ?selection, "restored original source; skipping picker");
+                return Some(selection);
+            }
+            let prefer_windows = requested & source_types::MONITOR == 0;
+            match self.inner.picker.pick(
+                session_key.clone(), sources, picker_cancelled, prefer_windows,
+            ).await {
+                PickResult::Source(src) => Some(match src.kind {
+                    SourceKind::Output(out) => Selection::Output(out),
+                    SourceKind::Toplevel(top) => Selection::Toplevel(top),
+                }),
+                PickResult::Cancelled => None,
+            }
+        };
+        let selection = tokio::select! {
+            biased;
+            _ = cancelled.wait_for(|closed| *closed) => None,
+            selection = choose => selection,
+        };
+        self.inner.picker.cancel(&session_key);
+        tokio::task::spawn_blocking(move || drop(stream_guard)).await
+            .map_err(|e| zbus::fdo::Error::Failed(format!("thumbnail thread join: {e}")))?;
+        if let Some(selection) = selection {
+            tracing::info!(%session_handle, ?selection, "picker: selected source");
+            if self.inner.set_selection(&session_key, selection) {
                 return Ok((0, HashMap::new()));
             }
-            tracing::info!(
-                %session_handle,
-                "restore_data no longer matches any source; prompting picker",
-            );
         }
-
-        let pick = self.inner.picker.pick(filtered).await;
-        drop(_stream_guard);
-
-        match pick {
-            PickResult::Source(src) => match src.kind {
-                SourceKind::Output(out) => {
-                    tracing::info!(?out, %session_handle, "picker: selected output");
-                    self.inner
-                        .sessions
-                        .lock()
-                        .unwrap()
-                        .insert(session_handle.to_string(), Selection::Output(out));
-                    Ok((0, HashMap::new()))
-                }
-                SourceKind::Toplevel(top) => {
-                    tracing::info!(?top, %session_handle, "picker: selected toplevel");
-                    self.inner
-                        .sessions
-                        .lock()
-                        .unwrap()
-                        .insert(session_handle.to_string(), Selection::Toplevel(top));
-                    Ok((0, HashMap::new()))
-                }
-            },
-            PickResult::Cancelled => {
-                tracing::info!(%session_handle, "picker: cancelled");
-                Ok((1, HashMap::new()))
-            }
-        }
+        tracing::info!(%session_handle, "picker: cancelled");
+        Ok((1, HashMap::new()))
     }
 
     async fn start(
@@ -454,32 +410,13 @@ impl ScreenCast {
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
-        let selection = self
-            .inner
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&session_handle.to_string())
-            .cloned();
+        let session_key = session_handle.to_string();
+        let (selection, cursor_visible, persist_mode) = self.inner.sessions.lock().unwrap()
+            .get(&session_key)
+            .map(|session| (session.selection.clone(), session.cursor_visible, session.persist_mode))
+            .unwrap_or((None, true, 0));
         tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?selection, "Start");
 
-        let session_key = session_handle.to_string();
-        let cursor_visible = self
-            .inner
-            .cursor_visibility
-            .lock()
-            .unwrap()
-            .get(&session_key)
-            .copied()
-            .unwrap_or(true);
-        let persist_mode = self
-            .inner
-            .persist_modes
-            .lock()
-            .unwrap()
-            .get(&session_key)
-            .copied()
-            .unwrap_or(0);
         match selection {
             Some(Selection::Output(out)) => {
                 let framerate = {
@@ -644,5 +581,26 @@ impl ScreenCast {
                 Ok((1, HashMap::new()))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_requires_the_original_window_identifier() {
+        let sources = vec![SourceInfo {
+            kind: SourceKind::Toplevel(ToplevelInfo {
+                identifier: "replacement".into(),
+                app_id: "brave-browser".into(),
+                title: "Same title".into(),
+            }),
+            thumbnail: None,
+        }];
+        let request = RestoreRequest { kind: "toplevel".into(), key: "closed-window".into() };
+        assert!(match_restore(&request, &sources).is_none());
+        let request = RestoreRequest { kind: "toplevel".into(), key: "replacement".into() };
+        assert!(matches!(match_restore(&request, &sources), Some(Selection::Toplevel(_))));
     }
 }
