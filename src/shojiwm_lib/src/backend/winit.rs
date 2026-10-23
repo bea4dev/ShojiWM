@@ -5489,10 +5489,10 @@ fn winit_window_stack_elements(
                 let mut backdrop_items = backdrop_shader_elements_for_window(
                     renderer,
                     state,
-                    &output,
+                    output,
                     output_geo,
                     scale,
-                    &windows_top_to_bottom,
+                    windows_top_to_bottom,
                     below,
                     force_visible,
                     _window_index,
@@ -5516,10 +5516,10 @@ fn winit_window_stack_elements(
                         configured_background_effect_elements_for_window(
                             renderer,
                             state,
-                            &output,
+                            output,
                             output_geo,
                             scale,
-                            &windows_top_to_bottom,
+                            windows_top_to_bottom,
                             below,
                             force_visible,
                             _window_index,
@@ -5617,7 +5617,7 @@ fn winit_window_stack_elements(
                     renderer,
                     &state.space,
                     &state.window_decorations,
-                    &output,
+                    output,
                     window,
                     if use_full_window_snapshot {
                         1.0
@@ -5640,7 +5640,7 @@ fn winit_window_stack_elements(
                     renderer,
                     &state.space,
                     &state.window_decorations,
-                    &output,
+                    output,
                     window,
                     if use_full_window_snapshot {
                         1.0
@@ -5969,7 +5969,7 @@ fn winit_window_stack_elements(
                     renderer,
                     state,
                     std::slice::from_ref(window),
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     PopupLayer::Window,
@@ -6086,7 +6086,7 @@ fn winit_window_stack_elements(
                     let configured_background_effect = state.configured_background_effect.clone();
                     scene_elements.extend(composed_window_popup_scene_elements(
                         renderer,
-                        &output,
+                        output,
                         output_geo,
                         scale,
                         window,
@@ -6139,7 +6139,7 @@ fn winit_window_stack_elements(
                 && capture_live_snapshot_for_window(
                     renderer,
                     state,
-                    &output,
+                    output,
                     window,
                     window_location,
                     scale,
