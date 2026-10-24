@@ -16,11 +16,12 @@ use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Offscreen};
 use smithay::output::Output;
 use smithay::reexports::calloop::LoopHandle;
-use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::shm;
 
-use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
+use crate::protocols::screencopy::{
+    Screencopy, ScreencopyBuffer, ScreencopyManagerState, screencopy_shm_buffer_range,
+};
 use crate::state::ShojiWM;
 
 /// Render and submit all queued screencopies that target `output`.
@@ -324,24 +325,77 @@ fn render_to_shm(
     elements: &[impl RenderElement<GlesRenderer>],
 ) -> Result<(), Box<dyn std::error::Error>> {
     timescope::scope!("screencopy render_to_shm");
-    shm::with_buffer_contents_mut(buffer, |shm_buffer, shm_len, buffer_data| {
-        if !(buffer_data.format == wl_shm::Format::Xrgb8888
-            && buffer_data.width == size.w
-            && buffer_data.height == size.h
-            && buffer_data.stride == size.w * 4
-            && shm_len == buffer_data.stride as usize * buffer_data.height as usize)
-        {
+    shm::with_buffer_contents_mut(buffer, |shm_buffer, pool_len, buffer_data| {
+        let Some(buffer_range) = screencopy_shm_buffer_range(pool_len, buffer_data, size) else {
             return Err::<(), Box<dyn std::error::Error>>("invalid shm buffer format/size".into());
-        }
+        };
         let mapping =
             render_and_download(renderer, size, scale, transform, Fourcc::Xrgb8888, elements)?;
         let bytes = renderer.map_texture(&mapping)?;
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buffer.cast(), shm_len);
+            copy_frame_to_shm(shm_buffer, pool_len, buffer_range, bytes)?;
         }
         Ok(())
     })??;
     Ok(())
+}
+
+unsafe fn copy_frame_to_shm(
+    pool: *mut u8,
+    pool_len: usize,
+    buffer_range: std::ops::Range<usize>,
+    frame: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if buffer_range.start > buffer_range.end || buffer_range.end > pool_len {
+        return Err("shm buffer lies outside its pool".into());
+    }
+    let buffer_len = buffer_range.end - buffer_range.start;
+    if frame.len() < buffer_len {
+        return Err("downloaded frame is smaller than the buffer".into());
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(frame.as_ptr(), pool.add(buffer_range.start), buffer_len);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shm_copy_leaves_bytes_outside_buffer_untouched() {
+        let mut pool = vec![0xA5; 10];
+        let frame = [1, 2, 3, 4];
+
+        unsafe {
+            copy_frame_to_shm(pool.as_mut_ptr(), pool.len(), 3..7, &frame).unwrap();
+        }
+
+        assert_eq!(pool, [0xA5, 0xA5, 0xA5, 1, 2, 3, 4, 0xA5, 0xA5, 0xA5]);
+    }
+
+    #[test]
+    fn shm_copy_rejects_a_short_frame_without_writing() {
+        let mut pool = vec![0xA5; 10];
+
+        let result = unsafe { copy_frame_to_shm(pool.as_mut_ptr(), pool.len(), 3..7, &[1, 2, 3]) };
+
+        assert!(result.is_err());
+        assert_eq!(pool, [0xA5; 10]);
+    }
+
+    #[test]
+    fn shm_copy_rejects_invalid_ranges_without_writing() {
+        let mut pool = vec![0xA5; 10];
+        let frame = [1, 2, 3, 4];
+
+        for range in [8..12, 7..3] {
+            let result = unsafe { copy_frame_to_shm(pool.as_mut_ptr(), pool.len(), range, &frame) };
+            assert!(result.is_err());
+        }
+        assert_eq!(pool, [0xA5; 10]);
+    }
 }
 
 fn render_and_download(
