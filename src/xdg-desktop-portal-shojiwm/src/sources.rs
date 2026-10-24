@@ -224,7 +224,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
         };
         match interface.as_str() {
             "wl_output" => {
-                let proxy = registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                let proxy =
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
                 let info = OutputInfo {
                     name: String::new(),
                     description: String::new(),
@@ -290,14 +291,20 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
         _: &QueueHandle<Self>,
     ) {
         let mut state = app.state.lock().unwrap();
-        let Some(entry) = state.outputs.iter_mut().find(|entry| &entry.proxy == output) else {
+        let Some(entry) = state
+            .outputs
+            .iter_mut()
+            .find(|entry| &entry.proxy == output)
+        else {
             return;
         };
         let cur = &mut entry.pending;
         match event {
             wl_output::Event::Name { name } => cur.name = name,
             wl_output::Event::Description { description } => cur.description = description,
-            wl_output::Event::Geometry { x, y, transform, .. } => {
+            wl_output::Event::Geometry {
+                x, y, transform, ..
+            } => {
                 cur.position = (x, y);
                 if let WEnum::Value(transform) = transform {
                     cur.transform = transform;
@@ -553,7 +560,10 @@ fn capture_via_source(
         return None;
     }
     let format = format.unwrap_or(wl_shm::Format::Xrgb8888);
-    let Some(stride) = width.checked_mul(4).and_then(|stride| i32::try_from(stride).ok()) else {
+    let Some(stride) = width
+        .checked_mul(4)
+        .and_then(|stride| i32::try_from(stride).ok())
+    else {
         session.destroy();
         return None;
     };
@@ -739,7 +749,8 @@ pub fn start_thumbnail_stream(
     let join = std::thread::Builder::new()
         .name("portal-thumbnails".into())
         .spawn(move || {
-            if let Err(e) = run_stream(session_key, requested, init_tx, updates_tx, stop_for_thread) {
+            if let Err(e) = run_stream(session_key, requested, init_tx, updates_tx, stop_for_thread)
+            {
                 tracing::warn!("thumbnail stream exited: {e}");
             }
         })
@@ -796,7 +807,9 @@ fn run_stream(
         let s = state.lock().unwrap();
         let mut v: Vec<LiveSource> = Vec::new();
         if requested & source_types::MONITOR != 0 {
-            let mut outputs: Vec<_> = s.outputs.iter()
+            let mut outputs: Vec<_> = s
+                .outputs
+                .iter()
                 .filter(|o| !o.info.name.is_empty() && o.info.width > 0 && o.info.height > 0)
                 .collect();
             outputs.sort_by(|a, b| {
@@ -830,7 +843,10 @@ fn run_stream(
     };
 
     let mut thumbnails = std::collections::HashMap::new();
-    let initial = discover(&thumbnails).iter().map(|src| src.info().clone()).collect();
+    let initial = discover(&thumbnails)
+        .iter()
+        .map(|src| src.info().clone())
+        .collect();
     if init_tx.send(initial).is_err() {
         return Ok(());
     }
@@ -849,18 +865,26 @@ fn run_stream(
             let src = &live_sources[cursor % live_sources.len()];
             cursor = cursor.wrapping_add(1);
             let handle = match src {
-                LiveSource::Output { proxy, .. } =>
-                    capture_output_thumbnail(&mut event_queue, &mut app, &qh, proxy),
-                LiveSource::Toplevel { proxy, .. } =>
-                    capture_toplevel_thumbnail(&mut event_queue, &mut app, &qh, proxy),
+                LiveSource::Output { proxy, .. } => {
+                    capture_output_thumbnail(&mut event_queue, &mut app, &qh, proxy)
+                }
+                LiveSource::Toplevel { proxy, .. } => {
+                    capture_toplevel_thumbnail(&mut event_queue, &mut app, &qh, proxy)
+                }
             };
             if let Some(handle) = handle {
                 thumbnails.insert(src.info().id().to_owned(), handle);
             }
         }
-        let sources: Vec<_> = discover(&thumbnails).iter().map(|src| src.info().clone()).collect();
+        let sources: Vec<_> = discover(&thumbnails)
+            .iter()
+            .map(|src| src.info().clone())
+            .collect();
         thumbnails.retain(|id, _| sources.iter().any(|src| src.id() == id));
-        match updates_tx.try_send(SourceUpdate { session_key: session_key.clone(), sources }) {
+        match updates_tx.try_send(SourceUpdate {
+            session_key: session_key.clone(),
+            sources,
+        }) {
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             // Keep only a bounded number of snapshots if the UI is busy.
             Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}

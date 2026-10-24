@@ -132,8 +132,9 @@ const RESTORE_VERSION: u32 = 1;
 
 /// Encode a selection as the `v` payload of restore_data. Flat `(ssss)`:
 /// ("output", connector_name, "", "") or
-/// ("toplevel", identifier, app_id, title). Keep the blob shape compatible,
-/// but require another pick if the original identifier no longer exists.
+/// ("toplevel", identifier, app_id, title). Toplevel identifiers are not
+/// stable across compositor restarts, so app_id+title are carried as a
+/// fallback match key.
 fn encode_restore_data(selection: &Selection) -> Value<'static> {
     let data = match selection {
         Selection::Output(out) => Value::from((
@@ -180,6 +181,8 @@ fn append_restore_results(
 struct RestoreRequest {
     kind: String,
     key: String,
+    app_id: String,
+    title: String,
 }
 
 fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
@@ -216,6 +219,8 @@ fn decode_restore_data(value: &OwnedValue) -> Option<RestoreRequest> {
     Some(RestoreRequest {
         kind: field_str(0)?,
         key: field_str(1)?,
+        app_id: field_str(2)?,
+        title: field_str(3)?,
     })
 }
 
@@ -230,12 +235,35 @@ fn match_restore(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<Sel
             }
             _ => None,
         }),
-        "toplevel" => sources.iter().find_map(|s| match &s.kind {
-            SourceKind::Toplevel(top) if !request.key.is_empty() && top.identifier == request.key => {
-                Some(Selection::Toplevel(top.clone()))
+        "toplevel" => {
+            let toplevels: Vec<&ToplevelInfo> = sources
+                .iter()
+                .filter_map(|s| match &s.kind {
+                    SourceKind::Toplevel(top) => Some(top),
+                    _ => None,
+                })
+                .collect();
+            // Identifier is exact within a compositor run; app_id+title is
+            // the cross-restart fallback; a unique app_id match handles
+            // title drift (documents, web pages).
+            if let Some(top) = toplevels.iter().find(|t| t.identifier == request.key) {
+                return Some(Selection::Toplevel((*top).clone()));
             }
-            _ => None,
-        }),
+            if !request.app_id.is_empty()
+                && let Some(top) = toplevels
+                    .iter()
+                    .find(|t| t.app_id == request.app_id && t.title == request.title)
+            {
+                return Some(Selection::Toplevel((*top).clone()));
+            }
+            if !request.app_id.is_empty() {
+                let mut by_app = toplevels.iter().filter(|t| t.app_id == request.app_id);
+                if let (Some(top), None) = (by_app.next(), by_app.next()) {
+                    return Some(Selection::Toplevel((*top).clone()));
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -298,21 +326,25 @@ impl ScreenCast {
         {
             let mut sessions = self.inner.sessions.lock().unwrap();
             if sessions.contains_key(session_handle.as_str()) {
-                return Err(zbus::fdo::Error::InvalidArgs("session already exists".into()));
+                return Err(zbus::fdo::Error::InvalidArgs(
+                    "session already exists".into(),
+                ));
             }
-            sessions.insert(session_handle.to_string(), SessionState {
-                selection: None,
-                cursor_visible: true,
-                persist_mode: 0,
-                cancelled: tokio::sync::watch::channel(false).0,
-            });
+            sessions.insert(
+                session_handle.to_string(),
+                SessionState {
+                    selection: None,
+                    cursor_visible: true,
+                    persist_mode: 0,
+                    cancelled: tokio::sync::watch::channel(false).0,
+                },
+            );
         }
-        if let Err(error) = server
-            .at(&session_handle, session)
-            .await
-        {
+        if let Err(error) = server.at(&session_handle, session).await {
             self.inner.cleanup_session(session_handle.as_str());
-            return Err(zbus::fdo::Error::Failed(format!("export session object: {error}")));
+            return Err(zbus::fdo::Error::Failed(format!(
+                "export session object: {error}"
+            )));
         }
         Ok((0, HashMap::new()))
     }
@@ -360,9 +392,8 @@ impl ScreenCast {
         // round-robin until the returned handle is dropped.
         let (init_tx, init_rx) = tokio::sync::oneshot::channel();
         let thumbnail_tx = self.inner.thumbnail_tx.clone();
-        let stream_guard = sources::start_thumbnail_stream(
-            session_key.clone(), requested, init_tx, thumbnail_tx,
-        );
+        let stream_guard =
+            sources::start_thumbnail_stream(session_key.clone(), requested, init_tx, thumbnail_tx);
         let picker_cancelled = cancelled.clone();
         let choose = async {
             let sources = init_rx.await.unwrap_or_default();
@@ -374,9 +405,17 @@ impl ScreenCast {
                 return Some(selection);
             }
             let prefer_windows = requested & source_types::MONITOR == 0;
-            match self.inner.picker.pick(
-                session_key.clone(), sources, picker_cancelled, prefer_windows,
-            ).await {
+            match self
+                .inner
+                .picker
+                .pick(
+                    session_key.clone(),
+                    sources,
+                    picker_cancelled,
+                    prefer_windows,
+                )
+                .await
+            {
                 PickResult::Source(src) => Some(match src.kind {
                     SourceKind::Output(out) => Selection::Output(out),
                     SourceKind::Toplevel(top) => Selection::Toplevel(top),
@@ -390,7 +429,8 @@ impl ScreenCast {
             selection = choose => selection,
         };
         self.inner.picker.cancel(&session_key);
-        tokio::task::spawn_blocking(move || drop(stream_guard)).await
+        tokio::task::spawn_blocking(move || drop(stream_guard))
+            .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("thumbnail thread join: {e}")))?;
         if let Some(selection) = selection {
             tracing::info!(%session_handle, ?selection, "picker: selected source");
@@ -411,9 +451,19 @@ impl ScreenCast {
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         let session_key = session_handle.to_string();
-        let (selection, cursor_visible, persist_mode) = self.inner.sessions.lock().unwrap()
+        let (selection, cursor_visible, persist_mode) = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap()
             .get(&session_key)
-            .map(|session| (session.selection.clone(), session.cursor_visible, session.persist_mode))
+            .map(|session| {
+                (
+                    session.selection.clone(),
+                    session.cursor_visible,
+                    session.persist_mode,
+                )
+            })
             .unwrap_or((None, true, 0));
         tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?selection, "Start");
 
@@ -588,19 +638,66 @@ impl ScreenCast {
 mod tests {
     use super::*;
 
-    #[test]
-    fn restore_requires_the_original_window_identifier() {
-        let sources = vec![SourceInfo {
+    fn window(identifier: &str, app_id: &str, title: &str) -> SourceInfo {
+        SourceInfo {
             kind: SourceKind::Toplevel(ToplevelInfo {
-                identifier: "replacement".into(),
-                app_id: "brave-browser".into(),
-                title: "Same title".into(),
+                identifier: identifier.into(),
+                app_id: app_id.into(),
+                title: title.into(),
             }),
             thumbnail: None,
-        }];
-        let request = RestoreRequest { kind: "toplevel".into(), key: "closed-window".into() };
-        assert!(match_restore(&request, &sources).is_none());
-        let request = RestoreRequest { kind: "toplevel".into(), key: "replacement".into() };
-        assert!(matches!(match_restore(&request, &sources), Some(Selection::Toplevel(_))));
+        }
+    }
+
+    fn request(key: &str, app_id: &str, title: &str) -> RestoreRequest {
+        RestoreRequest {
+            kind: "toplevel".into(),
+            key: key.into(),
+            app_id: app_id.into(),
+            title: title.into(),
+        }
+    }
+
+    fn restored_identifier(request: &RestoreRequest, sources: &[SourceInfo]) -> Option<String> {
+        match match_restore(request, sources)? {
+            Selection::Toplevel(top) => Some(top.identifier),
+            Selection::Output(_) => None,
+        }
+    }
+
+    #[test]
+    fn restore_prefers_the_original_window_identifier() {
+        let sources = [
+            window("a", "brave-browser", "Same title"),
+            window("b", "brave-browser", "Same title"),
+        ];
+        let request = request("b", "brave-browser", "Same title");
+        assert_eq!(
+            restored_identifier(&request, &sources).as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn restore_falls_back_to_app_id_and_title_after_a_restart() {
+        let sources = [
+            window("a", "brave-browser", "Other"),
+            window("b", "brave-browser", "Stream"),
+        ];
+        let request = request("stale", "brave-browser", "Stream");
+        assert_eq!(
+            restored_identifier(&request, &sources).as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn restore_accepts_title_drift_only_for_a_unique_app_window() {
+        let unique = [window("a", "obs", "Renamed")];
+        let request = request("stale", "obs", "Original");
+        assert_eq!(restored_identifier(&request, &unique).as_deref(), Some("a"));
+
+        let ambiguous = [window("a", "obs", "Renamed"), window("b", "obs", "Other")];
+        assert_eq!(restored_identifier(&request, &ambiguous), None);
     }
 }

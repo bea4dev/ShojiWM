@@ -58,7 +58,13 @@ impl PickerHandle {
         prefer_windows: bool,
     ) -> PickResult {
         let (responder, rx) = oneshot::channel();
-        let request = PickRequest { session_key, sources, responder, cancelled, prefer_windows };
+        let request = PickRequest {
+            session_key,
+            sources,
+            responder,
+            cancelled,
+            prefer_windows,
+        };
         if self.tx.send(PickerCommand::Pick(request)).is_err() {
             tracing::error!("picker thread is gone");
             return PickResult::Cancelled;
@@ -117,7 +123,10 @@ enum Message {
     RequestArrived(RequestArrived),
     WindowOpened(window::Id),
     WindowClosed(window::Id),
-    SourceClicked { session_key: String, source_id: String },
+    SourceClicked {
+        session_key: String,
+        source_id: String,
+    },
     Cancelled(String),
     SessionCancelled(String),
     TabSelected(Tab),
@@ -145,8 +154,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             {
                 let _ = r.send(PickResult::Cancelled);
             }
-            let has_outputs = request.sources.iter().any(|s| matches!(s.kind, SourceKind::Output(_)));
-            let has_windows = request.sources.iter().any(|s| matches!(s.kind, SourceKind::Toplevel(_)));
+            let has_outputs = request
+                .sources
+                .iter()
+                .any(|s| matches!(s.kind, SourceKind::Output(_)));
+            let has_windows = request
+                .sources
+                .iter()
+                .any(|s| matches!(s.kind, SourceKind::Toplevel(_)));
             state.active = Some(Active {
                 session_key: request.session_key,
                 tab: if request.prefer_windows || (!has_outputs && has_windows) {
@@ -182,17 +197,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::SourceClicked { session_key, source_id } => {
-            if state.active.as_ref().is_some_and(|active| active.session_key == session_key) {
+        Message::SourceClicked {
+            session_key,
+            source_id,
+        } => {
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.session_key == session_key)
+            {
                 finish(state, |sources| {
-                    sources.iter().find(|src| src.id() == source_id).cloned().map(PickResult::Source)
+                    sources
+                        .iter()
+                        .find(|src| src.id() == source_id)
+                        .cloned()
+                        .map(PickResult::Source)
                 })
             } else {
                 Task::none()
             }
         }
         Message::Cancelled(session_key) | Message::SessionCancelled(session_key) => {
-            if state.active.as_ref().is_some_and(|active| active.session_key == session_key) {
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.session_key == session_key)
+            {
                 finish(state, |_| Some(PickResult::Cancelled))
             } else {
                 Task::none()
@@ -401,16 +431,22 @@ mod tests {
     fn window_request_opens_the_window_tab() {
         let (responder, _response) = oneshot::channel();
         let (_cancel, cancelled) = watch::channel(false);
-        let mut state = State { active: None, window_id: Some(window::Id::unique()) };
-        let _ = update(&mut state, Message::RequestArrived(RequestArrived(
-            std::sync::Arc::new(Mutex::new(Some(PickRequest {
-                session_key: "session".into(),
-                sources: vec![window_source()],
-                responder,
-                cancelled,
-                prefer_windows: true,
-            }))),
-        )));
+        let mut state = State {
+            active: None,
+            window_id: Some(window::Id::unique()),
+        };
+        let _ = update(
+            &mut state,
+            Message::RequestArrived(RequestArrived(std::sync::Arc::new(Mutex::new(Some(
+                PickRequest {
+                    session_key: "session".into(),
+                    sources: vec![window_source()],
+                    responder,
+                    cancelled,
+                    prefer_windows: true,
+                },
+            ))))),
+        );
         assert_eq!(state.active.unwrap().tab, Tab::Window);
     }
 
@@ -430,6 +466,9 @@ mod tests {
         let _ = update(&mut state, Message::WindowClosed(window::Id::unique()));
         assert_eq!(state.window_id, Some(id));
         assert!(state.active.is_some());
-        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(
+            response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
     }
 }
