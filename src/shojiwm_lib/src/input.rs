@@ -2894,6 +2894,21 @@ impl ShojiWM {
             source,
             timestamp: now_ms,
         };
+        if !source.permits_background_focus()
+            && !self
+                .seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus())
+                .is_some_and(|active| self.surface_belongs_to_window(window, &active))
+        {
+            // Refuse before TS can switch workspaces, and suppress protocol fallback.
+            info!(
+                window_id = %snapshot.id,
+                source = ?source,
+                "blocked background window activation"
+            );
+            return true;
+        }
         tracing::info!(
             window_id = %snapshot.id,
             title = %snapshot.title,
@@ -3569,6 +3584,10 @@ impl ShojiWM {
         // by the time it is reached the caller has already raised the element
         // and rewritten `window_keyboard_focus`.
         if self.session_lock_active {
+            return;
+        }
+        if !self.user_input_in_flight && self.background_parent_blocks_focus(window) {
+            info!(window_id = window.id(), "blocked background dialog focus");
             return;
         }
         if self.automatic_focus_is_superseded(window) {
