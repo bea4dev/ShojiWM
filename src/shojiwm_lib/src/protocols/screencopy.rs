@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,12 +23,33 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
+use smithay::wayland::shm::BufferData;
 use smithay::wayland::{dmabuf, shm};
 use tracing::{error, trace};
 use zwlr_screencopy_frame_v1::{Flags, ZwlrScreencopyFrameV1};
 use zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
 const VERSION: u32 = 3;
+
+pub(crate) fn screencopy_shm_buffer_range(
+    pool_len: usize,
+    buffer_data: BufferData,
+    size: Size<i32, Physical>,
+) -> Option<Range<usize>> {
+    let expected_stride = size.w.checked_mul(4)?;
+    let offset = usize::try_from(buffer_data.offset).ok()?;
+    let stride = usize::try_from(buffer_data.stride).ok()?;
+    let height = usize::try_from(buffer_data.height).ok()?;
+    let buffer_len = stride.checked_mul(height)?;
+    let end = offset.checked_add(buffer_len)?;
+
+    (buffer_data.format == Format::Xrgb8888
+        && buffer_data.width == size.w
+        && buffer_data.height == size.h
+        && buffer_data.stride == expected_stride
+        && end <= pool_len)
+        .then_some(offset..end)
+}
 
 pub struct ScreencopyQueue {
     damage_tracker: OutputDamageTracker,
@@ -519,12 +541,8 @@ where
                 );
                 return;
             }
-        } else if shm::with_buffer_contents(&buffer, |_, shm_len, buffer_data| {
-            buffer_data.format == Format::Xrgb8888
-                && buffer_data.width == size.w
-                && buffer_data.height == size.h
-                && buffer_data.stride == size.w * 4
-                && shm_len == buffer_data.stride as usize * buffer_data.height as usize
+        } else if shm::with_buffer_contents(&buffer, |_, pool_len, buffer_data| {
+            screencopy_shm_buffer_range(pool_len, buffer_data, size).is_some()
         })
         .unwrap_or(false)
         {
@@ -578,6 +596,72 @@ where
         if queue.is_empty() && !manager.is_alive() {
             state.queues.remove(manager);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer_data(offset: i32) -> BufferData {
+        BufferData {
+            offset,
+            width: 64,
+            height: 64,
+            stride: 256,
+            format: Format::Xrgb8888,
+        }
+    }
+
+    #[test]
+    fn shm_buffer_range_honors_offset_in_larger_pool() {
+        let range = screencopy_shm_buffer_range(16_448, buffer_data(64), Size::from((64, 64)));
+
+        assert_eq!(range, Some(64..16_448));
+    }
+
+    #[test]
+    fn shm_buffer_range_accepts_larger_pool_at_zero_offset() {
+        let exact = screencopy_shm_buffer_range(16_384, buffer_data(0), Size::from((64, 64)));
+        let range = screencopy_shm_buffer_range(32_768, buffer_data(0), Size::from((64, 64)));
+
+        assert_eq!(exact, Some(0..16_384));
+        assert_eq!(range, Some(0..16_384));
+    }
+
+    #[test]
+    fn shm_buffer_range_rejects_out_of_bounds_buffer() {
+        let range = screencopy_shm_buffer_range(16_447, buffer_data(64), Size::from((64, 64)));
+
+        assert_eq!(range, None);
+    }
+
+    #[test]
+    fn shm_buffer_range_rejects_unadvertised_attributes() {
+        let size = Size::from((64, 64));
+
+        let mut data = buffer_data(0);
+        data.format = Format::Argb8888;
+        assert_eq!(screencopy_shm_buffer_range(16_384, data, size), None);
+
+        let mut data = buffer_data(0);
+        data.width -= 1;
+        assert_eq!(screencopy_shm_buffer_range(16_384, data, size), None);
+
+        let mut data = buffer_data(0);
+        data.height -= 1;
+        assert_eq!(screencopy_shm_buffer_range(16_384, data, size), None);
+
+        let mut data = buffer_data(0);
+        data.stride += 4;
+        assert_eq!(screencopy_shm_buffer_range(16_640, data, size), None);
+    }
+
+    #[test]
+    fn shm_buffer_range_rejects_negative_offset() {
+        let range = screencopy_shm_buffer_range(16_384, buffer_data(-1), Size::from((64, 64)));
+
+        assert_eq!(range, None);
     }
 }
 
