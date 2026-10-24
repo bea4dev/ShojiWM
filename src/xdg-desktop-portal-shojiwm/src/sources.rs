@@ -41,10 +41,16 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
 
 const MAX_THUMBNAIL_DIM: u32 = 320;
 
+pub mod source_types {
+    pub const MONITOR: u32 = 1;
+    pub const WINDOW: u32 = 2;
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
     pub name: String,
     pub description: String,
+    pub position: (i32, i32),
     /// Current mode dimensions in hardware (untransformed) orientation, as
     /// sent by `wl_output.mode`.
     pub width: i32,
@@ -123,10 +129,12 @@ impl SourceInfo {
     pub fn detail(&self) -> String {
         match &self.kind {
             SourceKind::Output(o) => format!(
-                "{}×{} @ {:.2}Hz",
+                "{}×{} @ {:.2}Hz · ({}, {})",
                 o.width,
                 o.height,
-                o.refresh_mhz as f64 / 1000.0
+                o.refresh_mhz as f64 / 1000.0,
+                o.position.0,
+                o.position.1,
             ),
             SourceKind::Toplevel(t) => {
                 if t.identifier.is_empty() {
@@ -143,8 +151,10 @@ impl SourceInfo {
 // ---------------------------------------------------------------------------
 
 struct DiscoveredOutput {
+    global_name: u32,
     proxy: wl_output::WlOutput,
     info: OutputInfo,
+    pending: OutputInfo,
 }
 
 struct DiscoveredToplevel {
@@ -155,7 +165,6 @@ struct DiscoveredToplevel {
 #[derive(Default)]
 struct DiscoveryState {
     outputs: Vec<DiscoveredOutput>,
-    output_pending: Vec<OutputInfo>,
     toplevels: Vec<DiscoveredToplevel>,
     toplevel_index: std::collections::HashMap<u32, usize>,
 
@@ -193,6 +202,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        if let wl_registry::Event::GlobalRemove { name } = event {
+            _app.state.lock().unwrap().outputs.retain(|output| {
+                if output.global_name != name {
+                    return true;
+                }
+                if output.proxy.version() >= 3 {
+                    output.proxy.release();
+                }
+                false
+            });
+            return;
+        }
         let wl_registry::Event::Global {
             name,
             interface,
@@ -203,7 +224,22 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
         };
         match interface.as_str() {
             "wl_output" => {
-                registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                let proxy = registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                let info = OutputInfo {
+                    name: String::new(),
+                    description: String::new(),
+                    position: (0, 0),
+                    width: 0,
+                    height: 0,
+                    refresh_mhz: 0,
+                    transform: wl_output::Transform::Normal,
+                };
+                _app.state.lock().unwrap().outputs.push(DiscoveredOutput {
+                    global_name: name,
+                    proxy,
+                    pending: info.clone(),
+                    info,
+                });
             }
             "wl_shm" => {
                 let shm = registry.bind::<wl_shm::WlShm, _, _>(name, version.min(1), qh, ());
@@ -254,21 +290,15 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
         _: &QueueHandle<Self>,
     ) {
         let mut state = app.state.lock().unwrap();
-        if state.output_pending.is_empty() {
-            state.output_pending.push(OutputInfo {
-                name: String::new(),
-                description: String::new(),
-                width: 0,
-                height: 0,
-                refresh_mhz: 0,
-                transform: wl_output::Transform::Normal,
-            });
-        }
-        let cur = state.output_pending.last_mut().unwrap();
+        let Some(entry) = state.outputs.iter_mut().find(|entry| &entry.proxy == output) else {
+            return;
+        };
+        let cur = &mut entry.pending;
         match event {
             wl_output::Event::Name { name } => cur.name = name,
             wl_output::Event::Description { description } => cur.description = description,
-            wl_output::Event::Geometry { transform, .. } => {
+            wl_output::Event::Geometry { x, y, transform, .. } => {
+                cur.position = (x, y);
                 if let WEnum::Value(transform) = transform {
                     cur.transform = transform;
                 }
@@ -288,11 +318,7 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
                 cur.refresh_mhz = refresh;
             }
             wl_output::Event::Done => {
-                let info = state.output_pending.pop().unwrap();
-                state.outputs.push(DiscoveredOutput {
-                    proxy: output.clone(),
-                    info,
-                });
+                entry.info = entry.pending.clone();
             }
             _ => {}
         }
@@ -360,6 +386,7 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for AppData {
                         }
                     }
                 }
+                proxy.destroy();
             }
             _ => {}
         }
@@ -456,7 +483,9 @@ fn capture_output_thumbnail(
         (s.capture_manager.clone()?, s.output_source_manager.clone()?)
     };
     let source = output_mgr.create_source(output, qh, ());
-    capture_via_source(event_queue, app, qh, &manager, &source)
+    let thumbnail = capture_via_source(event_queue, app, qh, &manager, &source);
+    source.destroy();
+    thumbnail
 }
 
 fn capture_toplevel_thumbnail(
@@ -473,7 +502,9 @@ fn capture_toplevel_thumbnail(
         )
     };
     let source = toplevel_mgr.create_source(toplevel, qh, ());
-    capture_via_source(event_queue, app, qh, &manager, &source)
+    let thumbnail = capture_via_source(event_queue, app, qh, &manager, &source);
+    source.destroy();
+    thumbnail
 }
 
 /// Run one capture cycle against a freshly-created `ExtImageCaptureSourceV1`.
@@ -501,6 +532,7 @@ fn capture_via_source(
     // Drain buffer_size / shm_format / done.
     for _ in 0..8 {
         if event_queue.roundtrip(app).is_err() {
+            session.destroy();
             return None;
         }
         if app.capture.lock().unwrap().constraints_done {
@@ -521,7 +553,10 @@ fn capture_via_source(
         return None;
     }
     let format = format.unwrap_or(wl_shm::Format::Xrgb8888);
-    let stride = (width * 4) as i32;
+    let Some(stride) = width.checked_mul(4).and_then(|stride| i32::try_from(stride).ok()) else {
+        session.destroy();
+        return None;
+    };
     let size = stride as usize * height as usize;
 
     // Allocate a memfd-backed buffer the compositor can write into.
@@ -529,7 +564,7 @@ fn capture_via_source(
         session.destroy();
         return None;
     };
-    let (wl_buffer, ptr, _pool, _memfd) = buffer_artifacts;
+    let (wl_buffer, ptr, pool, _memfd) = buffer_artifacts;
 
     let frame = session.create_frame(qh, ());
     frame.attach_buffer(&wl_buffer);
@@ -563,7 +598,10 @@ fn capture_via_source(
     frame.destroy();
     session.destroy();
     wl_buffer.destroy();
-    // pool + memfd dropped here, unmapping their mmaps.
+    pool.destroy();
+    if let Err(error) = unsafe { rustix::mm::munmap(ptr.as_ptr().cast(), size) } {
+        tracing::warn!(%error, "failed to unmap thumbnail buffer");
+    }
 
     thumbnail
 }
@@ -584,6 +622,7 @@ fn allocate_shm_buffer(
 )> {
     let shm = app.state.lock().unwrap().shm.clone()?;
     let size = stride as usize * height as usize;
+    let pool_size = i32::try_from(size).ok()?;
     let memfd =
         rustix::fs::memfd_create("shojiwm-portal-thumbnail", rustix::fs::MemfdFlags::CLOEXEC)
             .ok()?;
@@ -600,7 +639,7 @@ fn allocate_shm_buffer(
     }
     .ok()?;
     let ptr = NonNull::new(ptr.cast::<u8>())?;
-    let pool = shm.create_pool(memfd.as_fd(), size as i32, qh, ());
+    let pool = shm.create_pool(memfd.as_fd(), pool_size, qh, ());
     let buffer = pool.create_buffer(0, width as i32, height as i32, stride, format, qh, ());
     Some((buffer, ptr, pool, memfd))
 }
@@ -657,11 +696,11 @@ unsafe fn decode_buffer(
 // Live refresh ("Lv.2")
 // ---------------------------------------------------------------------------
 
-/// A single thumbnail update pushed by the background thread.
+/// A current source list, including the latest available thumbnails.
 #[derive(Debug, Clone)]
-pub struct ThumbnailUpdate {
-    pub source_id: String,
-    pub handle: image::Handle,
+pub struct SourceUpdate {
+    pub session_key: String,
+    pub sources: Vec<SourceInfo>,
 }
 
 /// Handle to the background thumbnail-refresh thread. Drop it to stop.
@@ -682,7 +721,7 @@ impl Drop for ThumbnailStream {
 /// Spawn a background thread that:
 ///   1. enumerates all sources + captures their first thumbnail,
 ///   2. sends the initial `Vec<SourceInfo>` through `init_tx`,
-///   3. then round-robins through the sources, pushing fresh thumbnails on
+///   3. then round-robins through the sources, pushing current source lists on
 ///      `updates_tx` until the returned `ThumbnailStream` is dropped.
 ///
 /// One wayland Connection lives on the thread for its whole lifetime —
@@ -690,15 +729,17 @@ impl Drop for ThumbnailStream {
 /// `ext-image-copy-capture-v1` sessions are themselves not long-lived
 /// streaming primitives; they're billed per frame.
 pub fn start_thumbnail_stream(
+    session_key: String,
+    requested: u32,
     init_tx: tokio::sync::oneshot::Sender<Vec<SourceInfo>>,
-    updates_tx: tokio::sync::mpsc::UnboundedSender<ThumbnailUpdate>,
+    updates_tx: tokio::sync::mpsc::Sender<SourceUpdate>,
 ) -> ThumbnailStream {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_for_thread = stop.clone();
     let join = std::thread::Builder::new()
         .name("portal-thumbnails".into())
         .spawn(move || {
-            if let Err(e) = run_stream(init_tx, updates_tx, stop_for_thread) {
+            if let Err(e) = run_stream(session_key, requested, init_tx, updates_tx, stop_for_thread) {
                 tracing::warn!("thumbnail stream exited: {e}");
             }
         })
@@ -710,8 +751,10 @@ pub fn start_thumbnail_stream(
 }
 
 fn run_stream(
+    session_key: String,
+    requested: u32,
     init_tx: tokio::sync::oneshot::Sender<Vec<SourceInfo>>,
-    updates_tx: tokio::sync::mpsc::UnboundedSender<ThumbnailUpdate>,
+    updates_tx: tokio::sync::mpsc::Sender<SourceUpdate>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::connect_to_env()?;
@@ -730,58 +773,67 @@ fn run_stream(
         event_queue.roundtrip(&mut app)?;
     }
 
-    // Snapshot the discovered proxies + identity strings up front. The
-    // refresh loop keys off the identity string ("source_id") so the picker
-    // can match incoming updates against its source list.
+    // Rebuild this list after dispatching events so open/close, title changes
+    // and output hotplug reach the picker while it is open.
     enum LiveSource {
         Output {
-            id: String,
             proxy: wl_output::WlOutput,
-            info: OutputInfo,
+            info: SourceInfo,
         },
         Toplevel {
-            id: String,
             proxy: ExtForeignToplevelHandleV1,
-            info: ToplevelInfo,
+            info: SourceInfo,
         },
     }
-    let live_sources: Vec<LiveSource> = {
+    impl LiveSource {
+        fn info(&self) -> &SourceInfo {
+            match self {
+                Self::Output { info, .. } | Self::Toplevel { info, .. } => info,
+            }
+        }
+    }
+    let discover = |thumbnails: &std::collections::HashMap<String, image::Handle>| {
         let s = state.lock().unwrap();
         let mut v: Vec<LiveSource> = Vec::new();
-        for o in &s.outputs {
-            v.push(LiveSource::Output {
-                id: o.info.name.clone(),
-                proxy: o.proxy.clone(),
-                info: o.info.clone(),
+        if requested & source_types::MONITOR != 0 {
+            let mut outputs: Vec<_> = s.outputs.iter()
+                .filter(|o| !o.info.name.is_empty() && o.info.width > 0 && o.info.height > 0)
+                .collect();
+            outputs.sort_by(|a, b| {
+                (a.info.position, &a.info.name).cmp(&(b.info.position, &b.info.name))
             });
+            for o in outputs {
+                v.push(LiveSource::Output {
+                    proxy: o.proxy.clone(),
+                    info: SourceInfo {
+                        kind: SourceKind::Output(o.info.clone()),
+                        thumbnail: thumbnails.get(&o.info.name).cloned(),
+                    },
+                });
+            }
         }
-        for t in &s.toplevels {
-            v.push(LiveSource::Toplevel {
-                id: t.info.identifier.clone(),
-                proxy: t.proxy.clone(),
-                info: t.info.clone(),
-            });
+        if requested & source_types::WINDOW != 0 {
+            for t in &s.toplevels {
+                if t.info.identifier.is_empty() {
+                    continue;
+                }
+                v.push(LiveSource::Toplevel {
+                    proxy: t.proxy.clone(),
+                    info: SourceInfo {
+                        kind: SourceKind::Toplevel(t.info.clone()),
+                        thumbnail: thumbnails.get(&t.info.identifier).cloned(),
+                    },
+                });
+            }
         }
         v
     };
 
-    // Send the source list immediately with thumbnails=None so the picker
-    // window opens without delay. Thumbnails flow in through `updates_tx`
-    // below, one source at a time — the picker fills them in as they arrive.
-    let initial: Vec<SourceInfo> = live_sources
-        .iter()
-        .map(|src| match src {
-            LiveSource::Output { info, .. } => SourceInfo {
-                kind: SourceKind::Output(info.clone()),
-                thumbnail: None,
-            },
-            LiveSource::Toplevel { info, .. } => SourceInfo {
-                kind: SourceKind::Toplevel(info.clone()),
-                thumbnail: None,
-            },
-        })
-        .collect();
-    let _ = init_tx.send(initial);
+    let mut thumbnails = std::collections::HashMap::new();
+    let initial = discover(&thumbnails).iter().map(|src| src.info().clone()).collect();
+    if init_tx.send(initial).is_err() {
+        return Ok(());
+    }
 
     // Round-robin refresh. Short sleep between captures keeps CPU bounded
     // and avoids starving the compositor / cursor when many windows are
@@ -789,49 +841,29 @@ fn run_stream(
     // — typical numbers: 1 source ~10fps, 5 sources ~2-3fps. Adjust if the
     // picker feels sluggish vs. too hot.
     let tick = std::time::Duration::from_millis(50);
-    let empty_idle = std::time::Duration::from_millis(200);
-    let mut live_sources = live_sources;
     let mut cursor = 0usize;
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-        if live_sources.is_empty() {
-            std::thread::sleep(empty_idle);
-            continue;
+        event_queue.roundtrip(&mut app)?;
+        let live_sources = discover(&thumbnails);
+        if !live_sources.is_empty() {
+            let src = &live_sources[cursor % live_sources.len()];
+            cursor = cursor.wrapping_add(1);
+            let handle = match src {
+                LiveSource::Output { proxy, .. } =>
+                    capture_output_thumbnail(&mut event_queue, &mut app, &qh, proxy),
+                LiveSource::Toplevel { proxy, .. } =>
+                    capture_toplevel_thumbnail(&mut event_queue, &mut app, &qh, proxy),
+            };
+            if let Some(handle) = handle {
+                thumbnails.insert(src.info().id().to_owned(), handle);
+            }
         }
-        let idx = cursor % live_sources.len();
-        cursor = cursor.wrapping_add(1);
-
-        // Skip dead proxies (window closed, output unplugged) — and prune
-        // them so we don't trip on them again. Touching a dead resource
-        // would cause the compositor to send us a protocol error, killing
-        // the whole stream.
-        let alive = match &live_sources[idx] {
-            LiveSource::Output { proxy, .. } => proxy.is_alive(),
-            LiveSource::Toplevel { proxy, .. } => proxy.is_alive(),
-        };
-        if !alive {
-            live_sources.remove(idx);
-            continue;
-        }
-
-        let (id, handle) = match &live_sources[idx] {
-            LiveSource::Output { id, proxy, .. } => (
-                id.clone(),
-                capture_output_thumbnail(&mut event_queue, &mut app, &qh, proxy),
-            ),
-            LiveSource::Toplevel { id, proxy, .. } => (
-                id.clone(),
-                capture_toplevel_thumbnail(&mut event_queue, &mut app, &qh, proxy),
-            ),
-        };
-        if let Some(handle) = handle
-            && updates_tx
-                .send(ThumbnailUpdate {
-                    source_id: id,
-                    handle,
-                })
-                .is_err()
-        {
-            break;
+        let sources: Vec<_> = discover(&thumbnails).iter().map(|src| src.info().clone()).collect();
+        thumbnails.retain(|id, _| sources.iter().any(|src| src.id() == id));
+        match updates_tx.try_send(SourceUpdate { session_key: session_key.clone(), sources }) {
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            // Keep only a bounded number of snapshots if the UI is busy.
+            Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
         }
         std::thread::sleep(tick);
     }

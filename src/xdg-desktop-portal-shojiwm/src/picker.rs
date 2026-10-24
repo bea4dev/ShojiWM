@@ -16,12 +16,12 @@ use std::sync::{Mutex, OnceLock};
 use iced::widget::{button, column, container, image, row, scrollable, space, text};
 use iced::window;
 use iced::{Element, Length, Subscription, Task};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 
 use crate::i18n;
-use crate::sources::{SourceInfo, SourceKind, ThumbnailUpdate};
+use crate::sources::{SourceInfo, SourceKind, SourceUpdate};
 
 #[derive(Debug, Clone)]
 pub enum PickResult {
@@ -29,38 +29,58 @@ pub enum PickResult {
     Cancelled,
 }
 
+#[derive(Debug)]
 pub struct PickRequest {
+    pub session_key: String,
     pub sources: Vec<SourceInfo>,
     pub responder: oneshot::Sender<PickResult>,
+    pub cancelled: watch::Receiver<bool>,
+    pub prefer_windows: bool,
+}
+
+enum PickerCommand {
+    Pick(PickRequest),
+    Cancel(String),
 }
 
 /// Handle the D-Bus side uses to request a pick. Cheap to clone.
 #[derive(Clone)]
 pub struct PickerHandle {
-    tx: mpsc::UnboundedSender<PickRequest>,
+    tx: mpsc::UnboundedSender<PickerCommand>,
 }
 
 impl PickerHandle {
-    pub async fn pick(&self, sources: Vec<SourceInfo>) -> PickResult {
+    pub async fn pick(
+        &self,
+        session_key: String,
+        sources: Vec<SourceInfo>,
+        cancelled: watch::Receiver<bool>,
+        prefer_windows: bool,
+    ) -> PickResult {
         let (responder, rx) = oneshot::channel();
-        if self.tx.send(PickRequest { sources, responder }).is_err() {
+        let request = PickRequest { session_key, sources, responder, cancelled, prefer_windows };
+        if self.tx.send(PickerCommand::Pick(request)).is_err() {
             tracing::error!("picker thread is gone");
             return PickResult::Cancelled;
         }
         rx.await.unwrap_or(PickResult::Cancelled)
     }
+
+    pub fn cancel(&self, session_key: &str) {
+        let _ = self.tx.send(PickerCommand::Cancel(session_key.to_owned()));
+    }
 }
 
-type ReceiverSlot = Mutex<Option<mpsc::UnboundedReceiver<PickRequest>>>;
+type ReceiverSlot = Mutex<Option<mpsc::UnboundedReceiver<PickerCommand>>>;
 static PICKER_RX: OnceLock<ReceiverSlot> = OnceLock::new();
 
-type ThumbnailRxSlot = Mutex<Option<mpsc::UnboundedReceiver<ThumbnailUpdate>>>;
+type ThumbnailRxSlot = Mutex<Option<mpsc::Receiver<SourceUpdate>>>;
 static THUMBNAIL_RX: OnceLock<ThumbnailRxSlot> = OnceLock::new();
 
-pub fn setup() -> (PickerHandle, mpsc::UnboundedSender<ThumbnailUpdate>) {
+pub fn setup() -> (PickerHandle, mpsc::Sender<SourceUpdate>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let _ = PICKER_RX.set(Mutex::new(Some(rx)));
-    let (thumb_tx, thumb_rx) = mpsc::unbounded_channel();
+    let (thumb_tx, thumb_rx) = mpsc::channel(2);
     let _ = THUMBNAIL_RX.set(Mutex::new(Some(thumb_rx)));
     (PickerHandle { tx }, thumb_tx)
 }
@@ -79,6 +99,7 @@ struct State {
 }
 
 struct Active {
+    session_key: String,
     sources: Vec<SourceInfo>,
     responder: Option<oneshot::Sender<PickResult>>,
     tab: Tab,
@@ -96,14 +117,15 @@ enum Message {
     RequestArrived(RequestArrived),
     WindowOpened(window::Id),
     WindowClosed(window::Id),
-    SourceClicked(usize),
-    Cancelled,
+    SourceClicked { session_key: String, source_id: String },
+    Cancelled(String),
+    SessionCancelled(String),
     TabSelected(Tab),
-    ThumbnailUpdate(ThumbnailUpdate),
+    SourceUpdate(SourceUpdate),
 }
 
-/// `(picked sources, responder)` handed off to the picker's request handler.
-type PickHandoff = (Vec<SourceInfo>, oneshot::Sender<PickResult>);
+/// Request handed off to the picker's event loop.
+type PickHandoff = PickRequest;
 
 /// Boxed handoff for the responder so Message can stay `Clone`.
 #[derive(Debug, Clone)]
@@ -112,18 +134,28 @@ struct RequestArrived(std::sync::Arc<Mutex<Option<PickHandoff>>>);
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::RequestArrived(arrived) => {
-            let Some((sources, responder)) = arrived.0.lock().unwrap().take() else {
+            let Some(request) = arrived.0.lock().unwrap().take() else {
                 return Task::none();
             };
+            if *request.cancelled.borrow() {
+                return Task::none();
+            }
             if let Some(mut prev) = state.active.take()
                 && let Some(r) = prev.responder.take()
             {
                 let _ = r.send(PickResult::Cancelled);
             }
+            let has_outputs = request.sources.iter().any(|s| matches!(s.kind, SourceKind::Output(_)));
+            let has_windows = request.sources.iter().any(|s| matches!(s.kind, SourceKind::Toplevel(_)));
             state.active = Some(Active {
-                sources,
-                responder: Some(responder),
-                tab: Tab::default(),
+                session_key: request.session_key,
+                tab: if request.prefer_windows || (!has_outputs && has_windows) {
+                    Tab::Window
+                } else {
+                    Tab::FullScreen
+                },
+                sources: request.sources,
+                responder: Some(request.responder),
             });
             if state.window_id.is_some() {
                 Task::none()
@@ -139,9 +171,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::WindowOpened(_id) => Task::none(),
         Message::WindowClosed(id) => {
-            if state.window_id == Some(id) {
-                state.window_id = None;
+            if state.window_id != Some(id) {
+                return Task::none();
             }
+            state.window_id = None;
             if let Some(mut active) = state.active.take()
                 && let Some(r) = active.responder.take()
             {
@@ -149,24 +182,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::SourceClicked(index) => finish(state, |sources| {
-            sources.get(index).cloned().map(PickResult::Source)
-        }),
-        Message::Cancelled => finish(state, |_| Some(PickResult::Cancelled)),
+        Message::SourceClicked { session_key, source_id } => {
+            if state.active.as_ref().is_some_and(|active| active.session_key == session_key) {
+                finish(state, |sources| {
+                    sources.iter().find(|src| src.id() == source_id).cloned().map(PickResult::Source)
+                })
+            } else {
+                Task::none()
+            }
+        }
+        Message::Cancelled(session_key) | Message::SessionCancelled(session_key) => {
+            if state.active.as_ref().is_some_and(|active| active.session_key == session_key) {
+                finish(state, |_| Some(PickResult::Cancelled))
+            } else {
+                Task::none()
+            }
+        }
         Message::TabSelected(tab) => {
             if let Some(active) = state.active.as_mut() {
                 active.tab = tab;
             }
             Task::none()
         }
-        Message::ThumbnailUpdate(update) => {
-            if let Some(active) = state.active.as_mut() {
-                for src in &mut active.sources {
-                    if src.id() == update.source_id {
-                        src.thumbnail = Some(update.handle.clone());
-                        break;
-                    }
-                }
+        Message::SourceUpdate(update) => {
+            if let Some(active) = state.active.as_mut()
+                && active.session_key == update.session_key
+            {
+                active.sources = update.sources;
             }
             Task::none()
         }
@@ -234,7 +276,7 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
 
     let mut list = column![].spacing(6);
     let mut shown_any = false;
-    for (i, src) in active.sources.iter().enumerate() {
+    for src in &active.sources {
         let in_tab = matches!(
             (active.tab, &src.kind),
             (Tab::FullScreen, SourceKind::Output(_)) | (Tab::Window, SourceKind::Toplevel(_))
@@ -270,7 +312,10 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
             button(row_content)
                 .width(Length::Fill)
                 .padding(10)
-                .on_press(Message::SourceClicked(i)),
+                .on_press(Message::SourceClicked {
+                    session_key: active.session_key.clone(),
+                    source_id: src.id().to_owned(),
+                }),
         );
     }
     if !shown_any {
@@ -285,7 +330,8 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
 
     let footer = row![
         space::horizontal(),
-        button(text(i18n::t("picker.cancel"))).on_press(Message::Cancelled),
+        button(text(i18n::t("picker.cancel")))
+            .on_press(Message::Cancelled(active.session_key.clone())),
     ];
 
     container(column![text(i18n::t("picker.heading")).size(18), tabs, body, footer,].spacing(12))
@@ -312,11 +358,11 @@ fn subscription(_state: &State) -> Subscription<Message> {
             .unwrap()
             .take()
             .expect("picker subscription started twice");
-        UnboundedReceiverStream::new(rx).map(|req| {
-            Message::RequestArrived(RequestArrived(std::sync::Arc::new(Mutex::new(Some((
-                req.sources,
-                req.responder,
-            ))))))
+        UnboundedReceiverStream::new(rx).map(|command| match command {
+            PickerCommand::Pick(request) => Message::RequestArrived(RequestArrived(
+                std::sync::Arc::new(Mutex::new(Some(request))),
+            )),
+            PickerCommand::Cancel(session_key) => Message::SessionCancelled(session_key),
         })
     });
 
@@ -328,10 +374,62 @@ fn subscription(_state: &State) -> Subscription<Message> {
             .unwrap()
             .take()
             .expect("thumbnail subscription started twice");
-        UnboundedReceiverStream::new(rx).map(Message::ThumbnailUpdate)
+        ReceiverStream::new(rx).map(Message::SourceUpdate)
     });
 
     let close_events = window::close_events().map(Message::WindowClosed);
 
     Subscription::batch([request_stream, thumbnail_stream, close_events])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window_source() -> SourceInfo {
+        SourceInfo {
+            kind: SourceKind::Toplevel(crate::sources::ToplevelInfo {
+                identifier: "window".into(),
+                app_id: "app".into(),
+                title: "Window".into(),
+            }),
+            thumbnail: None,
+        }
+    }
+
+    #[test]
+    fn window_request_opens_the_window_tab() {
+        let (responder, _response) = oneshot::channel();
+        let (_cancel, cancelled) = watch::channel(false);
+        let mut state = State { active: None, window_id: Some(window::Id::unique()) };
+        let _ = update(&mut state, Message::RequestArrived(RequestArrived(
+            std::sync::Arc::new(Mutex::new(Some(PickRequest {
+                session_key: "session".into(),
+                sources: vec![window_source()],
+                responder,
+                cancelled,
+                prefer_windows: true,
+            }))),
+        )));
+        assert_eq!(state.active.unwrap().tab, Tab::Window);
+    }
+
+    #[test]
+    fn closing_an_old_window_does_not_cancel_the_current_request() {
+        let (responder, mut response) = oneshot::channel();
+        let id = window::Id::unique();
+        let mut state = State {
+            active: Some(Active {
+                session_key: "current".into(),
+                sources: vec![window_source()],
+                responder: Some(responder),
+                tab: Tab::Window,
+            }),
+            window_id: Some(id),
+        };
+        let _ = update(&mut state, Message::WindowClosed(window::Id::unique()));
+        assert_eq!(state.window_id, Some(id));
+        assert!(state.active.is_some());
+        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+    }
 }
