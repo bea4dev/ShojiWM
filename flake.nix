@@ -125,6 +125,7 @@
             LIBGL_DRIVERS_PATH = driDriversPath;
             __EGL_VENDOR_LIBRARY_DIRS = eglVendorLibraryDirs;
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib or pkgs.llvmPackages.libclang}/lib";
+            FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ ]; };
             RUSTY_V8_ARCHIVE = rustyV8Archive;
 
             shellHook = ''
