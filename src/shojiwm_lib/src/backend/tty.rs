@@ -9733,7 +9733,7 @@ fn configured_background_effect_elements_for_layer(
         .hash(&mut hasher);
     let signature = hasher.finish();
     let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
-        &backdrop_effect,
+        backdrop_effect,
         smithay::utils::Rectangle::new(
             smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
             (effect_rect.width, effect_rect.height).into(),
@@ -9794,7 +9794,7 @@ fn configured_background_effect_elements_for_layer(
                     rect_local,
                     rect_local,
                     captured_local_rect,
-                    &backdrop_effect,
+                    backdrop_effect,
                     alpha,
                     scale.x as f32,
                     None,
@@ -9948,7 +9948,7 @@ fn configured_background_effect_elements_for_layer(
             input_size,
             sample_region,
             output_size,
-            &backdrop_effect,
+            backdrop_effect,
             crate::backend::shader_effect::EffectFrame::plain(None, scale.x),
         )?
     } else {
@@ -9960,7 +9960,7 @@ fn configured_background_effect_elements_for_layer(
             input_size,
             sample_region,
             output_size,
-            &backdrop_effect,
+            backdrop_effect,
             crate::backend::shader_effect::EffectFrame::plain(None, scale.x),
         )?
     };
@@ -10063,7 +10063,7 @@ fn configured_background_effect_elements_for_layer(
                 rect_local,
                 rect_local,
                 captured_local_rect,
-                &backdrop_effect,
+                backdrop_effect,
                 alpha,
                 scale.x as f32,
                 None,
@@ -10225,7 +10225,7 @@ fn lower_layer_scene_elements(
                 ));
             }
             let source_damage_hit = crate::backend::shader_effect::source_damage_intersects_rect(
-                &backdrop_effect,
+                backdrop_effect,
                 smithay::utils::Rectangle::new(
                     smithay::utils::Point::from((effect_rect.x, effect_rect.y)),
                     (effect_rect.width, effect_rect.height).into(),
@@ -10284,7 +10284,7 @@ fn lower_layer_scene_elements(
                             rect_local,
                             rect_local,
                             captured_local_rect,
-                            &backdrop_effect,
+                            backdrop_effect,
                             1.0,
                             scale.x as f32,
                             None,
@@ -10435,7 +10435,7 @@ fn lower_layer_scene_elements(
                     input_size,
                     sample_region,
                     output_size,
-                    &backdrop_effect,
+                    backdrop_effect,
                     crate::backend::shader_effect::EffectFrame::plain(None, scale.x),
                 )?
             } else {
@@ -10447,7 +10447,7 @@ fn lower_layer_scene_elements(
                     input_size,
                     sample_region,
                     output_size,
-                    &backdrop_effect,
+                    backdrop_effect,
                     crate::backend::shader_effect::EffectFrame::plain(None, scale.x),
                 )?
             };
@@ -10519,7 +10519,7 @@ fn lower_layer_scene_elements(
                         rect_local,
                         rect_local,
                         captured_local_rect,
-                        &backdrop_effect,
+                        backdrop_effect,
                         1.0,
                         scale.x as f32,
                         None,
@@ -14364,14 +14364,14 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &state.window_commit_times,
-                    &state.window_source_damage,
-                    &state.lower_layer_source_damage,
-                    &state.upper_layer_source_damage,
-                    &output,
+                    state.window_commit_times,
+                    state.window_source_damage,
+                    state.lower_layer_source_damage,
+                    state.upper_layer_source_damage,
+                    output,
                     output_geo,
                     scale,
-                    &windows_top_to_bottom,
+                    windows_top_to_bottom,
                     below,
                     force_visible,
                     _window_index,
@@ -14394,14 +14394,14 @@ fn tty_window_stack_elements(
                             &mut *renderer,
                             space,
                             window_decorations,
-                            &state.window_commit_times,
-                            &state.window_source_damage,
-                            &state.lower_layer_source_damage,
-                            &state.upper_layer_source_damage,
-                            &output,
+                            state.window_commit_times,
+                            state.window_source_damage,
+                            state.lower_layer_source_damage,
+                            state.upper_layer_source_damage,
+                            output,
                             output_geo,
                             scale,
-                            &windows_top_to_bottom,
+                            windows_top_to_bottom,
                             below,
                             force_visible,
                             _window_index,
@@ -14619,7 +14619,7 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &output,
+                    output,
                     window,
                     if use_full_window_snapshot {
                         1.0
@@ -14705,7 +14705,7 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &output,
+                    output,
                     window,
                     if use_full_window_snapshot {
                         1.0
@@ -15629,15 +15629,15 @@ fn tty_window_stack_elements(
                 // only taken when the visual transform is identity.
                 current_window_elements.extend(composed_window_popup_scene_elements(
                     &mut *renderer,
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     window,
                     physical_location,
                     visual_state.opacity,
-                    &state.configured_popup_effects,
-                    &mut state.popup_effect_cache,
-                    &mut state.popup_framebuffer_effect_states,
+                    state.configured_popup_effects,
+                    state.popup_effect_cache,
+                    state.popup_framebuffer_effect_states,
                     state.configured_background_effect.as_ref(),
                 ));
             } else {
@@ -15781,14 +15781,14 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &state.window_commit_times,
-                    &state.window_source_damage,
-                    &state.lower_layer_source_damage,
-                    &state.upper_layer_source_damage,
-                    &output,
+                    state.window_commit_times,
+                    state.window_source_damage,
+                    state.lower_layer_source_damage,
+                    state.upper_layer_source_damage,
+                    output,
                     output_geo,
                     scale,
-                    &windows_top_to_bottom,
+                    windows_top_to_bottom,
                     below,
                     force_visible,
                     _window_index,
@@ -15804,14 +15804,14 @@ fn tty_window_stack_elements(
                             &mut *renderer,
                             space,
                             window_decorations,
-                            &state.window_commit_times,
-                            &state.window_source_damage,
-                            &state.lower_layer_source_damage,
-                            &state.upper_layer_source_damage,
-                            &output,
+                            state.window_commit_times,
+                            state.window_source_damage,
+                            state.lower_layer_source_damage,
+                            state.upper_layer_source_damage,
+                            output,
                             output_geo,
                             scale,
-                            &windows_top_to_bottom,
+                            windows_top_to_bottom,
                             below,
                             force_visible,
                             _window_index,
@@ -15869,7 +15869,7 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &output,
+                    output,
                     window,
                     source_alpha,
                 )? {
@@ -15884,7 +15884,7 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     space,
                     window_decorations,
-                    &output,
+                    output,
                     window,
                     source_alpha,
                 )? {
@@ -15934,7 +15934,7 @@ fn tty_window_stack_elements(
                             .and_then(|effect| {
                                 subsurface_effect_elements(
                                     &mut *renderer,
-                                    &output,
+                                    output,
                                     output_geo,
                                     scale,
                                     &window_id,
@@ -15949,7 +15949,7 @@ fn tty_window_stack_elements(
                         let mut elements = match replace_subsurfaces_slot.as_ref() {
                             Some(effect) => subsurface_effect_elements(
                                 &mut *renderer,
-                                &output,
+                                output,
                                 output_geo,
                                 scale,
                                 &window_id,
@@ -16050,7 +16050,7 @@ fn tty_window_stack_elements(
                     })?;
                 window_effect_elements(
                     &mut *renderer,
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     &window_id,
@@ -16191,7 +16191,7 @@ fn tty_window_stack_elements(
                         })?;
                     window_effect_elements(
                         &mut *renderer,
-                        &output,
+                        output,
                         output_geo,
                         scale,
                         &window_id,
@@ -16256,7 +16256,7 @@ fn tty_window_stack_elements(
                     })?;
                 window_effect_elements(
                     &mut *renderer,
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     &window_id,
@@ -16317,7 +16317,7 @@ fn tty_window_stack_elements(
                     })?;
                 window_effect_elements(
                     &mut *renderer,
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     &window_id,
@@ -16347,7 +16347,7 @@ fn tty_window_stack_elements(
                     &mut *renderer,
                     window_decorations,
                     std::slice::from_ref(window),
-                    &output,
+                    output,
                     output_geo,
                     scale,
                     PopupLayer::Window,
