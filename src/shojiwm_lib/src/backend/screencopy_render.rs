@@ -389,8 +389,9 @@ mod tests {
     fn shm_copy_rejects_invalid_ranges_without_writing() {
         let mut pool = vec![0xA5; 10];
         let frame = [1, 2, 3, 4];
+        let reversed_range = std::ops::Range { start: 7, end: 3 };
 
-        for range in [8..12, 7..3] {
+        for range in [8..12, reversed_range] {
             let result = unsafe { copy_frame_to_shm(pool.as_mut_ptr(), pool.len(), range, &frame) };
             assert!(result.is_err());
         }
