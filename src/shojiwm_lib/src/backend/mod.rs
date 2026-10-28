@@ -12,6 +12,7 @@ pub mod fps_counter;
 pub mod hdr_cursor;
 pub mod hdr_pipeline;
 pub mod icon;
+pub mod lock_scene;
 pub mod image_copy_capture_render;
 pub mod overlay;
 pub mod paint;

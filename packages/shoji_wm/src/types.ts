@@ -3429,9 +3429,12 @@ export interface CompositorDefinition {
 export interface PreloadController {}
 
 export interface SessionController {
+  /** Select exact runtime roots behind a transparent lock; returns protocol lock state. */
+  configureLockBackground: typeof import("./session-lock").configureLockBackground;
   /**
-   * Start with the session locked: nothing but ext-session-lock surfaces is
-   * drawn, and input reaches only them, until a locker (Quickshell's
+   * Start with the session locked: only ext-session-lock surfaces (and any
+   * explicitly configured lock background roots) are drawn. Input reaches only
+   * the locker, until a locker (Quickshell's
    * `WlSessionLock`, hyprlock, swaylock, ...) locks and then unlocks. The
    * config has to start that locker itself. With automatic login this makes
    * the lock screen the login screen. Default `false`.

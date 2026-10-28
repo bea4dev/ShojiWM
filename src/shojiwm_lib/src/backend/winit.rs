@@ -1094,6 +1094,7 @@ pub fn init_winit(
                     {
                         timescope::scope!("winit scene build");
                         let scene_build_started_at = Instant::now();
+                        crate::backend::lock_scene::apply_pending();
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
                         let output_geo = state.space.output_geometry(&output).unwrap();
                         let scale =
@@ -1243,6 +1244,15 @@ pub fn init_winit(
                         );
                         overlay_below_layers += content_elements.len();
                         content_elements.extend(scene_elements);
+                        let live_locker = state.session_lock_surface_for_output(&output)
+                            .as_ref().is_some_and(crate::backend::lock_scene::locker_ready);
+                        if state.session_lock_active {
+                            content_elements = if live_locker {
+                                crate::backend::lock_scene::background_elements(
+                                    renderer, &state.space, &state.window_decorations, &output, scale,
+                                ).into_iter().map(WinitRenderElements::Window).collect()
+                            } else { Vec::new() };
+                        }
                         if !state.session_lock_active {
                             state.output_overlays.render(renderer, &output,
                                 (output_geo.size.w, output_geo.size.h), scale, &mut content_elements,
@@ -1329,11 +1339,11 @@ pub fn init_winit(
                                 .map(WinitRenderElements::Window),
                             );
                         }
-                        // While locked only the lock surface is shown: if the
-                        // locker dies, the screen stays blank rather than
-                        // revealing the session (ext-session-lock-v1).
-                        if !state.session_lock_active {
-                            elements.extend(content_elements);
+                        elements.extend(content_elements);
+                        if state.session_lock_active && live_locker {
+                            state.output_overlays.render(renderer, &output,
+                                (output_geo.size.w, output_geo.size.h), scale, &mut elements,
+                                0, WinitRenderElements::Snapshot);
                         }
 
                         trace!(

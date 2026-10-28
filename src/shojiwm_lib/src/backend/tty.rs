@@ -2442,6 +2442,14 @@ fn collect_client_buffers_for_hold(
     for window in windows {
         window.with_surfaces(|_, states| hold(states));
     }
+    if state.session_lock_active && state.session_lock_surface_for_output(output).as_ref()
+        .is_some_and(crate::backend::lock_scene::locker_ready) {
+        for window in state.space.elements().filter(|window|
+            !windows.contains(window) && state.space.outputs_for_element(window).contains(output)
+                && crate::backend::lock_scene::window_selected(window)) {
+            window.with_surfaces(|_, states| hold(states));
+        }
+    }
     for layer in layer_map_for_output(output).layers() {
         layer.with_surfaces(|_, states| hold(states));
     }
@@ -4480,6 +4488,7 @@ fn render_surface(
     // Taken before the render so it names exactly the buffers this frame will sample (commits
     // cannot land in between: the loop is single-threaded). Stored on the surface once the
     // frame is actually submitted; see `SurfaceData::held_client_buffers`.
+    crate::backend::lock_scene::apply_pending();
     let held_client_buffers = if composition_all_windows.is_empty() {
         collect_client_buffers_for_hold(state, &output, &windows_top_to_bottom_for_output)
     } else {
@@ -4889,6 +4898,14 @@ fn render_surface(
         }
         overlay_below_layers += content_elements.len();
         content_elements.extend(scene_elements);
+        let live_locker = session_lock_surface_for_output.as_ref().is_some_and(crate::backend::lock_scene::locker_ready);
+        if state.session_lock_active {
+            content_elements = if live_locker {
+                crate::backend::lock_scene::background_elements(
+                    &mut *renderer, space, window_decorations, &output, scale,
+                ).into_iter().map(TtyRenderElements::Window).collect()
+            } else { Vec::new() };
+        }
 
         let cursor_status_for_log = config_cursor_override
             .map(crate::cursor::CursorOverride::status)
@@ -4917,22 +4934,21 @@ fn render_surface(
             );
         }
         overlay_below_layers += content_for_capture.len();
-        // While locked only the lock surface is shown: if the locker dies,
-        // the screen stays blank rather than revealing the session
-        // (ext-session-lock-v1).
-        if !state.session_lock_active {
-            content_for_capture.extend(content_elements);
-        }
-        if !state.session_lock_active {
+        // Locked content contains only explicitly selected roots. A dead
+        // locker leaves both the background and unlock overlays hidden.
+        content_for_capture.extend(content_elements);
+        if !state.session_lock_active || live_locker {
             state.output_overlays.render(
                 &mut *renderer,
                 &output,
                 (output_geo.size.w, output_geo.size.h),
                 scale,
                 &mut content_for_capture,
-                overlay_below_layers,
+                if state.session_lock_active { 0 } else { overlay_below_layers },
                 TtyRenderElements::Snapshot,
             );
+        }
+        if !state.session_lock_active {
             // Drag views: above everything but the cursor.
             let drag_elements = crate::backend::dnd::drag_elements(
                 &mut *renderer,

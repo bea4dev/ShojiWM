@@ -258,6 +258,7 @@ impl SessionLockHandler for ShojiWM {
             crate::backend::overlay::close_all("Session locked");
             self.output_overlays.clear();
             self.session_lock_active = true;
+            crate::backend::lock_scene::set_locked(true);
             for targets in self.composition_targets.values_mut() {
                 targets.clear_presentation();
             }
@@ -285,6 +286,7 @@ impl SessionLockHandler for ShojiWM {
 
     fn unlock(&mut self) {
         self.session_lock_active = false;
+        crate::backend::lock_scene::set_locked(false);
         self.session_locker = None;
         self.session_lock_surfaces.clear();
         self.pointer_contents = crate::state::PointerContents::default();

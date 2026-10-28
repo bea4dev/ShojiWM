@@ -1238,6 +1238,16 @@ impl ShojiRuntimeBridge {
         Ok(())
     }
 
+    fn configure_lock_background(
+        &self,
+        #[serde] background: shojiwm_lib::backend::lock_scene::BackgroundSelection,
+    ) -> Result<bool, std::io::Error> {
+        if shojiwm_lib::backend::lock_scene::configure(&self.overlay_owner, background)? {
+            op_shoji_wake_compositor();
+        }
+        Ok(shojiwm_lib::backend::lock_scene::is_locked())
+    }
+
     fn create_overlay(
         &self,
         #[string] output: String,

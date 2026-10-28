@@ -1,4 +1,6 @@
 /// <reference path="./runtime-globals.d.ts" />
+export { configureLockBackground, installSessionLockBridge } from "./session-lock";
+export type { LockBackgroundSelection } from "./session-lock";
 import type {
   CompositionRenderable,
   AppIconProps,
