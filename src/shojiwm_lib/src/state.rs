@@ -1201,6 +1201,28 @@ impl ShojiWM {
         self.note_window_user_input(&window);
     }
 
+    /// A dialog opened by a background window must not take the user's seat.
+    pub(crate) fn background_parent_blocks_focus(&self, window: &Window) -> bool {
+        let Some(active) = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .or_else(|| self.activated_window_surface())
+        else {
+            return false;
+        };
+        if self.surface_belongs_to_window(window, &active) {
+            return false;
+        }
+        let Some(parent_id) = self.snapshot_window(window).parent_id else {
+            return false;
+        };
+        self.space.elements().any(|parent| {
+            self.snapshot_window(parent).id == parent_id
+                && !self.surface_belongs_to_window(parent, &active)
+        })
+    }
+
     /// Whether an *automatic* focus grant for `window` — one the user did not
     /// ask for: a window's own open-time `focus()`, an xdg-activation, an
     /// `_NET_ACTIVE_WINDOW` request — must give way to whoever currently holds
