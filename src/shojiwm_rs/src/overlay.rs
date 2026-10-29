@@ -45,6 +45,11 @@ pub enum OverlayPlacement {
     Top,
     /// Above windows but below Top/Overlay layer-shell surfaces.
     BelowLayers,
+    /// The unlock handoff: created while the session is locked, it captures
+    /// the lock scene and stays over the desktop once the locker unlocks.
+    /// Needs a [`snapshot_source`], `persistent(false)` and a deadline of at
+    /// most 3000 ms. See [`crate::compositor::SessionController`].
+    Unlock,
 }
 
 /// What to draw (`overlay(output, { effect, placement, persistent, maxDuration })`).
@@ -151,11 +156,24 @@ fn wake() {
     }
 }
 
+/// Lock background selections end with the config, like its overlays.
+pub(crate) fn configure_lock_background(
+    background: shojiwm_lib::backend::lock_scene::BackgroundSelection,
+) -> Result<bool, String> {
+    if shojiwm_lib::backend::lock_scene::configure(&owner(), background)
+        .map_err(|error| error.to_string())?
+    {
+        wake();
+    }
+    Ok(shojiwm_lib::backend::lock_scene::is_locked())
+}
+
 pub(crate) fn create(output: &str, overlay: Overlay) -> Result<OverlayHandle, String> {
     let host = runtime::host().ok_or("output overlays need a running config")?;
     let placement = match overlay.placement {
         OverlayPlacement::Top => "top",
         OverlayPlacement::BelowLayers => "below-layers",
+        OverlayPlacement::Unlock => "unlock",
     };
     let dirty = Rc::new(Cell::new(false));
     let observer = {

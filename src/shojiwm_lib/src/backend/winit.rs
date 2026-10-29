@@ -1247,11 +1247,45 @@ pub fn init_winit(
                         let live_locker = state.session_lock_surface_for_output(&output)
                             .as_ref().is_some_and(crate::backend::lock_scene::locker_ready);
                         if state.session_lock_active {
-                            content_elements = if live_locker {
-                                crate::backend::lock_scene::background_elements(
-                                    renderer, &state.space, &state.window_decorations, &output, scale,
-                                ).into_iter().map(WinitRenderElements::Window).collect()
-                            } else { Vec::new() };
+                            content_elements = Vec::new();
+                            if let Some(lock_surface) = state
+                                .session_lock_surface_for_output(&output)
+                                .filter(|_| live_locker)
+                            {
+                                // The lock surface in front of the selected roots, then
+                                // unlock overlays over both: their snapshot is this lock
+                                // scene only, without the diagnostics added below.
+                                content_elements.extend(
+                                    crate::backend::window::lock_surface_elements(
+                                        renderer,
+                                        &lock_surface,
+                                        scale,
+                                        1.0,
+                                    )
+                                    .into_iter()
+                                    .map(WinitRenderElements::Window),
+                                );
+                                content_elements.extend(
+                                    crate::backend::lock_scene::background_elements(
+                                        renderer,
+                                        &state.space,
+                                        &state.window_decorations,
+                                        &output,
+                                        scale,
+                                    )
+                                    .into_iter()
+                                    .map(WinitRenderElements::Window),
+                                );
+                                state.output_overlays.render(
+                                    renderer,
+                                    &output,
+                                    (output_geo.size.w, output_geo.size.h),
+                                    scale,
+                                    &mut content_elements,
+                                    0,
+                                    WinitRenderElements::Snapshot,
+                                );
+                            }
                         }
                         if !state.session_lock_active {
                             state.output_overlays.render(renderer, &output,
@@ -1326,7 +1360,10 @@ pub fn init_winit(
                             .into_iter()
                             .map(WinitRenderElements::Blink),
                         );
-                        if let Some(lock_surface) = state.session_lock_surface_for_output(&output)
+                        // A live lock surface is already part of the locked content.
+                        if let Some(lock_surface) = state
+                            .session_lock_surface_for_output(&output)
+                            .filter(|_| !live_locker)
                         {
                             elements.extend(
                                 crate::backend::window::lock_surface_elements(
@@ -1340,11 +1377,6 @@ pub fn init_winit(
                             );
                         }
                         elements.extend(content_elements);
-                        if state.session_lock_active && live_locker {
-                            state.output_overlays.render(renderer, &output,
-                                (output_geo.size.w, output_geo.size.h), scale, &mut elements,
-                                0, WinitRenderElements::Snapshot);
-                        }
 
                         trace!(
                             output = %output.name(),

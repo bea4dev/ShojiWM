@@ -810,6 +810,14 @@ impl ShojiWM {
         }
     }
 
+    /// The only writer of `session_lock_active` after construction: it also
+    /// updates the copy `lock_scene` keeps for the runtime threads (unlock
+    /// overlay creation), which must never disagree with it.
+    pub(crate) fn set_session_lock_active(&mut self, active: bool) {
+        self.session_lock_active = active;
+        crate::backend::lock_scene::set_locked(active);
+    }
+
     pub fn session_lock_surface_for_output(&self, output: &Output) -> Option<LockSurface> {
         self.session_lock_surfaces
             .get(output.name().as_str())
@@ -1751,6 +1759,7 @@ impl ShojiWM {
             })
             .expect("Failed to init async asset worker.");
 
+        // Mirrors `session_lock_active` below; see `set_session_lock_active`.
         crate::backend::lock_scene::set_locked(runtime.start_locked());
         Self {
             start_time,
@@ -3009,6 +3018,9 @@ impl ShojiWM {
             .insert_source(ping_source, |_, _, state| {
                 state.record_event_source_wake("runtime-host");
                 state.drain_runtime_host_messages();
+                if crate::backend::lock_scene::take_changed() {
+                    state.schedule_redraw();
+                }
                 state.tick_output_overlays();
                 state.schedule_output_overlay_tick();
                 if state.config_runtime.host().take_wake_request() {
@@ -3102,8 +3114,10 @@ impl ShojiWM {
         let outputs: Vec<_> = self
             .space
             .outputs()
-            .filter(|output| self.runtime_output_render_enabled(&output.name())
-                && !self.powered_off_outputs.contains_key(&output.name()))
+            .filter(|output| {
+                self.runtime_output_render_enabled(&output.name())
+                    && !self.powered_off_outputs.contains_key(&output.name())
+            })
             .cloned()
             .collect();
         let unavailable =
@@ -3366,8 +3380,7 @@ impl ShojiWM {
         }
         if !self.session_lock_active {
             info!("session starts locked (config)");
-            self.session_lock_active = true;
-            crate::backend::lock_scene::set_locked(true);
+            self.set_session_lock_active(true);
         }
     }
 

@@ -96,9 +96,9 @@ pub mod prelude {
         },
         compositor::{
             Command, CursorPosition, CursorPositionSnapshot, DisableEvent, EnableEvent,
-            FramePacing, HotCorner, HotCornerOptions, InputChangeEvent, OutputChangeEvent,
-            OutputConfig, OutputContext, OutputPower, OutputPowerOptions, PointerRegion,
-            PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionOffset,
+            FramePacing, HotCorner, HotCornerOptions, InputChangeEvent, LockBackground,
+            OutputChangeEvent, OutputConfig, OutputContext, OutputPower, OutputPowerOptions,
+            PointerRegion, PointerRegionAnchor, PointerRegionEventSnapshot, PointerRegionOffset,
             PointerRegionPhase, PointerRegionSize, Sender, SurfaceRef,
         },
         dnd::{

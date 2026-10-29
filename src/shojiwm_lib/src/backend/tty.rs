@@ -2442,11 +2442,17 @@ fn collect_client_buffers_for_hold(
     for window in windows {
         window.with_surfaces(|_, states| hold(states));
     }
-    if state.session_lock_active && state.session_lock_surface_for_output(output).as_ref()
-        .is_some_and(crate::backend::lock_scene::locker_ready) {
-        for window in state.space.elements().filter(|window|
-            !windows.contains(window) && state.space.outputs_for_element(window).contains(output)
-                && crate::backend::lock_scene::window_selected(window)) {
+    if state.session_lock_active
+        && state
+            .session_lock_surface_for_output(output)
+            .as_ref()
+            .is_some_and(crate::backend::lock_scene::locker_ready)
+    {
+        for window in state.space.elements().filter(|window| {
+            !windows.contains(window)
+                && state.space.outputs_for_element(window).contains(output)
+                && crate::backend::lock_scene::window_selected(window)
+        }) {
             window.with_surfaces(|_, states| hold(states));
         }
     }
@@ -4898,13 +4904,24 @@ fn render_surface(
         }
         overlay_below_layers += content_elements.len();
         content_elements.extend(scene_elements);
-        let live_locker = session_lock_surface_for_output.as_ref().is_some_and(crate::backend::lock_scene::locker_ready);
+        let live_locker = session_lock_surface_for_output
+            .as_ref()
+            .is_some_and(crate::backend::lock_scene::locker_ready);
         if state.session_lock_active {
             content_elements = if live_locker {
                 crate::backend::lock_scene::background_elements(
-                    &mut *renderer, space, window_decorations, &output, scale,
-                ).into_iter().map(TtyRenderElements::Window).collect()
-            } else { Vec::new() };
+                    &mut *renderer,
+                    space,
+                    window_decorations,
+                    &output,
+                    scale,
+                )
+                .into_iter()
+                .map(TtyRenderElements::Window)
+                .collect()
+            } else {
+                Vec::new()
+            };
         }
 
         let cursor_status_for_log = config_cursor_override
@@ -4944,7 +4961,11 @@ fn render_surface(
                 (output_geo.size.w, output_geo.size.h),
                 scale,
                 &mut content_for_capture,
-                if state.session_lock_active { 0 } else { overlay_below_layers },
+                if state.session_lock_active {
+                    0
+                } else {
+                    overlay_below_layers
+                },
                 TtyRenderElements::Snapshot,
             );
         }

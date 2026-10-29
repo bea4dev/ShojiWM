@@ -141,6 +141,7 @@ fn setup() {
 | `createIpcServer()` | `shojiwm_rs::ipc::IpcServer`（同じプロトコル） |
 | `COMPOSITOR.effect.background_effect = computed(..)` | `COMPOSITOR.effect.background_with(\|\| ..)` |
 | `COMPOSITOR.effect.overlay(output, { effect })` | `COMPOSITOR.effect.overlay(output, Overlay::new(effect))`（すぐ返る。await の代わりに `on_ready` / `on_closed`） |
+| `COMPOSITOR.session.configureLockBackground({ windowIds, layerIds })` | `COMPOSITOR.session.configure_lock_background(LockBackground { window_ids, layer_ids })` |
 | `COMPOSITOR.rendering.framePacing = ..` | `COMPOSITOR.rendering.frame_pacing(..)` / `frame_pacing_with(\|output\| ..)` |
 | `COMPOSITOR.rendering.composition = (output) => <DefaultComposition />` | `COMPOSITOR.rendering.composition(\|output\| OutputStack::default_stacking())` |
 | `<Layers>`, `<Windows>`, `<Scene3D>`, `<Plane>`, `renderTexture()` | `Layers::new`、`Windows::all` / `Windows::only`、`Scene3D::new`、`Plane::new`、`RenderTexture::new` |

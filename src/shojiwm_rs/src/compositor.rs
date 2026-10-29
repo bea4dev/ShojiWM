@@ -87,6 +87,7 @@ pub struct Compositor {
     pub event: EventController,
     pub debug: DebugController,
     pub dnd: crate::dnd::DndController,
+    pub session: SessionController,
 }
 
 /// The one compositor. Use it like the TypeScript global.
@@ -106,6 +107,7 @@ pub const COMPOSITOR: Compositor = Compositor {
     event: EventController,
     debug: DebugController,
     dnd: crate::dnd::DndController,
+    session: SessionController,
 };
 
 /// Passed to [`Compositor::on_enable`] listeners.
@@ -1231,6 +1233,24 @@ impl RenderingController {
     /// it reads (or the output) change.
     pub fn composition(&self, f: impl Fn(&WaylandOutputSnapshot) -> OutputStack + 'static) {
         with_registry(|registry| registry.output_composition = Some(Rc::new(f)));
+    }
+}
+
+/// Exact window/layer runtime ids drawn behind a transparent lock surface.
+pub use shojiwm_lib::backend::lock_scene::BackgroundSelection as LockBackground;
+
+/// `COMPOSITOR.session`. Starting locked is [`crate::ConfigBuilder::start_locked`].
+pub struct SessionController;
+
+impl SessionController {
+    /// `session.configureLockBackground({ windowIds, layerIds })`: draw these
+    /// roots ([`Window::id`], [`WaylandLayerSnapshot::id`]) behind a
+    /// transparent lock surface; an empty selection (the default) clears it.
+    /// Only their client surface trees are drawn, and input still reaches only
+    /// the locker. Ends with the config. Returns whether the session is
+    /// locked; never locks or unlocks it.
+    pub fn configure_lock_background(&self, background: LockBackground) -> Result<bool, String> {
+        crate::overlay::configure_lock_background(background)
     }
 }
 

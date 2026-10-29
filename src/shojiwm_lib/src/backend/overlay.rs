@@ -127,9 +127,15 @@ pub fn create(
         ));
     }
     let unlock = placement == "unlock";
-    if unlock && (!super::lock_scene::is_locked() || persistent || duration > 3000.0
-        || !uses_snapshot(&effect)) {
-        return Err(io::Error::other("Unlock overlays require an active lock, a snapshot and a nonpersistent deadline <= 3000ms"));
+    if unlock
+        && (!super::lock_scene::is_locked()
+            || persistent
+            || duration > 3000.0
+            || !uses_snapshot(&effect))
+    {
+        return Err(io::Error::other(
+            "Unlock overlays require an active lock, a snapshot and a nonpersistent deadline <= 3000ms",
+        ));
     }
     let placement = match placement.as_str() {
         "top" => Placement::Top,
@@ -431,8 +437,11 @@ impl OutputOverlays {
             .lock()
             .unwrap()
             .values()
-            .filter(|c| c.output == output.name() && c.alive()
-                && (!super::lock_scene::is_locked() || c.unlock))
+            .filter(|c| {
+                c.output == output.name()
+                    && c.alive()
+                    && (!super::lock_scene::is_locked() || c.unlock)
+            })
             .cloned()
             .collect();
         // Front-to-back scene: compose the lower slot first so the top sees its result.
