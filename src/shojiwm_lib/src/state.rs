@@ -1751,6 +1751,7 @@ impl ShojiWM {
             })
             .expect("Failed to init async asset worker.");
 
+        crate::backend::lock_scene::set_locked(runtime.start_locked());
         Self {
             start_time,
             display_handle: dh,
@@ -3101,11 +3102,15 @@ impl ShojiWM {
         let outputs: Vec<_> = self
             .space
             .outputs()
-            .filter(|output| self.runtime_output_render_enabled(&output.name()))
+            .filter(|output| self.runtime_output_render_enabled(&output.name())
+                && !self.powered_off_outputs.contains_key(&output.name()))
             .cloned()
             .collect();
         let unavailable =
             self.session_lock_active || (!self.tty_backends.is_empty() && !self.tty_session_active);
+        if !self.tty_backends.is_empty() && !self.tty_session_active {
+            crate::backend::overlay::close_all("Session paused");
+        }
         if self.output_overlays.tick(&outputs, unavailable) {
             self.schedule_redraw();
             self.runtime_frame_sync_interval_ms()
@@ -3362,6 +3367,7 @@ impl ShojiWM {
         if !self.session_lock_active {
             info!("session starts locked (config)");
             self.session_lock_active = true;
+            crate::backend::lock_scene::set_locked(true);
         }
     }
 
