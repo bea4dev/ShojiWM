@@ -528,6 +528,7 @@ pub struct ShojiWM {
     /// A key the grab took inside the keyboard filter, dispatched right after.
     pub pending_input_grab_key_event: Option<crate::runtime_input_grab::InputGrabEventSnapshot>,
     pub current_keyboard_modifiers: ModifiersState,
+    pub consumed_pointer_buttons: HashSet<(String, u32)>,
     // Modifier-only tap detection (e.g. "Super"). If no other input occurs
     // between press and release, the release is treated as a tap.
     pub tap_pressed_keys: u32,
@@ -1924,6 +1925,7 @@ impl ShojiWM {
             runtime_input_grab: None,
             pending_input_grab_key_event: None,
             current_keyboard_modifiers: ModifiersState::default(),
+            consumed_pointer_buttons: HashSet::new(),
             tap_pressed_keys: 0,
             tap_armed_modifier: None,
             tap_interrupted: false,
