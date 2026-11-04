@@ -1966,12 +1966,15 @@ export interface KeyBindingOptions {
 }
 
 /**
- * Registers compositor-level keyboard and discrete mouse-wheel shortcuts.
+ * Registers compositor-level keyboard, side-button and discrete mouse-wheel shortcuts.
  * コンポジターレベルのキーボードおよびマウスホイールショートカットを登録します。
  *
  * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
  * string uses modifier+key notation such as `"Super+T"`, `"Super+Shift+Left"`,
- * or `"Super+WheelScrollUp"`.
+ * `"Super+WheelScrollUp"` or `"Super+MouseForward"`.
+ * `MouseBack` and `MouseForward` use the standard Linux side-button codes.
+ * Side-button shortcuts only accept `on: "press"`; their release is consumed
+ * with the press, while unmatched buttons keep reaching applications.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
  * `shortcut` は `"Super+T"` や `"Super+Shift+Left"` のような記法を使います。
  *
@@ -1987,7 +1990,7 @@ export interface KeyBindingOptions {
  */
 export interface KeyBindingController {
   /**
-   * Register a keyboard or mouse-wheel shortcut. `id` must be unique;
+   * Register a keyboard, side-button or mouse-wheel shortcut. `id` must be unique;
    * registering the same id twice replaces the previous binding.
    * ショートカットを登録します。`id` は一意である必要があります。
    * 同じ `id` を2回登録すると前のバインドが上書きされます。

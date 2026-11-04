@@ -1,7 +1,7 @@
 use smithay::{
     backend::{
         input::{
-            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, Event, GestureBeginEvent,
             GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend,
             InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
             PointerMotionEvent,
@@ -1044,6 +1044,11 @@ impl ShojiWM {
         }
 
         match event {
+            InputEvent::DeviceRemoved { device } => {
+                let device_id = device.id();
+                self.consumed_pointer_buttons
+                    .retain(|(id, _)| id != &device_id);
+            }
             InputEvent::Keyboard { event, .. } => {
                 let device = event.device();
                 crate::runtime_input::apply_keyboard_config_for_backend_device(self, &device);
@@ -1512,6 +1517,18 @@ impl ShojiWM {
 
                 let button_state = event.state();
 
+                let button_key = (event.device().id(), button);
+                // The client never saw the intercepted press; do not send its release,
+                // even if Super was released or the session was locked in between.
+                if button_state == ButtonState::Released
+                    && self.consumed_pointer_buttons.remove(&button_key)
+                {
+                    return;
+                }
+                if self.consumed_pointer_buttons.contains(&button_key) {
+                    return;
+                }
+
                 // A pointer button press cancels a pending modifier tap (e.g. Super+drag).
                 if matches!(button_state, ButtonState::Pressed) {
                     self.modifier_tap.interrupt();
@@ -1548,6 +1565,21 @@ impl ShojiWM {
                 if self.runtime_input_grab.is_some() {
                     self.input_grab_pointer_button(button, button_state, event.time_msec());
                     return;
+                }
+
+                if button_state == ButtonState::Pressed {
+                    let binding_id = self
+                        .runtime_key_bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.matches_mouse_button(button, &self.current_keyboard_modifiers)
+                        })
+                        .map(|binding| binding.id.clone());
+                    if let Some(binding_id) = binding_id {
+                        self.consumed_pointer_buttons.insert(button_key);
+                        self.run_runtime_key_binding(&binding_id);
+                        return;
+                    }
                 }
 
                 // SSD `<Popup>`s hear about every press: anchors pressed
