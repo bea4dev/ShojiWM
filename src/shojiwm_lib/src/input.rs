@@ -436,7 +436,7 @@ impl ShojiWM {
         }
     }
 
-    fn dispatch_pointer_move_events(
+    pub(crate) fn dispatch_pointer_move_events(
         &mut self,
         previous_pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -526,6 +526,8 @@ impl ShojiWM {
         if transitions.is_empty() {
             return;
         }
+        // The config hears about the motion before the region it led into.
+        self.flush_pointer_dispatch();
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         for transition in transitions {
             let event = PointerRegionEventSnapshot {
@@ -1010,7 +1012,18 @@ impl ShojiWM {
         // Saved and restored rather than cleared so the flag survives nesting.
         let previous = std::mem::replace(&mut self.user_input_in_flight, true);
         let keyboard = matches!(event, InputEvent::Keyboard { .. });
+        let pointer_motion = matches!(
+            event,
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. }
+        );
+        // The config must not see this event before the motion that led up to it.
+        if !pointer_motion {
+            self.flush_pointer_dispatch();
+        }
         self.process_input_event_inner(event);
+        if pointer_motion {
+            self.pump_pointer_dispatch();
+        }
         self.user_input_in_flight = previous;
         // Caps Lock and Num Lock reach the config at once, not at the next
         // scheduler tick.
@@ -1438,7 +1451,7 @@ impl ShojiWM {
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
 
-                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                self.queue_pointer_move_dispatch(previous_pos, pos, event.time_msec());
                 self.update_pointer_regions(
                     pos,
                     previous_pos + motion_delta - pos,
@@ -1498,7 +1511,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
-                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                self.queue_pointer_move_dispatch(previous_pos, pos, event.time_msec());
                 // An absolute device cannot push past the layout edge.
                 self.update_pointer_regions(pos, Point::default(), event.time_msec());
                 self.update_decoration_hover_target(pos);

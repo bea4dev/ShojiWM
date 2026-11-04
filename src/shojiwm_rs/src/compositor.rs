@@ -1322,7 +1322,9 @@ listeners! {
 }
 
 impl EventController {
-    /// Every pointer motion, answered before the compositor moves on.
+    /// Pointer motion, answered before the compositor moves on. Fires at most about once
+    /// per display refresh: faster motion arrives as one event with the latest position
+    /// and the combined delta.
     pub fn on_pointer_move(&self, listener: impl Fn(&PointerMoveEventSnapshot) + 'static) {
         add_filtered(|listeners| listeners.pointer_move.push(Rc::new(listener)));
     }

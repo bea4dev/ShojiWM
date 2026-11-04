@@ -2126,6 +2126,11 @@ pub fn device_added(
         if let DrmEvent::VBlank(crtc) = event {
             trace!(?node, ?crtc, "received drm vblank");
             frame_finish(state, &drm_loop_handle, node, crtc, metadata);
+            // The next frame can start now, and it should show where the pointer is: this
+            // is what keeps a drag's redraws in step with the display. Not any earlier:
+            // without a driver timestamp, `frame_finish` takes the time it runs for the
+            // time of the flip.
+            state.flush_pointer_dispatch();
         }
     })?;
 
@@ -3245,6 +3250,11 @@ fn fast_cursor_move_inner(
                             surface.cursor_commit_timer_armed = false;
                             true
                         };
+                        // Motion the config has yet to see may well lead to a redraw (it does
+                        // during a drag), which needs this flip more than the cursor does.
+                        if timer_is_current {
+                            state.flush_pointer_dispatch();
+                        }
                         // A pending full redraw carries the cursor position by
                         // itself; committing here as well would only occupy
                         // the CRTC ahead of it.
@@ -4235,6 +4245,10 @@ fn render_surface(
         .and_then(|backend| backend.surfaces.get_mut(&crtc))
     {
         surface.last_decoration_refresh_at = Some(Instant::now());
+    }
+    // This frame is about to be laid out: it should show where the pointer is now.
+    if redraw_state_at_entry == TtyRedrawState::Queued {
+        state.flush_pointer_dispatch();
     }
     let mut motion_trace_frame_tick: Option<(f64, bool)> = None;
     // Frame-driven runtime work (kinetic scrolling, poll-driven animations) steps here, at

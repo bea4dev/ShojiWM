@@ -484,6 +484,8 @@ pub struct ShojiWM {
     pub runtime_process_entries: BTreeMap<String, RuntimeProcessEntry>,
     pub runtime_process_once_runs: HashMap<String, u64>,
     pub runtime_process_suppressed_services: HashMap<String, u64>,
+    pub runtime_process_spawn_backoff: HashMap<String, crate::runtime_process::ServiceSpawnBackoff>,
+    pub runtime_process_last_refresh_at: Option<Instant>,
     pub runtime_managed_services: BTreeMap<String, ManagedRuntimeService>,
     // Fire-and-forget children (Once/spawn) that aren't tracked anywhere
     // else. We don't need their exit status, just to reap them so they
@@ -512,6 +514,7 @@ pub struct ShojiWM {
     pub runtime_libinput_devices: HashMap<String, input::Device>,
     pub runtime_pointer_move_enabled: bool,
     pub runtime_pointer_move_async_enabled: bool,
+    pub pointer_dispatch: crate::pointer_dispatch::PointerDispatchQueue,
     pub runtime_gesture_swipe_enabled: bool,
     pub runtime_gesture_swipe_async_enabled: bool,
     /// The config listens to touchpad pinches; the fingers of the one in
@@ -748,7 +751,7 @@ impl ShojiWM {
         (rank, output_name.to_string())
     }
 
-    fn runtime_frame_sync_interval_ms(&self) -> u64 {
+    pub(crate) fn runtime_frame_sync_interval_ms(&self) -> u64 {
         self.space
             .outputs()
             .filter_map(|output| {
@@ -1896,6 +1899,8 @@ impl ShojiWM {
             runtime_process_entries: Default::default(),
             runtime_process_once_runs: Default::default(),
             runtime_process_suppressed_services: Default::default(),
+            runtime_process_spawn_backoff: Default::default(),
+            runtime_process_last_refresh_at: None,
             runtime_managed_services: Default::default(),
             runtime_pending_reap: Default::default(),
             runtime_key_binding_entries: Default::default(),
@@ -1914,6 +1919,7 @@ impl ShojiWM {
             runtime_libinput_devices: Default::default(),
             runtime_pointer_move_enabled: false,
             runtime_pointer_move_async_enabled: false,
+            pointer_dispatch: Default::default(),
             runtime_gesture_swipe_enabled: false,
             runtime_gesture_swipe_async_enabled: false,
             runtime_gesture_pinch_async_enabled: false,
@@ -4227,11 +4233,18 @@ impl ShojiWM {
     pub fn apply_runtime_process_config_update(&mut self, update: RuntimeProcessConfigUpdate) {
         self.runtime_process_config_generation =
             self.runtime_process_config_generation.saturating_add(1);
-        self.runtime_process_entries = update
-            .entries
-            .into_iter()
-            .map(|entry| (entry.id().to_string(), entry))
-            .collect();
+        let previous_entries = std::mem::replace(
+            &mut self.runtime_process_entries,
+            update
+                .entries
+                .into_iter()
+                .map(|entry| (entry.id().to_string(), entry))
+                .collect(),
+        );
+        // A service the config changed gets a fresh attempt.
+        let entries = &self.runtime_process_entries;
+        self.runtime_process_spawn_backoff
+            .retain(|id, _| previous_entries.get(id) == entries.get(id));
         self.reconcile_runtime_processes();
     }
 
@@ -4257,6 +4270,18 @@ impl ShojiWM {
     }
 
     pub fn refresh_runtime_processes(&mut self) {
+        // The scheduler ticks once per frame while anything animates, but children do not
+        // need looking after that often: a service that keeps failing would be respawned
+        // on the main thread at the refresh rate.
+        const REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+        if self
+            .runtime_process_last_refresh_at
+            .is_some_and(|at| at.elapsed() < REFRESH_INTERVAL)
+        {
+            return;
+        }
+        self.runtime_process_last_refresh_at = Some(Instant::now());
+
         let service_ids = self
             .runtime_managed_services
             .keys()
@@ -4433,9 +4458,18 @@ impl ShojiWM {
                     {
                         continue;
                     }
+                    let now = Instant::now();
+                    if self
+                        .runtime_process_spawn_backoff
+                        .get(&service_id)
+                        .is_some_and(|backoff| !backoff.is_due(now))
+                    {
+                        continue;
+                    }
 
                     match spawn_runtime_process(launch, cwd.as_deref(), env) {
                         Ok(child) => {
+                            self.runtime_process_spawn_backoff.remove(&service_id);
                             self.runtime_process_suppressed_services.remove(&service_id);
                             self.runtime_managed_services.insert(
                                 service_id.clone(),
@@ -4448,7 +4482,25 @@ impl ShojiWM {
                             info!(process_id = %service_id, "started runtime managed service");
                         }
                         Err(error) => {
-                            warn!(?error, process_id = %service_id, "failed to start runtime managed service");
+                            let backoff = self
+                                .runtime_process_spawn_backoff
+                                .get(&service_id)
+                                .map_or_else(
+                                    || {
+                                        crate::runtime_process::ServiceSpawnBackoff::first_failure(
+                                            now,
+                                        )
+                                    },
+                                    |backoff| backoff.next_failure(now),
+                                );
+                            self.runtime_process_spawn_backoff
+                                .insert(service_id.clone(), backoff);
+                            warn!(
+                                ?error,
+                                process_id = %service_id,
+                                retry_in_secs = backoff.delay().as_secs(),
+                                "failed to start runtime managed service"
+                            );
                         }
                     }
                 }
