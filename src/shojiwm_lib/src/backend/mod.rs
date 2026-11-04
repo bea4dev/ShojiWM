@@ -164,6 +164,8 @@ pub fn run_tty_udev(
             SessionEvent::ActivateSession => {
                 info!("resuming tty session");
                 state.tty_session_active = true;
+                // Keys let go on another VT sent us no release.
+                state.modifier_tap.reset();
                 if let Err(err) = libinput.resume() {
                     warn!(?err, "failed to resume libinput context");
                 }

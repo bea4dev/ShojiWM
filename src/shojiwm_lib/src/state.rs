@@ -531,16 +531,7 @@ pub struct ShojiWM {
     /// A key the grab took inside the keyboard filter, dispatched right after.
     pub pending_input_grab_key_event: Option<crate::runtime_input_grab::InputGrabEventSnapshot>,
     pub current_keyboard_modifiers: ModifiersState,
-    // Modifier-only tap detection (e.g. "Super"). If no other input occurs
-    // between press and release, the release is treated as a tap.
-    /// The keys down now, with the event time (ms) of their press. A set and
-    /// not a count: a release that never comes (a KVM switch, a keyboard
-    /// unplugged with a key down) must not block every later tap.
-    pub tap_pressed_keys: std::collections::HashMap<u32, u32>,
-    pub tap_armed_modifier: Option<crate::runtime_key_binding::ModifierClass>,
-    pub tap_interrupted: bool,
-    /// Event time (ms) the tap modifier was pressed, for `within`.
-    pub tap_armed_at: u32,
+    pub modifier_tap: crate::modifier_tap::ModifierTapTracker,
     pub pending_tap_binding_ids: Vec<String>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
@@ -822,6 +813,10 @@ impl ShojiWM {
     pub(crate) fn set_session_lock_active(&mut self, active: bool) {
         self.session_lock_active = active;
         crate::backend::lock_scene::set_locked(active);
+        // The releases of the keys down now go to the locker.
+        if active {
+            self.modifier_tap.reset();
+        }
     }
 
     pub fn session_lock_surface_for_output(&self, output: &Output) -> Option<LockSurface> {
@@ -1933,10 +1928,7 @@ impl ShojiWM {
             runtime_input_grab: None,
             pending_input_grab_key_event: None,
             current_keyboard_modifiers: ModifiersState::default(),
-            tap_pressed_keys: std::collections::HashMap::new(),
-            tap_armed_modifier: None,
-            tap_interrupted: false,
-            tap_armed_at: 0,
+            modifier_tap: Default::default(),
             pending_tap_binding_ids: Vec::new(),
             suggested_window_offset: None,
             async_asset_dirty: false,

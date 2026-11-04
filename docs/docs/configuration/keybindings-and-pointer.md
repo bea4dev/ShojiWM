@@ -55,6 +55,10 @@ allowing `Super` to act as a modifier for other shortcuts.
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```
 
+A key down for more than a minute no longer counts as pressed, so that a release
+the compositor never received (a KVM switch, an unplugged keyboard) cannot block
+tap bindings for good. A key really held that long does not cancel a tap either.
+
 Add `within` (milliseconds) to fire only on a quick tap. Holding the modifier
 longer, for a drag or while
 [ignoring a game's pointer lock](./cursor.md#ignoring-app-pointer-locks),
