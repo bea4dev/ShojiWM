@@ -917,9 +917,8 @@ mod tests {
         // A fading plane in front, drawn first, still lets the opaque plane
         // behind it show through.
         let mut faint = plane(0, translate_z(-0.5));
-        if let Object3d::Plane { opacity, .. } = &mut faint {
-            *opacity = 0.1;
-        }
+        let Object3d::Plane { opacity, .. } = &mut faint;
+        *opacity = 0.1;
         spec.objects = vec![faint, plane(1, translate_z(0.5))];
         target
             .render(&mut renderer, &spec, &inputs, (4, 4).into())
@@ -945,9 +944,8 @@ mod tests {
         // A plane a hair short of opaque (the end of a fade) is drawn whole,
         // even where the shader's mediump opacity rounds up to 1.
         let mut almost = plane(1, IDENTITY);
-        if let Object3d::Plane { opacity, .. } = &mut almost {
-            *opacity = 0.99999;
-        }
+        let Object3d::Plane { opacity, .. } = &mut almost;
+        *opacity = 0.99999;
         spec.objects = vec![almost];
         target
             .render(&mut renderer, &spec, &inputs, (4, 4).into())
