@@ -1967,7 +1967,7 @@ export interface KeyBindingOptions {
 
 /**
  * Registers compositor-level keyboard, side-button and discrete mouse-wheel shortcuts.
- * コンポジターレベルのキーボードおよびマウスホイールショートカットを登録します。
+ * コンポジターレベルのキーボード、サイドボタンおよびマウスホイールショートカットを登録します。
  *
  * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
  * string uses modifier+key notation such as `"Super+T"`, `"Super+Shift+Left"`,
@@ -1976,7 +1976,11 @@ export interface KeyBindingOptions {
  * Side-button shortcuts only accept `on: "press"`; their release is consumed
  * with the press, while unmatched buttons keep reaching applications.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
- * `shortcut` は `"Super+T"` や `"Super+Shift+Left"` のような記法を使います。
+ * `shortcut` は `"Super+T"`、`"Super+Shift+Left"`、`"Super+WheelScrollUp"`、
+ * `"Super+MouseForward"` のような記法を使います。
+ * `MouseBack` と `MouseForward` は Linux 標準のサイドボタンのコードを使います。
+ * サイドボタンのショートカットは `on: "press"` のみ指定でき、リリースも押下と一緒に
+ * 消費されます。一致しなかったボタンはこれまでどおりアプリケーションに届きます。
  *
  * @example
  * ```ts
