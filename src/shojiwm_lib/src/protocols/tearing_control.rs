@@ -9,11 +9,8 @@
 //! The global is passive: it only records hints, so there is no handler trait.
 //! Read a surface's current preference with [`surface_prefers_tearing`].
 //!
-//! Note: the protocol specifies `set_presentation_hint` as double-buffered
-//! (applied on `wl_surface.commit`). We apply it immediately instead. For a
-//! latency hint that a client sets once and rarely changes this is
-//! indistinguishable in practice, and it keeps the surface state lock-free for
-//! the render-thread read.
+//! Presentation hints are double-buffered and take effect with the associated
+//! surface commit, including synchronized subsurface transactions.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,9 +23,12 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
-use smithay::wayland::compositor::with_states;
+use smithay::wayland::compositor::{Cacheable, with_states};
 
 const VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests;
 
 /// Per-surface tearing-control state, stored in the surface's `data_map`.
 #[derive(Debug, Default)]
@@ -36,8 +36,21 @@ struct TearingControlSurfaceData {
     /// A `wp_tearing_control_v1` already exists for this surface. The protocol
     /// requires erroring if the client requests a second one.
     has_control: AtomicBool,
-    /// Current presentation hint: `true` => async (tearing acceptable).
-    prefer_tearing: AtomicBool,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct TearingControlCachedState {
+    prefer_tearing: bool,
+}
+
+impl Cacheable for TearingControlCachedState {
+    fn commit(&mut self, _dh: &DisplayHandle) -> Self {
+        *self
+    }
+
+    fn merge_into(self, into: &mut Self, _dh: &DisplayHandle) {
+        *into = self;
+    }
 }
 
 /// Manager state for the `wp_tearing_control_manager_v1` global.
@@ -67,14 +80,15 @@ pub struct TearingControlData {
 /// Returns whether the surface's client hinted that tearing (async page flips)
 /// is acceptable for its content (`wp_tearing_control_v1` `async` hint).
 ///
-/// Defaults to `false` (vsync) for surfaces without a tearing control.
+/// Defaults to `false` (vsync). Hint changes and control destruction take effect
+/// on the next applicable surface commit.
 pub fn surface_prefers_tearing(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
         states
-            .data_map
-            .get::<TearingControlSurfaceData>()
-            .map(|data| data.prefer_tearing.load(Ordering::Relaxed))
-            .unwrap_or(false)
+            .cached_state
+            .get::<TearingControlCachedState>()
+            .current()
+            .prefer_tearing
     })
 }
 
@@ -88,9 +102,19 @@ fn with_surface_data<T>(surface: &WlSurface, f: impl FnOnce(&TearingControlSurfa
 }
 
 fn reset_surface_hint(surface: &WlSurface) {
+    set_pending_hint(surface, false);
     with_surface_data(surface, |data| {
-        data.prefer_tearing.store(false, Ordering::Relaxed);
         data.has_control.store(false, Ordering::Relaxed);
+    });
+}
+
+fn set_pending_hint(surface: &WlSurface, prefer_tearing: bool) {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<TearingControlCachedState>()
+            .pending()
+            .prefer_tearing = prefer_tearing;
     });
 }
 
@@ -171,11 +195,7 @@ where
         match request {
             wp_tearing_control_v1::Request::SetPresentationHint { hint } => {
                 let prefer_tearing = matches!(hint, WEnum::Value(PresentationHint::Async));
-                with_surface_data(&data.surface, |surface_data| {
-                    surface_data
-                        .prefer_tearing
-                        .store(prefer_tearing, Ordering::Relaxed);
-                });
+                set_pending_hint(&data.surface, prefer_tearing);
             }
             wp_tearing_control_v1::Request::Destroy => {
                 reset_surface_hint(&data.surface);
