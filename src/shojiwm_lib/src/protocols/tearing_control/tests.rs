@@ -270,3 +270,44 @@ fn synchronized_subsurface_hint_waits_for_parent_commit() {
     test.sync();
     assert!(!test.prefers_tearing(1));
 }
+
+#[test]
+fn uncommitted_requests_stay_out_of_synchronized_child_snapshot() {
+    let mut test = TestClient::new();
+    let parent = test.surface();
+    let child = test.surface();
+    let _subsurface = test
+        .subcompositor
+        .get_subsurface(&child, &parent, &test.queue.handle(), ());
+    let control = test.control(&child);
+    control.set_presentation_hint(PresentationHint::Async);
+    child.commit();
+    control.set_presentation_hint(PresentationHint::Vsync);
+    parent.commit();
+    test.sync();
+    assert!(
+        test.prefers_tearing(1),
+        "uncommitted hint leaked into the parent commit"
+    );
+    child.commit();
+    parent.commit();
+    test.sync();
+    assert!(!test.prefers_tearing(1));
+
+    control.set_presentation_hint(PresentationHint::Async);
+    child.commit();
+    parent.commit();
+    test.sync();
+    assert!(test.prefers_tearing(1));
+    control.destroy();
+    parent.commit();
+    test.sync();
+    assert!(
+        test.prefers_tearing(1),
+        "uncommitted reset leaked into the parent commit"
+    );
+    child.commit();
+    parent.commit();
+    test.sync();
+    assert!(!test.prefers_tearing(1));
+}

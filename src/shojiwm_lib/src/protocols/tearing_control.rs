@@ -23,7 +23,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
-use smithay::wayland::compositor::{Cacheable, with_states};
+use smithay::wayland::compositor::{Cacheable, add_pre_commit_hook, with_states};
 
 const VERSION: u32 = 1;
 
@@ -36,6 +36,9 @@ struct TearingControlSurfaceData {
     /// A `wp_tearing_control_v1` already exists for this surface. The protocol
     /// requires erroring if the client requests a second one.
     has_control: AtomicBool,
+    commit_hook_registered: AtomicBool,
+    /// The hint last requested, moved into the cached state on commit.
+    pending_prefer_tearing: AtomicBool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -109,12 +112,35 @@ fn reset_surface_hint(surface: &WlSurface) {
 }
 
 fn set_pending_hint(surface: &WlSurface, prefer_tearing: bool) {
-    with_states(surface, |states| {
-        states
-            .cached_state
-            .get::<TearingControlCachedState>()
-            .pending()
-            .prefer_tearing = prefer_tearing;
+    with_surface_data(surface, |data| {
+        data.pending_prefer_tearing
+            .store(prefer_tearing, Ordering::Relaxed);
+    });
+}
+
+fn register_surface_commit_hook<D: 'static>(surface: &WlSurface) {
+    let already_registered = with_surface_data(surface, |data| {
+        data.commit_hook_registered.swap(true, Ordering::Relaxed)
+    });
+    if already_registered {
+        return;
+    }
+    add_pre_commit_hook::<D, _>(surface, |_, _, surface| {
+        with_states(surface, |states| {
+            let prefer_tearing = states
+                .data_map
+                .get::<TearingControlSurfaceData>()
+                .unwrap()
+                .pending_prefer_tearing
+                .load(Ordering::Relaxed);
+            // Smithay can snapshot synchronized children again on a parent commit.
+            // Keep newer client requests out of that snapshot until the child's commit.
+            states
+                .cached_state
+                .get::<TearingControlCachedState>()
+                .pending()
+                .prefer_tearing = prefer_tearing;
+        });
     });
 }
 
@@ -154,6 +180,7 @@ where
     ) {
         match request {
             wp_tearing_control_manager_v1::Request::GetTearingControl { id, surface } => {
+                register_surface_commit_hook::<D>(&surface);
                 // The new object must always be initialised to consume the id,
                 // even on the error path (the offending client is then killed).
                 let already_present = with_surface_data(&surface, |data| {
