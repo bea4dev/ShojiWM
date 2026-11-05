@@ -3481,7 +3481,9 @@ export interface DebugController {
 
   /**
    * Enable or disable the built-in timescope profiler. Disabling after it was
-   * enabled dumps `summary.txt` and `report.html` under `~/shoji_wm/logs/`.
+   * enabled dumps `summary.txt` and `report.html` in the session log directory:
+   * `$XDG_STATE_HOME/shoji_wm/logs/`, defaulting to
+   * `~/.local/state/shoji_wm/logs/`, or `SHOJI_LOG_DIR` when set.
    */
   enableProfile(enabled: boolean): void;
 

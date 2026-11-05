@@ -20,6 +20,9 @@ use std::{
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+#[cfg(test)]
+mod log_path_tests;
+
 pub mod activation_environment;
 pub mod backend;
 pub mod backlight;
@@ -423,9 +426,30 @@ fn prune_rotated_logs(log_dir: &Path, retention: &LogRetention) {
 }
 
 fn shoji_log_dir() -> PathBuf {
-    std::env::var_os("HOME")
+    resolve_log_dir(
+        std::env::var_os("SHOJI_LOG_DIR"),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn resolve_log_dir(
+    log_dir: Option<std::ffi::OsString>,
+    state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(log_dir) = log_dir.filter(|path| !path.is_empty()) {
+        return PathBuf::from(log_dir);
+    }
+    state_home
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| {
+            home.map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("state")
+        })
         .join("shoji_wm")
         .join("logs")
 }

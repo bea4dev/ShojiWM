@@ -4,6 +4,19 @@ sidebar_position: 6
 
 # Processes & Environment
 
+## Session logs
+
+Session logs and Timescope profiles are stored in `$XDG_STATE_HOME/shoji_wm/logs/`,
+with `~/.local/state/shoji_wm/logs/` as the default. An empty or relative
+`XDG_STATE_HOME` is ignored. Set `SHOJI_LOG_DIR` before starting the compositor
+to override the complete directory; a relative override is resolved from its
+working directory. An empty override is ignored.
+
+The current session log is `latest.log`. Rotation and retention apply within
+the selected directory. The default-path change does not migrate or delete
+files under `~/shoji_wm/logs/`. Set `SHOJI_LOG_DIR` to that path to keep using
+it; normal rotation and retention then apply there.
+
 ## Spawning processes
 
 `COMPOSITOR.process` launches external programs. There are three methods,

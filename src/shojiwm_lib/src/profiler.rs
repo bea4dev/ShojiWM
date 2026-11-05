@@ -60,7 +60,7 @@ fn dump(reason: &'static str) {
 }
 
 fn rotate_latest_profile_dir() -> PathBuf {
-    let log_dir = log_dir();
+    let log_dir = crate::shoji_log_dir();
     let latest = log_dir.join("timescope-latest");
     if !latest.exists() {
         return latest;
@@ -92,14 +92,6 @@ fn rotate_latest_profile_dir() -> PathBuf {
     }
 
     latest
-}
-
-fn log_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("shoji_wm")
-        .join("logs")
 }
 
 fn timestamp_millis() -> u128 {
