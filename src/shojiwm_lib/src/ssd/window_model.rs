@@ -372,6 +372,12 @@ pub enum WindowActivateRequestSourceSnapshot {
     Keybind,
 }
 
+impl WindowActivateRequestSourceSnapshot {
+    pub(crate) fn permits_background_focus(self) -> bool {
+        matches!(self, Self::Api | Self::Keybind)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowMaximizeRequestEventSnapshot {
@@ -1323,7 +1329,16 @@ fn anchor_to_edge_snapshot(anchor: WlrAnchor) -> Option<LayerEdgeSnapshot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PointerHitTargetSnapshot, WaylandWindowAction};
+    use super::{PointerHitTargetSnapshot, WaylandWindowAction, WindowActivateRequestSourceSnapshot};
+
+    #[test]
+    fn background_activation_requires_desktop_control() {
+        use WindowActivateRequestSourceSnapshot::*;
+        assert!(!XdgActivation.permits_background_focus());
+        assert!(!Xwayland.permits_background_focus());
+        assert!(Api.permits_background_focus());
+        assert!(Keybind.permits_background_focus());
+    }
 
     #[test]
     fn pointer_hit_targets_serialize_for_runtime_events() {
