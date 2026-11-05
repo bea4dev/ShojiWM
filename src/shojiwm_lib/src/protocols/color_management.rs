@@ -2,16 +2,14 @@
 //!
 //! Advertises the compositor's color capabilities, exposes per-output image
 //! descriptions, and records per-surface parametric image descriptions in
-//! the surface `data_map` (same passive pattern as `tearing_control.rs`).
+//! double-buffered surface state.
 //!
 //! Scope: parametric-only (no ICC), perceptual render intent, sRGB always;
 //! PQ/BT.2020 entries are added when the `SHOJI_HDR_OUTPUTS` experiment is
 //! enabled (`crate::color::hdr_experiment_enabled`).
 //!
-//! Note: the protocol specifies `set_image_description` as double-buffered
-//! (applied on `wl_surface.commit`). We apply it immediately instead — the
-//! same simplification `tearing_control.rs` documents; clients set this
-//! once before their first commit in practice.
+//! Surface descriptions take effect with the associated surface commit,
+//! including synchronized subsurface transactions.
 
 use std::sync::{
     Mutex,
@@ -35,13 +33,16 @@ use smithay::reexports::wayland_server::{
     backend::ClientId,
     protocol::{wl_output::WlOutput, wl_surface::WlSurface},
 };
-use smithay::wayland::compositor::{SurfaceData, with_states};
+use smithay::wayland::compositor::{Cacheable, SurfaceData, add_pre_commit_hook, with_states};
 
 use crate::color::{
     ColorPrimaries, ImageDescription, Luminances, TransferCharacteristics, hdr_experiment_enabled,
 };
 
 const VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests;
 
 /// Compositor-side lookups the protocol cannot answer from surface state.
 pub trait ColorManagementHandler {
@@ -101,9 +102,56 @@ pub struct ColorSurfaceData {
     /// A `wp_color_management_surface_v1` already exists for this surface;
     /// the protocol requires erroring on a second one.
     has_surface_object: AtomicBool,
-    /// Committed image description; `None` => untagged (compositor assumes
-    /// sRGB).
-    description: Mutex<Option<ImageDescription>>,
+    commit_hook_registered: AtomicBool,
+    pending_description: Mutex<Option<ImageDescription>>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ColorSurfaceCachedState {
+    description: Option<ImageDescription>,
+}
+
+impl Cacheable for ColorSurfaceCachedState {
+    fn commit(&mut self, _dh: &DisplayHandle) -> Self {
+        *self
+    }
+
+    fn merge_into(self, into: &mut Self, _dh: &DisplayHandle) {
+        *into = self;
+    }
+}
+
+fn set_pending_description(surface: &WlSurface, description: Option<ImageDescription>) {
+    with_color_surface_data(surface, |data| {
+        *data.pending_description.lock().unwrap() = description;
+    });
+}
+
+fn register_surface_commit_hook<D: 'static>(surface: &WlSurface) {
+    let already_registered = with_color_surface_data(surface, |data| {
+        data.commit_hook_registered.swap(true, Ordering::Relaxed)
+    });
+    if already_registered {
+        return;
+    }
+    add_pre_commit_hook::<D, _>(surface, |_, _, surface| {
+        with_states(surface, |states| {
+            let description = *states
+                .data_map
+                .get::<ColorSurfaceData>()
+                .unwrap()
+                .pending_description
+                .lock()
+                .unwrap();
+            // Smithay can snapshot synchronized children again on a parent commit.
+            // Keep newer client requests out of that snapshot until the child's commit.
+            states
+                .cached_state
+                .get::<ColorSurfaceCachedState>()
+                .pending()
+                .description = description;
+        });
+    });
 }
 
 fn with_color_surface_data<T>(surface: &WlSurface, f: impl FnOnce(&ColorSurfaceData) -> T) -> T {
@@ -143,9 +191,10 @@ pub fn any_surface_tagged() -> bool {
 /// needs, so there is never a reason to lock again.
 pub fn image_description_from_states(states: &SurfaceData) -> Option<ImageDescription> {
     states
-        .data_map
-        .get::<ColorSurfaceData>()
-        .and_then(|data| *data.description.lock().unwrap())
+        .cached_state
+        .get::<ColorSurfaceCachedState>()
+        .current()
+        .description
 }
 
 /// Render-side read: the surface's committed image description, or `None`
@@ -397,6 +446,7 @@ where
                 state.color_management_state().outputs.push(object);
             }
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
+                register_surface_commit_hook::<D>(&surface);
                 // Always init to consume the id, even on the error path.
                 let already_present = with_color_surface_data(&surface, |data| {
                     data.has_surface_object.swap(true, Ordering::Relaxed)
@@ -536,8 +586,8 @@ fn reset_surface_color(surface: &WlSurface) {
     }
     with_color_surface_data(surface, |data| {
         data.has_surface_object.store(false, Ordering::Relaxed);
-        *data.description.lock().unwrap() = None;
     });
+    set_pending_description(surface, None);
 }
 
 impl<D> Dispatch<WpColorManagementSurfaceV1, ColorSurfaceObjData, D> for ColorManagementState
@@ -582,16 +632,12 @@ where
                     );
                     return;
                 };
-                with_color_surface_data(&data.surface, |surface_data| {
-                    *surface_data.description.lock().unwrap() = Some(description);
-                });
+                set_pending_description(&data.surface, Some(description));
                 ANY_SURFACE_TAGGED.store(true, Ordering::Relaxed);
             }
             wp_color_management_surface_v1::Request::UnsetImageDescription => {
                 if data.surface.is_alive() {
-                    with_color_surface_data(&data.surface, |surface_data| {
-                        *surface_data.description.lock().unwrap() = None;
-                    });
+                    set_pending_description(&data.surface, None);
                 }
             }
             wp_color_management_surface_v1::Request::Destroy => {
