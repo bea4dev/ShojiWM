@@ -4,7 +4,9 @@
 //! (outputs go through ext-image-copy-capture), naming them by their
 //! `zwlr_foreign_toplevel_handle_v1` (`capture_toplevel_with_wlr_toplevel_handle`,
 //! version 2). Version 1's `capture_toplevel` names a window by its address in
-//! Hyprland, which means nothing here, so those frames fail.
+//! Hyprland; here the `handle` is the window's ShojiWM id, the number behind
+//! the `0x…` string the config IPC reports as `window.id`, so shells written
+//! for Hyprland's address can pass that id unchanged.
 //!
 //! Each frame advertises one wl_shm Xrgb8888 buffer of the window's size, then
 //! `copy` queues it in [`HyprlandToplevelExportState`] for the backend's next
@@ -23,7 +25,6 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::utils::{Buffer as BufferCoords, Size};
 use smithay::wayland::shm;
-use wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 use crate::wlr_foreign_toplevel::WlrForeignToplevelHandle;
 
@@ -67,6 +68,13 @@ pub trait HyprlandToplevelExportHandler {
         &self,
         handle: &WlrForeignToplevelHandle,
     ) -> Option<Size<i32, BufferCoords>>;
+
+    /// The live foreign-toplevel handle of the window whose ShojiWM id (as
+    /// formatted by [`window_id_from_handle`]) is `window_id`.
+    fn hyprland_toplevel_export_handle_for_window_id(
+        &self,
+        window_id: &str,
+    ) -> Option<WlrForeignToplevelHandle>;
 
     /// A copy was queued. It needs a render pass even when nothing is drawn
     /// anew: the window may have changed since the previous copy, and an
@@ -204,22 +212,24 @@ where
             hyprland_toplevel_export_manager_v1::Request::CaptureToplevel {
                 frame,
                 overlay_cursor,
-                handle: _,
-            } => (frame, overlay_cursor, None),
+                handle,
+            } => {
+                let window_id = window_id_from_handle(handle);
+                let handle = state.hyprland_toplevel_export_handle_for_window_id(&window_id);
+                (frame, overlay_cursor, handle)
+            }
             hyprland_toplevel_export_manager_v1::Request::CaptureToplevelWithWlrToplevelHandle {
                 frame,
                 overlay_cursor,
                 handle,
-            } => (frame, overlay_cursor, Some(handle)),
+            } => {
+                let handle = handle.data::<WlrForeignToplevelHandle>().cloned();
+                (frame, overlay_cursor, handle)
+            }
             hyprland_toplevel_export_manager_v1::Request::Destroy => return,
         };
 
-        let handle = handle
-            .as_ref()
-            .and_then(|handle: &ZwlrForeignToplevelHandleV1| {
-                handle.data::<WlrForeignToplevelHandle>().cloned()
-            })
-            .filter(|handle| !handle.is_closed());
+        let handle = handle.filter(|handle| !handle.is_closed());
         let size = handle
             .as_ref()
             .and_then(|handle| state.hyprland_toplevel_export_size(handle));
@@ -340,6 +350,23 @@ where
             .hyprland_toplevel_export_state()
             .pending
             .retain(|pending| pending.frame != *frame);
+    }
+}
+
+/// The ShojiWM window id a version 1 `capture_toplevel` `handle` names, in the
+/// `0x…` form the config IPC uses (`runtime_id_for_window`).
+fn window_id_from_handle(handle: u32) -> String {
+    format!("0x{handle:x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_id_from_handle;
+
+    #[test]
+    fn window_id_from_handle_matches_ipc_format() {
+        assert_eq!(window_id_from_handle(26), "0x1a");
+        assert_eq!(window_id_from_handle(0), "0x0");
     }
 }
 

@@ -501,7 +501,7 @@ impl WlrForeignToplevelManagerState {
         handle
     }
 
-    fn handle_for_window_id(&self, window_id: &str) -> Option<WlrForeignToplevelHandle> {
+    pub(crate) fn handle_for_window_id(&self, window_id: &str) -> Option<WlrForeignToplevelHandle> {
         self.handles
             .iter()
             .find(|handle| handle.window_id() == window_id && !handle.is_closed())
