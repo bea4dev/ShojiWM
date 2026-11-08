@@ -4588,7 +4588,7 @@ fn render_surface(
             surfaces,
             ..
         } = backend;
-        let (renderer, mut cross_gpu_scanout_renderer) = match render_backend {
+        let (renderer, cross_gpu_scanout_renderer) = match render_backend {
             Some(render_backend) => (&mut render_backend.renderer, Some(output_renderer)),
             None => (output_renderer, None),
         };
@@ -5375,7 +5375,7 @@ fn render_surface(
         // cursor motion even when both the game and the output are otherwise running fast.
         let mut fullscreen_root_buffer_details = None;
         let render_frame_result: Result<TtyRenderFrameResult, Box<dyn std::error::Error>> =
-            if let Some(scanout_renderer) = cross_gpu_scanout_renderer.as_deref_mut()
+            if let Some(scanout_renderer) = cross_gpu_scanout_renderer
                 && let Some(target) = surface.cross_gpu.as_mut()
             {
                 timescope::scope!("tty render_frame cross-gpu");
@@ -12541,10 +12541,7 @@ fn connector_connected(
                         node,
                     ),
                 };
-                match feedback {
-                    Err(err) => Err(Box::<dyn std::error::Error>::from(err)),
-                    Ok(feedback) => Ok((drm_output, feedback)),
-                }
+                feedback.map(|feedback| (drm_output, feedback))
             }
         }
     };
