@@ -5338,7 +5338,9 @@ fn winit_window_stack_elements(
             // fullscreen window is occluded; render it as a
             // bare surface tree + popups.
             if let Some(fullscreen_window) = fullscreen_scanout.as_ref() {
-                if window != fullscreen_window {
+                // The menus and tooltips of X11 programs (override-redirect) stay over it.
+                if window != fullscreen_window && !crate::state::window_is_override_redirect(window)
+                {
                     continue;
                 }
                 let Some(window_location) = state.space.element_location(window) else {

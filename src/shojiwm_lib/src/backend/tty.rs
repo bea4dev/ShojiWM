@@ -14084,7 +14084,10 @@ fn tty_window_stack_elements(
             // popups (no decorations, no effects) so the frame can collapse
             // to a single scanout-capable element.
             if let Some(fullscreen_fast_path_window) = fullscreen_window.as_ref() {
-                if window != fullscreen_fast_path_window {
+                // The menus and tooltips of X11 programs (override-redirect) stay over it.
+                if window != fullscreen_fast_path_window
+                    && !crate::state::window_is_override_redirect(window)
+                {
                     continue;
                 }
                 let Some(window_location) = space.element_location(window) else {
