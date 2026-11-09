@@ -117,7 +117,7 @@ impl WlrLayerShellHandler for ShojiWM {
             let mut map = layer_map_for_output(&output);
             map.unmap_layer(&layer);
             drop(map);
-            self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+            self.update_keyboard_focus_after_destroy(layer.wl_surface());
             self.schedule_redraw();
         } else if let Some(index) = self
             .pending_layer_surfaces

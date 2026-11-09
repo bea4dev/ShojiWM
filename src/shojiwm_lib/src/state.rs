@@ -1529,6 +1529,22 @@ impl ShojiWM {
         }
     }
 
+    /// [`Self::update_keyboard_focus`] for when the role object of `surface` has just been
+    /// destroyed. When a whole client goes away, libwayland destroys its objects in id order, so
+    /// the surface can already be dead while the client's `wl_keyboard` is still alive; taking the
+    /// focus from it then sends `wl_keyboard.leave` naming a dead object, which wayland-backend
+    /// panics on inside the destructor, aborting the compositor. Once the client is gone its
+    /// keyboards are gone too, so in that case the focus moves after this dispatch.
+    pub fn update_keyboard_focus_after_destroy(&mut self, surface: &WlSurface) {
+        if surface.alive() {
+            self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+        } else {
+            self.loop_handle.insert_idle(|state| {
+                state.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+            });
+        }
+    }
+
     fn should_defer_initial_keyboard_focus(&self, focus: Option<&WlSurface>) -> bool {
         if self.pending_initial_focus_window_ids.is_empty() {
             return false;

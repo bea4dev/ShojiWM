@@ -269,7 +269,7 @@ impl XdgShellHandler for ShojiWM {
         // else on the close path touches keyboard focus, so the dead target
         // used to survive until some unrelated event ran
         // `update_keyboard_focus` — and no replacement was ever chosen.
-        self.update_keyboard_focus(smithay::utils::SERIAL_COUNTER.next_serial());
+        self.update_keyboard_focus_after_destroy(wl_surface);
         self.remove_window_decoration_negotiation(wl_surface);
         self.request_tty_maintenance("xdg-toplevel-destroyed");
         self.schedule_redraw();
