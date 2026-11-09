@@ -68,8 +68,8 @@ use smithay::{
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{
-            data_device::DataDeviceState, primary_selection::PrimarySelectionState,
-            wlr_data_control::DataControlState,
+            data_device::DataDeviceState, ext_data_control::DataControlState as ExtDataControlState,
+            primary_selection::PrimarySelectionState, wlr_data_control::DataControlState,
         },
         session_lock::{LockSurface, SessionLockManagerState},
         shell::kde::decoration::KdeDecorationState,
@@ -342,6 +342,9 @@ pub struct ShojiWM {
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub data_control_state: DataControlState,
+    /// `ext-data-control-v1`, the standard form of `wlr-data-control`:
+    /// clipboard managers such as Vicinae's history bind only this one.
+    pub ext_data_control_state: ExtDataControlState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -1667,6 +1670,8 @@ impl ShojiWM {
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         let data_control_state =
             DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
+        let ext_data_control_state =
+            ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -1821,6 +1826,7 @@ impl ShojiWM {
             data_device_state,
             primary_selection_state,
             data_control_state,
+            ext_data_control_state,
             popups,
             seat,
 
