@@ -215,14 +215,10 @@ fn apply_runtime_overrides(args: &CommonArgs) {
 }
 
 fn sanitize_inherited_compositor_environment() {
-    for key in [
-        "NIRI_SOCKET",
-        "HYPRLAND_INSTANCE_SIGNATURE",
-        "SWAYSOCK",
-        "I3SOCK",
-        "LABWC_PID",
-    ] {
-        process_env::set_var(key, "");
+    // Removed, not set to "": programs such as Vicinae check whether
+    // HYPRLAND_INSTANCE_SIGNATURE is set at all and then drive hyprctl.
+    for key in runtime_process::FOREIGN_COMPOSITOR_ENV {
+        process_env::remove_var(key);
     }
 
     process_env::set_var("XDG_CURRENT_DESKTOP", "ShojiWM");
