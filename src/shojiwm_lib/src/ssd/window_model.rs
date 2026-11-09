@@ -999,6 +999,16 @@ impl ShojiWM {
         let transient_for = x11.is_transient_for();
         let parent_id = transient_for.map(|parent| format!("x11:{parent}"));
         let is_transient = parent_id.is_some() || x11.is_modal();
+        // An X11 client that draws its own frame (Steam, Electron programs, ...) says so
+        // through _MOTIF_WM_HINTS, with no decorations from the window manager. There is no
+        // negotiation for X11 windows, so this is their decoration state: the config sees a
+        // client-decorated window, as for xdg-decoration, and does not add a frame of its own.
+        let client_decorated = x11.is_decorated();
+        let decoration_mode = if client_decorated {
+            WindowDecorationModeSnapshot::Client
+        } else {
+            WindowDecorationModeSnapshot::Server
+        };
 
         // Active window, not raw keyboard focus — see the xdg-toplevel branch
         // above and `ShojiWM::activated_window_surface`.
@@ -1050,7 +1060,9 @@ impl ShojiWM {
             is_xwayland: true,
             decoration: WindowDecorationStateSnapshot {
                 protocol: WindowDecorationProtocolSnapshot::Xwayland,
-                ..WindowDecorationStateSnapshot::default()
+                client_preference: client_decorated.then_some(WindowDecorationModeSnapshot::Client),
+                configured_mode: decoration_mode,
+                mode: decoration_mode,
             },
             size_constraints,
             is_resizable,

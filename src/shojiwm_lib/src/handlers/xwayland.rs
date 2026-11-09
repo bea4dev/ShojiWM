@@ -190,13 +190,20 @@ impl XwmHandler for ShojiWM {
         &mut self,
         _xwm: XwmId,
         window: X11Surface,
-        _property: smithay::xwayland::xwm::WmWindowProperty,
+        property: smithay::xwayland::xwm::WmWindowProperty,
     ) {
         // Title/class changes arrive as X11 property updates. Re-read and
         // push to ext-foreign-toplevel-list-v1 clients; sync is cheap when
         // nothing changed.
         if let Some(elem) = self.find_x11_window(&window) {
             self.sync_foreign_toplevel(&elem);
+            // The Motif hints decide whether the client draws its own frame (the snapshot's
+            // decoration state): the decoration is evaluated again when they change.
+            if property == smithay::xwayland::xwm::WmWindowProperty::MotifHints {
+                let window_id = self.snapshot_window(&elem).id;
+                self.snapshot_dirty_window_ids.insert(window_id);
+                self.schedule_redraw();
+            }
         }
     }
 
