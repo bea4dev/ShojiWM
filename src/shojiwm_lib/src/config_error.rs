@@ -197,6 +197,7 @@ fn emit_label(
         text_align: None,
         text_overflow: None,
         line_height: Some(rect.height as f32),
+        text_shadow: None,
         raster_scale: scale.x.abs().max(1.0),
     };
     let Some(label) = rasterizer.render_label(&spec) else {

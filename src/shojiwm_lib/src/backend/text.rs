@@ -79,6 +79,8 @@ pub struct LabelSpec {
     /// `"ellipsis"`: text wider than the label ends in "…".
     pub text_overflow: Option<String>,
     pub line_height: Option<f32>,
+    /// A copy of the text, offset, blurred and tinted, drawn under it.
+    pub text_shadow: Option<crate::ssd::TextShadow>,
     /// Exact rasterization scale (the layout scale), so the buffer maps
     /// one-to-one onto the node's physical pixels.
     pub raster_scale: f64,
@@ -239,6 +241,52 @@ impl TextRasterizer {
         let y_offset = ((target_height as f32 - text_height) * 0.5).max(0.0);
 
         let mut pixels = vec![0u8; (target_width * target_height * 4) as usize];
+
+        // The shadow first, under the text: the glyphs' coverage, offset,
+        // blurred, then tinted.
+        if let Some(shadow) = spec.text_shadow.filter(|shadow| shadow.color.a > 0) {
+            let dx = (shadow.offset_x * f64::from(raster_scale)).round() as i32;
+            let dy = (shadow.offset_y * f64::from(raster_scale)).round() as i32;
+            let mut mask = vec![0f32; (target_width * target_height) as usize];
+            {
+                let mut buffer = buffer.borrow_with(&mut self.font_system);
+                let full = CosmicColor::rgba(255, 255, 255, 255);
+                buffer.draw(&mut self.swash_cache, full, |x, y, w, h, color| {
+                    let coverage = f32::from(color.a()) / 255.0;
+                    for off_y in 0..h as i32 {
+                        for off_x in 0..w as i32 {
+                            let px = x + off_x + dx;
+                            let py = y + off_y + y_offset as i32 + dy;
+                            if px < 0 || py < 0 || px >= target_width || py >= target_height {
+                                continue;
+                            }
+                            let cell = &mut mask[(py * target_width + px) as usize];
+                            *cell = (*cell + coverage).min(1.0);
+                        }
+                    }
+                });
+            }
+            // CSS: the Gaussian's sigma is half the blur radius.
+            let sigma = shadow.blur * f64::from(raster_scale) / 2.0;
+            blur_mask(&mut mask, target_width, target_height, sigma);
+            for py in 0..target_height {
+                for px in 0..target_width {
+                    let coverage = mask[(py * target_width + px) as usize];
+                    if coverage <= 0.0 {
+                        continue;
+                    }
+                    let alpha = (coverage * f32::from(shadow.color.a)).round().min(255.0) as u8;
+                    blend_pixel(
+                        &mut pixels,
+                        target_width,
+                        px,
+                        py,
+                        (shadow.color.r, shadow.color.g, shadow.color.b, alpha),
+                    );
+                }
+            }
+        }
+
         let text_color = CosmicColor::rgba(spec.color.r, spec.color.g, spec.color.b, spec.color.a);
         {
             let mut buffer = buffer.borrow_with(&mut self.font_system);
@@ -395,6 +443,21 @@ pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
     spec.text_align.hash(&mut hasher);
     spec.text_overflow.hash(&mut hasher);
     spec.line_height.map(f32::to_bits).hash(&mut hasher);
+    spec.text_shadow
+        .map(|shadow| {
+            (
+                shadow.offset_x.to_bits(),
+                shadow.offset_y.to_bits(),
+                shadow.blur.to_bits(),
+                (
+                    shadow.color.r,
+                    shadow.color.g,
+                    shadow.color.b,
+                    shadow.color.a,
+                ),
+            )
+        })
+        .hash(&mut hasher);
     spec.raster_scale.to_bits().hash(&mut hasher);
     spec.font_family.hash(&mut hasher);
     spec.font_weight
@@ -705,6 +768,52 @@ fn alignment_for_spec(text_align: Option<&str>) -> Option<Align> {
     }
 }
 
+/// Blurs a coverage mask in place with three box blurs, horizontal then
+/// vertical, which together come close to a Gaussian of this sigma (in
+/// pixels). A sigma under half a pixel leaves the mask as it is.
+fn blur_mask(mask: &mut [f32], width: i32, height: i32, sigma: f64) {
+    if sigma < 0.5 || width <= 0 || height <= 0 {
+        return;
+    }
+    // Three boxes of width 2r + 1 add up to a variance of (4r^2 + 4r) / 4.
+    let radius = (((4.0 * sigma * sigma + 1.0).sqrt() - 1.0) / 2.0)
+        .round()
+        .max(1.0) as i32;
+    let (width, height) = (width as usize, height as usize);
+    let mut line = Vec::new();
+    for _ in 0..3 {
+        for y in 0..height {
+            line.clear();
+            line.extend_from_slice(&mask[y * width..(y + 1) * width]);
+            box_blur_line(&line, radius, |x, value| mask[y * width + x] = value);
+        }
+        for x in 0..width {
+            line.clear();
+            line.extend((0..height).map(|y| mask[y * width + x]));
+            box_blur_line(&line, radius, |y, value| mask[y * width + x] = value);
+        }
+    }
+}
+
+/// One box blur of radius `radius` along a line; outside the line counts as
+/// empty.
+fn box_blur_line(line: &[f32], radius: i32, mut write: impl FnMut(usize, f32)) {
+    let len = line.len() as i32;
+    let at = |index: i32| {
+        if index < 0 || index >= len {
+            0.0
+        } else {
+            line[index as usize]
+        }
+    };
+    let span = (2 * radius + 1) as f32;
+    let mut sum: f32 = (-radius..=radius).map(at).sum();
+    for index in 0..len {
+        write(index as usize, sum / span);
+        sum += at(index + radius + 1) - at(index - radius);
+    }
+}
+
 fn blend_pixel(pixels: &mut [u8], width: i32, x: i32, y: i32, rgba: (u8, u8, u8, u8)) {
     let index = ((y * width + x) * 4) as usize;
     let (src_r, src_g, src_b, src_a) = rgba;
@@ -762,10 +871,29 @@ fn intersect_logical_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::ellipsize;
+    use super::{blur_mask, ellipsize};
 
     fn at_most(chars: usize) -> impl FnMut(&str) -> bool {
         move |text: &str| text.chars().count() <= chars
+    }
+
+    #[test]
+    fn blur_mask_keeps_the_total_and_spreads_it() {
+        let mut mask = vec![0.0f32; 21 * 21];
+        mask[10 * 21 + 10] = 1.0;
+        blur_mask(&mut mask, 21, 21, 2.0);
+        let total: f32 = mask.iter().sum();
+        assert!((total - 1.0).abs() < 1e-3, "total {total}");
+        assert!(mask[10 * 21 + 10] < 0.2);
+        assert!(mask[10 * 21 + 12] > 0.0);
+    }
+
+    #[test]
+    fn blur_mask_leaves_a_sharp_shadow_alone() {
+        let mut mask = vec![0.0f32; 9];
+        mask[4] = 1.0;
+        blur_mask(&mut mask, 3, 3, 0.0);
+        assert_eq!(mask[4], 1.0);
     }
 
     #[test]

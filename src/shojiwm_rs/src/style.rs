@@ -371,6 +371,7 @@ impl Style {
             text_overflow: None,
             line_height: read(&self.line_height),
             box_shadow: read(&self.box_shadow).unwrap_or_default(),
+            text_shadow: None,
             paint: None,
             overlay: None,
         }
