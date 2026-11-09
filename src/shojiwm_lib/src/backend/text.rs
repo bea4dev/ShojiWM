@@ -55,8 +55,9 @@ pub struct CachedDecorationLabel {
     pub clip_radius_precise: Option<f32>,
     pub text: String,
     pub color: Color,
-    /// Physical pixels the buffer reaches past `rect` on each side: room for
-    /// the text shadow, which is not cut at the label's box.
+    /// Logical pixels the buffer reaches past `rect` on each side: room for
+    /// the text shadow, which is not cut at the label's box. Whole logical
+    /// pixels, so the raster and the output scale both map it exactly.
     pub overflow: i32,
     pub buffer: MemoryRenderBuffer,
 }
@@ -247,7 +248,7 @@ impl TextRasterizer {
 
         // The buffer reaches `pad` past the box on each side, for the shadow;
         // the text keeps its place in the box.
-        let pad = shadow_overflow(spec);
+        let pad = (f64::from(shadow_overflow(spec)) * f64::from(raster_scale)).round() as i32;
         let buffer_width = target_width + 2 * pad;
         let buffer_height = target_height + 2 * pad;
         let mut pixels = vec![0u8; (buffer_width * buffer_height * 4) as usize];
@@ -664,7 +665,14 @@ pub(crate) fn memory_text_element(
     scale: OutputScale<f64>,
     alpha: f32,
 ) -> Result<Option<DecorationTextureElements>, GlesError> {
-    if intersect_logical_rect(label.rect, output_geo).is_none() {
+    // The box and its shadow's reach: a glow may cross onto this output.
+    let reach = LogicalRect::new(
+        label.rect.x - label.overflow,
+        label.rect.y - label.overflow,
+        label.rect.width + 2 * label.overflow,
+        label.rect.height + 2 * label.overflow,
+    );
+    if intersect_logical_rect(reach, output_geo).is_none() {
         return Ok(None);
     }
 
@@ -688,12 +696,15 @@ pub(crate) fn memory_text_element(
                 scale,
             )
         });
-    // The buffer reaches `overflow` past the box on each side (the shadow).
+    // The buffer reaches `overflow` logical pixels past the box on each side
+    // (the shadow), at this output's scale.
+    let grow_x = (f64::from(label.overflow) * scale.x).round() as i32;
+    let grow_y = (f64::from(label.overflow) * scale.y).round() as i32;
     let physical = Rectangle::new(
-        physical.loc - Point::from((label.overflow, label.overflow)),
-        physical.size + Size::from((2 * label.overflow, 2 * label.overflow)),
+        physical.loc - Point::from((grow_x, grow_y)),
+        physical.size + Size::from((2 * grow_x, 2 * grow_y)),
     );
-    let overflow_logical = f64::from(label.overflow) / label.raster_scale.max(0.0001);
+    let overflow_logical = f64::from(label.overflow);
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         physical.loc.to_f64(),
@@ -720,7 +731,7 @@ pub(crate) fn memory_text_element(
             element,
             scale,
             {
-                let grow = overflow_logical.ceil() as i32;
+                let grow = label.overflow;
                 LogicalRect::new(
                     label.rect.x - root_rect.x - grow,
                     label.rect.y - root_rect.y - grow,
@@ -800,17 +811,16 @@ fn alignment_for_spec(text_align: Option<&str>) -> Option<Align> {
     }
 }
 
-/// Physical pixels a label's buffer reaches past its box on each side so its
+/// Logical pixels a label's buffer reaches past its box on each side so its
 /// shadow is whole: the blur's reach (three sigmas, CSS's sigma being half
-/// the blur radius) plus the offset. 0 without a shadow.
+/// the blur radius), the spread and the offset, rounded up. 0 without a
+/// shadow.
 pub(crate) fn shadow_overflow(spec: &LabelSpec) -> i32 {
     let Some(shadow) = spec.text_shadow.filter(|shadow| shadow.color.a > 0) else {
         return 0;
     };
-    let scale = spec.raster_scale.max(0.0001);
-    let sigma = shadow.blur * scale / 2.0;
-    let offset = shadow.offset_x.abs().max(shadow.offset_y.abs()) * scale;
-    (3.0 * sigma + shadow.spread * scale + offset).ceil() as i32
+    let offset = shadow.offset_x.abs().max(shadow.offset_y.abs());
+    (1.5 * shadow.blur + shadow.spread + offset).ceil() as i32
 }
 
 /// Grows a coverage mask in place by `radius` pixels: each pixel takes the
@@ -981,12 +991,14 @@ mod tests {
         assert_eq!(shadow_overflow(&spec_with_shadow(None, 1.0)), 0);
         // sigma 3, three sigmas.
         assert_eq!(shadow_overflow(&spec_with_shadow(Some(glow), 1.0)), 9);
-        // In physical pixels: twice at scale 2, plus a 1 px offset.
+        // Logical pixels: the scale does not change it; the offset and the
+        // spread add to it, rounded up.
         let line = TextShadow {
             offset_y: 1.0,
+            spread: 0.5,
             ..glow
         };
-        assert_eq!(shadow_overflow(&spec_with_shadow(Some(line), 2.0)), 20);
+        assert_eq!(shadow_overflow(&spec_with_shadow(Some(line), 2.0)), 11);
     }
 
     #[test]
