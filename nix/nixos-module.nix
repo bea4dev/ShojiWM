@@ -176,7 +176,9 @@ in
       extraPortals =
         [ shojiPackage ]
         ++ lib.optional (cfg.portal.gtkFallback && gtkPortal != null) gtkPortal;
-      config.ShojiWM =
+      # xdg-desktop-portal reads <desktop>-portals.conf with the desktop name
+      # in lowercase, so this is shojiwm-portals.conf.
+      config.shojiwm =
         {
           "org.freedesktop.impl.portal.ScreenCast" = [ "shojiwm" ];
         }
