@@ -1626,6 +1626,9 @@ pub struct TextShadow {
     pub offset_y: f64,
     /// Blur radius (CSS semantics: the Gaussian sigma is half of it).
     pub blur: f64,
+    /// Grows the glyphs by this much before the blur, as `box-shadow`'s
+    /// spread grows its box: a dense glow rather than a faint halo.
+    pub spread: f64,
     pub color: Color,
 }
 

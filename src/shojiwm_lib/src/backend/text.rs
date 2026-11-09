@@ -30,7 +30,7 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::{Logical, Rectangle, Scale as OutputScale},
+    utils::{Logical, Point, Rectangle, Scale as OutputScale, Size},
 };
 
 thread_local! {
@@ -55,6 +55,9 @@ pub struct CachedDecorationLabel {
     pub clip_radius_precise: Option<f32>,
     pub text: String,
     pub color: Color,
+    /// Physical pixels the buffer reaches past `rect` on each side: room for
+    /// the text shadow, which is not cut at the label's box.
+    pub overflow: i32,
     pub buffer: MemoryRenderBuffer,
 }
 
@@ -140,6 +143,7 @@ impl TextRasterizer {
                 clip_radius_precise: None,
                 text: spec.text.clone(),
                 color: spec.color,
+                overflow: shadow_overflow(spec),
                 buffer: cached.buffer.clone(),
             });
         }
@@ -173,6 +177,7 @@ impl TextRasterizer {
             clip_radius_precise: None,
             text: spec.text.clone(),
             color: spec.color,
+            overflow: shadow_overflow(spec),
             buffer: MemoryRenderBuffer::from_slice(
                 &rendered.pixels,
                 Fourcc::Argb8888,
@@ -240,14 +245,19 @@ impl TextRasterizer {
             .fold(0.0f32, f32::max);
         let y_offset = ((target_height as f32 - text_height) * 0.5).max(0.0);
 
-        let mut pixels = vec![0u8; (target_width * target_height * 4) as usize];
+        // The buffer reaches `pad` past the box on each side, for the shadow;
+        // the text keeps its place in the box.
+        let pad = shadow_overflow(spec);
+        let buffer_width = target_width + 2 * pad;
+        let buffer_height = target_height + 2 * pad;
+        let mut pixels = vec![0u8; (buffer_width * buffer_height * 4) as usize];
 
         // The shadow first, under the text: the glyphs' coverage, offset,
         // blurred, then tinted.
         if let Some(shadow) = spec.text_shadow.filter(|shadow| shadow.color.a > 0) {
             let dx = (shadow.offset_x * f64::from(raster_scale)).round() as i32;
             let dy = (shadow.offset_y * f64::from(raster_scale)).round() as i32;
-            let mut mask = vec![0f32; (target_width * target_height) as usize];
+            let mut mask = vec![0f32; (buffer_width * buffer_height) as usize];
             {
                 let mut buffer = buffer.borrow_with(&mut self.font_system);
                 let full = CosmicColor::rgba(255, 255, 255, 255);
@@ -255,30 +265,32 @@ impl TextRasterizer {
                     let coverage = f32::from(color.a()) / 255.0;
                     for off_y in 0..h as i32 {
                         for off_x in 0..w as i32 {
-                            let px = x + off_x + dx;
-                            let py = y + off_y + y_offset as i32 + dy;
-                            if px < 0 || py < 0 || px >= target_width || py >= target_height {
+                            let px = x + off_x + dx + pad;
+                            let py = y + off_y + y_offset as i32 + dy + pad;
+                            if px < 0 || py < 0 || px >= buffer_width || py >= buffer_height {
                                 continue;
                             }
-                            let cell = &mut mask[(py * target_width + px) as usize];
+                            let cell = &mut mask[(py * buffer_width + px) as usize];
                             *cell = (*cell + coverage).min(1.0);
                         }
                     }
                 });
             }
+            let spread = (shadow.spread * f64::from(raster_scale)).round() as i32;
+            grow_mask(&mut mask, buffer_width, buffer_height, spread);
             // CSS: the Gaussian's sigma is half the blur radius.
             let sigma = shadow.blur * f64::from(raster_scale) / 2.0;
-            blur_mask(&mut mask, target_width, target_height, sigma);
-            for py in 0..target_height {
-                for px in 0..target_width {
-                    let coverage = mask[(py * target_width + px) as usize];
+            blur_mask(&mut mask, buffer_width, buffer_height, sigma);
+            for py in 0..buffer_height {
+                for px in 0..buffer_width {
+                    let coverage = mask[(py * buffer_width + px) as usize];
                     if coverage <= 0.0 {
                         continue;
                     }
                     let alpha = (coverage * f32::from(shadow.color.a)).round().min(255.0) as u8;
                     blend_pixel(
                         &mut pixels,
-                        target_width,
+                        buffer_width,
                         px,
                         py,
                         (shadow.color.r, shadow.color.g, shadow.color.b, alpha),
@@ -298,15 +310,21 @@ impl TextRasterizer {
                         if px < 0 || py < 0 || px >= target_width || py >= target_height {
                             continue;
                         }
-                        blend_pixel(&mut pixels, target_width, px, py, color.as_rgba_tuple());
+                        blend_pixel(
+                            &mut pixels,
+                            buffer_width,
+                            px + pad,
+                            py + pad,
+                            color.as_rgba_tuple(),
+                        );
                     }
                 }
             });
         }
 
         Some(RenderedLabelPixels {
-            width: target_width,
-            height: target_height,
+            width: buffer_width,
+            height: buffer_height,
             pixels,
         })
     }
@@ -449,6 +467,7 @@ pub fn hash_label_spec(spec: &LabelSpec) -> u64 {
                 shadow.offset_x.to_bits(),
                 shadow.offset_y.to_bits(),
                 shadow.blur.to_bits(),
+                shadow.spread.to_bits(),
                 (
                     shadow.color.r,
                     shadow.color.g,
@@ -669,6 +688,12 @@ pub(crate) fn memory_text_element(
                 scale,
             )
         });
+    // The buffer reaches `overflow` past the box on each side (the shadow).
+    let physical = Rectangle::new(
+        physical.loc - Point::from((label.overflow, label.overflow)),
+        physical.size + Size::from((2 * label.overflow, 2 * label.overflow)),
+    );
+    let overflow_logical = f64::from(label.overflow) / label.raster_scale.max(0.0001);
     let element = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         physical.loc.to_f64(),
@@ -694,12 +719,15 @@ pub(crate) fn memory_text_element(
             renderer,
             element,
             scale,
-            LogicalRect::new(
-                label.rect.x - root_rect.x,
-                label.rect.y - root_rect.y,
-                label.rect.width,
-                label.rect.height,
-            ),
+            {
+                let grow = overflow_logical.ceil() as i32;
+                LogicalRect::new(
+                    label.rect.x - root_rect.x - grow,
+                    label.rect.y - root_rect.y - grow,
+                    label.rect.width + 2 * grow,
+                    label.rect.height + 2 * grow,
+                )
+            },
             LogicalRect::new(
                 clip_rect.x - root_rect.x,
                 clip_rect.y - root_rect.y,
@@ -711,19 +739,23 @@ pub(crate) fn memory_text_element(
                 x: label
                     .rect_precise
                     .map(|rect| rect.x - root_rect.x as f32)
-                    .unwrap_or((label.rect.x - root_rect.x) as f32),
+                    .unwrap_or((label.rect.x - root_rect.x) as f32)
+                    - overflow_logical as f32,
                 y: label
                     .rect_precise
                     .map(|rect| rect.y - root_rect.y as f32)
-                    .unwrap_or((label.rect.y - root_rect.y) as f32),
+                    .unwrap_or((label.rect.y - root_rect.y) as f32)
+                    - overflow_logical as f32,
                 width: label
                     .rect_precise
                     .map(|rect| rect.width)
-                    .unwrap_or(label.rect.width as f32),
+                    .unwrap_or(label.rect.width as f32)
+                    + 2.0 * overflow_logical as f32,
                 height: label
                     .rect_precise
                     .map(|rect| rect.height)
-                    .unwrap_or(label.rect.height as f32),
+                    .unwrap_or(label.rect.height as f32)
+                    + 2.0 * overflow_logical as f32,
             }),
             label.clip_rect_precise.map(|clip_rect| PreciseLogicalRect {
                 x: clip_rect.x - root_rect.x as f32,
@@ -765,6 +797,48 @@ fn alignment_for_spec(text_align: Option<&str>) -> Option<Align> {
         Some("center") => Some(Align::Center),
         Some("end") => Some(Align::End),
         _ => None,
+    }
+}
+
+/// Physical pixels a label's buffer reaches past its box on each side so its
+/// shadow is whole: the blur's reach (three sigmas, CSS's sigma being half
+/// the blur radius) plus the offset. 0 without a shadow.
+pub(crate) fn shadow_overflow(spec: &LabelSpec) -> i32 {
+    let Some(shadow) = spec.text_shadow.filter(|shadow| shadow.color.a > 0) else {
+        return 0;
+    };
+    let scale = spec.raster_scale.max(0.0001);
+    let sigma = shadow.blur * scale / 2.0;
+    let offset = shadow.offset_x.abs().max(shadow.offset_y.abs()) * scale;
+    (3.0 * sigma + shadow.spread * scale + offset).ceil() as i32
+}
+
+/// Grows a coverage mask in place by `radius` pixels: each pixel takes the
+/// highest coverage within that distance, along rows then columns.
+fn grow_mask(mask: &mut [f32], width: i32, height: i32, radius: i32) {
+    if radius <= 0 || width <= 0 || height <= 0 {
+        return;
+    }
+    let (width, height) = (width as usize, height as usize);
+    let radius = radius as usize;
+    let mut line = Vec::new();
+    for y in 0..height {
+        line.clear();
+        line.extend_from_slice(&mask[y * width..(y + 1) * width]);
+        for x in 0..width {
+            let start = x.saturating_sub(radius);
+            let end = (x + radius + 1).min(width);
+            mask[y * width + x] = line[start..end].iter().copied().fold(0.0, f32::max);
+        }
+    }
+    for x in 0..width {
+        line.clear();
+        line.extend((0..height).map(|y| mask[y * width + x]));
+        for y in 0..height {
+            let start = y.saturating_sub(radius);
+            let end = (y + radius + 1).min(height);
+            mask[y * width + x] = line[start..end].iter().copied().fold(0.0, f32::max);
+        }
     }
 }
 
@@ -871,10 +945,58 @@ fn intersect_logical_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{blur_mask, ellipsize};
+    use super::{LabelSpec, blur_mask, ellipsize, grow_mask, shadow_overflow};
+    use crate::ssd::{Color, LogicalRect, TextShadow};
 
     fn at_most(chars: usize) -> impl FnMut(&str) -> bool {
         move |text: &str| text.chars().count() <= chars
+    }
+
+    fn spec_with_shadow(shadow: Option<TextShadow>, raster_scale: f64) -> LabelSpec {
+        LabelSpec {
+            rect: LogicalRect::new(0, 0, 100, 18),
+            rect_precise: None,
+            text: "Title".into(),
+            color: Color::WHITE,
+            font_size: 12.0,
+            font_weight: None,
+            font_family: None,
+            text_align: None,
+            text_overflow: None,
+            line_height: None,
+            text_shadow: shadow,
+            raster_scale,
+        }
+    }
+
+    #[test]
+    fn shadow_overflow_covers_the_blur_and_the_offset() {
+        let glow = TextShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 6.0,
+            spread: 0.0,
+            color: Color::WHITE,
+        };
+        assert_eq!(shadow_overflow(&spec_with_shadow(None, 1.0)), 0);
+        // sigma 3, three sigmas.
+        assert_eq!(shadow_overflow(&spec_with_shadow(Some(glow), 1.0)), 9);
+        // In physical pixels: twice at scale 2, plus a 1 px offset.
+        let line = TextShadow {
+            offset_y: 1.0,
+            ..glow
+        };
+        assert_eq!(shadow_overflow(&spec_with_shadow(Some(line), 2.0)), 20);
+    }
+
+    #[test]
+    fn grow_mask_widens_a_point_to_a_square() {
+        let mut mask = vec![0.0f32; 7 * 7];
+        mask[3 * 7 + 3] = 0.5;
+        grow_mask(&mut mask, 7, 7, 2);
+        assert_eq!(mask[7 + 1], 0.5);
+        assert_eq!(mask[5 * 7 + 5], 0.5);
+        assert_eq!(mask[0], 0.0);
     }
 
     #[test]

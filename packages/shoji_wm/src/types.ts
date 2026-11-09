@@ -2527,6 +2527,12 @@ export interface TextShadowValue {
   y?: MaybeSignal<number>;
   /** Blur radius (CSS semantics). / ぼかし半径（CSS と同じ意味）。 */
   blur?: MaybeSignal<number>;
+  /**
+   * Grows the glyphs before the blur, as `box-shadow`'s spread: a dense glow
+   * rather than a faint halo. / ぼかす前にグリフを太らせます（`box-shadow`
+   * の spread と同じ）。淡い光でなく濃いグローになります。
+   */
+  spread?: MaybeSignal<number>;
   color: MaybeSignal<string>;
 }
 

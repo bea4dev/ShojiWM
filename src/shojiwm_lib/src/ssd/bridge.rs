@@ -154,6 +154,8 @@ pub struct WireTextShadow {
     pub y: f64,
     #[serde(default)]
     pub blur: f64,
+    #[serde(default)]
+    pub spread: f64,
     pub color: String,
 }
 
@@ -1351,6 +1353,7 @@ fn parse_text_shadow(input: WireTextShadow) -> Result<TextShadow, DecorationBrid
         offset_x: finite(input.x),
         offset_y: finite(input.y),
         blur: finite(input.blur).max(0.0),
+        spread: finite(input.spread).max(0.0),
         color: parse_color(&input.color)?,
     })
 }
