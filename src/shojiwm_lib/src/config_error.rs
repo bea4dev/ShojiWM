@@ -30,9 +30,36 @@ pub enum ConfigErrorKind {
     /// The runtime cannot hot reload (e.g. a compiled Rust config). Shown briefly.
     HotReloadUnavailable,
     Runtime,
+    /// Evaluating the config for a frame failed (window decorations, layer or popup effects),
+    /// and the previous frame's result was kept. Owned by the render path like `Effect`: it
+    /// comes down once every failed evaluation has succeeded again, because such a failure can
+    /// be transient (a window that closes during the evaluation) and nothing else would take
+    /// the overlay down before a config reload.
+    Frame,
     /// A shader or effect pipeline from the config failed. Unlike the others this one is owned
     /// by the render path, which replaces or clears it as the set of failures changes.
     Effect,
+}
+
+/// The per-frame config evaluations (window decorations, layer or popup effects) that failed
+/// for an output and have not succeeded since. The `Frame` report stays up while one remains.
+#[derive(Debug, Default)]
+pub struct FailedFrameEvaluations(std::collections::BTreeSet<(String, &'static str)>);
+
+impl FailedFrameEvaluations {
+    pub fn failed(&mut self, output: &str, stage: &'static str) {
+        self.0.insert((output.to_string(), stage));
+    }
+
+    /// Note a success. `true` when it ends the last failure, so the `Frame` report can come
+    /// down.
+    pub fn succeeded(&mut self, output: &str, stage: &'static str) -> bool {
+        self.0.remove(&(output.to_string(), stage)) && self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 impl ConfigErrorReport {
@@ -67,6 +94,14 @@ impl ConfigErrorReport {
     pub fn effect(error: impl ToString) -> Self {
         Self {
             kind: ConfigErrorKind::Effect,
+            message: error.to_string(),
+            expires_at: None,
+        }
+    }
+
+    pub fn frame(error: impl ToString) -> Self {
+        Self {
+            kind: ConfigErrorKind::Frame,
             message: error.to_string(),
             expires_at: None,
         }
@@ -127,7 +162,7 @@ pub fn text_elements_for_output(
         ConfigErrorKind::InitialLoad => "ShojiWM config initial load failed",
         ConfigErrorKind::HotReload => "ShojiWM config hot reload failed",
         ConfigErrorKind::HotReloadUnavailable => "ShojiWM config hot reload is not available",
-        ConfigErrorKind::Runtime => "ShojiWM config runtime error",
+        ConfigErrorKind::Runtime | ConfigErrorKind::Frame => "ShojiWM config runtime error",
         ConfigErrorKind::Effect => "ShojiWM effect error (the effect is disabled)",
     };
     let body = truncate_error_message(&report.message, 3200);
@@ -263,6 +298,20 @@ fn wrap_lines(message: &str, max_chars: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_frame_report_ends_with_the_last_failure() {
+        let mut failures = FailedFrameEvaluations::default();
+        failures.failed("DP-2", "window decorations");
+        failures.failed("HDMI-A-1", "window decorations");
+        // A stage that never failed ends nothing.
+        assert!(!failures.succeeded("DP-2", "layer effects"));
+        // One output recovers; the other still fails.
+        assert!(!failures.succeeded("DP-2", "window decorations"));
+        assert!(failures.succeeded("HDMI-A-1", "window decorations"));
+        // Later successes do not report the end again.
+        assert!(!failures.succeeded("HDMI-A-1", "window decorations"));
+    }
 
     #[test]
     fn only_the_hot_reload_unavailable_notice_expires() {
