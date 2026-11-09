@@ -7,7 +7,7 @@ sidebar_position: 5
 ## キーボードショートカット
 
 `COMPOSITOR.key.bind(id, shortcut, handler, options?)` はコンポジターレベルの
-キーボードショートカットを登録します。
+キーボード、マウスのサイドボタン、マウスホイールのショートカットを登録します。
 
 ```ts
 COMPOSITOR.key.bind('terminal', 'Super+T', () => {
@@ -29,6 +29,13 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 - **モディファイア:** `Super`・`Ctrl`・`Shift`・`Alt`
 - **キー:** 英字（`T`・`Q`）、矢印（`Left`・`Right`・`Up`・`Down`）、
   ファンクションキー（`F`）など
+- **マウスのサイドボタン:** `MouseBack`（`BTN_SIDE`、275）と `MouseForward`
+  （`BTN_EXTRA`、276）。名前の大文字と小文字は区別せず、発火タイミングはデフォルトの
+  `on: "press"` です。`on: "release"` のサイドボタンバインドは無効になります。
+- **マウスホイール:** `WheelScrollUp`・`WheelScrollDown`・`WheelScrollLeft`・
+  `WheelScrollRight`。ホイールショートカットはマウスホイールの段階的なスクロールで
+  発火します。タッチパッドのスクロールは連続的なままで、通常どおりアプリケーションに
+  届きます。発火タイミングはデフォルトの `on: "press"` です。
 
 ```ts
 COMPOSITOR.key.bind('close', 'Super+Q', () => focused?.close());
@@ -36,7 +43,18 @@ COMPOSITOR.key.bind('move-tile-left', 'Super+Shift+Left', () => moveTile(-1));
 COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
   COMPOSITOR.process.spawn({command: 'hyprshot -m region --raw | swappy -f -'});
 });
+COMPOSITOR.key.bind('focus-left', 'Super+WheelScrollUp', () => focusTile(-1));
+COMPOSITOR.key.bind('focus-right', 'Super+WheelScrollDown', () => focusTile(1));
+COMPOSITOR.key.bind('focus-left-button', 'Super+MouseBack', () => focusTile(-1));
+COMPOSITOR.key.bind('focus-right-button', 'Super+MouseForward', () => focusTile(1));
 ```
+
+サイドボタンのバインドは、指定したモディファイアと完全に一致したときだけ発火します。
+たとえば `Super+MouseForward` を登録しても、`MouseForward` 単体はフォーカス中の
+アプリケーションやゲームでそのまま使えます。一致したバインドは押下とリリースの両方を
+消費します。先にモディファイアを離しても同じで、モディファイア単体のタップバインドも
+発火しません。セッションのロック中やモーダルな入力グラブの間は、サイドボタンの
+ショートカットは動作しません。
 
 ### タップバインド（`on: "release"`）
 
@@ -48,6 +66,11 @@ COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```
+
+1分を超えて押されたままのキーは、押されていないものとして扱います。コンポジターが
+受け取れなかった解放（KVM の切り替えやキーボードの取り外し）のせいでタップバインドが
+効かなくなり続けるのを防ぐためです。実際に1分を超えて押し続けているキーでも、
+タップは取り消されません。
 
 `within`（ミリ秒）を付けると、素早いタップのときだけ発火します。ドラッグや
 [ゲームのポインターロックの無視](./cursor.md#アプリのポインターロックを無視する)で

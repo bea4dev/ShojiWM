@@ -1966,14 +1966,21 @@ export interface KeyBindingOptions {
 }
 
 /**
- * Registers compositor-level keyboard and discrete mouse-wheel shortcuts.
- * コンポジターレベルのキーボードおよびマウスホイールショートカットを登録します。
+ * Registers compositor-level keyboard, side-button and discrete mouse-wheel shortcuts.
+ * コンポジターレベルのキーボード、サイドボタンおよびマウスホイールショートカットを登録します。
  *
  * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
  * string uses modifier+key notation such as `"Super+T"`, `"Super+Shift+Left"`,
- * or `"Super+WheelScrollUp"`.
+ * `"Super+WheelScrollUp"` or `"Super+MouseForward"`.
+ * `MouseBack` and `MouseForward` use the standard Linux side-button codes.
+ * Side-button shortcuts only accept `on: "press"`; their release is consumed
+ * with the press, while unmatched buttons keep reaching applications.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
- * `shortcut` は `"Super+T"` や `"Super+Shift+Left"` のような記法を使います。
+ * `shortcut` は `"Super+T"`、`"Super+Shift+Left"`、`"Super+WheelScrollUp"`、
+ * `"Super+MouseForward"` のような記法を使います。
+ * `MouseBack` と `MouseForward` は Linux 標準のサイドボタンのコードを使います。
+ * サイドボタンのショートカットは `on: "press"` のみ指定でき、リリースも押下と一緒に
+ * 消費されます。一致しなかったボタンはこれまでどおりアプリケーションに届きます。
  *
  * @example
  * ```ts
@@ -1987,7 +1994,7 @@ export interface KeyBindingOptions {
  */
 export interface KeyBindingController {
   /**
-   * Register a keyboard or mouse-wheel shortcut. `id` must be unique;
+   * Register a keyboard, side-button or mouse-wheel shortcut. `id` must be unique;
    * registering the same id twice replaces the previous binding.
    * ショートカットを登録します。`id` は一意である必要があります。
    * 同じ `id` を2回登録すると前のバインドが上書きされます。
@@ -3474,7 +3481,9 @@ export interface DebugController {
 
   /**
    * Enable or disable the built-in timescope profiler. Disabling after it was
-   * enabled dumps `summary.txt` and `report.html` under `~/shoji_wm/logs/`.
+   * enabled dumps `summary.txt` and `report.html` in the session log directory:
+   * `$XDG_STATE_HOME/shoji_wm/logs/`, defaulting to
+   * `~/.local/state/shoji_wm/logs/`, or `SHOJI_LOG_DIR` when set.
    */
   enableProfile(enabled: boolean): void;
 

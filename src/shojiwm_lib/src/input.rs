@@ -1,7 +1,7 @@
 use smithay::{
     backend::{
         input::{
-            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, Event, GestureBeginEvent,
             GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend,
             InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
             PointerMotionEvent,
@@ -436,7 +436,7 @@ impl ShojiWM {
         }
     }
 
-    fn dispatch_pointer_move_events(
+    pub(crate) fn dispatch_pointer_move_events(
         &mut self,
         previous_pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -526,6 +526,8 @@ impl ShojiWM {
         if transitions.is_empty() {
             return;
         }
+        // The config hears about the motion before the region it led into.
+        self.flush_pointer_dispatch();
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         for transition in transitions {
             let event = PointerRegionEventSnapshot {
@@ -1010,7 +1012,18 @@ impl ShojiWM {
         // Saved and restored rather than cleared so the flag survives nesting.
         let previous = std::mem::replace(&mut self.user_input_in_flight, true);
         let keyboard = matches!(event, InputEvent::Keyboard { .. });
+        let pointer_motion = matches!(
+            event,
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. }
+        );
+        // The config must not see this event before the motion that led up to it.
+        if !pointer_motion {
+            self.flush_pointer_dispatch();
+        }
         self.process_input_event_inner(event);
+        if pointer_motion {
+            self.pump_pointer_dispatch();
+        }
         self.user_input_in_flight = previous;
         // Caps Lock and Num Lock reach the config at once, not at the next
         // scheduler tick.
@@ -1031,6 +1044,11 @@ impl ShojiWM {
         }
 
         match event {
+            InputEvent::DeviceRemoved { device } => {
+                let device_id = device.id();
+                self.consumed_pointer_buttons
+                    .retain(|(id, _)| id != &device_id);
+            }
             InputEvent::Keyboard { event, .. } => {
                 let device = event.device();
                 crate::runtime_input::apply_keyboard_config_for_backend_device(self, &device);
@@ -1080,46 +1098,28 @@ impl ShojiWM {
                             let tap_class = handle
                                 .raw_latin_sym_or_raw_current_sym()
                                 .and_then(|sym| modifier_class_of_keysym(sym.raw()));
+                            let key = handle.raw_code().raw();
                             match key_phase {
                                 crate::runtime_key_binding::RuntimeKeyBindingPhase::Press => {
-                                    let was_idle = data.tap_pressed_keys == 0;
-                                    data.tap_pressed_keys += 1;
-                                    match tap_class {
-                                        Some(class) if was_idle => {
-                                            data.tap_armed_modifier = Some(class);
-                                            data.tap_armed_at = time;
-                                            data.tap_interrupted = false;
-                                        }
-                                        _ => {
-                                            data.tap_interrupted = true;
-                                        }
-                                    }
+                                    data.modifier_tap.press(key, tap_class, time);
                                 }
                                 crate::runtime_key_binding::RuntimeKeyBindingPhase::Release => {
-                                    if let Some(class) = tap_class
-                                        && data.tap_armed_modifier == Some(class)
-                                        && !data.tap_interrupted
+                                    if let Some(tap) =
+                                        data.modifier_tap.release(key, tap_class, time)
                                     {
-                                        let held_ms = time.wrapping_sub(data.tap_armed_at);
                                         for binding in runtime_key_bindings.iter() {
                                             if binding.phase
                                                 == crate::runtime_key_binding::RuntimeKeyBindingPhase::Release
                                                 && binding.shortcut.modifier_class()
-                                                    == Some(class)
+                                                    == Some(tap.class)
                                                 && binding
                                                     .within_ms
-                                                    .is_none_or(|within| held_ms <= within)
+                                                    .is_none_or(|within| tap.held_ms <= within)
                                             {
                                                 data.pending_tap_binding_ids
                                                     .push(binding.id.clone());
                                             }
                                         }
-                                    }
-                                    data.tap_pressed_keys =
-                                        data.tap_pressed_keys.saturating_sub(1);
-                                    if data.tap_pressed_keys == 0 {
-                                        data.tap_armed_modifier = None;
-                                        data.tap_interrupted = false;
                                     }
                                 }
                             }
@@ -1129,7 +1129,7 @@ impl ShojiWM {
                             // VT switch). Releases of keys held when the grab
                             // started also reach the client that saw the press.
                             if let Some(grab) = data.runtime_input_grab.as_mut() {
-                                data.tap_interrupted = true;
+                                data.modifier_tap.interrupt();
                                 let raw = handle.raw_latin_sym_or_raw_current_sym();
                                 let builtin = matches!(
                                     key_phase,
@@ -1438,7 +1438,7 @@ impl ShojiWM {
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
 
-                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                self.queue_pointer_move_dispatch(previous_pos, pos, event.time_msec());
                 self.update_pointer_regions(
                     pos,
                     previous_pos + motion_delta - pos,
@@ -1498,7 +1498,7 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 self.activate_pointer_constraint_at(pos);
-                self.dispatch_pointer_move_events(previous_pos, pos, event.time_msec());
+                self.queue_pointer_move_dispatch(previous_pos, pos, event.time_msec());
                 // An absolute device cannot push past the layout edge.
                 self.update_pointer_regions(pos, Point::default(), event.time_msec());
                 self.update_decoration_hover_target(pos);
@@ -1517,9 +1517,21 @@ impl ShojiWM {
 
                 let button_state = event.state();
 
+                let button_key = (event.device().id(), button);
+                // The client never saw the intercepted press; do not send its release,
+                // even if Super was released or the session was locked in between.
+                if button_state == ButtonState::Released
+                    && self.consumed_pointer_buttons.remove(&button_key)
+                {
+                    return;
+                }
+                if self.consumed_pointer_buttons.contains(&button_key) {
+                    return;
+                }
+
                 // A pointer button press cancels a pending modifier tap (e.g. Super+drag).
                 if matches!(button_state, ButtonState::Pressed) {
-                    self.tap_interrupted = true;
+                    self.modifier_tap.interrupt();
                 }
 
                 if pointer_button_debug_enabled() {
@@ -1553,6 +1565,21 @@ impl ShojiWM {
                 if self.runtime_input_grab.is_some() {
                     self.input_grab_pointer_button(button, button_state, event.time_msec());
                     return;
+                }
+
+                if button_state == ButtonState::Pressed {
+                    let binding_id = self
+                        .runtime_key_bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.matches_mouse_button(button, &self.current_keyboard_modifiers)
+                        })
+                        .map(|binding| binding.id.clone());
+                    if let Some(binding_id) = binding_id {
+                        self.consumed_pointer_buttons.insert(button_key);
+                        self.run_runtime_key_binding(&binding_id);
+                        return;
+                    }
                 }
 
                 // SSD `<Popup>`s hear about every press: anchors pressed
@@ -2232,7 +2259,7 @@ impl ShojiWM {
                 if source == AxisSource::Wheel
                     && (horizontal_amount != 0.0 || vertical_amount != 0.0)
                 {
-                    self.tap_interrupted = true;
+                    self.modifier_tap.interrupt();
                     use crate::runtime_key_binding::RuntimeWheelDirection;
                     let vertical_direction = if vertical_amount < 0.0 {
                         Some(RuntimeWheelDirection::Up)

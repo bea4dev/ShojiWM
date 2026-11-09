@@ -589,14 +589,7 @@ fn satellite_logging_enabled() -> bool {
 fn satellite_log_path() -> PathBuf {
     std::env::var_os("SHOJI_XWAYLAND_SATELLITE_LOG_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("shoji_wm")
-                .join("logs")
-                .join(SATELLITE_LOG_FILE)
-        })
+        .unwrap_or_else(|| crate::shoji_log_dir().join(SATELLITE_LOG_FILE))
 }
 
 fn spawn_waiter_thread(path: PathBuf, mut child: Child) {

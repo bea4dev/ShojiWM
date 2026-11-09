@@ -4,6 +4,7 @@
 //! enters a MoveSurfaceGrab state.
 
 use crate::{
+    pointer_dispatch::PendingGrabMotion,
     ssd::{
         LogicalRect, PointerModifierStateSnapshot, WindowMoveEventSnapshot,
         WindowMovePhaseSnapshot, WindowMoveSourceSnapshot, WindowPositionSnapshot,
@@ -128,7 +129,9 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
         self.last_pointer = event.location;
 
         if self.runtime_managed {
-            self.invoke_runtime_event(data, WindowMovePhaseSnapshot::Update, event.location);
+            let window_id = data.snapshot_window(&self.window).id;
+            let event = self.runtime_event(data, WindowMovePhaseSnapshot::Update, event.location);
+            data.queue_grab_motion_dispatch(PendingGrabMotion::WindowMove { window_id, event });
             return;
         }
 
@@ -341,6 +344,7 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
     }
 
     fn unset(&mut self, data: &mut ShojiWM) {
+        data.pointer_dispatch.discard_grab_motion();
         data.update_decoration_cursor_icon(self.last_pointer);
     }
 }

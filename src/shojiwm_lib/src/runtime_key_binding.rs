@@ -49,6 +49,11 @@ impl RuntimeKeyBindingEntry {
                 self.shortcut.clone(),
             ));
         }
+        if shortcut.mouse_button.is_some() && self.on != RuntimeKeyBindingPhase::Press {
+            return Err(RuntimeKeyBindingParseError::MouseButtonRequiresPress(
+                self.shortcut.clone(),
+            ));
+        }
         Ok(CompiledRuntimeKeyBinding {
             id: self.id.clone(),
             phase: self.on,
@@ -102,6 +107,12 @@ impl CompiledRuntimeKeyBinding {
         self.phase == RuntimeKeyBindingPhase::Press
             && self.shortcut.matches_wheel(direction, modifiers)
     }
+
+    pub fn matches_mouse_button(&self, button: u32, modifiers: &ModifiersState) -> bool {
+        self.phase == RuntimeKeyBindingPhase::Press
+            && self.shortcut.mouse_button == Some(button)
+            && self.shortcut.modifiers_match(modifiers)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +124,7 @@ pub struct RuntimeKeyShortcut {
     /// `None` for a modifier-only shortcut (a "tap" binding).
     pub keysym: Option<xkb::Keysym>,
     pub wheel_direction: Option<RuntimeWheelDirection>,
+    pub mouse_button: Option<u32>,
 }
 
 impl RuntimeKeyShortcut {
@@ -138,7 +150,7 @@ impl RuntimeKeyShortcut {
     }
 
     pub fn is_modifier_only(&self) -> bool {
-        self.keysym.is_none() && self.wheel_direction.is_none()
+        self.keysym.is_none() && self.wheel_direction.is_none() && self.mouse_button.is_none()
     }
 
     /// The single modifier class for a modifier-only shortcut, else `None`.
@@ -175,6 +187,8 @@ pub enum RuntimeKeyBindingParseError {
     ModifierOnlyRequiresRelease(String),
     #[error("mouse-wheel shortcut `{0}` is only valid with `on: \"press\"`")]
     WheelRequiresPress(String),
+    #[error("mouse-button shortcut `{0}` is only valid with `on: \"press\"`")]
+    MouseButtonRequiresPress(String),
     #[error("`within` on `{0}` only applies to modifier-only tap bindings")]
     WithinRequiresTap(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
@@ -252,6 +266,7 @@ fn parse_runtime_key_shortcut(
     let mut logo = false;
     let mut keysym = None;
     let mut wheel_direction = None;
+    let mut mouse_button = None;
 
     for part in parts {
         if let Some(target) = modifier_slot(part, &mut ctrl, &mut alt, &mut shift, &mut logo) {
@@ -265,7 +280,7 @@ fn parse_runtime_key_shortcut(
             continue;
         }
 
-        if keysym.is_some() || wheel_direction.is_some() {
+        if keysym.is_some() || wheel_direction.is_some() || mouse_button.is_some() {
             return Err(RuntimeKeyBindingParseError::MultipleKeys {
                 shortcut: shortcut.to_string(),
             });
@@ -273,6 +288,11 @@ fn parse_runtime_key_shortcut(
 
         if let Some(direction) = parse_wheel_direction(part) {
             wheel_direction = Some(direction);
+            continue;
+        }
+
+        if let Some(button) = parse_mouse_button(part) {
+            mouse_button = Some(button);
             continue;
         }
 
@@ -284,7 +304,7 @@ fn parse_runtime_key_shortcut(
         keysym = Some(parsed_keysym);
     }
 
-    if keysym.is_none() && wheel_direction.is_none() {
+    if keysym.is_none() && wheel_direction.is_none() && mouse_button.is_none() {
         // Modifier-only shortcut ("tap"): require exactly one modifier.
         let modifier_count = [ctrl, alt, shift, logo]
             .into_iter()
@@ -302,6 +322,7 @@ fn parse_runtime_key_shortcut(
             logo,
             keysym: None,
             wheel_direction: None,
+            mouse_button: None,
         });
     }
 
@@ -312,7 +333,16 @@ fn parse_runtime_key_shortcut(
         logo,
         keysym,
         wheel_direction,
+        mouse_button,
     })
+}
+
+fn parse_mouse_button(name: &str) -> Option<u32> {
+    match name.to_ascii_lowercase().as_str() {
+        "mouseback" => Some(0x113),
+        "mouseforward" => Some(0x114),
+        _ => None,
+    }
 }
 
 fn parse_wheel_direction(name: &str) -> Option<RuntimeWheelDirection> {
@@ -401,6 +431,45 @@ mod tests {
             entry("Super+WheelScrollUp", RuntimeKeyBindingPhase::Release).compile(),
             Err(RuntimeKeyBindingParseError::WheelRequiresPress(_)),
         ));
+    }
+
+    #[test]
+    fn side_buttons_require_press_and_exact_modifiers() {
+        let modifiers = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        for (name, code) in [("MouseBack", 275), ("mouseforward", 276)] {
+            let shortcut = format!("Super+{name}");
+            let binding = entry(&shortcut, RuntimeKeyBindingPhase::Press)
+                .compile()
+                .unwrap();
+            assert!(!binding.shortcut.is_modifier_only());
+            assert!(binding.matches_mouse_button(code, &modifiers));
+            assert!(!binding.matches_mouse_button(272, &modifiers));
+            assert!(!binding.matches_mouse_button(code, &ModifiersState::default()));
+            assert!(!binding.matches_mouse_button(
+                code,
+                &ModifiersState {
+                    shift: true,
+                    ..modifiers
+                },
+            ));
+            assert!(matches!(
+                entry(&shortcut, RuntimeKeyBindingPhase::Release).compile(),
+                Err(RuntimeKeyBindingParseError::MouseButtonRequiresPress(_)),
+            ));
+        }
+        for shortcut in [
+            "MouseBack+MouseForward",
+            "A+MouseBack",
+            "MouseForward+WheelScrollUp",
+        ] {
+            assert!(matches!(
+                parse_runtime_key_shortcut(shortcut),
+                Err(RuntimeKeyBindingParseError::MultipleKeys { .. })
+            ));
+        }
     }
 
     #[test]

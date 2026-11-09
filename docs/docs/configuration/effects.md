@@ -131,7 +131,8 @@ identity inside the function that decides what it gets.
 Both are signals, so the decision is re-made when the value changes (a browser
 that sets its `app_id` after mapping still ends up with the right effect). To
 find the value for an app you use, log it once and look in
-`~/shoji_wm/logs/latest.log`:
+`$XDG_STATE_HOME/shoji_wm/logs/latest.log` (by default,
+`~/.local/state/shoji_wm/logs/latest.log`, or under `SHOJI_LOG_DIR` when set):
 
 ```ts
 COMPOSITOR.effect.layer = (layer) => {

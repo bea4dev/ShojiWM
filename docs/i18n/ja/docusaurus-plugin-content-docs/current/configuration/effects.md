@@ -129,7 +129,8 @@ const BAR_BLUR = compileLayerEffect({
 
 どちらもシグナルなので、値が変わると判定がやり直されます（マップ後に `app_id`
 を設定するブラウザでも正しいエフェクトになります）。使っているアプリの値を調べるには、
-一度ログに出して `~/shoji_wm/logs/latest.log` を見てください。
+一度ログに出して `$XDG_STATE_HOME/shoji_wm/logs/latest.log` を見てください。
+既定では `~/.local/state/shoji_wm/logs/latest.log`、`SHOJI_LOG_DIR` が設定されている場合はそのディレクトリ内です。
 
 ```ts
 COMPOSITOR.effect.layer = (layer) => {

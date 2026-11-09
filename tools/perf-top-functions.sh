@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The compositor's log directory: see `resolve_log_dir` in src/shojiwm_lib/src/lib.rs.
+default_log_dir() {
+  if [[ -n "${SHOJI_LOG_DIR:-}" ]]; then
+    echo "$SHOJI_LOG_DIR"
+  elif [[ "${XDG_STATE_HOME:-}" == /* ]]; then
+    echo "$XDG_STATE_HOME/shoji_wm/logs"
+  else
+    echo "${HOME:-.}/.local/state/shoji_wm/logs"
+  fi
+}
+
 duration="${1:-15}"
-out_dir="${2:-"$HOME/shoji_wm/logs/perf-$(date +%Y%m%d-%H%M%S)"}"
+out_dir="${2:-"$(default_log_dir)/perf-$(date +%Y%m%d-%H%M%S)"}"
 freq="${PERF_FREQ:-99}"
 call_graph="${PERF_CALL_GRAPH:-dwarf}"
 

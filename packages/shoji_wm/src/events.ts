@@ -488,17 +488,23 @@ export interface CompositorEventController {
    */
   onKeyboardLayoutChange(listener: KeyboardLayoutChangeListener): () => void;
   /**
-   * Fires synchronously on every pointer move event.
+   * Fires synchronously when the pointer moves, at most about once per display
+   * refresh: faster motion is coalesced into one event with the latest position
+   * and the combined `delta`. A listener always sees the latest position before
+   * any other input event, such as a button press.
    * Keep the listener short: input processing waits for it to return.
-   * ポインター移動イベントのたびに同期的に発火します。
+   * ポインターが移動すると同期的に発火します。発火はディスプレイのリフレッシュごとに
+   * 最大1回程度で、それより速い移動は最新の位置と合算した `delta` を持つ1つのイベントに
+   * まとめられます。ボタン押下などの他の入力イベントより前に、必ず最新の位置が届きます。
    * 入力処理はリスナーの完了を待つため、短い処理に留めてください。
    */
   onPointerMove(listener: PointerMoveListener): () => void;
   /**
-   * Fires asynchronously on every pointer move event.
+   * Fires asynchronously when the pointer moves, coalesced like `onPointerMove`.
    * The listener may return a `Promise`; the compositor awaits it before
    * completing the runtime dispatch.
-   * ポインター移動イベントのたびに非同期で発火します。リスナーは `Promise` を返せます。
+   * ポインターが移動すると非同期で発火します。`onPointerMove` と同様にまとめられます。
+   * リスナーは `Promise` を返せます。
    *
    * @example
    * ```ts

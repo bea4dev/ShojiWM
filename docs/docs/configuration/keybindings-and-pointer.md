@@ -7,7 +7,7 @@ sidebar_position: 5
 ## Keyboard shortcuts
 
 `COMPOSITOR.key.bind(id, shortcut, handler, options?)` registers a
-compositor-level keyboard or mouse-wheel shortcut.
+compositor-level keyboard, mouse side-button or mouse-wheel shortcut.
 
 ```ts
 COMPOSITOR.key.bind('terminal', 'Super+T', () => {
@@ -29,6 +29,9 @@ Combine modifiers and a key with `+`:
 - **Modifiers:** `Super`, `Ctrl`, `Shift`, `Alt`
 - **Keys:** letters (`T`, `Q`), arrows (`Left`, `Right`, `Up`, `Down`),
   function keys (`F`), etc.
+- **Mouse side buttons:** `MouseBack` (`BTN_SIDE`, 275) and `MouseForward`
+  (`BTN_EXTRA`, 276). Names are case-insensitive and use the default
+  `on: "press"` phase. Release-only side-button bindings are rejected.
 - **Mouse wheel:** `WheelScrollUp`, `WheelScrollDown`, `WheelScrollLeft`,
   `WheelScrollRight`. Wheel shortcuts fire on discrete mouse-wheel events;
   touchpad scrolling remains continuous and is forwarded normally. Wheel
@@ -42,7 +45,16 @@ COMPOSITOR.key.bind('screenshot', 'Super+P', () => {
 });
 COMPOSITOR.key.bind('focus-left', 'Super+WheelScrollUp', () => focusTile(-1));
 COMPOSITOR.key.bind('focus-right', 'Super+WheelScrollDown', () => focusTile(1));
+COMPOSITOR.key.bind('focus-left-button', 'Super+MouseBack', () => focusTile(-1));
+COMPOSITOR.key.bind('focus-right-button', 'Super+MouseForward', () => focusTile(1));
 ```
+
+Side-button bindings require the configured modifiers to match exactly. For
+example, `Super+MouseForward` leaves plain `MouseForward` available to the
+focused application or game. A matched binding consumes both the press and its
+release, even if the modifier is released first, and does not trigger a bare
+modifier tap binding. System side-button shortcuts do not run while the session
+is locked or a modal input grab is held.
 
 ### Tap bindings (`on: "release"`)
 
@@ -54,6 +66,10 @@ allowing `Super` to act as a modifier for other shortcuts.
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```
+
+A key down for more than a minute no longer counts as pressed, so that a release
+the compositor never received (a KVM switch, an unplugged keyboard) cannot block
+tap bindings for good. A key really held that long does not cancel a tap either.
 
 Add `within` (milliseconds) to fire only on a quick tap. Holding the modifier
 longer, for a drag or while

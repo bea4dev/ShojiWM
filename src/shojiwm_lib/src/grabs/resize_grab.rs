@@ -3,6 +3,7 @@
 //! eg. Usually whenever a user clicks on the app's border and starts dragging, the compositors
 //! enters a ResizeSurfaceGrab state.
 
+use crate::pointer_dispatch::PendingGrabMotion;
 use crate::ssd::{
     WindowPositionSnapshot, WindowResizeEdgesSnapshot, WindowResizeEventSnapshot,
     WindowResizePhaseSnapshot, WindowResizePointSnapshot, WindowResizeSourceSnapshot,
@@ -212,7 +213,9 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
         self.last_pointer = event.location;
 
         if self.runtime_managed {
-            self.invoke_runtime_event(data, WindowResizePhaseSnapshot::Update, event.location);
+            let window_id = data.snapshot_window(&self.window).id;
+            let event = self.runtime_event(data, WindowResizePhaseSnapshot::Update, event.location);
+            data.queue_grab_motion_dispatch(PendingGrabMotion::WindowResize { window_id, event });
             return;
         }
 
@@ -419,7 +422,9 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut ShojiWM) {}
+    fn unset(&mut self, data: &mut ShojiWM) {
+        data.pointer_dispatch.discard_grab_motion();
+    }
 }
 
 fn resize_rect_for_delta(
