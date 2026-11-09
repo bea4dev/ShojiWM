@@ -146,10 +146,9 @@ impl XdgShellHandler for ShojiWM {
         self.space
             .map_element(window.clone(), initial_location, false);
         self.ensure_wayland_window_decoration_policy(&wl_surface);
-        // Announce the new toplevel on ext-foreign-toplevel-list-v1 so shells
-        // and the portal picker can see it. Has to happen after map so the
-        // initial title/app_id reads from xdg state succeed.
-        self.install_foreign_toplevel(&window);
+        // The foreign-toplevel handles come with the first buffer (the commit handler): a
+        // toplevel that never shows anything, such as a program started hidden in the
+        // notification area, is no window for a taskbar.
         if uses_xwayland_refresh_override {
             self.update_xwayland_refresh_override_for_window(&window, "xdg-toplevel-map");
         }
