@@ -2158,14 +2158,16 @@ type WlSurface = smithay::reexports::wayland_server::protocol::wl_surface::WlSur
 /// The dmabuf feedback last sent to a surface, kept in its data map.
 struct SentDmabufFeedback(std::cell::RefCell<Option<DmabufFeedback>>);
 
-/// Sends each surface of a tree the feedback `select` picks, unless it is the one it was sent
-/// last. smithay's `SurfaceDmabufFeedbackState::set_feedback` compares the format tables
+/// Sends each surface of a tree whose primary scan-out output is `output` the feedback `select`
+/// picks, unless it is the one it was sent last. A surface on two outputs gets the feedback of
+/// its primary one only, as smithay's own walk filters it; else the two would take turns. smithay's `SurfaceDmabufFeedbackState::set_feedback` compares the format tables
 /// whenever the feedback is another `Arc`, and keeps its old one when they are equal: given an
 /// equal feedback on every frame, it compared the tables on every frame (about a tenth of the
 /// compositor's CPU, bea4dev/ShojiWM#185). The feedback kept here is the one just picked, so
 /// the next frame's comparison stops at the pointer.
 fn send_dmabuf_feedback_tree<'a>(
     root: &WlSurface,
+    output: &Output,
     select: impl Fn(&WlSurface, &CompositorSurfaceData) -> &'a DmabufFeedback,
 ) {
     smithay::wayland::compositor::with_surface_tree_downward(
@@ -2173,6 +2175,11 @@ fn send_dmabuf_feedback_tree<'a>(
         (),
         |_, _, &()| smithay::wayland::compositor::TraversalAction::DoChildren(()),
         |wl_surface, states, &()| {
+            if smithay::desktop::utils::surface_primary_scanout_output(wl_surface, states).as_ref()
+                != Some(output)
+            {
+                return;
+            }
             let Some(feedback_state) =
                 smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states)
             else {
@@ -2199,11 +2206,12 @@ fn send_dmabuf_feedback_tree<'a>(
 /// `Window::send_dmabuf_feedback` and `LayerSurface::send_dmabuf_feedback` walk them.
 fn send_dmabuf_feedback_with_popups<'a>(
     root: &WlSurface,
+    output: &Output,
     select: impl Fn(&WlSurface, &CompositorSurfaceData) -> &'a DmabufFeedback + Copy,
 ) {
-    send_dmabuf_feedback_tree(root, select);
+    send_dmabuf_feedback_tree(root, output, select);
     for (popup, _) in PopupManager::popups_for_surface(root) {
-        send_dmabuf_feedback_tree(popup.wl_surface(), select);
+        send_dmabuf_feedback_tree(popup.wl_surface(), output, select);
     }
 }
 
@@ -7116,17 +7124,17 @@ fn render_surface(
         };
         for window in state.space.elements_for_output(&output) {
             if let Some(wl_surface) = smithay::wayland::seat::WaylandFocus::wl_surface(window) {
-                send_dmabuf_feedback_with_popups(&wl_surface, select);
+                send_dmabuf_feedback_with_popups(&wl_surface, &output, select);
             }
         }
         for layer in layer_map_for_output(&output)
             .layers()
             .filter(|layer| crate::backend::window::layer_surface_is_mapped(layer))
         {
-            send_dmabuf_feedback_with_popups(layer.wl_surface(), select);
+            send_dmabuf_feedback_with_popups(layer.wl_surface(), &output, select);
         }
         if let Some(lock_surface) = session_lock_surface_for_output.as_ref() {
-            send_dmabuf_feedback_tree(lock_surface.wl_surface(), select);
+            send_dmabuf_feedback_tree(lock_surface.wl_surface(), &output, select);
         }
         if !result.is_empty {
             if frame_liveness_debug_enabled() {
