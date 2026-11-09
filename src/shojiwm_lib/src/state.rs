@@ -5144,6 +5144,11 @@ impl ShojiWM {
     }
 
     pub fn managed_window_z_index(&self, window: &Window) -> i32 {
+        // An override-redirect window is a menu, tooltip or drag icon of some window: it stays
+        // above every managed window, as X11 stacks it above the windows the WM manages.
+        if window_is_override_redirect(window) {
+            return i32::MAX;
+        }
         self.window_decorations
             .get(window)
             .filter(|decoration| decoration.managed_window.managed)
@@ -6099,4 +6104,13 @@ mod subpixel_latch_tests {
         output.set_subpixel(resolve_output_subpixel(None, detected_subpixel(&output)));
         assert_eq!(output.physical_properties().subpixel, Subpixel::Unknown);
     }
+}
+
+/// An X11 override-redirect window: a menu, tooltip or drag icon that the client places and
+/// draws itself. The window manager must not frame, move, resize or list it (ICCCM 4.1.10), so it
+/// stays out of the config's window list.
+pub(crate) fn window_is_override_redirect(window: &Window) -> bool {
+    window
+        .x11_surface()
+        .is_some_and(|x11| x11.is_override_redirect())
 }

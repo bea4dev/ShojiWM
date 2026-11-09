@@ -2780,7 +2780,11 @@ impl ShojiWM {
         );
         let windows: Vec<Window> = {
             timescope::scope!("ssd collect windows");
-            self.space.elements().cloned().collect()
+            self.space
+                .elements()
+                .filter(|window| !crate::state::window_is_override_redirect(window))
+                .cloned()
+                .collect()
         };
         let live_window_ids = {
             timescope::scope!("ssd collect live window ids");

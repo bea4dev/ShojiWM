@@ -100,7 +100,8 @@ impl XwmHandler for ShojiWM {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        let location = window.geometry().loc;
+        // Where the client put the window. `geometry()` has only its size, at (0, 0).
+        let location = window.last_configure().loc;
         if xwayland_popup_debug_enabled() {
             trace!(
                 window = ?window,

@@ -5367,6 +5367,24 @@ fn winit_window_stack_elements(
             let Some(window_location) = state.space.element_location(window) else {
                 continue;
             };
+            // An override-redirect window (a menu, a tooltip) is not one of the config's
+            // windows: it is drawn bare, where its client put it.
+            if crate::state::window_is_override_redirect(window) {
+                let physical_location =
+                    (window_location - output_geo.loc).to_physical_precise_round(scale);
+                scene_elements.extend(
+                    window_render::surface_elements(
+                        window,
+                        renderer,
+                        physical_location,
+                        scale,
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(WinitRenderElements::Window),
+                );
+                continue;
+            }
             let Some(window_id) = state
                 .window_decorations
                 .get(window)

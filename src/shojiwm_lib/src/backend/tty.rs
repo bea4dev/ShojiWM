@@ -14115,6 +14115,21 @@ fn tty_window_stack_elements(
             let Some(window_location) = space.element_location(window) else {
                 continue;
             };
+            // An override-redirect window (a menu, a tooltip) is not one of the config's
+            // windows: it is drawn bare, where its client put it.
+            if crate::state::window_is_override_redirect(window) {
+                let physical_location =
+                    (window_location - output_geo.loc).to_physical_precise_round(scale);
+                let surface_elements = window_render::surface_elements(
+                    window,
+                    &mut *renderer,
+                    physical_location,
+                    scale,
+                    1.0,
+                );
+                scene_elements.extend(surface_elements.into_iter().map(TtyRenderElements::Window));
+                continue;
+            }
             let Some(window_id) = window_decorations
                 .get(window)
                 .map(|decoration| decoration.snapshot.id.clone())
