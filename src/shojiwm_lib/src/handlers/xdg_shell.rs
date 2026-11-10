@@ -552,6 +552,19 @@ impl XdgShellHandler for ShojiWM {
             return;
         };
 
+        if seat != self.seat
+            || self.window_for_root_surface(&root).is_some_and(|window| {
+                !self
+                    .seat
+                    .get_keyboard()
+                    .and_then(|keyboard| keyboard.current_focus())
+                    .is_some_and(|active| self.surface_belongs_to_window(window, &active))
+            })
+        {
+            info!(popup_surface_id, "denied background xdg popup input grab");
+            return;
+        }
+
         let mut grab = match self
             .popups
             .grab_popup::<Self>(root.clone(), popup, &seat, serial)
