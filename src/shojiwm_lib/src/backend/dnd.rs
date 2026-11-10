@@ -348,12 +348,16 @@ fn view_pieces(
     let Some(content) = view.content.as_mut() else {
         return Ok(Vec::new());
     };
+    // The tree is laid out before each frame (`refresh_drag_views`), but the
+    // runtime can send a new one later in the same frame (evaluating layer
+    // effects drains its messages). Until that one is laid out, the last
+    // build is drawn: drawing nothing made the view blink out for a frame
+    // whenever its content changed, which is every frame it animates.
     let Some(layout) = content
         .layouts
         .iter_mut()
-        .find(|layout| layout.scale == scale.x && layout.generation == content.generation)
+        .find(|layout| layout.scale == scale.x)
     else {
-        // Laid out before the next frame (`refresh_drag_views`).
         return Ok(Vec::new());
     };
     let decoration = &mut layout.decoration;
