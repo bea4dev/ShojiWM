@@ -31,9 +31,10 @@ COMPOSITOR.dnd.event.onStart((drag) => {
 });
 ```
 
-The [default config](./default-config.md) uses this for a frosted card with
-a badge for the action and a pill naming what is dragged; a drop nobody
-accepts flies back to where the drag started. Its source is
+The [default config](./default-config.md) uses this for a Material 3 Expressive card with
+a badge for the action and a pill naming what is dragged; an accepted drop
+sinks into the window, and one nobody accepts flies back to where the drag
+started. Its source is
 `packages/config/src/drag-and-drop.tsx`, a good starting point for your own.
 
 ## Without a listener

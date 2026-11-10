@@ -55,6 +55,7 @@ import {
   type OutputInfo,
   type PollHandle,
   type ReadonlySignal,
+  type Signal,
   type WaylandWindow,
 } from "shoji_wm";
 import {
@@ -189,8 +190,14 @@ export interface WindowSwitcher {
   readonly shown: ReadonlySignal<boolean>;
   /** Scale for window backdrop effects (0..1); fades them back in after closing. */
   readonly backdropStrength: ReadonlySignal<number>;
-  /** The selected window while the switcher is open, else `null`. */
-  readonly selectedWindowId: ReadonlySignal<string | null>;
+  /**
+   * Whether window `windowId` is the selected one while the switcher is open.
+   * One signal per window, so a change of selection only touches the two
+   * windows it concerns.
+   */
+  isSelected(windowId: string): ReadonlySignal<boolean>;
+  /** Move the selection by `steps` windows while open (no-op otherwise). */
+  flip(steps: number): void;
 }
 
 export interface WindowSwitcherOptions {
@@ -257,10 +264,34 @@ export function createWindowSwitcher<State>(
   const [revision, setRevision] = signal(0);
   const [blurSuspended, setBlurSuspended] = signal(false);
   const [backdropStrength, setBackdropStrength] = signal(1);
-  const [selectedWindowId, setSelectedWindowId] = signal<string | null>(null);
+  // Each window's "selected" flag, and the window whose flag is up.
+  const selectionFlags = new Map<string, Signal<boolean>>();
+  let selectedWindowId: string | null = null;
   let blurFade: PollHandle | null = null;
 
   const touch = () => setRevision(revision.peek() + 1);
+
+  function isSelected(windowId: string): ReadonlySignal<boolean> {
+    let flag = selectionFlags.get(windowId);
+    if (!flag) {
+      flag = signal(windowId === selectedWindowId);
+      selectionFlags.set(windowId, flag);
+    }
+    return flag;
+  }
+
+  function setSelectedWindowId(windowId: string | null) {
+    if (windowId === selectedWindowId) {
+      return;
+    }
+    if (selectedWindowId !== null) {
+      selectionFlags.get(selectedWindowId)?.set(false);
+    }
+    selectedWindowId = windowId;
+    if (windowId !== null) {
+      selectionFlags.get(windowId)?.set(true);
+    }
+  }
 
   function viewportOf(name: string): Viewport | null {
     const output = COMPOSITOR.output.get(name);
@@ -740,6 +771,12 @@ export function createWindowSwitcher<State>(
     setBlurSuspended(false);
     setCurrent(null);
     setSelectedWindowId(null);
+    const alive = new Set(wm.listWindows().map((window) => window.id));
+    for (const windowId of selectionFlags.keys()) {
+      if (!alive.has(windowId)) {
+        selectionFlags.delete(windowId);
+      }
+    }
     let fadeStartMs: number | null = null;
     blurFade = createPoll(
       1,
@@ -924,7 +961,13 @@ export function createWindowSwitcher<State>(
     blurSuspended,
     shown: blurSuspended,
     backdropStrength,
-    selectedWindowId,
+    isSelected,
+    flip: (steps) => {
+      const session = current.peek();
+      if (session && steps !== 0) {
+        select(session, session.selected + steps);
+      }
+    },
   };
 }
 

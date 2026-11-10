@@ -265,8 +265,8 @@ Where your flake inputs include the package, for example:
 ShojiWM is just the compositor — it does not ship a bar, launcher, or other shell
 UI on its own. A standard shell implementation is provided separately:
 
-- **shoji-bar-3** — [github.com/bea4dev/shoji-bar-3](https://github.com/bea4dev/shoji-bar-3)
+- **shoji-bar-4** — [github.com/bea4dev/shoji-bar-4](https://github.com/bea4dev/shoji-bar-4), a Material 3 Expressive shell that goes with the default config's window frames
 
 Follow the setup instructions in that repository's `README.md` to install and
-enable it. (The default ShojiWM config already launches `shoji-bar-3` if it is
-present.)
+enable it. (The default ShojiWM config already launches it from
+`~/.config/shoji-bar-4/target/release/shoji-bar-4` if it is present.)

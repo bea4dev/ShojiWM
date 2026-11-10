@@ -31,9 +31,9 @@ COMPOSITOR.dnd.event.onStart((drag) => {
 });
 ```
 
-[デフォルト設定](./default-config.md)はこの API で、すりガラスのカードに操作のバッジと
-ドラッグ中のデータの種類を示すラベルを付けて表示し、どこにも受け入れられなかった
-ドロップはドラッグ開始位置へ戻します。ソースは `packages/config/src/drag-and-drop.tsx`
+[デフォルト設定](./default-config.md)はこの API で、Material 3 Expressive のカードに操作のバッジと
+ドラッグ中のデータの種類を示すピルを付けて表示し、受け入れられたドロップは相手に沈み込み、
+どこにも受け入れられなかったドロップはドラッグ開始位置へ戻します。ソースは `packages/config/src/drag-and-drop.tsx`
 にあり、自作する際の出発点にちょうど良いはずです。
 
 ## リスナーが無い場合

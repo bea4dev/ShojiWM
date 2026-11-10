@@ -1,4 +1,5 @@
 import {
+  animationVariable,
   createWindowStack,
   createWindowState,
   dropWindowState,
@@ -7,6 +8,7 @@ import {
   markManagedWindowDirty,
   markWindowDirty,
   read,
+  milliseconds,
   seconds,
   COMPOSITOR,
   type EasingFunction,
@@ -26,6 +28,13 @@ import {
 } from "shoji_wm";
 import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
 import { playRectAnimation, stopRectAnimation } from "./window-animation";
+import {
+  WINDOW_DURATION,
+  WINDOW_EASE,
+  WINDOW_EASE_OVERSHOOT,
+  WINDOW_OPEN_CLOSE_DURATION,
+} from "./md3e/motion";
+import { FRAME } from "./md3e/decoration";
 
 export type SnapZone =
   | "maximize"
@@ -130,22 +139,46 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
   },
 );
 
-const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
+// A window opens coming up from below and growing out of a little smaller,
+// going a hair past its place and size and back, as it fades in, and closes shrinking a little as it fades out.
+const WINDOW_OPEN_DURATION = WINDOW_OPEN_CLOSE_DURATION;
+const WINDOW_OPEN_FADE_DURATION = WINDOW_OPEN_CLOSE_DURATION;
+const WINDOW_CLOSE_DURATION = WINDOW_OPEN_CLOSE_DURATION;
+const MINIMIZE_ANIMATION_DURATION = WINDOW_DURATION;
+const UNMINIMIZE_ANIMATION_DURATION = WINDOW_DURATION;
+/** How much smaller a window is drawn at the start of opening / end of closing. */
+const WINDOW_OPEN_ZOOM = 0.12;
+/** How far below its place a window starts to open (logical px). */
+const WINDOW_OPEN_RISE = 96;
+const WINDOW_CLOSE_ZOOM = 0.06;
+/** How much smaller a window gets as it goes down to the dock. */
+const WINDOW_MINIMIZE_ZOOM = 0.4;
+/**
+ * How much smaller than its rect a window is drawn (0: its full size), while
+ * it opens or closes. The window composition applies it as a scale.
+ */
+export const WINDOW_ZOOM_OUT = animationVariable("window-zoom-out");
 const INITIAL_TILEABILITY_SETTLE_DURATION = seconds(1);
-const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.3);
+const WINDOW_MANAGEMENT_ANIMATION_DURATION = WINDOW_DURATION;
 const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
 // See `lastRestoreAtMs`: a restore and an activate closer together than this
 // are one taskbar click, so the minimize-raise toggle must not fire.
 const RESTORE_ACTIVATE_GRACE_MS = 100;
-export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
-const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
-const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
+// Title bar presses: two within this time and distance are a double click,
+// which maximizes or restores the window, and a maximized window comes off
+// its maximized rect only once the pointer has moved this far.
+const TITLEBAR_DOUBLE_CLICK_MS = 500;
+const TITLEBAR_DOUBLE_CLICK_SLOP_PX = 4;
+const TITLEBAR_DRAG_THRESHOLD_PX = 6;
+export const WINDOW_MANAGEMENT_EASING = WINDOW_EASE;
+const WINDOW_OPEN_EASING = WINDOW_EASE_OVERSHOOT;
+const WINDOW_CLOSE_EASING = WINDOW_EASE;
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
-const WINDOW_MINIMIZE_RECT_EASING = cubicBezier(0.3, -0.3, 0, 1);
-const WINDOW_UNMINIMIZE_RECT_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
-const WINDOW_MINIMIZE_OPACITY_EASING = cubicBezier(0.3, -0.3, 0, 1);
-const WINDOW_UNMINIMIZE_OPACITY_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
+const WINDOW_MINIMIZE_RECT_EASING = WINDOW_EASE;
+const WINDOW_UNMINIMIZE_RECT_EASING = WINDOW_EASE_OVERSHOOT;
+const WINDOW_MINIMIZE_OPACITY_EASING = WINDOW_EASE;
+const WINDOW_UNMINIMIZE_OPACITY_EASING = WINDOW_EASE;
 export const TILE_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -406,8 +439,14 @@ const MINIMIZE_ANIMATION_CHANNEL = "window.minimize";
 const WORKSPACE_VISUAL_ANIMATION_CHANNEL = "workspace.visual";
 const WORKSPACE_VISUAL_RECT_ANIMATION_CHANNEL = `${WORKSPACE_VISUAL_ANIMATION_CHANNEL}.rect`;
 const WORKSPACE_VISUAL_OPACITY_ANIMATION_CHANNEL = `${WORKSPACE_VISUAL_ANIMATION_CHANNEL}.opacity`;
-export const WINDOW_BORDER_PX = 2;
-export const TITLEBAR_HEIGHT = 30;
+/**
+ * Where a maximized window hangs from the pointer when it is dragged off its
+ * maximized rect: the middle of the frame's title bar (logical px from the
+ * top).
+ */
+const TITLEBAR_GRAB_Y = FRAME.titleBar / 2;
+// A maximized (or snapped) window keeps its frame and stays this far inside
+// the work area.
 export const MAXIMIZED_WINDOW_PADDING = {
   top: 8,
   right: 8,
@@ -448,6 +487,22 @@ export class HybridWindowManager {
     windowId: string;
     width: number;
     height: number;
+  } | null = null;
+  /** The last press on a title bar, for double clicks. */
+  private lastTitlebarPress: {
+    windowId: string;
+    timestamp: number;
+    x: number;
+    y: number;
+  } | null = null;
+  /**
+   * A title bar press on a maximized window that has not moved far enough
+   * yet to drag it off its maximized rect; or a double click, whose grab is
+   * ignored to its end.
+   */
+  private heldTitlebarDrag: {
+    windowId: string;
+    doubleClick: boolean;
   } | null = null;
   private workspaceGesture: WorkspaceGestureState | null = null;
   private workspaceGestureMode: WorkspaceGestureMode | null = null;
@@ -660,7 +715,7 @@ export class HybridWindowManager {
     window.focus();
     this.windowStack.add(window);
 
-    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
+    window.setCloseAnimationDuration(WINDOW_CLOSE_DURATION);
   }
 
   private trackWindowTileability(window: WaylandWindow) {
@@ -935,7 +990,7 @@ export class HybridWindowManager {
     if (!this.windowStack.has(window)) {
       this.windowStack.add(window, { at: "back" });
     }
-    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
+    window.setCloseAnimationDuration(WINDOW_CLOSE_DURATION);
 
     const layoutWasDeferred = this.deferredInitialLayoutWindowIds.delete(
       window.id,
@@ -1048,6 +1103,11 @@ export class HybridWindowManager {
   }
 
   public onWindowMove(event: WindowMoveEvent) {
+    const held = this.holdTitlebarDrag(event);
+    if (!held) {
+      return;
+    }
+    event = held;
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       this.onTileWindowMove(event, workspace);
@@ -1127,6 +1187,74 @@ export class HybridWindowManager {
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(event.currentRect);
     this.applyWorkspaceStackPolicy(workspace);
+  }
+
+  /**
+   * Title bar presses, as on Windows: a double click maximizes or restores
+   * the window, and a single press on a maximized window does not restore it
+   * until the pointer has actually dragged it. Returns the event to handle
+   * (a held drag starts once it moves far enough), or `null` to drop it.
+   */
+  private holdTitlebarDrag(event: WindowMoveEvent): WindowMoveEvent | null {
+    const window = event.window;
+    if (event.source !== "ssd") {
+      return event;
+    }
+    if (event.phase === "start") {
+      const last = this.lastTitlebarPress;
+      this.lastTitlebarPress = {
+        windowId: window.id,
+        timestamp: event.timestamp,
+        x: event.currentPointer.x,
+        y: event.currentPointer.y,
+      };
+      if (
+        last?.windowId === window.id &&
+        event.timestamp - last.timestamp <= TITLEBAR_DOUBLE_CLICK_MS &&
+        Math.hypot(event.currentPointer.x - last.x, event.currentPointer.y - last.y) <=
+          TITLEBAR_DOUBLE_CLICK_SLOP_PX
+      ) {
+        this.lastTitlebarPress = null;
+        this.heldTitlebarDrag = { windowId: window.id, doubleClick: true };
+        if (read(window.isResizable)) {
+          if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+            window.unmaximize();
+          } else {
+            window.maximize();
+          }
+        }
+        return null;
+      }
+      const workspace = this.findWorkspaceForWindow(window);
+      const tiled = workspace?.isTiled && workspace.shouldTile(window);
+      if (window.state[WINDOW_STATE_MAXIMIZED]() && !tiled) {
+        this.heldTitlebarDrag = { windowId: window.id, doubleClick: false };
+        return null;
+      }
+      this.heldTitlebarDrag = null;
+      return event;
+    }
+
+    const held = this.heldTitlebarDrag;
+    if (held?.windowId !== window.id) {
+      return event;
+    }
+    if (event.phase === "end" || event.phase === "cancel") {
+      this.heldTitlebarDrag = null;
+      return null;
+    }
+    const moved = Math.hypot(
+      event.currentPointer.x - event.startPointer.x,
+      event.currentPointer.y - event.startPointer.y,
+    );
+    if (held.doubleClick || moved < TITLEBAR_DRAG_THRESHOLD_PX) {
+      return null;
+    }
+    // Far enough: the drag starts here, taking the window off its maximized
+    // rect.
+    this.heldTitlebarDrag = null;
+    this.lastTitlebarPress = null;
+    return { ...event, phase: "start" };
   }
 
   private onFloatingWindowMove(event: WindowMoveEvent, workspace: Workspace) {
@@ -2861,11 +2989,10 @@ export class HybridWindowManager {
     height: number,
   ): ManagedWindowRect {
     const pointer = event.currentPointer;
-    const titlebarCenterY = WINDOW_BORDER_PX + TITLEBAR_HEIGHT / 2;
     const pointerOffsetY =
       event.source === "modifier"
         ? height / 2
-        : Math.min(height / 2, titlebarCenterY);
+        : Math.min(height / 2, TITLEBAR_GRAB_Y);
 
     return {
       x: pointer.x - width / 2,
@@ -5756,40 +5883,46 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
 function scheduleOpenAnimation(window: WaylandWindow): void {
   window.scheduleAnimation({
     channel: OPEN_ANIMATION_CHANNEL,
+    // Up from below, a little past its place and back, as it grows.
     rect: {
-      from: { x: 0, y: 200, width: 0, height: 0 },
+      from: { x: 0, y: WINDOW_OPEN_RISE, width: 0, height: 0 },
       to: { x: 0, y: 0, width: 0, height: 0 },
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      duration: WINDOW_OPEN_DURATION,
       easing: WINDOW_OPEN_EASING,
       mode: "add",
     },
     opacity: {
       from: 0,
       to: 1,
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: WINDOW_OPEN_EASING,
+      duration: WINDOW_OPEN_FADE_DURATION,
+      easing: WINDOW_EASE,
       mode: "multiply",
     },
+  });
+  void window.animation.start(WINDOW_ZOOM_OUT, {
+    from: WINDOW_OPEN_ZOOM,
+    to: 0,
+    duration: WINDOW_OPEN_DURATION,
+    easing: WINDOW_OPEN_EASING,
   });
 }
 
 function scheduleCloseAnimation(window: WaylandWindow): void {
   window.scheduleAnimation({
     channel: CLOSE_ANIMATION_CHANNEL,
-    rect: {
-      from: { x: 0, y: 0, width: 0, height: 0 },
-      to: { x: 0, y: 120, width: 0, height: 0 },
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: WINDOW_CLOSE_EASING,
-      mode: "add",
-    },
     opacity: {
       from: 1,
       to: 0,
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      duration: WINDOW_CLOSE_DURATION,
       easing: WINDOW_CLOSE_EASING,
       mode: "multiply",
     },
+  });
+  void window.animation.start(WINDOW_ZOOM_OUT, {
+    from: 0,
+    to: WINDOW_CLOSE_ZOOM,
+    duration: WINDOW_CLOSE_DURATION,
+    easing: WINDOW_CLOSE_EASING,
   });
 }
 
@@ -5800,25 +5933,33 @@ function scheduleMinimizeAnimation(
 ): void {
   if (instant) {
     // Replace whatever the channel holds with its end pose.
-    const rest = minimized ? { x: 0, y: 120, width: 0, height: 0 } : { x: 0, y: 0, width: 0, height: 0 };
+    const rest = minimized ? { x: 0, y: 240, width: 0, height: 0 } : { x: 0, y: 0, width: 0, height: 0 };
     const opacity = minimized ? 0 : 1;
     window.scheduleAnimation({
       channel: MINIMIZE_ANIMATION_CHANNEL,
       rect: { from: rest, to: rest, duration: 1, mode: "add" },
       opacity: { from: opacity, to: opacity, duration: 1, mode: "override" },
     });
+    window.animation.set(WINDOW_ZOOM_OUT, minimized ? WINDOW_MINIMIZE_ZOOM : 0);
     return;
   }
+  const duration = minimized ? MINIMIZE_ANIMATION_DURATION : UNMINIMIZE_ANIMATION_DURATION;
+  // Down toward the dock, getting smaller, and back up out of it.
+  void window.animation.start(WINDOW_ZOOM_OUT, {
+    to: minimized ? WINDOW_MINIMIZE_ZOOM : 0,
+    duration,
+    easing: minimized ? WINDOW_MINIMIZE_RECT_EASING : WINDOW_UNMINIMIZE_RECT_EASING,
+  });
   window.scheduleAnimation({
     channel: MINIMIZE_ANIMATION_CHANNEL,
     rect: {
       from: minimized
         ? { x: 0, y: 0, width: 0, height: 0 }
-        : { x: 0, y: 200, width: 0, height: 0 },
+        : { x: 0, y: 240, width: 0, height: 0 },
       to: minimized
-        ? { x: 0, y: 120, width: 0, height: 0 }
+        ? { x: 0, y: 240, width: 0, height: 0 }
         : { x: 0, y: 0, width: 0, height: 0 },
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      duration,
       easing: minimized
         ? WINDOW_MINIMIZE_RECT_EASING
         : WINDOW_UNMINIMIZE_RECT_EASING,
@@ -5827,7 +5968,7 @@ function scheduleMinimizeAnimation(
     opacity: {
       from: minimized ? 1 : 0,
       to: minimized ? 0 : 1,
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      duration,
       easing: minimized
         ? WINDOW_MINIMIZE_OPACITY_EASING
         : WINDOW_UNMINIMIZE_OPACITY_EASING,

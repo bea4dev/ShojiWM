@@ -61,13 +61,14 @@ fn main() -> std::process::ExitCode {
 }
 ```
 
-### Rust 版のデフォルト設定
+### 以前のデフォルト設定の Rust 版
 
-デフォルト設定のすべてを Rust に移植した example があります。フローティングと
+以前のデフォルト設定（Material 3 Expressive に書き直す前）のすべてを Rust に移植した
+example があります。フローティングと
 タイリングを切り替えられるウィンドウマネージャ、キーバインド、バー向けの IPC、
 エフェクト、タイトルバーまで含みます。
 
-| TypeScript（`packages/config/src/`） | Rust（`src/shojiwm_rs/examples/default_config/`） |
+| TypeScript（書き直す前の `packages/config/src/`） | Rust（`src/shojiwm_rs/examples/default_config/`） |
 | --- | --- |
 | `index.tsx` | `main.rs` |
 | `window-manager.ts` | `window_manager.rs`、`workspace.rs` |
@@ -77,7 +78,7 @@ fn main() -> std::process::ExitCode {
 | `flip-3d.tsx` | `flip_3d.rs` |
 | `window-grid.tsx` | `window_grid.rs` |
 
-シェーダーとアイコンは `packages/config` のものをそのまま使います。ソースの
+シェーダーとアイコンは、隣の `assets/` にあります。ソースの
 チェックアウトから起動してください（`nix develop` の中か、
 [インストール](../getting-started/installation.md) の依存関係を入れた環境で）。
 

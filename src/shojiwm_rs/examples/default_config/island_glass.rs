@@ -51,7 +51,7 @@ pub fn island_glass() -> SurfaceEffect {
         .resize(shojiwm_rs::ssd::EffectStateResizePolicy::Clear);
 
     let smooth = |axis: [f64; 2], smoothing: f64, input: &str| {
-        shader_stage("./src/effect/island-smooth.frag")
+        shader_stage("./shaders/island-smooth.frag")
             .uniform("axis", axis)
             .uniform("smoothing_px", smoothing)
             .texture("field_input", saved(input))
@@ -66,14 +66,14 @@ pub fn island_glass() -> SurfaceEffect {
         save("island-seed-mask-x"),
         smooth([0.0, 1.0], 1.0, "island-seed-mask-x").into(),
         save("island-seed-mask"),
-        shader_stage("./src/effect/island-seed.frag")
+        shader_stage("./shaders/island-seed.frag")
             .texture("mask_input", saved("island-seed-mask"))
             .into(),
         save("island-float-step"),
     ];
     for jump in [64, 32, 16, 8, 4, 2, 1, 1] {
         distance_pipeline.push(
-            shader_stage("./src/effect/island-jump.frag")
+            shader_stage("./shaders/island-jump.frag")
                 .uniform("jump_px", jump)
                 .texture("field_input", saved("island-float-step"))
                 .into(),
@@ -81,7 +81,7 @@ pub fn island_glass() -> SurfaceEffect {
         distance_pipeline.push(save("island-float-step"));
     }
     distance_pipeline.extend([
-        shader_stage("./src/effect/island-height.frag")
+        shader_stage("./shaders/island-height.frag")
             .texture("silhouette", saved("island-seed-mask"))
             .texture("field_input", saved("island-float-step"))
             .uniform("distance_limit_px", 120.0)
@@ -102,7 +102,7 @@ pub fn island_glass() -> SurfaceEffect {
         // render_to_if_dirty keeps this final float texture as the state
         // without copying it, so state_source below reads it in the same raw
         // multi-texture coordinate system.
-        shader_stage("./src/effect/island-ridge.frag")
+        shader_stage("./shaders/island-ridge.frag")
             .uniform("rim_width_px", OPTIONS.rim_width)
             .texture("field_input", saved("island-float-step"))
             .texture("direction_input", saved("island-direction"))
@@ -119,7 +119,7 @@ pub fn island_glass() -> SurfaceEffect {
         .stage(save("island-soft"))
         .stage(save("island-edge-soft"))
         .stage(
-            shader_stage("./src/effect/island-mask.frag")
+            shader_stage("./shaders/island-mask.frag")
                 .texture("layer_mask", layer_source())
                 .uniform("surface_opacity", OPTIONS.surface_opacity),
         )
@@ -134,7 +134,7 @@ pub fn island_glass() -> SurfaceEffect {
             Effect::new(saved("island-mask")).stages(distance_pipeline),
         ))
         .stage(
-            shader_stage("./src/effect/island-refract.frag")
+            shader_stage("./shaders/island-refract.frag")
                 .texture("sharp_scene", saved("island-sharp"))
                 .texture("soft_scene", saved("island-soft"))
                 .texture("edge_scene", saved("island-edge-soft"))

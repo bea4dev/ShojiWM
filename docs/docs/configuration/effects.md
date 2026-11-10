@@ -189,9 +189,10 @@ COMPOSITOR.window.composition = (window) => {
 };
 ```
 
-The default config does exactly this for kitty and ghostty (search for
-`TERMINALS` in `packages/config/src/index.tsx`), with the liquid-glass shader
-below instead of a plain blur.
+The [Rust port of the previous default config](./languages.md#the-previous-default-config-in-rust)
+does exactly this for kitty and ghostty (search for `TERMINALS` in
+`src/shojiwm_rs/examples/default_config/main.rs`), with the liquid-glass
+shader below instead of a plain blur.
 
 :::note The application has to be translucent
 The blur is drawn **behind** the client, so it only shows through where the
@@ -203,7 +204,7 @@ the effect.
 
 ### Stronger liquid glass
 
-The default config's liquid-glass stage bends the backdrop only slightly. Its
+That liquid-glass stage bends the backdrop only slightly. Its
 uniforms control the look:
 
 | Uniform | Effect |
@@ -218,8 +219,8 @@ uniforms control the look:
 shaderStage(loadShader('./src/effect/liquid-glass.frag'), {
   uniforms: {
     glass_radius_px: -1.0,
-    distortion_depth: 0.35,    // default config: 0.2
-    distortion_strength: 0.4,  // default config: 0.15
+    distortion_depth: 0.35,    // the Rust port: 0.2
+    distortion_strength: 0.4,  // the Rust port: 0.15
     chromatic_shift_px: 4.0,
     glass_tint: 0.85,
   },

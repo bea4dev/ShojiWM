@@ -186,9 +186,9 @@ COMPOSITOR.window.composition = (window) => {
 };
 ```
 
-デフォルト設定は kitty と ghostty に対してまさにこれを行っています
-（`packages/config/src/index.tsx` の `TERMINALS` を検索）。ただし単純なブラーではなく、
-次に説明する liquid glass シェーダーを使っています。
+[以前のデフォルト設定の Rust 版](./languages.md#以前のデフォルト設定の-rust-版)は、kitty と ghostty に対して
+まさにこれを行っています（`src/shojiwm_rs/examples/default_config/main.rs` の `TERMINALS` を検索）。
+ただし単純なブラーではなく、次に説明する liquid glass シェーダーを使っています。
 
 :::note アプリ側を半透明にする必要があります
 ブラーはクライアントの**背後**に描かれるので、クライアント自身のピクセルが透明な
@@ -199,7 +199,7 @@ COMPOSITOR.window.composition = (window) => {
 
 ### liquid glass を強くする
 
-デフォルト設定の liquid glass ステージは、背景をわずかにしか曲げません。見た目は
+その liquid glass ステージは、背景をわずかにしか曲げません。見た目は
 uniform で調整できます。
 
 | uniform | 効果 |
@@ -214,8 +214,8 @@ uniform で調整できます。
 shaderStage(loadShader('./src/effect/liquid-glass.frag'), {
   uniforms: {
     glass_radius_px: -1.0,
-    distortion_depth: 0.35,    // デフォルト設定: 0.2
-    distortion_strength: 0.4,  // デフォルト設定: 0.15
+    distortion_depth: 0.35,    // Rust 版: 0.2
+    distortion_strength: 0.4,  // Rust 版: 0.15
     chromatic_shift_px: 4.0,
     glass_tint: 0.85,
   },

@@ -145,7 +145,7 @@ fn frosted_panel(radius: f64, content: Element) -> Element {
 fn kind_icon(kind: DragKind, size: f64) -> Element {
     Flex::column()
         .paint(
-            paint_shader("./src/effect/dnd-kind-icon.frag")
+            paint_shader("./shaders/dnd-kind-icon.frag")
                 .uniform("kind", kind.index())
                 .uniform("color", kind.color()),
         )

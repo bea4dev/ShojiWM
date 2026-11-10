@@ -60,13 +60,13 @@ fn main() -> std::process::ExitCode {
 }
 ```
 
-### The default config, in Rust
+### The previous default config, in Rust
 
-The whole default config — the hybrid floating/tiling window manager,
-keybindings, the bar IPC, effects and the titlebar — is ported to Rust as an
-example:
+The whole previous default config (before its Material 3 Expressive rewrite)
+— the hybrid floating/tiling window manager, keybindings, the bar IPC,
+effects and the titlebar — is ported to Rust as an example:
 
-| TypeScript (`packages/config/src/`) | Rust (`src/shojiwm_rs/examples/default_config/`) |
+| TypeScript (`packages/config/src/`, before the rewrite) | Rust (`src/shojiwm_rs/examples/default_config/`) |
 | --- | --- |
 | `index.tsx` | `main.rs` |
 | `window-manager.ts` | `window_manager.rs`, `workspace.rs` |
@@ -76,7 +76,7 @@ example:
 | `flip-3d.tsx` | `flip_3d.rs` |
 | `window-grid.tsx` | `window_grid.rs` |
 
-It reuses the shaders and icons of `packages/config`. Run it from a source
+Its shaders and icons are in `assets/` next to it. Run it from a source
 checkout (inside `nix develop`, or with the dependencies from
 [Installation](../getting-started/installation.md)):
 

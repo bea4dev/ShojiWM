@@ -1,58 +1,35 @@
 import {
-  AppIcon,
-  Box,
-  Button,
-  ClientWindow,
-  Image,
-  ShaderEffect,
-  Label,
   COMPOSITOR,
-  WindowBorder,
   backdropSource,
   compileEffect,
   compileLayerEffect,
   dualKawaseBlur,
-  type SSDStyle,
-  type WaylandWindow,
-  type WindowDecorationState,
   computed,
-  useState,
   shaderStage,
   loadShader,
   layerSource,
-  ManagedWindow,
-  read,
   type DisplayConfigDraft,
   compilePopupEffect,
   popupSource,
-  Popup,
-  type ReadonlySignal,
   DefaultComposition,
 } from "shoji_wm";
-import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
 import { createIpcServer } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
-  TITLEBAR_HEIGHT,
-  WINDOW_BORDER_PX,
-  WINDOW_STATE_FULLSCREEN,
   WINDOW_STATE_MINIMIZED,
   WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
-  WINDOW_STATE_TILE_DRAGGING,
-  WINDOW_STATE_TILE_REORDERING,
-  WINDOW_STATE_TILED,
-  WINDOW_STATE_WORKSPACE_TILED,
-  WINDOW_STATE_VISIBLE_OUTPUTS,
-  WINDOW_STATE_RECT,
-  WINDOW_STATE_WORKSPACE_VISIBLE,
-  WINDOW_STATE_WORKSPACE_OFFSET_Y,
-  WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
-import { ISLAND_GLASS } from "./effect/island-glass";
-import { createFlip3D } from "./flip-3d";
 import { createWindowGrid } from "./window-grid";
+import { createFlip3D } from "./flip-3d";
 import { installDragAndDrop } from "./drag-and-drop";
-import type { TitlebarButton } from "./window-switcher";
+import { createWindowComposition, windowStackOrder } from "./window-composition";
+import {
+  captionButtonAt,
+  decorationPolicy,
+  installFocusFade,
+  naturalRootRect,
+} from "./md3e/decoration";
+import { currentScheme, schemeFrom, setTheme, type Scheme } from "./md3e/theme";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -75,9 +52,10 @@ COMPOSITOR.process.once("GTK-CSD-control-buttons", {
   runPolicy: "once-per-session",
 });
 
-COMPOSITOR.window.decoration.configure((_window, context) => {
-  return { mode: context.clientPreference ?? "server" };
-});
+// Material 3 Expressive frames (./md3e) for clients that want server-side
+// decorations; the rest keep their own and get our corners and shadow.
+COMPOSITOR.window.decoration.configure(decorationPolicy);
+installFocusFade();
 
 // GTK 3 applications (Thunar, ...) choose between their own title bar and
 // ours once, at startup, from this default alone: "server" drops theirs.
@@ -99,12 +77,9 @@ const WINDOW_SWITCHER = (
   WINDOW_SWITCHER_STYLE === "grid" ? createWindowGrid : createFlip3D
 )({
   windowManager: HYBRID_WINDOW_MANAGER,
-  stackOrder: (window) =>
-    window.state[WINDOW_STATE_FULLSCREEN]()
-      ? FULLSCREEN_Z_INDEX
-      : windowZIndex(window),
+  stackOrder: (window) => windowStackOrder(HYBRID_WINDOW_MANAGER, window),
   // The grid's selected card: its title bar buttons work.
-  titlebarButtonAt,
+  titlebarButtonAt: captionButtonAt,
 });
 
 // Drag and drop: the dragged image on a card with the action and the kind of
@@ -120,41 +95,23 @@ const backdropFade = () =>
     uniforms: { strength: WINDOW_SWITCHER.backdropStrength },
   });
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
-const FULLSCREEN_Z_INDEX = 2_000_000_000;
-const FLOATING_WINDOW_Z_INDEX_BASE = 1_500_000_000;
-const WINDOW_STACK_Z_INDEX_RANGE = 100_000_000;
-const FOCUSED_TILED_WINDOW_Z_INDEX = 1_000_000_000;
-const REORDERING_TILED_WINDOW_Z_INDEX = -2_000_000_000;
-
-/** Where a (non-fullscreen) window sits in the stack; higher is on top. */
-function windowZIndex(window: WaylandWindow): number {
-  const stackZIndex = HYBRID_WINDOW_MANAGER.getWindowZIndex(window)();
-  if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
-    return stackZIndex;
-  }
-  const stackOffset = Math.max(
-    -WINDOW_STACK_Z_INDEX_RANGE,
-    Math.min(WINDOW_STACK_Z_INDEX_RANGE, stackZIndex),
-  );
-  if (!window.state[WINDOW_STATE_TILED]()) {
-    return FLOATING_WINDOW_Z_INDEX_BASE + stackOffset;
-  }
-  if (window.state[WINDOW_STATE_TILE_REORDERING]()) {
-    return REORDERING_TILED_WINDOW_Z_INDEX;
-  }
-  return window.isFocused() ? FOCUSED_TILED_WINDOW_Z_INDEX : stackOffset;
-}
+const HOT_RELOAD_THEME = "config.md3e-theme";
 
 COMPOSITOR.onDisable((event) => {
   if (event.isReloading) {
     const snapshot = HYBRID_WINDOW_MANAGER.snapshot();
     event.persist(HOT_RELOAD_WINDOW_MANAGER_STATE, snapshot);
+    event.persist(HOT_RELOAD_THEME, currentScheme.peek());
   }
   HYBRID_WINDOW_MANAGER.dispose();
 });
 
 COMPOSITOR.onEnable((event) => {
   if (event.isReloading) {
+    const theme = event.restore<Scheme>(HOT_RELOAD_THEME);
+    if (theme) {
+      setTheme(theme);
+    }
     const snapshot = event.restore<
       ReturnType<typeof HYBRID_WINDOW_MANAGER.snapshot>
     >(HOT_RELOAD_WINDOW_MANAGER_STATE);
@@ -173,6 +130,7 @@ COMPOSITOR.onEnable((event) => {
 //   workspaces.changed       -> WorkspacesView                     (broadcast)
 //   windows.activate         { windowId: string }                  (command)
 //   dock.proximity           { monitor: string, inside: bool }    (broadcast)
+//   theme.set                { dark, primary, surface, ... }       (command)
 // ---------------------------------------------------------------------------
 const WORKSPACE_IPC = createIpcServer();
 let lastWorkspacesJson = "";
@@ -266,6 +224,14 @@ COMPOSITOR.workspace.event.onActivate((event) => {
   }
   HYBRID_WINDOW_MANAGER.activate(monitor, index);
   scheduleWorkspaceBroadcast();
+});
+
+// The color scheme of the frames, sent by shoji-bar-4 (./md3e/theme.ts).
+WORKSPACE_IPC.handle("theme.set", (params) => {
+  const scheme = schemeFrom(params);
+  if (scheme) {
+    setTheme(scheme);
+  }
 });
 
 WORKSPACE_IPC.handle("workspaces.get", () =>
@@ -391,15 +357,12 @@ COMPOSITOR.process.once("fcitx5", {
   runPolicy: "once-per-session",
 });
 
-// shoji-bar-3, the session's shell: bar, wallpaper, notification daemon and
-// tray host.
-//
-// The shader is compiled first. The built .qsb is not in the repository, and
-// without it the islands have no silhouette at all. The two are sequenced with
-// `;` rather than `&&` on purpose: if the build fails, starting anyway with a
-// previously built .qsb is far better than a session with no shell in it.
+// The session's shell: shoji-bar-4 (~/.config/shoji-bar-4), the bar, dock,
+// panels, launcher, notifications and wallpaper, in the same Material 3
+// Expressive style. It sends its color scheme here (`theme.set`).
+const SHELL = "~/.config/shoji-bar-4/target/release/shoji-bar-4";
 COMPOSITOR.process.once("shell", {
-  command: "cd ~/.config/shoji-bar-3 && bash build.sh; exec quickshell --path .",
+  command: `exec ${SHELL}`,
   runPolicy: "once-per-session",
 });
 // cliphist clipboard history watchers. Text and image need separate watchers;
@@ -449,43 +412,26 @@ COMPOSITOR.key.bind("prev", "XF86AudioPrev", () => {
   COMPOSITOR.process.spawn({ command: "playerctl previous" });
 });
 
-// shoji-bar-3's application launcher, on the monitor under the cursor.
-//
-// The bar answers on Quickshell's IPC socket, which is addressed by the config
-// it was started with rather than by a running instance id, so this works
-// whether the bar was started by hand or by a service.
-//
-//   quickshell -p ~/.config/shoji-bar-3 ipc show
-//
-// lists the rest of the target's functions (open / close / toggle, each also
-// in a `...On <screen>` form). An empty screen name would open it everywhere.
-function toggleLauncher() {
+// shoji-bar-4's launcher and panels, on the monitor under the cursor
+// (`shoji-bar-4 msg ...`, see ~/.config/shoji-bar-4/src/ipc.rs).
+function toggleOnCurrentMonitor(panel: string) {
   const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
-  COMPOSITOR.process.spawn({
-    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher toggleOn "${monitor}"`,
-  });
+  COMPOSITOR.process.spawn({ command: `${SHELL} msg toggle ${panel} "${monitor}"` });
 }
-COMPOSITOR.key.bind("launcher", "Super+A", toggleLauncher);
+COMPOSITOR.key.bind("launcher", "Super+A", () => toggleOnCurrentMonitor("launcher"));
 // Super tap: fires on a quick release (within 300 ms) with no other key/button pressed in between.
-COMPOSITOR.key.bind("launcher-tap", "Super", toggleLauncher, {
+COMPOSITOR.key.bind("launcher-tap", "Super", () => toggleOnCurrentMonitor("launcher"), {
   on: "release",
   within: 300,
 });
-// The same launcher panel with its field pointed at the clipboard's history.
-function toggleClipboard() {
-  const monitor = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
-  COMPOSITOR.process.spawn({
-    command: `quickshell -p ~/.config/shoji-bar-3 ipc call launcher clipboardOn "${monitor}"`,
-  });
-}
-COMPOSITOR.key.bind("clipboard", "Super+V", toggleClipboard);
-
+COMPOSITOR.key.bind("quick-settings", "Super+N", () => toggleOnCurrentMonitor("quick-settings"));
+COMPOSITOR.key.bind("calendar", "Super+C", () => toggleOnCurrentMonitor("calendar"));
+// The clipboard's history, as the cliphist watchers above keep it.
+COMPOSITOR.key.bind("clipboard", "Super+V", () => toggleOnCurrentMonitor("clipboard"));
 // Lock the session. No monitor argument: a lock covers every screen there is,
 // and the shell refuses to expose an unlock over the same socket.
 COMPOSITOR.key.bind("lock", "Super+L", () => {
-  COMPOSITOR.process.spawn({
-    command: "quickshell -p ~/.config/shoji-bar-3 ipc call session lock",
-  });
+  COMPOSITOR.process.spawn({ command: `${SHELL} msg lock` });
 });
 
 COMPOSITOR.key.bind("screenshot", "Super+P", () => {
@@ -695,12 +641,8 @@ const LAYER_BLUR_MASK = compileLayerEffect({
 
 COMPOSITOR.effect.layer = (layer) => {
   const namespace = layer.namespace();
-  // Both the LiquidIsland experiment and shoji-bar-3 draw only a translucent
-  // silhouette and let the compositor recover the shape from its alpha.
-  if (namespace === "liquid-island-qs" || namespace === "shoji-bar-3") {
-    return { behind: ISLAND_GLASS };
-  }
-  if (namespace === "no_blur") {
+  // Nothing is behind the wallpaper.
+  if (namespace === "shoji-bar-4-wallpaper" || namespace === "no_blur") {
     return {};
   }
 
@@ -877,507 +819,9 @@ COMPOSITOR.event.onWindowActivateRequest((event) => {
   scheduleWorkspaceBroadcast();
 });
 
-function usesClientDecoration(decoration: WindowDecorationState): boolean {
-  return (
-    decoration.mode === "client" &&
-    !(
-      decoration.clientPreference === "server" &&
-      decoration.configuredMode === "server"
-    )
-  );
-}
-
-// Must match the frame the composition below draws: a client-decorated window
-// gets only the border, so counting the title bar would size its client 30px
-// past what the layout meant (and past the client's own maximum). The border
-// is drawn for both, so it is counted for both; a config that drops the
-// border for client-decorated windows must drop WINDOW_BORDER_PX here too.
-function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
-  const client = window.position;
-  const titlebar = usesClientDecoration(window.decoration.peek())
-    ? 0
-    : TITLEBAR_HEIGHT;
-  return {
-    x: client.x - WINDOW_BORDER_PX,
-    y: client.y - titlebar - WINDOW_BORDER_PX,
-    width: client.width + WINDOW_BORDER_PX * 2,
-    height: client.height + titlebar + WINDOW_BORDER_PX * 2,
-  };
-}
-
-/**
- * The title bar's button size, padding and gap. `titlebarButtonAt` finds the
- * buttons with the same numbers, so change them here.
- */
-const TITLEBAR_BUTTON_SIZE = 16;
-const TITLEBAR_PADDING_X = 8;
-const TITLEBAR_GAP = 8;
-
-COMPOSITOR.window.composition = (window: WaylandWindow) => {
-  const useClientDecoration = usesClientDecoration(window.decoration());
-  const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
-  const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
-  const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
-  const tileDragging = window.state[WINDOW_STATE_TILE_DRAGGING];
-  const managedRect = computed(() => {
-    const rect = window.state[WINDOW_STATE_RECT]();
-    return {
-      x: read(rect.x),
-      y: read(rect.y) + workspaceOffsetY(),
-      width: read(rect.width),
-      height: read(rect.height),
-    };
-  });
-  const forceRectSize = computed(
-    () => window.isResizable() && !window.isTransient(),
-  );
-
-  // force no corner rounding CSD
-  const tiled = true;
-
-  const zIndex = computed(() => windowZIndex(window));
-  const minimizeVisualIdle = window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE];
-  const inactive = computed(
-    () => minimizeVisualIdle() || (!workspaceVisible() && !tileDragging()),
-  );
-
-  const borderColor = window.isFocused((focused) =>
-    focused ? "#d7ba7d" : "#4f5666",
-  );
-  // A soft drop shadow under the frame; the focused window floats a bit higher.
-  // The window selected in the window switcher glows white instead (it fits
-  // in the switcher's texture margin).
-  const windowShadow = computed(() =>
-    WINDOW_SWITCHER.selectedWindowId() === window.id
-      ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
-      : window.isFocused()
-        ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
-        : [{ y: 4, blur: 16, spread: -2, color: "#00000060" }],
-  );
-  const titlebarBackground = window.isFocused((focused) =>
-    focused ? "#1f243080" : "#2a2f3a80",
-  );
-  const titleColor = window.isFocused((focused) =>
-    focused ? "#f5f7fa" : "#c9d1d9",
-  );
-
-  const titlebarStyle: SSDStyle = {
-    height: TITLEBAR_HEIGHT,
-    paddingX: TITLEBAR_PADDING_X,
-    gap: TITLEBAR_GAP,
-    alignItems: "center",
-    background: titlebarBackground,
-  };
-
-  const backgroundShader = compileEffect({
-    input: backdropSource(),
-    capturePadding: 24,
-    invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
-    pipeline: [
-      dualKawaseBlur({ radius: 4, passes: 2 }),
-      shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
-        uniforms: {
-          // Follow the window's rounded corners.
-          glass_radius_px: -1.0,
-          distortion_depth: 0.2,
-          distortion_strength: 0.15,
-          chromatic_shift_px: 3.0,
-          glass_tint: 0.9,
-        },
-      }),
-      backdropFade(),
-    ],
-    alpha: "preserve",
-  });
-
-  const titleOnlyShader = compileEffect({
-    input: backdropSource(),
-    capturePadding: 24,
-    invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
-    alpha: "preserve",
-    pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
-  });
-  // No backdrop effects while the window switcher shows the windows as
-  // textures: there is nothing under a window there to blur.
-  const blurSuspended = WINDOW_SWITCHER.blurSuspended();
-
-  const appIcon = (
-    <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
-  );
-  const label = (
-    <Label
-      text={window.title}
-      style={{
-        color: titleColor,
-        fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-        fontSize: 13,
-        fontWeight: 600,
-        flexGrow: 1,
-        flexShrink: 1,
-        minWidth: 0,
-      }}
-    />
-  );
-  const minimizeButton = <MinimizeButton window={window} />;
-  const maximizeButton = <MaximizeButton window={window} />;
-  const closeButton = <CloseButton window={window} />;
-
-  const titlebarContent = [
-    appIcon,
-    label,
-    minimizeButton,
-    maximizeButton,
-    closeButton,
-  ];
-  var innerComponents = (
-    <Box direction="column">
-      {blurSuspended ? (
-        <Box direction="row" style={titlebarStyle}>
-          {titlebarContent}
-        </Box>
-      ) : (
-        <ShaderEffect
-          shader={titleOnlyShader}
-          direction="row"
-          style={titlebarStyle}
-        >
-          {titlebarContent}
-        </ShaderEffect>
-      )}
-      <ClientWindow />
-    </Box>
-  );
-
-  const TERMINALS = ["kitty", "ghostty"];
-
-  if (TERMINALS.includes(window.appId() ?? "")) {
-    const terminalContent = [
-      <Box direction="row" style={titlebarStyle}>
-        {titlebarContent}
-      </Box>,
-      <ClientWindow />,
-    ];
-    innerComponents = blurSuspended ? (
-      <Box direction="column">{terminalContent}</Box>
-    ) : (
-      <ShaderEffect shader={backgroundShader} direction="column">
-        {terminalContent}
-      </ShaderEffect>
-    );
-  }
-
-  // Fullscreen: drop all chrome (titlebar, border, rounded corners) and let
-  // the client surface fill its managed rect edge to edge. The rect is set to
-  // the whole output by onWindowFullscreenRequest. Rendering nothing but the
-  // bare ClientWindow is also what lets the tty backend promote the client
-  // buffer to the primary plane (direct scanout).
-  if (window.state[WINDOW_STATE_FULLSCREEN]()) {
-    return (
-      <ManagedWindow
-        rect={managedRect}
-        zIndex={FULLSCREEN_Z_INDEX}
-        visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
-        opacity={workspaceOpacity}
-        forceRectSize={forceRectSize}
-        tiled={tiled}
-        idle={inactive}
-        interactive={inactive((value) => !value)}
-        // Permit low-latency tearing for fullscreen windows. The compositor only actually tears
-        // once the window is on the direct-scanout fast path and is committing faster than the
-        // refresh rate (i.e. games), so this is a no-op for ordinary fullscreen apps. Narrow it
-        // per app if desired, e.g. `allowTearing={isGame(window.appId())}`.
-        allowTearing={true}
-      >
-        <ClientWindow />
-      </ManagedWindow>
-    );
-  }
-
-  // use less Server-Side Decoration
-  if (useClientDecoration) {
-    return (
-      <ManagedWindow
-        rect={managedRect}
-        zIndex={zIndex}
-        visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
-        opacity={workspaceOpacity}
-        forceRectSize={forceRectSize}
-        tiled={tiled}
-        idle={inactive}
-        interactive={inactive((value) => !value)}
-      >
-        <WindowBorder
-          style={{
-            border: { px: WINDOW_BORDER_PX, color: borderColor },
-            borderRadius: 10,
-            boxShadow: windowShadow,
-            background: "#10131900",
-            padding: 0,
-            paddingX: 0,
-            paddingRight: 0,
-          }}
-          interaction={{
-            resizeHitArea: {
-              edgePx: 8,
-              cornerPx: 14,
-            },
-          }}
-        >
-          <ClientWindow />
-        </WindowBorder>
-      </ManagedWindow>
-    );
-  }
-
-  // use full Server-Side Decoration
-  return (
-    <ManagedWindow
-      rect={managedRect}
-      zIndex={zIndex}
-      visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
-      opacity={workspaceOpacity}
-      forceRectSize={forceRectSize}
-      tiled={tiled}
-      idle={inactive}
-      interactive={inactive((value) => !value)}
-    >
-      <WindowBorder
-        style={{
-          border: { px: WINDOW_BORDER_PX, color: borderColor },
-          borderRadius: 10,
-          boxShadow: windowShadow,
-          background: "#10131900",
-          padding: 0,
-          paddingX: 0,
-          paddingRight: 0,
-        }}
-        interaction={{
-          resizeHitArea: {
-            edgePx: 8,
-            cornerPx: 14,
-          },
-        }}
-      >
-        <Box direction="row">{innerComponents}</Box>
-      </WindowBorder>
-    </ManagedWindow>
-  );
-};
-
-/**
- * The title bar button at `(x, y)`, logical px from the top-left corner of
- * `window.rect` (the frame: border, then the title bar). From the right:
- * close, maximize, minimize. Each button takes the whole title bar height
- * and half the gap on both sides, so a scaled-down card still has a usable
- * target.
- */
-function titlebarButtonAt(window: WaylandWindow, x: number, y: number): TitlebarButton | null {
-  if (
-    window.state[WINDOW_STATE_FULLSCREEN].peek() ||
-    usesClientDecoration(window.decoration.peek())
-  ) {
-    return null;
-  }
-  if (y < WINDOW_BORDER_PX || y > WINDOW_BORDER_PX + TITLEBAR_HEIGHT) {
-    return null;
-  }
-  const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
-  const pitch = TITLEBAR_BUTTON_SIZE + TITLEBAR_GAP;
-  const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
-  for (let i = 0; i < buttons.length; i++) {
-    const center = right - TITLEBAR_BUTTON_SIZE / 2 - i * pitch;
-    if (Math.abs(x - center) <= pitch / 2) {
-      return buttons[i];
-    }
-  }
-  return null;
-}
-
-const CloseButton = ({ window }: { window: WaylandWindow }) => {
-  const [hover, setHover] = useState(false);
-
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F0808030"));
-
-  var icon: CompositionRenderable | null = null;
-  if (hover()) {
-    icon = (
-      <Image
-        src="./assets/x.svg"
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
-  }
-
-  return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
-        onClick={window.close}
-      />
-      {icon}
-    </Box>
-  );
-};
-
-/** How long the pointer has to rest on a title bar button before its tooltip shows. */
-const TOOLTIP_DELAY_MS = 500;
-
-/**
- * A small label under a title bar button, drawn above every window. It
- * opens once the pointer has rested on the button for `TOOLTIP_DELAY_MS` and
- * closes as soon as it leaves.
- */
-const TitlebarTooltip = ({
-  text,
-}: {
-  text: string | ReadonlySignal<string>;
-}) => (
-  <Popup
-    trigger="hover"
-    openDelay={TOOLTIP_DELAY_MS}
-    closeDelay={0}
-    placement="bottom"
-    offset={8}
-  >
-    <Box
-      style={{
-        background: "#1f2430e6",
-        borderRadius: 6,
-        paddingX: 8,
-        paddingY: 4,
-        border: { px: 1, color: "#ffffff1f" },
-        boxShadow: [{ y: 4, blur: 12, color: "#00000070" }],
-      }}
-    >
-      <Label
-        text={text}
-        style={{
-          color: "#e6e9ef",
-          fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-          fontSize: 12,
-        }}
-      />
-    </Box>
-  </Popup>
+COMPOSITOR.window.composition = createWindowComposition(
+  HYBRID_WINDOW_MANAGER,
+  WINDOW_SWITCHER,
 );
-
-const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
-  const [hover, setHover] = useState(false);
-
-  const borderColor = computed(() => {
-    if (!window.isResizable()) {
-      return "#00000000";
-    }
-    return hover() ? "#00000000" : "#00BFFF30";
-  });
-  const shouldHover = computed(() => hover() && window.isResizable());
-
-  var icon: CompositionRenderable | null = null;
-  if (shouldHover()) {
-    const src = window.isMaximized((maximized) => {
-      return maximized ? "./assets/minimize-2.svg" : "./assets/maximize-2.svg";
-    });
-
-    icon = (
-      <Image
-        src={src}
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
-  }
-
-  return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
-        onClick={() => {
-          if (!read(window.isResizable)) {
-            return;
-          }
-
-          if (read(window.isMaximized)) {
-            window.unmaximize();
-          } else {
-            window.maximize();
-          }
-        }}
-      />
-      {icon}
-      {window.isResizable() ? (
-        <TitlebarTooltip
-          text={window.isMaximized((maximized) =>
-            maximized ? "Restore" : "Maximize",
-          )}
-        />
-      ) : null}
-    </Box>
-  );
-};
-
-const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
-  const [hover, setHover] = useState(false);
-
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F8FF7530"));
-
-  var icon: CompositionRenderable | null = null;
-  if (hover()) {
-    icon = (
-      <Image
-        src="./assets/minus.svg"
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
-    );
-  }
-
-  return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={{
-          width: TITLEBAR_BUTTON_SIZE,
-          height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
-          border: { px: 1, color: borderColor },
-        }}
-        onClick={() => window.minimize()}
-      />
-      {icon}
-      <TitlebarTooltip text="Minimize" />
-    </Box>
-  );
-};
 
 export default COMPOSITOR;

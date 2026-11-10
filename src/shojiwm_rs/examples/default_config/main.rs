@@ -1,13 +1,14 @@
-//! The default ShojiWM config (`packages/config/src/index.tsx`) ported to
-//! Rust on top of `shojiwm_rs`'s reactive API.
+//! ShojiWM's previous default config (`packages/config/src/index.tsx` before
+//! its Material 3 Expressive rewrite) ported to Rust on top of `shojiwm_rs`'s
+//! reactive API.
 //!
 //! ```sh
 //! cargo run -p shojiwm_rs --example default_config -- --dev          # nested
 //! cargo run -p shojiwm_rs --example default_config --release -- --tty
 //! ```
 //!
-//! Shaders and icons are shared with the TypeScript config: relative asset
-//! paths resolve against `packages/config`.
+//! Its shaders and icons are in `assets/` next to it: relative asset paths
+//! resolve against that directory.
 
 mod drag_and_drop;
 mod flip_3d;
@@ -85,7 +86,7 @@ fn main() -> std::process::ExitCode {
         .name("rust-default-config")
         .asset_root(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../packages/config"
+            "/examples/default_config/assets"
         ))
         .run()
 }
@@ -723,7 +724,7 @@ fn setup_outputs_and_input() {
 /// Window backdrop effects end with this stage so they can fade back in
 /// after the window switcher closes.
 fn backdrop_fade(switcher: &WindowSwitcher) -> ShaderStage {
-    shader_stage("./src/effect/backdrop-fade.frag")
+    shader_stage("./shaders/backdrop-fade.frag")
         .uniform("strength", switcher.backdrop_strength())
 }
 
@@ -763,7 +764,7 @@ fn masked_blur(mask: Source, capture_padding: i32) -> Effect {
         .preserve_alpha()
         .stage(dual_kawase_blur(4, 2))
         .stage(
-            shader_stage("./src/effect/layer-blur-mask.frag")
+            shader_stage("./shaders/layer-blur-mask.frag")
                 .texture("layer_mask", mask)
                 .uniform("opacity_threshold", 0.25)
                 .uniform("mask_feather", 0.04),
@@ -1169,7 +1170,7 @@ fn decorated_contents(window: Window, is_terminal: bool, blur: Option<&WindowSwi
             .preserve_alpha()
             .stage(dual_kawase_blur(4, 2))
             .stage(
-                shader_stage("./src/effect/liquid-glass.frag")
+                shader_stage("./shaders/liquid-glass.frag")
                     // Follow the window's rounded corners.
                     .uniform("glass_radius_px", -1.0)
                     .uniform("distortion_depth", 0.2)
@@ -1277,7 +1278,7 @@ fn close_button(window: Window) -> Element {
     title_button(
         border,
         hover,
-        move || hover.get().then(|| button_icon("./assets/x.svg")),
+        move || hover.get().then(|| button_icon("./icons/x.svg")),
         || None,
         move || window.close(),
     )
@@ -1300,9 +1301,9 @@ fn maximize_button(window: Window) -> Element {
             should_hover.get().then(|| {
                 button_icon(window.is_maximized().map(|maximized| {
                     if *maximized {
-                        "./assets/minimize-2.svg"
+                        "./icons/minimize-2.svg"
                     } else {
-                        "./assets/maximize-2.svg"
+                        "./icons/maximize-2.svg"
                     }
                 }))
             })
@@ -1341,7 +1342,7 @@ fn minimize_button(window: Window) -> Element {
     title_button(
         border,
         hover,
-        move || hover.get().then(|| button_icon("./assets/minus.svg")),
+        move || hover.get().then(|| button_icon("./icons/minus.svg")),
         || Some(titlebar_tooltip("Minimize")),
         move || window.minimize(),
     )
@@ -1434,7 +1435,7 @@ mod tests {
         let args = CommonArgs::parse(&[], &[]);
         let launcher = ConfigBuilder::new(setup).asset_root(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../packages/config"
+            "/examples/default_config/assets"
         ));
         let mut runtime =
             RuntimeBoot::new(Box::new(launcher), &args).launch(RuntimeHost::detached());
@@ -1668,7 +1669,7 @@ mod tests {
         let args = CommonArgs::parse(&[], &[]);
         let launcher =
             ConfigBuilder::new(|| crate::drag_and_drop::install_drag_and_drop()).asset_root(
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/config"),
+                concat!(env!("CARGO_MANIFEST_DIR"), "/examples/default_config/assets"),
             );
         let mut runtime = RuntimeBoot::new(Box::new(launcher), &args).launch(host.clone());
         runtime.preload().unwrap();
