@@ -809,14 +809,10 @@ pub fn snapshot_bounds(
 fn union_rect(a: crate::ssd::LogicalRect, b: crate::ssd::LogicalRect) -> crate::ssd::LogicalRect {
     let left = a.x.min(b.x);
     let top = a.y.min(b.y);
-    let right = a
-        .x
-        .saturating_add(a.width)
-        .max(b.x.saturating_add(b.width));
-    let bottom = a
-        .y
-        .saturating_add(a.height)
-        .max(b.y.saturating_add(b.height));
+    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
+    let bottom =
+        a.y.saturating_add(a.height)
+            .max(b.y.saturating_add(b.height));
     crate::ssd::LogicalRect::new(left, top, right - left, bottom - top)
 }
 

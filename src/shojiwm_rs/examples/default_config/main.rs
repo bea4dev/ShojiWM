@@ -724,8 +724,7 @@ fn setup_outputs_and_input() {
 /// Window backdrop effects end with this stage so they can fade back in
 /// after the window switcher closes.
 fn backdrop_fade(switcher: &WindowSwitcher) -> ShaderStage {
-    shader_stage("./shaders/backdrop-fade.frag")
-        .uniform("strength", switcher.backdrop_strength())
+    shader_stage("./shaders/backdrop-fade.frag").uniform("strength", switcher.backdrop_strength())
 }
 
 fn backdrop_blur(switcher: &WindowSwitcher) -> Effect {
@@ -1667,10 +1666,11 @@ mod tests {
 
         let host = RuntimeHost::detached();
         let args = CommonArgs::parse(&[], &[]);
-        let launcher =
-            ConfigBuilder::new(|| crate::drag_and_drop::install_drag_and_drop()).asset_root(
-                concat!(env!("CARGO_MANIFEST_DIR"), "/examples/default_config/assets"),
-            );
+        let launcher = ConfigBuilder::new(|| crate::drag_and_drop::install_drag_and_drop())
+            .asset_root(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/examples/default_config/assets"
+            ));
         let mut runtime = RuntimeBoot::new(Box::new(launcher), &args).launch(host.clone());
         runtime.preload().unwrap();
         runtime.enable().unwrap();
