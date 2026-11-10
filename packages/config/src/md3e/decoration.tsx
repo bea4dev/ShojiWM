@@ -97,7 +97,7 @@ const FROSTED = compileEffect({
 });
 
 /** How opaque the title bar is over the blur. */
-const TITLE_BAR_ALPHA = 0.85;
+const TITLE_BAR_ALPHA = 1.0;
 
 /**
  * The window's content over the blurred backdrop; without one (inside the
@@ -248,10 +248,10 @@ function frameShadow(options: FrameOptions): MaybeSignal<BoxShadowValue[]> {
  * over the client area would be under the client's surface.
  */
 export const BORDER = {
-  /** Logical px; whole, so the client keeps a whole size. */
-  width: 1,
-  focused: [1, 1, 1, 0.9] as Rgba,
-  unfocused: [0.5, 0.5, 0.5, 0.6] as Rgba,
+  /** Logical px; twice it is whole (it is on both sides), so the client keeps a whole size. */
+  width: 1.5,
+  focused: [1, 1, 1, 0.5] as Rgba,
+  unfocused: [0.5, 0.5, 0.5, 0.5] as Rgba,
 };
 
 /**
@@ -261,9 +261,9 @@ export const BORDER = {
  */
 export const BORDER_SWELL = {
   /** How long it lasts, ms. */
-  duration: 1600,
+  duration: 500,
   /** How much wider than the border the line is at its fullest, outward; logical px. */
-  thicken: 1,
+  thicken: 2,
   /** The part of `duration` it takes to grow (0..1). */
   rise: 0.15,
   /** The part of `duration` it takes to thin again, at the end (0..1). */

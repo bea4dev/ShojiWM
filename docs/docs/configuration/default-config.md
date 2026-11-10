@@ -137,64 +137,6 @@ back, close shrinking as they fade, and minimize sinking toward the dock
 
 ## Tiling & workspaces
 
-| Shortcut | Action |
-| --- | --- |
-| `Super` + `←` / `→` | Move focus to the left / right tile |
-| `Super` + `Ctrl` + `←` / `→` | Move focus to the left / right tile (alias) |
-| `Super` + `Shift` + `←` / `→` | Move the focused tile left / right |
-| `Super` + `Ctrl` + `↑` / `↓` | Switch to the previous / next workspace |
-| `Super` + `Shift` + `↑` / `↓` | Move the focused window to the previous / next workspace |
-
-### Window switcher (Flip 3D)
-
-| Shortcut | Action |
-| --- | --- |
-| `Super` + `Tab` | Open the switcher with the previous window in front |
-| `Tab` / `Shift` + `Tab` (holding `Super`) | Next / previous window |
-| `←` `→` `↑` `↓`, mouse wheel, touchpad scroll, three-finger swipe | Flip through the windows |
-| Release `Super`, `Return`, `Space` | Switch to the front window |
-| Click a window | Switch to that window |
-| `Escape` | Back to the desktop unchanged |
-
-See [Flip 3D](#flip-3d) below. With `WINDOW_SWITCHER_STYLE = "grid"` in
-`index.tsx`, `Super` + `Tab` opens the [window grid](#window-grid) instead.
-
-### System (built into the compositor)
-
-These are hard-wired in the compositor itself, not defined by the config — so
-they keep working even if your config is broken.
-
-| Shortcut | Action |
-| --- | --- |
-| `Super` + `Shift` + `R` | **Hot reload the config** — apply edits to `index.tsx` without restarting (see [Overview → Hot reload](./overview.md#hot-reload)) |
-| `Super` + `Shift` + `Q` | Quit the ShojiWM session |
-
-The same two actions are available as `shoji_wm --reload` and `shoji_wm --quit`
-(see [Keybindings → Quit and reload](./keybindings-and-pointer.md#quit-and-reload)).
-
-### Debug
-
-| Shortcut | Action |
-| --- | --- |
-| `Super` + `Shift` + `F` | Toggle the FPS / frame-time overlay |
-
-## Window appearance
-
-Each window gets a title bar with the app icon, the window title, and
-minimize / maximize / close buttons. The border is **gold when focused**
-(`#d7ba7d`) and gray otherwise (`#4f5666`), with rounded corners.
-Resting the pointer on the minimize or maximize button for half a second shows a
-tooltip under it ([`<Popup/>`](./components.md#popup)).
-
-- **Terminals** (kitty, ghostty) get a translucent *liquid-glass* blurred
-  background instead of a solid title bar.
-- **Fullscreen** windows drop all chrome (border, title bar, rounded corners) and
-  render edge-to-edge. This bare path lets the compositor hand the buffer
-  straight to the display (direct scanout) and permits tearing, for the lowest
-  latency in games.
-
-## Tiling & workspaces
-
 Window management is handled by the **HybridWindowManager**, which mixes tiling
 and floating per workspace:
 
@@ -289,7 +231,8 @@ See [Input devices](./input.md) to change these.
   `ext-background-effect-v1` protocol (e.g. translucent apps that ask the
   compositor to blur behind them).
 - Every window gets a blurred backdrop, which shows through translucent
-  clients (kitty's `background_opacity`, ...) and the title bar.
+  clients (kitty's `background_opacity`, ...). The title bar is opaque
+  (`TITLE_BAR_ALPHA` below 1 lets it show there too).
 - **Layer surfaces** (bars, docks) and **layer popups** (menus) are blurred
   behind, unless a surface opts out with the `no_blur` namespace (and
   shoji-bar-4's wallpaper).
