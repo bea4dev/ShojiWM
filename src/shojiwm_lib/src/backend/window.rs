@@ -777,33 +777,46 @@ where
         .collect()
 }
 
+/// What a window draws while it is drawn as one texture (a scale animation): the decoration, the
+/// client's surfaces, and what the decoration paints past them, `paint_rects` (the logical bounds
+/// of its paint items: outer `boxShadow`s, `paint` outsets). Without those, a window's shadow was
+/// cut away for as long as it was scaled, as while it opened.
 pub fn snapshot_bounds(
     window: &Window,
     location: Point<i32, Logical>,
     root_rect: crate::ssd::LogicalRect,
     content_clip: Option<ContentClip>,
+    paint_rects: impl IntoIterator<Item = crate::ssd::LogicalRect>,
 ) -> crate::ssd::LogicalRect {
-    if content_clip.is_some_and(|clip| clip.clips_surface) {
-        return root_rect;
-    }
+    let base = if content_clip.is_some_and(|clip| clip.clips_surface) {
+        root_rect
+    } else {
+        let bbox = window.bbox();
+        let surface = crate::ssd::LogicalRect::new(
+            location.x + bbox.loc.x,
+            location.y + bbox.loc.y,
+            bbox.size.w,
+            bbox.size.h,
+        );
+        union_rect(root_rect, surface)
+    };
+    paint_rects
+        .into_iter()
+        .filter(|rect| rect.width > 0 && rect.height > 0)
+        .fold(base, union_rect)
+}
 
-    let bbox = window.bbox();
-    let surface = crate::ssd::LogicalRect::new(
-        location.x + bbox.loc.x,
-        location.y + bbox.loc.y,
-        bbox.size.w,
-        bbox.size.h,
-    );
-    let left = root_rect.x.min(surface.x);
-    let top = root_rect.y.min(surface.y);
-    let right = root_rect
+fn union_rect(a: crate::ssd::LogicalRect, b: crate::ssd::LogicalRect) -> crate::ssd::LogicalRect {
+    let left = a.x.min(b.x);
+    let top = a.y.min(b.y);
+    let right = a
         .x
-        .saturating_add(root_rect.width)
-        .max(surface.x.saturating_add(surface.width));
-    let bottom = root_rect
+        .saturating_add(a.width)
+        .max(b.x.saturating_add(b.width));
+    let bottom = a
         .y
-        .saturating_add(root_rect.height)
-        .max(surface.y.saturating_add(surface.height));
+        .saturating_add(a.height)
+        .max(b.y.saturating_add(b.height));
     crate::ssd::LogicalRect::new(left, top, right - left, bottom - top)
 }
 

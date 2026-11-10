@@ -6040,6 +6040,7 @@ fn winit_window_stack_elements(
                         window_location,
                         decoration.layout.root.rect,
                         decoration.content_clip,
+                        decoration.buffers.iter().map(|buffer| buffer.rect),
                     )
                 });
                 let mut snapshot_scene = Vec::new();
