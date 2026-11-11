@@ -1658,6 +1658,7 @@ impl ShojiWM {
             crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&dh);
         let output_power_manager_state =
             crate::protocols::output_power::OutputPowerManagerState::new::<Self>(&dh);
+        crate::protocols::virtual_pointer::VirtualPointerManagerState::new::<Self>(&dh);
         let color_management_state =
             crate::protocols::color_management::ColorManagementState::new::<Self>(&dh);
         let foreign_toplevel_list_state =

@@ -133,6 +133,35 @@ the socket to the systemd/D-Bus activation environment in TTY sessions, or when
 nested publication is enabled with `SHOJI_PUBLISH_ACTIVATION_ENV=1`. Without it,
 the socket is derived from `WAYLAND_DISPLAY`.
 
+### Pressing keys from outside
+
+`shoji_wm --key <chord>` presses and releases a chord in the running
+compositor, as if it came from a keyboard: it reaches your key bindings, the
+built-in `Super+Shift+Q`/`Super+Shift+R`, and then the focused window. Chords
+use the binding syntax (`Super+Shift+Return`, `Ctrl+c`); the key is a keysym
+looked up on the active layout, and `code:<xkb keycode>` names a key by its
+code. A keysym that needs Shift on the layout gets Shift added. `--hold <ms>`
+keeps the chord down that long before releasing it, which is enough for key
+repeat.
+
+```sh
+shoji_wm --key Super+T
+shoji_wm --key XF86AudioRaiseVolume --hold 800
+printf 'key Super+T\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+printf 'key XF86AudioRaiseVolume 800\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+```
+
+Tools like `wtype` use the virtual keyboard protocol, which types into the
+focused window but never reaches a binding.
+
+### Virtual pointers
+
+ShojiWM offers `zwlr_virtual_pointer_manager_v1` (version 2), so
+`wlrctl pointer move 100 0`, `wlrctl pointer click left` and remote desktop
+servers drive the pointer through the same path as a mouse: hot corners,
+pointer regions, input grabs and `bindWindowMoveModifier` all see it. A
+virtual pointer created for one output maps absolute motion onto that output.
+
 ## Pointer
 
 `COMPOSITOR.pointer` configures mouse interactions handled by the compositor

@@ -131,6 +131,35 @@ ShojiWM は起動するすべてのプロセスにこの変数を渡します。
 `SHOJI_PUBLISH_ACTIVATION_ENV=1` でnestedでの公開を有効にした場合は、systemd/D-Busの
 アクティベーション環境にも渡します。未設定の場合は `WAYLAND_DISPLAY` からソケットを求めます。
 
+### 外部からキーを押す
+
+`shoji_wm --key <chord>` は、実行中のコンポジターでキーの組み合わせを押して離します。
+キーボードからの入力と同じ経路を通るので、キーバインディング、組み込みの
+`Super+Shift+Q`/`Super+Shift+R`、そしてフォーカス中のウィンドウに届きます。
+組み合わせはバインディングと同じ書式（`Super+Shift+Return`、`Ctrl+c`）です。キーは
+現在のレイアウト上の keysym として探され、`code:<xkb キーコード>` でコードを直接指定
+できます。そのレイアウトで Shift が必要な keysym には Shift が加わります。
+`--hold <ms>` を付けると、その時間だけ押し続けてから離します。キーリピートの
+確認に使えます。
+
+```sh
+shoji_wm --key Super+T
+shoji_wm --key XF86AudioRaiseVolume --hold 800
+printf 'key Super+T\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+printf 'key XF86AudioRaiseVolume 800\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+```
+
+`wtype` などの仮想キーボードプロトコルを使うツールは、フォーカス中のウィンドウに
+文字を打ち込みますが、バインディングには届きません。
+
+### 仮想ポインター
+
+ShojiWM は `zwlr_virtual_pointer_manager_v1`（バージョン 2）を提供します。
+`wlrctl pointer move 100 0`、`wlrctl pointer click left` やリモートデスクトップの
+サーバーは、マウスと同じ経路でポインターを動かします。ホットコーナー、ポインター
+領域、入力グラブ、`bindWindowMoveModifier` もこれを受け取ります。特定の出力向けに
+作られた仮想ポインターは、絶対座標の移動をその出力に対応させます。
+
 ## ポインター
 
 `COMPOSITOR.pointer` は、コンポジター自身が扱うマウス操作を設定します。（加速度・
