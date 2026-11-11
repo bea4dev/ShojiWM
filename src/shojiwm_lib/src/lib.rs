@@ -31,6 +31,7 @@ pub mod config;
 pub mod config_error;
 pub mod control_socket;
 pub mod cursor;
+pub mod debug_backtrace;
 pub mod dnd;
 pub mod drawing;
 pub mod foreign_toplevel;
@@ -136,6 +137,7 @@ fn run_with_args(
     let _log_guard = init_logging(&args)?;
     profiler::init();
     install_panic_hook();
+    debug_backtrace::install_if_enabled();
     apply_runtime_overrides(&args);
     sanitize_inherited_compositor_environment();
 
