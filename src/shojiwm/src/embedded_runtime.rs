@@ -293,6 +293,8 @@ pub struct NativeSchedulerRequest {
     pub input_state: std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyboard_layout: Option<shojiwm_lib::keyboard_layout::KeyboardLayoutSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lid_switch: Option<shojiwm_lib::lid_switch::LidSwitchSnapshot>,
 }
 
 enum BridgeRequest {

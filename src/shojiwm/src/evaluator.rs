@@ -44,6 +44,7 @@ use shojiwm_lib::{
     activation_environment::RuntimeEnvUpdates,
     config::RuntimeDisplayConfigUpdate,
     keyboard_layout::KeyboardLayoutSnapshot,
+    lid_switch::LidSwitchSnapshot,
     runtime_debug::RuntimeDebugConfigUpdate,
     runtime_input::{RuntimeInputConfigUpdate, RuntimeInputDeviceSnapshot},
     runtime_key_binding::RuntimeKeyBindingConfigUpdate,
@@ -65,6 +66,7 @@ pub struct EmbeddedDecorationEvaluator {
     display_state: Arc<Mutex<std::collections::BTreeMap<String, WaylandOutputSnapshot>>>,
     input_state: Arc<Mutex<std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>>>,
     keyboard_layout: Arc<Mutex<Option<KeyboardLayoutSnapshot>>>,
+    lid_switch: Arc<Mutex<Option<LidSwitchSnapshot>>>,
     runtime_state_generation: Arc<AtomicU64>,
     pointer_move_async: Arc<PointerMoveAsyncDispatcher>,
     host: RuntimeHost,
@@ -108,6 +110,7 @@ struct EmbeddedDecorationRuntime {
     host: RuntimeHost,
     last_sent_runtime_state_generation: u64,
     last_sent_keyboard_layout: Option<KeyboardLayoutSnapshot>,
+    last_sent_lid_switch: Option<LidSwitchSnapshot>,
 }
 
 #[derive(serde::Serialize)]
@@ -890,6 +893,7 @@ impl EmbeddedDecorationEvaluator {
             display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             input_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             keyboard_layout: Arc::new(Mutex::new(None)),
+            lid_switch: Arc::new(Mutex::new(None)),
             runtime_state_generation: Arc::new(AtomicU64::new(1)),
             pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
             host: RuntimeHost::detached(),
@@ -905,6 +909,7 @@ impl EmbeddedDecorationEvaluator {
             display_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             input_state: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             keyboard_layout: Arc::new(Mutex::new(None)),
+            lid_switch: Arc::new(Mutex::new(None)),
             runtime_state_generation: Arc::new(AtomicU64::new(1)),
             pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
             host: RuntimeHost::detached(),
@@ -976,6 +981,12 @@ impl EmbeddedDecorationEvaluator {
             return true;
         }
         false
+    }
+
+    pub fn set_lid_switch(&self, lid: LidSwitchSnapshot) {
+        if let Ok(mut current) = self.lid_switch.lock() {
+            *current = Some(lid);
+        }
     }
 
     /// Retire the current isolate and hand back an evaluator that shares this
@@ -1284,6 +1295,7 @@ impl EmbeddedDecorationEvaluator {
             host: self.host.clone(),
             last_sent_runtime_state_generation: 0,
             last_sent_keyboard_layout: None,
+            last_sent_lid_switch: None,
         })
     }
 
@@ -1880,6 +1892,7 @@ impl Clone for EmbeddedDecorationEvaluator {
             display_state: Arc::clone(&self.display_state),
             input_state: Arc::clone(&self.input_state),
             keyboard_layout: Arc::clone(&self.keyboard_layout),
+            lid_switch: Arc::clone(&self.lid_switch),
             runtime_state_generation: Arc::clone(&self.runtime_state_generation),
             pointer_move_async: Arc::clone(&self.pointer_move_async),
             host: self.host.clone(),
@@ -2898,8 +2911,12 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
             .lock()
             .map(|layout| layout.clone())
             .unwrap_or_default();
+        let lid_switch = self.lid_switch.lock().map(|lid| *lid).unwrap_or_default();
         let layout_changed = runtime.last_sent_keyboard_layout != keyboard_layout;
-        if runtime.last_sent_runtime_state_generation == runtime_state_generation && !layout_changed
+        let lid_changed = runtime.last_sent_lid_switch != lid_switch;
+        if runtime.last_sent_runtime_state_generation == runtime_state_generation
+            && !layout_changed
+            && !lid_changed
         {
             runtime.write_scheduler_fast_request(
                 request_id,
@@ -2932,6 +2949,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
                 } else {
                     None
                 },
+                lid_switch: if lid_changed { lid_switch } else { None },
             })?;
             runtime.last_sent_runtime_state_generation = runtime_state_generation;
         }
@@ -2977,6 +2995,7 @@ impl DecorationEvaluator for EmbeddedDecorationEvaluator {
         }
 
         runtime.last_sent_keyboard_layout = keyboard_layout;
+        runtime.last_sent_lid_switch = lid_switch;
 
         if managed_rect_debug_enabled() {
             info!(
@@ -6798,6 +6817,55 @@ COMPOSITOR.event.onDisable((event) => event.persist("layouts", layouts));
                 { "index": 1, "name": "German" },
             ])
         );
+        drop(reloaded);
+        drop(evaluator);
+        std::fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn embedded_runtime_reports_lid_switch_and_reload() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-lid-switch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text="lid test" />;
+const lids = [];
+COMPOSITOR.event.onEnable(() => {
+  COMPOSITOR.event.onLidSwitch((event) => lids.push(event.closed));
+});
+COMPOSITOR.event.onDisable((event) => event.persist("lids", lids));
+"#,
+        )
+        .unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("initial", None).unwrap();
+        // No lid has reported yet.
+        evaluator.scheduler_tick(1.0, None, &[]).unwrap();
+        for (tick, closed) in [(2.0, true), (3.0, true), (4.0, false)] {
+            evaluator.set_lid_switch(LidSwitchSnapshot { closed });
+            evaluator.scheduler_tick(tick, None, &[]).unwrap();
+        }
+        let state = evaluator.lifecycle_disable("reload").unwrap();
+        assert_eq!(state["lids"], serde_json::json!([true, false]));
+        evaluator.set_lid_switch(LidSwitchSnapshot { closed: true });
+        let reloaded = evaluator.fresh_like();
+        reloaded.lifecycle_enable("reload", None).unwrap();
+        reloaded.scheduler_tick(5.0, None, &[]).unwrap();
+        reloaded.scheduler_tick(6.0, None, &[]).unwrap();
+        let state = reloaded.lifecycle_disable("shutdown").unwrap();
+        assert_eq!(state["lids"], serde_json::json!([true]));
         drop(reloaded);
         drop(evaluator);
         std::fs::remove_dir_all(test_dir).unwrap();

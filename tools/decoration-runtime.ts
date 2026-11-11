@@ -349,6 +349,7 @@ import {
   type InputConfigDraft,
   type InputDeviceInfo,
   type KeyboardLayoutChangeEvent,
+  type LidSwitchEvent,
   type WindowCompositionFunction,
   type OutputStateSnapshot,
   type OutputInfo,
@@ -552,6 +553,7 @@ interface SchedulerTickRequest {
   displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
   keyboardLayout?: KeyboardLayoutChangeEvent;
+  lidSwitch?: LidSwitchEvent;
 }
 
 interface WindowClosedRequest {
@@ -1943,6 +1945,9 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           if (request.kind === "schedulerTick") {
             if (request.keyboardLayout) {
               events.emitKeyboardLayoutChange(request.keyboardLayout);
+            }
+            if (request.lidSwitch) {
+              events.emitLidSwitch(request.lidSwitch);
             }
             const tick = processSchedulerTick(request.output);
             if (statsEnabled && tick.dirty) stats.schedulerTickDirty++;
