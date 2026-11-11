@@ -1,4 +1,5 @@
 mod compositor;
+mod fractional_scale;
 mod layer_shell;
 mod xdg_shell;
 mod xwayland;
@@ -667,130 +668,52 @@ impl FractionalScaleHandler for ShojiWM {
                 while let Some(parent) = smithay::wayland::compositor::get_parent(&focused_root) {
                     focused_root = parent;
                 }
-
-                self.space
-                    .elements()
-                    .find(|window| {
-                        window
-                            .toplevel()
-                            .is_some_and(|toplevel| toplevel.wl_surface() == &focused_root)
-                            || window
-                                .x11_surface()
-                                .and_then(|x11| x11.wl_surface())
-                                .as_ref()
-                                == Some(&focused_root)
-                    })
-                    .cloned()
-                    .and_then(|window| self.space.outputs_for_element(&window).first().cloned())
-                    .or_else(|| {
-                        self.space.outputs().find_map(|output| {
-                            let map = layer_map_for_output(output);
-                            let found = map
-                                .layer_for_surface(&focused_root, WindowSurfaceType::TOPLEVEL)
-                                .is_some();
-                            drop(map);
-                            found.then(|| output.clone())
-                        })
-                    })
+                self.output_of_root_surface(&focused_root)
             });
 
-        smithay::wayland::compositor::with_states(&surface, |states| {
-            let primary_scanout_output =
-                smithay::desktop::utils::surface_primary_scanout_output(&surface, states)
-                    .or_else(|| {
-                        if root != surface {
-                            smithay::wayland::compositor::with_states(&root, |states| {
-                                smithay::desktop::utils::surface_primary_scanout_output(
-                                    &root, states,
-                                )
-                                .or_else(|| {
-                                    self.space
-                                        .elements()
-                                        .find(|window| {
-                                            window.toplevel().is_some_and(|toplevel| {
-                                                toplevel.wl_surface() == &root
-                                            })
-                                        })
-                                        .cloned()
-                                        .and_then(|window| {
-                                            self.space.outputs_for_element(&window).first().cloned()
-                                        })
-                                        .or_else(|| {
-                                            self.space.outputs().find_map(|output| {
-                                                let map = layer_map_for_output(output);
-                                                let found = map
-                                                    .layer_for_surface(
-                                                        &root,
-                                                        WindowSurfaceType::TOPLEVEL,
-                                                    )
-                                                    .is_some();
-                                                drop(map);
-                                                found.then(|| output.clone())
-                                            })
-                                        })
-                                })
-                            })
-                        } else {
-                            self.space
-                                .elements()
-                                .find(|window| {
-                                    window
-                                        .toplevel()
-                                        .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-                                })
-                                .cloned()
-                                .and_then(|window| {
-                                    self.space.outputs_for_element(&window).first().cloned()
-                                })
-                                .or_else(|| {
-                                    self.space.outputs().find_map(|output| {
-                                        let map = layer_map_for_output(output);
-                                        let found = map
-                                            .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                                            .is_some();
-                                        drop(map);
-                                        found.then(|| output.clone())
-                                    })
-                                })
-                        }
-                    })
-                    .or_else(|| {
-                        popup_root.as_ref().and_then(|popup_root| {
-                            self.space
-                                .elements()
-                                .find(|window| {
-                                    window
-                                        .toplevel()
-                                        .is_some_and(|toplevel| toplevel.wl_surface() == popup_root)
-                                })
-                                .cloned()
-                                .and_then(|window| {
-                                    self.space.outputs_for_element(&window).first().cloned()
-                                })
-                                .or_else(|| {
-                                    self.space.outputs().find_map(|output| {
-                                        let map = layer_map_for_output(output);
-                                        let found = map
-                                            .layer_for_surface(
-                                                popup_root,
-                                                WindowSurfaceType::TOPLEVEL,
-                                            )
-                                            .is_some();
-                                        drop(map);
-                                        found.then(|| output.clone())
-                                    })
-                                })
-                        })
-                    })
-                    .or_else(|| focused_output.clone())
-                    .or_else(|| self.space.outputs().next().cloned());
-
-            if let Some(output) = primary_scanout_output {
+        let output = fractional_scale::preferred_output(
+            &surface,
+            &root,
+            popup_root.as_ref(),
+            |root| self.output_of_root_surface(root),
+            || focused_output.or_else(|| self.space.outputs().next().cloned()),
+        );
+        if let Some(output) = output {
+            smithay::wayland::compositor::with_states(&surface, |states| {
                 with_fractional_scale(states, |fractional_scale| {
                     fractional_scale.set_preferred_scale(output.current_scale().fractional_scale());
                 });
-            }
-        });
+            });
+        }
+    }
+}
+
+impl ShojiWM {
+    /// The output a window or layer surface with this root surface is on.
+    fn output_of_root_surface(&self, root: &WlSurface) -> Option<Output> {
+        self.space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == root)
+                    || window
+                        .x11_surface()
+                        .and_then(|x11| x11.wl_surface())
+                        .as_ref()
+                        == Some(root)
+            })
+            .and_then(|window| self.space.outputs_for_element(window).first().cloned())
+            .or_else(|| {
+                self.space.outputs().find_map(|output| {
+                    let map = layer_map_for_output(output);
+                    let found = map
+                        .layer_for_surface(root, WindowSurfaceType::TOPLEVEL)
+                        .is_some();
+                    drop(map);
+                    found.then(|| output.clone())
+                })
+            })
     }
 }
 
