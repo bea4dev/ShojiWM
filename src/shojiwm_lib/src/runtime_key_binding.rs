@@ -123,6 +123,8 @@ pub struct RuntimeKeyShortcut {
     pub logo: bool,
     /// `None` for a modifier-only shortcut (a "tap" binding).
     pub keysym: Option<xkb::Keysym>,
+    /// `code:<xkb keycode>`: the physical key, whatever the layout puts on it.
+    pub keycode: Option<u32>,
     pub wheel_direction: Option<RuntimeWheelDirection>,
     pub mouse_button: Option<u32>,
 }
@@ -131,6 +133,9 @@ impl RuntimeKeyShortcut {
     pub fn matches(&self, modifiers: &ModifiersState, handle: &KeysymHandle<'_>) -> bool {
         // Modifier-only shortcuts are not matched here; they are dispatched as a
         // release "tap" by the input layer (see process_input_event).
+        if let Some(keycode) = self.keycode {
+            return self.modifiers_match(modifiers) && handle.raw_code().raw() == keycode;
+        }
         let Some(keysym) = self.keysym else {
             return false;
         };
@@ -150,7 +155,10 @@ impl RuntimeKeyShortcut {
     }
 
     pub fn is_modifier_only(&self) -> bool {
-        self.keysym.is_none() && self.wheel_direction.is_none() && self.mouse_button.is_none()
+        self.keysym.is_none()
+            && self.keycode.is_none()
+            && self.wheel_direction.is_none()
+            && self.mouse_button.is_none()
     }
 
     /// The single modifier class for a modifier-only shortcut, else `None`.
@@ -199,6 +207,8 @@ pub enum RuntimeKeyBindingParseError {
     MultipleKeys { shortcut: String },
     #[error("shortcut `{shortcut}` contains unknown key `{key}`")]
     UnknownKey { shortcut: String, key: String },
+    #[error("shortcut `{shortcut}` has `code:{code}`, which is not an xkb keycode (8 or more)")]
+    BadKeycode { shortcut: String, code: String },
 }
 
 pub fn compile_runtime_key_bindings(
@@ -265,6 +275,7 @@ fn parse_runtime_key_shortcut(
     let mut shift = false;
     let mut logo = false;
     let mut keysym = None;
+    let mut keycode = None;
     let mut wheel_direction = None;
     let mut mouse_button = None;
 
@@ -280,7 +291,11 @@ fn parse_runtime_key_shortcut(
             continue;
         }
 
-        if keysym.is_some() || wheel_direction.is_some() || mouse_button.is_some() {
+        if keysym.is_some()
+            || keycode.is_some()
+            || wheel_direction.is_some()
+            || mouse_button.is_some()
+        {
             return Err(RuntimeKeyBindingParseError::MultipleKeys {
                 shortcut: shortcut.to_string(),
             });
@@ -296,6 +311,23 @@ fn parse_runtime_key_shortcut(
             continue;
         }
 
+        if let Some(code) = part
+            .get(..5)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("code:"))
+            .map(|_| &part[5..])
+        {
+            let parsed = code
+                .parse::<u32>()
+                .ok()
+                .filter(|code| *code >= 8)
+                .ok_or_else(|| RuntimeKeyBindingParseError::BadKeycode {
+                    shortcut: shortcut.to_string(),
+                    code: code.to_string(),
+                })?;
+            keycode = Some(parsed);
+            continue;
+        }
+
         let parsed_keysym =
             parse_keysym_name(part).ok_or_else(|| RuntimeKeyBindingParseError::UnknownKey {
                 shortcut: shortcut.to_string(),
@@ -304,7 +336,8 @@ fn parse_runtime_key_shortcut(
         keysym = Some(parsed_keysym);
     }
 
-    if keysym.is_none() && wheel_direction.is_none() && mouse_button.is_none() {
+    if keysym.is_none() && keycode.is_none() && wheel_direction.is_none() && mouse_button.is_none()
+    {
         // Modifier-only shortcut ("tap"): require exactly one modifier.
         let modifier_count = [ctrl, alt, shift, logo]
             .into_iter()
@@ -321,6 +354,7 @@ fn parse_runtime_key_shortcut(
             shift,
             logo,
             keysym: None,
+            keycode: None,
             wheel_direction: None,
             mouse_button: None,
         });
@@ -332,6 +366,7 @@ fn parse_runtime_key_shortcut(
         shift,
         logo,
         keysym,
+        keycode,
         wheel_direction,
         mouse_button,
     })
@@ -391,6 +426,34 @@ mod tests {
             shortcut: shortcut.to_string(),
             on,
             within: None,
+        }
+    }
+
+    #[test]
+    fn keycode_shortcuts_name_the_physical_key() {
+        let shortcut = parse_runtime_key_shortcut("Super+Shift+code:10").unwrap();
+        assert_eq!(shortcut.keycode, Some(10));
+        assert!(shortcut.keysym.is_none());
+        assert!(shortcut.logo && shortcut.shift);
+        assert!(!shortcut.is_modifier_only());
+        assert_eq!(
+            parse_runtime_key_shortcut("CODE:19").unwrap().keycode,
+            Some(19)
+        );
+        assert!(
+            entry("Super+code:10", RuntimeKeyBindingPhase::Press)
+                .compile()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn keycodes_below_eight_and_extra_keys_are_rejected() {
+        for shortcut in ["Super+code:7", "Super+code:x", "Super+code:", "code:10+a"] {
+            assert!(
+                parse_runtime_key_shortcut(shortcut).is_err(),
+                "{shortcut} should not parse"
+            );
         }
     }
 

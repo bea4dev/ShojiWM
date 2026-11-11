@@ -29,6 +29,10 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 - **モディファイア:** `Super`・`Ctrl`・`Shift`・`Alt`
 - **キー:** 英字（`T`・`Q`）、矢印（`Left`・`Right`・`Up`・`Down`）、
   ファンクションキー（`F`）など
+- **キーコード:** `code:<xkb キーコード>` は、レイアウトに関係なく物理キーを指します。
+  コードは evdev コードに 8 を足した値で、`wev` が表示するものと同じです。数字段が
+  Shift なしで記号を出すレイアウト（フランス語 AZERTY など）でも、`Super+code:10`
+  から `Super+code:19` は 1 から 0 の刻印があるキーを指します。
 - **マウスのサイドボタン:** `MouseBack`（`BTN_SIDE`、275）と `MouseForward`
   （`BTN_EXTRA`、276）。名前の大文字と小文字は区別せず、発火タイミングはデフォルトの
   `on: "press"` です。`on: "release"` のサイドボタンバインドは無効になります。
