@@ -4393,6 +4393,7 @@ mod tests {
             output_name: None,
             plasma: None,
             minimized_geometry: None,
+            foreign_toplevel_id: None,
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),

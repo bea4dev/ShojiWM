@@ -315,6 +315,7 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
             output_name: None,
             plasma: None,
             minimized_geometry: None,
+            foreign_toplevel_id: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: Some("test".into()),
@@ -352,6 +353,89 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
             key_binding_ids(&host),
             Some(vec!["first".to_string(), "second".to_string()])
         );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// A window's `ext-foreign-toplevel-list-v1` identifier reaches the config
+    /// once the compositor has one.
+    #[test]
+    fn typescript_runtime_exposes_foreign_toplevel_id() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-foreign-toplevel-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label, computed } from "shoji_wm";
+COMPOSITOR.window.composition = (window) => (
+  <Label text={computed(() => window.foreignToplevelId.value ?? "unmapped")} />
+);
+"#,
+        )
+        .expect("test config should be written");
+        let args = CommonArgs::parse(
+            &[
+                "--dev".to_string(),
+                "--config".to_string(),
+                config_path.display().to_string(),
+                "--runtime-dir".to_string(),
+                repository_root.display().to_string(),
+            ],
+            TypeScriptLauncher.extra_args(),
+        );
+        let mut runtime =
+            shojiwm_lib::runtime_api::RuntimeBoot::new(Box::new(TypeScriptLauncher), &args)
+                .launch(RuntimeHost::detached());
+        runtime.preload().expect("config should preload");
+        runtime.enable().expect("config should enable");
+
+        let mut window = shojiwm_lib::ssd::WaylandWindowSnapshot {
+            output_name: None,
+            plasma: None,
+            minimized_geometry: None,
+            foreign_toplevel_id: None,
+            id: "w1".into(),
+            title: "hello".into(),
+            app_id: Some("test".into()),
+            position: Default::default(),
+            rect: Default::default(),
+            is_focused: true,
+            is_floating: true,
+            is_maximized: false,
+            is_fullscreen: false,
+            is_xwayland: false,
+            decoration: Default::default(),
+            size_constraints: Default::default(),
+            is_resizable: true,
+            is_transient: false,
+            parent_id: None,
+            icon: None,
+            interaction: Default::default(),
+        };
+        let label = |runtime: &mut shojiwm_lib::runtime_api::RuntimeHandle,
+                     window: &shojiwm_lib::ssd::WaylandWindowSnapshot,
+                     now: u64| {
+            match runtime
+                .evaluate_window(window, now)
+                .expect("window should evaluate")
+                .node
+                .kind
+            {
+                shojiwm_lib::ssd::DecorationNodeKind::Label(label) => label.text,
+                other => panic!("expected a label, got {other:?}"),
+            }
+        };
+        assert_eq!(label(&mut runtime, &window, 1), "unmapped");
+        window.foreign_toplevel_id = Some("Zq3f8Kx0".into());
+        assert_eq!(label(&mut runtime, &window, 2), "Zq3f8Kx0");
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }
@@ -797,6 +881,7 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             output_name: None,
             plasma: None,
             minimized_geometry: None,
+            foreign_toplevel_id: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: None,

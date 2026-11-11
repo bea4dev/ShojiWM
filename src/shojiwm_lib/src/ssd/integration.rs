@@ -8250,6 +8250,8 @@ fn window_snapshot_requires_runtime_refresh(
         // a stale value (the first snapshot is taken before the window is mapped, with no
         // output) would leave them on wall-clock timer ticks.
         || previous.output_name != next.output_name
+        // Set once, when the window is mapped and announced to taskbars.
+        || previous.foreign_toplevel_id != next.foreign_toplevel_id
 }
 
 fn push_damage_pair(

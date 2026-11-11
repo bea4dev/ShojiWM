@@ -22,6 +22,8 @@ export interface WaylandWindowSnapshot {
   readonly plasma?: PlasmaSurfaceState;
   /** The window's taskbar entry (global logical px), from KDE's `set_minimized_geometry`. / KDE の `set_minimized_geometry` によるタスクバー上の位置（グローバル論理 px）。 */
   readonly minimizedGeometry?: WindowPosition;
+  /** The window's `ext-foreign-toplevel-list-v1` identifier; absent until mapped. / `ext-foreign-toplevel-list-v1` での識別子。マップされるまでは省略。 */
+  readonly foreignToplevelId?: string;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
@@ -289,6 +291,15 @@ export interface WaylandWindow {
    * 行き先に使えます。
    */
   readonly minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
+  /**
+   * The window's `identifier` on `ext-foreign-toplevel-list-v1`, the key
+   * taskbars and screen capture clients (`ext-image-capture-source-v1`) know
+   * it by. `undefined` until the window is mapped.
+   * `ext-foreign-toplevel-list-v1` でのこのウィンドウの `identifier`。タスクバーや
+   * 画面キャプチャのクライアント（`ext-image-capture-source-v1`）はこれで
+   * ウィンドウを識別します。マップされるまでは `undefined`。
+   */
+  readonly foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -3569,6 +3580,7 @@ export interface ReactiveWaylandWindowSignals {
   parentId: import("./signals").ReadonlySignal<string | undefined>;
   plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
+  foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   output: import("./signals").ReadonlySignal<string | undefined>;

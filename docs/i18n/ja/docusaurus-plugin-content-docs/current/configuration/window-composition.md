@@ -64,6 +64,7 @@ COMPOSITOR.window.composition = (window) => (
 | `isResizable`     | `boolean`                 | クライアントがインタラクティブリサイズを許可      |
 | `isTransient`     | `boolean`                 | 別ウィンドウの子（ダイアログ）                    |
 | `parentId`        | `string \| undefined`     | トランジェントの場合の親ウィンドウ id             |
+| `foreignToplevelId` | `string \| undefined` | マップ後の `ext-foreign-toplevel-list-v1` 識別子 |
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
@@ -71,6 +72,12 @@ COMPOSITOR.window.composition = (window) => (
 ジオメトリ）、`state`（ウィンドウごとのストア。[状態とシグナル](./state-and-signals.md)
 を参照）、`transform`（GPU トランスフォーム）、`animation`
 （[アニメーション](./animations.md) を参照）。
+
+`id` は ShojiWM 独自のもので、タスクバーや画面キャプチャのクライアントが見る識別子では
+ありません。それらは `ext-foreign-toplevel-list-v1` の `identifier`（
+`ext-image-capture-source-v1` もこれでキャプチャ対象を指定します）でウィンドウを
+区別し、`foreignToplevelId` はその値です。これで config からクライアントに対象の
+ウィンドウを伝えられます。Rust の config では `window.foreign_toplevel_id()` です。
 
 ### クライアント側／サーバー側装飾
 

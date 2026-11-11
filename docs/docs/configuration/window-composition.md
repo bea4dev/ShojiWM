@@ -64,12 +64,19 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 | `isResizable`     | `boolean`                 | Client allows interactive resize             |
 | `isTransient`     | `boolean`                 | A child (dialog) of another window           |
 | `parentId`        | `string \| undefined`     | Parent window id, if transient               |
+| `foreignToplevelId` | `string \| undefined`   | The window's `ext-foreign-toplevel-list-v1` identifier, once mapped |
 | `sizeConstraints` | `WindowSizeConstraints`   | Min/max size from the client                 |
 | `interaction`     | snapshot                  | Current pointer/drag interaction state       |
 
 Non-reactive helpers: `id` (stable string), `position` / `rect` (current logical
 geometry), `state` (per-window store — see [State & Signals](./state-and-signals.md)),
 `transform` (GPU transform), `animation` (see [Animations](./animations.md)).
+
+`id` is ShojiWM's own and is not the identifier taskbars and screen capture
+clients see. Those key a window by its `ext-foreign-toplevel-list-v1`
+`identifier` (which `ext-image-capture-source-v1` also captures by), and
+`foreignToplevelId` is that value, so a config can hand a client the window it
+means. In a Rust config it is `window.foreign_toplevel_id()`.
 
 ### Client-side and server-side decorations
 
