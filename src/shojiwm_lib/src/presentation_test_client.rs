@@ -24,6 +24,9 @@ use wayland_client::{
         wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
     },
 };
+use wayland_protocols::wp::alpha_modifier::v1::client::{
+    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1, wp_alpha_modifier_v1::WpAlphaModifierV1,
+};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_server::{Client, Display, backend::ClientData, protocol as server};
 
@@ -33,6 +36,8 @@ pub(crate) struct TestClient {
     connection: Connection,
     queue: EventQueue<ClientState>,
     client: ClientState,
+    registry: wl_registry::WlRegistry,
+    surface: Option<wl_surface::WlSurface>,
 }
 
 impl TestClient {
@@ -47,6 +52,7 @@ impl TestClient {
             shm: ShmState::new::<Server>(&handle, []),
             window: None,
         };
+        smithay::wayland::alpha_modifier::AlphaModifierState::new::<Server>(&handle);
         let (server_socket, client_socket) = UnixStream::pair().unwrap();
         handle
             .insert_client(server_socket, Arc::new(ServerClient::default()))
@@ -61,6 +67,8 @@ impl TestClient {
             connection,
             queue,
             client: ClientState::default(),
+            registry: registry.clone(),
+            surface: None,
         };
         test.sync();
         let globals = &test.client.globals;
@@ -87,7 +95,24 @@ impl TestClient {
         surface.commit();
         test.sync();
         assert_eq!(test.window().bbox().size, (100, 100).into());
+        test.surface = Some(surface);
         test
+    }
+
+    /// Sets the toplevel's `wp_alpha_modifier_v1` multiplier and commits it.
+    pub(crate) fn set_alpha_multiplier(&mut self, multiplier: f32) {
+        let qh = self.queue.handle();
+        let manager = self.registry.bind::<WpAlphaModifierV1, _, _>(
+            self.client.globals["wp_alpha_modifier_v1"],
+            1,
+            &qh,
+            (),
+        );
+        let surface = self.surface.as_ref().unwrap();
+        let modifier = manager.get_surface(surface, &qh, ());
+        modifier.set_multiplier((f64::from(multiplier) * f64::from(u32::MAX)).round() as u32);
+        surface.commit();
+        self.sync();
     }
 
     pub(crate) fn window(&self) -> Window {
@@ -194,3 +219,5 @@ wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore xdg_wm_base::XdgWmBase);
 wayland_client::delegate_noop!(ClientState: ignore xdg_toplevel::XdgToplevel);
+wayland_client::delegate_noop!(ClientState: ignore WpAlphaModifierV1);
+wayland_client::delegate_noop!(ClientState: ignore WpAlphaModifierSurfaceV1);

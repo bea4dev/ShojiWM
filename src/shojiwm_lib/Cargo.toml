@@ -63,7 +63,13 @@ lcms2 = "6"
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["macros", "rt"] }
 wayland-client = "0.31.14"
-wayland-protocols = { version = "0.32.12", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+# DummyRenderer, for building surface render elements without a GPU.
+smithay = {
+    git = "https://github.com/bea4dev/smithay.git",
+    rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa",
+    features = ["renderer_test"]
+}
 
 [features]
 # Hardened allocator for chasing heap corruption:

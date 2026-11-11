@@ -337,6 +337,7 @@ pub struct ShojiWM {
     pub hyprland_toplevel_export_state:
         crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportState,
     pub single_pixel_buffer_state: SinglePixelBufferState,
+    pub alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
     pub fixes_state: FixesState,
     pub seat_state: SeatState<ShojiWM>,
     pub data_device_state: DataDeviceState,
@@ -1670,6 +1671,11 @@ impl ShojiWM {
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<Self>(&dh);
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
+        // Smithay's WaylandSurfaceRenderElement multiplies its alpha by the
+        // surface's committed multiplier, so every path that draws a surface
+        // (windows, layers, popups, config snapshots and effects) honours it.
+        let alpha_modifier_state =
+            smithay::wayland::alpha_modifier::AlphaModifierState::new::<Self>(&dh);
         let fixes_state = FixesState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         TextInputManagerState::new::<Self>(&dh);
@@ -1832,6 +1838,7 @@ impl ShojiWM {
             image_copy_capture_pending: Vec::new(),
             hyprland_toplevel_export_state,
             single_pixel_buffer_state,
+            alpha_modifier_state,
             fixes_state,
             seat_state,
             data_device_state,
