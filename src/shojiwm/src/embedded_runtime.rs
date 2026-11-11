@@ -713,6 +713,43 @@ fn op_shoji_output_power(
     Ok(())
 }
 
+/// `COMPOSITOR.output.create` / `remove`. The SDK picks the name and checks the
+/// size; a `scale` of 0 is none.
+#[op2(fast)]
+fn op_shoji_headless_output(
+    #[string] action: &str,
+    #[string] name: &str,
+    width: i32,
+    height: i32,
+    scale: f64,
+) -> Result<(), std::io::Error> {
+    use shojiwm_lib::headless_output::RuntimeHeadlessOutputRequest;
+    let name = name.to_string();
+    let request = match action {
+        "create" => RuntimeHeadlessOutputRequest::Create {
+            name,
+            width,
+            height,
+            scale: (scale > 0.0).then_some(scale),
+        },
+        "remove" => RuntimeHeadlessOutputRequest::Remove { name },
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown headless output action `{action}`"),
+            ));
+        }
+    };
+    if let Ok(slot) = WAKE_HOST.lock()
+        && let Some(host) = slot.as_ref()
+    {
+        host.send(shojiwm_lib::runtime_api::HostMessage::HeadlessOutput(
+            request,
+        ));
+    }
+    Ok(())
+}
+
 /// `COMPOSITOR.input.grab`: start (`active`) or end the config's input grab. Sent like
 /// any other host side effect, so a key binding that opens a grab has it in place before
 /// the next input event.
@@ -2621,6 +2658,7 @@ extension!(
         op_shoji_process_id,
         op_shoji_wake_compositor,
         op_shoji_output_power,
+        op_shoji_headless_output,
         op_shoji_input_grab,
         op_shoji_cursor_set_position,
         op_shoji_cursor_position,

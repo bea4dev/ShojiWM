@@ -321,6 +321,39 @@ How the power state behaves:
   screencasts of that output fail until it is back on (the screencast portal
   retries).
 
+## Outputs with no display (headless)
+
+`COMPOSITOR.output.create` adds an output that has no connector behind it and
+returns its name; `COMPOSITOR.output.remove` takes it away again.
+
+```ts
+const name = COMPOSITOR.output.create({width: 1280, height: 720}); // 'HEADLESS-1'
+COMPOSITOR.output.create({name: 'stream', width: 1920, height: 1080, scale: 1.5});
+COMPOSITOR.output.remove(name);
+```
+
+Without a `name` it is `HEADLESS-<n>`, the lowest `n` not in use. `scale` is the
+scale it starts with; `configure` can set a different one like for any output.
+In a Rust config it is
+`COMPOSITOR.output.create(HeadlessOutputOptions { width: 1280, height: 720, ..Default::default() })`.
+
+From then on it is an ordinary output that nobody looks at:
+
+- Clients see it (`wl_output`, `xdg-output`), layer surfaces can go on it, and
+  windows can be moved there.
+- It is in `COMPOSITOR.output.list`, and creating or removing it fires an
+  output change, so `configure` places it. Unless told otherwise it goes right
+  of the connected outputs at y 0, in the order the headless outputs were made.
+- The pointer crosses onto it like onto a real screen.
+- Screenshots and screencasts of it work (`grim -o`, the screencast portal). It
+  renders at 60 Hz, only for those and for the clients on it.
+
+Headless outputs need a TTY session; nested sessions have none. They last until
+removed or until the compositor exits, across config reloads too. A config that
+makes one at startup should give it a `name`, so a reload finds it instead of
+making a second one: creating an output whose name is taken fails with a
+warning in the log.
+
 ## Frame pacing (triple buffering)
 
 `COMPOSITOR.rendering.framePacing` chooses how frames are paced on each output.

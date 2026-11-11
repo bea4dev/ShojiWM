@@ -487,6 +487,43 @@ type GbmDrmOutput = DrmOutput<
     DrmDeviceFd,
 >;
 
+mod headless;
+pub(crate) use headless::{attach_headless_output, detach_headless_output};
+
+/// Where a surface's frames go: a connector's CRTC, or nowhere for an output
+/// with no connector (see [`crate::headless_output`]).
+enum SurfaceTarget {
+    Drm(GbmDrmOutput),
+    Headless(headless::HeadlessTarget),
+}
+
+impl SurfaceTarget {
+    /// The presentation feedback of the frame that just completed.
+    fn frame_submitted(&mut self) -> Option<smithay::desktop::utils::OutputPresentationFeedback> {
+        match self {
+            Self::Drm(drm_output) => drm_output.frame_submitted().ok().flatten().flatten(),
+            Self::Headless(headless) => headless.frame_submitted(),
+        }
+    }
+
+    fn reset_buffers(&mut self) {
+        match self {
+            Self::Drm(drm_output) => drm_output.reset_buffers(),
+            Self::Headless(headless) => headless.reset_buffers(),
+        }
+    }
+
+    fn update_cursor_position(
+        &mut self,
+        location: Point<i32, Physical>,
+    ) -> Result<CursorMoveOutcome, Box<dyn std::error::Error>> {
+        match self {
+            Self::Drm(drm_output) => Ok(drm_output.update_cursor_position(location, None)?),
+            Self::Headless(_) => Ok(CursorMoveOutcome::NotApplicable),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct TitlebarFillFrameState {
     first_pre_fill: Option<Rectangle<i32, smithay::utils::Physical>>,
@@ -1054,7 +1091,7 @@ struct DeferredSubmit {
 
 struct SurfaceData {
     output: Output,
-    drm_output: GbmDrmOutput,
+    target: SurfaceTarget,
     available_modes: Vec<smithay::reexports::drm::control::Mode>,
     blink_damage_tracker: OutputDamageTracker,
     frame_pending: bool,
@@ -1447,6 +1484,70 @@ fn render_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
     })
 }
 
+impl SurfaceData {
+    fn new(
+        output: Output,
+        target: SurfaceTarget,
+        available_modes: Vec<smithay::reexports::drm::control::Mode>,
+        dmabuf_feedback: SurfaceDmabufFeedback,
+        frame_duration: Duration,
+        supports_async_flip: bool,
+        cross_gpu: Option<CrossGpuTarget>,
+    ) -> Self {
+        Self {
+            output: output.clone(),
+            target,
+            available_modes,
+            blink_damage_tracker: OutputDamageTracker::from_output(&output),
+            frame_pending: false,
+            latency_in_flight: None,
+            queued_at: None,
+            queued_cpu_duration: Duration::ZERO,
+            skipped_while_pending_count: 0,
+            last_decoration_refresh_at: None,
+            held_client_buffers: Vec::new(),
+            frame_callback_timer_armed: false,
+            frame_callback_timer_generation: 0,
+            commit_timing_timer_armed: false,
+            commit_timing_timer_generation: 0,
+            frame_callback_sequence: 0,
+            redraw_state: TtyRedrawState::Idle,
+            frame_duration,
+            next_frame_target: None,
+            vblank_observations: std::collections::VecDeque::with_capacity(VBLANK_GRID_HISTORY),
+            last_grid_frame_target: None,
+            estimated_render_duration: Duration::from_millis(4),
+            last_presented_at: None,
+            last_frame_callback_at: None,
+            supports_async_flip,
+            tearing_active: false,
+            cursor_on_plane: false,
+            last_cursor_hotspot: Point::default(),
+            cursor_move_pending: false,
+            cursor_commit_timer_armed: false,
+            cursor_commit_timer_generation: 0,
+            vblank_timestamp_lead: Duration::ZERO,
+            cursor_commit_margin: CURSOR_MARGIN_INITIAL,
+            cursor_commit_predicted_vblank: None,
+            cursor_margin_period_basis: frame_duration,
+            cursor_margin_window_commits: 0,
+            cursor_margin_window_misses: 0,
+            deferred_submit: None,
+            deferred_submit_generation: 0,
+            ahead_submit: None,
+            ahead_held_client_buffers: Vec::new(),
+            ahead_attempted: false,
+            in_flight_frame_target: None,
+            fullscreen_fast_path_active: false,
+            powered_off: false,
+            power_cleared: false,
+            power_generation: 0,
+            dmabuf_feedback,
+            cross_gpu,
+        }
+    }
+}
+
 struct SurfaceDmabufFeedback {
     render: DmabufFeedback,
     scanout: DmabufFeedback,
@@ -1795,9 +1896,8 @@ fn power_off_surface(surface: &mut SurfaceData, session_active: bool) {
 
 fn clear_powered_off_surface(surface: &mut SurfaceData) {
     surface.power_cleared = true;
-    if let Err(err) = surface
-        .drm_output
-        .with_compositor(|compositor| compositor.clear())
+    if let SurfaceTarget::Drm(drm_output) = &surface.target
+        && let Err(err) = drm_output.with_compositor(|compositor| compositor.clear())
     {
         warn!(output = %surface.output.name(), ?err, "failed to switch output off");
     }
@@ -1808,7 +1908,7 @@ fn clear_powered_off_surface(surface: &mut SurfaceData) {
 fn power_on_surface(surface: &mut SurfaceData) {
     surface.power_cleared = false;
     // The swapchain contents predate the dark period; render the first frame from scratch.
-    surface.drm_output.reset_buffers();
+    surface.target.reset_buffers();
     if let Some(target) = surface.cross_gpu.as_mut() {
         target.reset(&surface.output);
     }
@@ -2546,7 +2646,7 @@ fn frame_finish(
     }
 
     trace!(?node, ?crtc, "marking frame submitted");
-    let submit_result = surface.drm_output.frame_submitted();
+    let submitted_feedback = surface.target.frame_submitted();
     let present_sequence = metadata
         .as_ref()
         .map(|metadata| metadata.sequence)
@@ -2677,7 +2777,7 @@ fn frame_finish(
             "latency trace: pointer input to photon"
         );
     }
-    if let Ok(user_data) = submit_result {
+    if let Some(mut feedback) = submitted_feedback {
         let clock = presentation_clock;
         let sequence = present_sequence;
         let flags = if metadata
@@ -2691,14 +2791,12 @@ fn frame_finish(
             wp_presentation_feedback::Kind::Vsync
         };
 
-        if let Some(mut feedback) = user_data.flatten() {
-            feedback.presented::<Duration, Monotonic>(
-                clock,
-                Refresh::fixed(surface.frame_duration),
-                sequence as u64,
-                flags,
-            );
-        }
+        feedback.presented::<Duration, Monotonic>(
+            clock,
+            Refresh::fixed(surface.frame_duration),
+            sequence as u64,
+            flags,
+        );
     }
 
     surface.last_presented_at = Some(presentation_clock);
@@ -2985,10 +3083,15 @@ fn submit_deferred_frame(
     let queue_started_at = Instant::now();
     let submit_error = {
         timescope::scope!("tty deferred queue_frame");
-        surface
-            .drm_output
-            .queue_frame_tearing(Some(deferred.feedback), false)
-            .err()
+        match &mut surface.target {
+            SurfaceTarget::Drm(drm_output) => drm_output
+                .queue_frame_tearing(Some(deferred.feedback), false)
+                .err(),
+            SurfaceTarget::Headless(headless) => {
+                headless.queue_frame(deferred.feedback);
+                None
+            }
+        }
     };
     match submit_error {
         None => {
@@ -3282,7 +3385,7 @@ fn fast_cursor_move_inner(
         .to_physical(scale)
         .to_i32_round();
 
-    match surface.drm_output.update_cursor_position(location, None) {
+    match surface.target.update_cursor_position(location) {
         Ok(CursorMoveOutcome::Committed) => {
             record_margin_learning_sample(surface, Duration::from(clock.now()));
             surface.cursor_move_pending = false;
@@ -5375,163 +5478,182 @@ fn render_surface(
         // cursor motion even when both the game and the output are otherwise running fast.
         let mut fullscreen_root_buffer_details = None;
         let render_frame_result: Result<TtyRenderFrameResult, Box<dyn std::error::Error>> =
-            if let Some(scanout_renderer) = cross_gpu_scanout_renderer.as_deref_mut()
-                && let Some(target) = surface.cross_gpu.as_mut()
-            {
-                timescope::scope!("tty render_frame cross-gpu");
-                render_cross_gpu_frame(
-                    target,
-                    renderer,
-                    scanout_renderer,
-                    &mut surface.drm_output,
-                    &output,
-                    &elements,
-                    frame_clear_color.into(),
-                    frame_flags,
-                )
-            } else {
-                timescope::scope!("tty render_frame");
-                crate::backend::shader_effect::with_gpu_timing_renderer_span(
-                    &mut *renderer,
-                    "tty-render-frame",
-                    (output_geo.size.w, output_geo.size.h),
-                    |renderer| {
-                        if direct_scanout_debug_enabled()
-                            && let Some(root_id) = fullscreen_root_element_id.as_ref()
-                            && let Some(element) =
-                                elements.iter().find(|element| element.id() == root_id)
-                        {
-                            let src = element.src();
-                            let geometry = element.geometry(scale);
-                            let transform = element.transform();
-                            let storage =
-                                describe_underlying_storage(element.underlying_storage(renderer));
-                            fullscreen_root_buffer_details = Some(format!(
-                                "element={} id={:?} src={src:?} geometry={geometry:?} \
+            match &mut surface.target {
+                SurfaceTarget::Headless(headless) => {
+                    timescope::scope!("tty render_frame headless");
+                    headless.render_frame(&output, &elements)
+                }
+                SurfaceTarget::Drm(drm_output) => {
+                    if let Some(scanout_renderer) = cross_gpu_scanout_renderer.as_deref_mut()
+                        && let Some(target) = surface.cross_gpu.as_mut()
+                    {
+                        timescope::scope!("tty render_frame cross-gpu");
+                        render_cross_gpu_frame(
+                            target,
+                            renderer,
+                            scanout_renderer,
+                            drm_output,
+                            &output,
+                            &elements,
+                            frame_clear_color.into(),
+                            frame_flags,
+                        )
+                    } else {
+                        timescope::scope!("tty render_frame");
+                        crate::backend::shader_effect::with_gpu_timing_renderer_span(
+                            &mut *renderer,
+                            "tty-render-frame",
+                            (output_geo.size.w, output_geo.size.h),
+                            |renderer| {
+                                if direct_scanout_debug_enabled()
+                                    && let Some(root_id) = fullscreen_root_element_id.as_ref()
+                                    && let Some(element) =
+                                        elements.iter().find(|element| element.id() == root_id)
+                                {
+                                    let src = element.src();
+                                    let geometry = element.geometry(scale);
+                                    let transform = element.transform();
+                                    let storage = describe_underlying_storage(
+                                        element.underlying_storage(renderer),
+                                    );
+                                    fullscreen_root_buffer_details = Some(format!(
+                                        "element={} id={:?} src={src:?} geometry={geometry:?} \
                          transform={transform:?} storage=[{storage}]",
-                                tty_render_element_name(element),
-                                element.id(),
-                            ));
-                        }
-                        if crate::backend::shader_effect::gpu_element_timing_debug_enabled() {
-                            let profiled_elements = elements
-                                .iter()
-                                .map(ProfiledTtyRenderElement::new)
-                                .collect::<Vec<_>>();
-                            surface
-                                .drm_output
-                                .render_frame(
-                                    renderer,
-                                    &profiled_elements,
-                                    frame_clear_color,
-                                    frame_flags,
-                                )
-                                .map(|result| {
-                                    // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
-                                    // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
-                                    // so smithay cannot attach a fence to the atomic commit. When
-                                    // needs_sync() is true the page flip would be submitted before
-                                    // the GPU finishes rendering, causing the display to scan out a
-                                    // partially-rendered buffer and producing visible microstutter
-                                    // during scroll/animation. Block on the swapchain sync point
-                                    // manually before queue_frame commits the flip.
-                                    if result.needs_sync()
-                                        && let PrimaryPlaneElement::Swapchain(ref element) =
-                                            result.primary_element
-                                    {
-                                        let _ = element.sync.wait();
-                                    }
-                                    let primary_scanout = matches!(
-                                        result.primary_element,
-                                        PrimaryPlaneElement::Element(_)
-                                    );
-                                    let primary_plane_kind = match &result.primary_element {
-                                        PrimaryPlaneElement::Element(_) => "element",
-                                        PrimaryPlaneElement::Swapchain(_) => "swapchain",
-                                    };
-                                    let overlay_details = if direct_scanout_debug_enabled() {
-                                        result
-                                            .overlay_elements
-                                            .iter()
-                                            .map(|element| {
-                                                format!(
-                                                    "id={:?} geo={:?} alpha={:.3}",
-                                                    element.id(),
-                                                    element.geometry(scale),
-                                                    element.alpha(),
-                                                )
-                                            })
-                                            .collect()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    TtyRenderFrameResult {
-                                        is_empty: result.is_empty,
-                                        primary_scanout,
-                                        primary_plane_kind,
-                                        overlay_plane_count: result.overlay_elements.len(),
-                                        overlay_details,
-                                        cursor_plane_assigned: result.cursor_element.is_some(),
-                                        states: result.states,
-                                    }
-                                })
-                        } else {
-                            surface
-                                .drm_output
-                                .render_frame(renderer, &elements, frame_clear_color, frame_flags)
-                                .map(|result| {
-                                    // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
-                                    // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
-                                    // so smithay cannot attach a fence to the atomic commit. When
-                                    // needs_sync() is true the page flip would be submitted before
-                                    // the GPU finishes rendering, causing the display to scan out a
-                                    // partially-rendered buffer and producing visible microstutter
-                                    // during scroll/animation. Block on the swapchain sync point
-                                    // manually before queue_frame commits the flip.
-                                    if result.needs_sync()
-                                        && let PrimaryPlaneElement::Swapchain(ref element) =
-                                            result.primary_element
-                                    {
-                                        let _ = element.sync.wait();
-                                    }
-                                    let primary_scanout = matches!(
-                                        result.primary_element,
-                                        PrimaryPlaneElement::Element(_)
-                                    );
-                                    let primary_plane_kind = match &result.primary_element {
-                                        PrimaryPlaneElement::Element(_) => "element",
-                                        PrimaryPlaneElement::Swapchain(_) => "swapchain",
-                                    };
-                                    let overlay_details = if direct_scanout_debug_enabled() {
-                                        result
-                                            .overlay_elements
-                                            .iter()
-                                            .map(|element| {
-                                                format!(
-                                                    "id={:?} geo={:?} alpha={:.3}",
-                                                    element.id(),
-                                                    element.geometry(scale),
-                                                    element.alpha(),
-                                                )
-                                            })
-                                            .collect()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    TtyRenderFrameResult {
-                                        is_empty: result.is_empty,
-                                        primary_scanout,
-                                        primary_plane_kind,
-                                        overlay_plane_count: result.overlay_elements.len(),
-                                        overlay_details,
-                                        cursor_plane_assigned: result.cursor_element.is_some(),
-                                        states: result.states,
-                                    }
-                                })
-                        }
-                    },
-                )
-                .map_err(Into::into)
+                                        tty_render_element_name(element),
+                                        element.id(),
+                                    ));
+                                }
+                                if crate::backend::shader_effect::gpu_element_timing_debug_enabled()
+                                {
+                                    let profiled_elements = elements
+                                        .iter()
+                                        .map(ProfiledTtyRenderElement::new)
+                                        .collect::<Vec<_>>();
+                                    drm_output
+                                        .render_frame(
+                                            renderer,
+                                            &profiled_elements,
+                                            frame_clear_color,
+                                            frame_flags,
+                                        )
+                                        .map(|result| {
+                                            // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                                            // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                                            // so smithay cannot attach a fence to the atomic commit. When
+                                            // needs_sync() is true the page flip would be submitted before
+                                            // the GPU finishes rendering, causing the display to scan out a
+                                            // partially-rendered buffer and producing visible microstutter
+                                            // during scroll/animation. Block on the swapchain sync point
+                                            // manually before queue_frame commits the flip.
+                                            if result.needs_sync()
+                                                && let PrimaryPlaneElement::Swapchain(ref element) =
+                                                    result.primary_element
+                                            {
+                                                let _ = element.sync.wait();
+                                            }
+                                            let primary_scanout = matches!(
+                                                result.primary_element,
+                                                PrimaryPlaneElement::Element(_)
+                                            );
+                                            let primary_plane_kind = match &result.primary_element {
+                                                PrimaryPlaneElement::Element(_) => "element",
+                                                PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                                            };
+                                            let overlay_details = if direct_scanout_debug_enabled()
+                                            {
+                                                result
+                                                    .overlay_elements
+                                                    .iter()
+                                                    .map(|element| {
+                                                        format!(
+                                                            "id={:?} geo={:?} alpha={:.3}",
+                                                            element.id(),
+                                                            element.geometry(scale),
+                                                            element.alpha(),
+                                                        )
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            TtyRenderFrameResult {
+                                                is_empty: result.is_empty,
+                                                primary_scanout,
+                                                primary_plane_kind,
+                                                overlay_plane_count: result.overlay_elements.len(),
+                                                overlay_details,
+                                                cursor_plane_assigned: result
+                                                    .cursor_element
+                                                    .is_some(),
+                                                states: result.states,
+                                            }
+                                        })
+                                } else {
+                                    drm_output
+                                        .render_frame(
+                                            renderer,
+                                            &elements,
+                                            frame_clear_color,
+                                            frame_flags,
+                                        )
+                                        .map(|result| {
+                                            // NVIDIA: IN_FENCE_FD is broken on nvidia-drm (see
+                                            // https://github.com/NVIDIA/open-gpu-kernel-modules/issues/622),
+                                            // so smithay cannot attach a fence to the atomic commit. When
+                                            // needs_sync() is true the page flip would be submitted before
+                                            // the GPU finishes rendering, causing the display to scan out a
+                                            // partially-rendered buffer and producing visible microstutter
+                                            // during scroll/animation. Block on the swapchain sync point
+                                            // manually before queue_frame commits the flip.
+                                            if result.needs_sync()
+                                                && let PrimaryPlaneElement::Swapchain(ref element) =
+                                                    result.primary_element
+                                            {
+                                                let _ = element.sync.wait();
+                                            }
+                                            let primary_scanout = matches!(
+                                                result.primary_element,
+                                                PrimaryPlaneElement::Element(_)
+                                            );
+                                            let primary_plane_kind = match &result.primary_element {
+                                                PrimaryPlaneElement::Element(_) => "element",
+                                                PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                                            };
+                                            let overlay_details = if direct_scanout_debug_enabled()
+                                            {
+                                                result
+                                                    .overlay_elements
+                                                    .iter()
+                                                    .map(|element| {
+                                                        format!(
+                                                            "id={:?} geo={:?} alpha={:.3}",
+                                                            element.id(),
+                                                            element.geometry(scale),
+                                                            element.alpha(),
+                                                        )
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            TtyRenderFrameResult {
+                                                is_empty: result.is_empty,
+                                                primary_scanout,
+                                                primary_plane_kind,
+                                                overlay_plane_count: result.overlay_elements.len(),
+                                                overlay_details,
+                                                cursor_plane_assigned: result
+                                                    .cursor_element
+                                                    .is_some(),
+                                                states: result.states,
+                                            }
+                                        })
+                                }
+                            },
+                        )
+                        .map_err(Into::into)
+                    }
+                }
             };
         let result = match render_frame_result {
             Ok(result) => result,
@@ -5944,19 +6066,22 @@ fn render_surface(
                         - surface.last_cursor_hotspot.to_f64())
                     .to_physical(scale)
                     .to_i32_round();
-                    let _ = surface
-                        .drm_output
-                        .update_cursor_position(cursor_location, None);
+                    let _ = surface.target.update_cursor_position(cursor_location);
                 }
                 // `should_tear` selects an immediate (async) page flip when the fullscreen
                 // direct-scanout tearing fast path is active, and a normal vblank-synced flip
                 // otherwise. See `should_tear` / the tearing fast-path block above.
                 {
                     timescope::scope!("tty queue_frame");
-                    if let Err(err) = surface
-                        .drm_output
-                        .queue_frame_tearing(Some(output_presentation_feedback), should_tear)
-                    {
+                    let queued = match &mut surface.target {
+                        SurfaceTarget::Drm(drm_output) => drm_output
+                            .queue_frame_tearing(Some(output_presentation_feedback), should_tear),
+                        SurfaceTarget::Headless(headless) => {
+                            headless.queue_frame(output_presentation_feedback);
+                            Ok(())
+                        }
+                    };
+                    if let Err(err) = queued {
                         if error_chain_has_permission_denied(&err) {
                             warn!(
                                 output = %output.name(),
@@ -12567,65 +12692,24 @@ fn connector_connected(
         supports_async_flip,
         "tty surface async page-flip (tearing) capability"
     );
-    let surface = SurfaceData {
-        output: output.clone(),
-        drm_output,
-        available_modes: connector.modes().to_vec(),
-        blink_damage_tracker: OutputDamageTracker::from_output(&output),
-        frame_pending: false,
-        latency_in_flight: None,
-        queued_at: None,
-        queued_cpu_duration: Duration::ZERO,
-        skipped_while_pending_count: 0,
-        last_decoration_refresh_at: None,
-        held_client_buffers: Vec::new(),
-        frame_callback_timer_armed: false,
-        frame_callback_timer_generation: 0,
-        commit_timing_timer_armed: false,
-        commit_timing_timer_generation: 0,
-        frame_callback_sequence: 0,
-        redraw_state: TtyRedrawState::Idle,
-        frame_duration,
-        next_frame_target: None,
-        vblank_observations: std::collections::VecDeque::with_capacity(VBLANK_GRID_HISTORY),
-        last_grid_frame_target: None,
-        estimated_render_duration: Duration::from_millis(4),
-        last_presented_at: None,
-        last_frame_callback_at: None,
-        supports_async_flip,
-        tearing_active: false,
-        cursor_on_plane: false,
-        last_cursor_hotspot: Point::default(),
-        cursor_move_pending: false,
-        cursor_commit_timer_armed: false,
-        cursor_commit_timer_generation: 0,
-        vblank_timestamp_lead: Duration::ZERO,
-        cursor_commit_margin: CURSOR_MARGIN_INITIAL,
-        cursor_commit_predicted_vblank: None,
-        cursor_margin_period_basis: frame_duration,
-        cursor_margin_window_commits: 0,
-        cursor_margin_window_misses: 0,
-        deferred_submit: None,
-        deferred_submit_generation: 0,
-        ahead_submit: None,
-        ahead_held_client_buffers: Vec::new(),
-        ahead_attempted: false,
-        in_flight_frame_target: None,
-        fullscreen_fast_path_active: false,
-        powered_off: false,
-        power_cleared: false,
-        power_generation: 0,
+    let cross_gpu = cross_gpu_render.map(|(render_node, gbm, _)| {
+        info!(
+            ?node,
+            ?render_node,
+            output = %output.name(),
+            "output is on another gpu than clients render with; rendering it there and copying"
+        );
+        CrossGpuTarget::new(&gbm, &output)
+    });
+    let surface = SurfaceData::new(
+        output.clone(),
+        SurfaceTarget::Drm(drm_output),
+        connector.modes().to_vec(),
         dmabuf_feedback,
-        cross_gpu: cross_gpu_render.map(|(render_node, gbm, _)| {
-            info!(
-                ?node,
-                ?render_node,
-                output = %output.name(),
-                "output is on another gpu than clients render with; rendering it there and copying"
-            );
-            CrossGpuTarget::new(&gbm, &output)
-        }),
-    };
+        frame_duration,
+        supports_async_flip,
+        cross_gpu,
+    );
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");
     if let Some(surface) = backend.surfaces.get_mut(&crtc) {
@@ -12638,6 +12722,31 @@ fn connector_connected(
     state.notify_runtime_outputs_changed();
     state.schedule_redraw();
     Ok(())
+}
+
+/// Drop what the compositor keeps for an output that went away. Its display
+/// configuration stays, see below.
+pub(crate) fn forget_output(state: &mut ShojiWM, output: &Output) {
+    let output_name = output.name();
+    state.output_color.remove(&output_name);
+    state.space.unmap_output(output);
+    state.remove_output_global(output);
+    state.screencopy_state.remove_output(output);
+    state.output_capture_mirrors.remove(&output_name);
+    // Output configuration belongs to the connector name, not to this short-lived Output
+    // instance. Keep it across hot-unplug so a reconnected connector receives its mode, scale,
+    // and position immediately. The TS runtime suppresses unchanged configuration payloads, so
+    // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
+    state.hdr_pipelines.remove(&output_name);
+    state.hdr_cursor_caches.remove(&output_name);
+    state.runtime_animation_outputs.remove(&output_name);
+    state.damage_blink_visible.remove(&output_name);
+    state.damage_blink_pending.remove(&output_name);
+    state.damage_blink_capture_suppression.remove(&output_name);
+    state.pending_decoration_damage.clear();
+    announce_output_icc_profiles(state);
+    state.apply_runtime_display_configuration();
+    state.notify_runtime_outputs_changed();
 }
 
 fn connector_disconnected(
@@ -12668,25 +12777,7 @@ fn connector_disconnected(
             blob,
         );
     }
-    let output = surface.output;
-    state.space.unmap_output(&output);
-    state.remove_output_global(&output);
-    state.screencopy_state.remove_output(&output);
-    state.output_capture_mirrors.remove(&output_name);
-    // Output configuration belongs to the connector name, not to this short-lived Output
-    // instance. Keep it across hot-unplug so a reconnected connector receives its mode, scale,
-    // and position immediately. The TS runtime suppresses unchanged configuration payloads, so
-    // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
-    state.hdr_pipelines.remove(&output_name);
-    state.hdr_cursor_caches.remove(&output_name);
-    state.runtime_animation_outputs.remove(&output_name);
-    state.damage_blink_visible.remove(&output_name);
-    state.damage_blink_pending.remove(&output_name);
-    state.damage_blink_capture_suppression.remove(&output_name);
-    state.pending_decoration_damage.clear();
-    announce_output_icc_profiles(state);
-    state.apply_runtime_display_configuration();
-    state.notify_runtime_outputs_changed();
+    forget_output(state, &surface.output);
     info!(
         ?node,
         ?crtc,
@@ -13257,13 +13348,14 @@ pub fn apply_tty_output_mode(
             }) else {
                 return Ok(false);
             };
-            surface
-                .drm_output
-                .use_mode::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
-                    drm_mode,
-                    &mut backend.renderer,
-                    &DrmOutputRenderElements::default(),
-                )?;
+            let SurfaceTarget::Drm(drm_output) = &mut surface.target else {
+                return Ok(false);
+            };
+            drm_output.use_mode::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+                drm_mode,
+                &mut backend.renderer,
+                &DrmOutputRenderElements::default(),
+            )?;
             surface.frame_duration = Duration::from_secs_f64(1_000f64 / mode.refresh as f64);
             if surface.powered_off {
                 // The new mode applies at power-on. `use_mode` itself may commit (smithay's

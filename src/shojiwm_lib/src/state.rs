@@ -294,6 +294,8 @@ pub struct ShojiWM {
     pub output_power_manager_state: crate::protocols::output_power::OutputPowerManagerState,
     /// Outputs whose panel is switched off (DPMS), by name; see [`crate::output_power`].
     pub powered_off_outputs: HashMap<String, crate::output_power::PoweredOffOutput>,
+    /// Outputs with no connector, in the order made (see [`crate::headless_output`]).
+    pub headless_outputs: Vec<Output>,
     pub color_management_state: crate::protocols::color_management::ColorManagementState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
@@ -734,7 +736,12 @@ fn detected_subpixel(output: &Output) -> smithay::output::Subpixel {
 const FRAME_DUE_TOLERANCE_MS: f64 = 0.5;
 
 impl ShojiWM {
-    fn output_auto_sort_key(output_name: &str) -> (i32, String) {
+    /// Built-in panels first, then other connectors by name, then headless
+    /// outputs in the order made.
+    fn output_auto_sort_key(&self, output_name: &str) -> (i32, usize, String) {
+        if let Some(index) = self.headless_output_index(output_name) {
+            return (2, index, String::new());
+        }
         let rank = if output_name.starts_with("eDP")
             || output_name.starts_with("LVDS")
             || output_name.starts_with("DSI")
@@ -743,7 +750,7 @@ impl ShojiWM {
         } else {
             1
         };
-        (rank, output_name.to_string())
+        (rank, 0, output_name.to_string())
     }
 
     pub(crate) fn runtime_frame_sync_interval_ms(&self) -> u64 {
@@ -1806,6 +1813,7 @@ impl ShojiWM {
             tearing_control_state,
             output_power_manager_state,
             powered_off_outputs: HashMap::new(),
+            headless_outputs: Vec::new(),
             color_management_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
@@ -3085,6 +3093,9 @@ impl ShojiWM {
                 HostMessage::OutputPower(request) => {
                     self.apply_runtime_output_power_request(request);
                 }
+                HostMessage::HeadlessOutput(request) => {
+                    self.apply_runtime_headless_output_request(request);
+                }
                 HostMessage::PointerHookResult(invocation) => {
                     let loop_handle = self.loop_handle.clone();
                     self.handle_runtime_pointer_move_async_invocation(invocation, &loop_handle);
@@ -3522,9 +3533,9 @@ impl ShojiWM {
             .collect()
     }
 
-    fn runtime_connected_outputs(&self) -> Vec<Output> {
+    pub(crate) fn runtime_connected_outputs(&self) -> Vec<Output> {
         let mut outputs = std::collections::BTreeMap::new();
-        for output in self.space.outputs() {
+        for output in self.space.outputs().chain(&self.headless_outputs) {
             outputs.insert(output.name(), output.clone());
         }
         for output in tty_connected_outputs(self) {
@@ -3753,7 +3764,7 @@ impl ShojiWM {
             }
         }
 
-        auto_outputs.sort_by_key(|name| Self::output_auto_sort_key(name));
+        auto_outputs.sort_by_key(|name| self.output_auto_sort_key(name));
         let mut auto_cursor_x = manual_positions
             .iter()
             .filter_map(|(name, (x, _))| {

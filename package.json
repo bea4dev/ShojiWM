@@ -8,7 +8,8 @@
   "scripts": {
     "typecheck": "tsc -p packages/shoji_wm/tsconfig.json && tsc -p packages/config/tsconfig.json",
     "test:overlays": "node --import tsx --test tests/output-overlay.test.ts && tsc -p tests/tsconfig.overlays.json",
-    "test:output-power": "node --import tsx --test tests/output-power.test.ts"
+    "test:output-power": "node --import tsx --test tests/output-power.test.ts",
+    "test:headless-output": "node --import tsx --test tests/headless-output.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

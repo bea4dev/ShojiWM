@@ -1303,6 +1303,24 @@ export interface OutputPowerOptions {
   wakeOnInput?: boolean;
 }
 
+/** Options of `COMPOSITOR.output.create`. / `COMPOSITOR.output.create` のオプション。 */
+export interface HeadlessOutputOptions {
+  /**
+   * Output name. Defaults to `HEADLESS-<n>`, the lowest `n` free.
+   * 出力名。省略すると空いている最小の `n` で `HEADLESS-<n>` になります。
+   */
+  name?: string;
+  /** Width in pixels. / 幅（ピクセル）。 */
+  width: number;
+  /** Height in pixels. / 高さ（ピクセル）。 */
+  height: number;
+  /**
+   * The scale it starts with; the display configuration can change it.
+   * 初期スケール。ディスプレイ設定で変更できます。
+   */
+  scale?: number;
+}
+
 export type OutputResolutionPreference =
   | "best"
   | {
@@ -1611,6 +1629,20 @@ export interface OutputController {
    * アイドルデーモンからは wlr-output-power-management（`wlopm`）で同じ操作ができます。
    */
   setPower(power: OutputPower, options?: OutputPowerOptions): void;
+  /**
+   * Adds an output with no connector and returns its name. From then on it is
+   * an ordinary output: clients see it, `configure` places it (right of the
+   * connected outputs unless told otherwise), the pointer crosses onto it and
+   * screen capture records it. Only the TTY backend has headless outputs.
+   * コネクターのない出力を追加し、その名前を返します。以後は通常の出力と同じく、
+   * クライアントから見え、`configure` で配置され（指定がなければ接続中の出力の右）、
+   * ポインターが移動でき、画面キャプチャの対象になります。TTY バックエンドのみ対応です。
+   */
+  create(options: HeadlessOutputOptions): string;
+  /**
+   * Removes an output `create` made. / `create` で作った出力を削除します。
+   */
+  remove(outputName: string): void;
 }
 
 export interface WorkspaceConfigEntry {
