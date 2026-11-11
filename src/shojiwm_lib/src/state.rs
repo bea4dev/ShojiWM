@@ -265,6 +265,9 @@ pub struct PendingPointerInput {
     pub handled_at: Duration,
 }
 
+/// The clear colour when the config sets none.
+pub const DEFAULT_CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
+
 pub struct ShojiWM {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -320,6 +323,8 @@ pub struct ShojiWM {
     pub active_idle_inhibit_labels: Vec<String>,
     pub session_lock_state: SessionLockManagerState,
     pub session_lock_active: bool,
+    /// What every output is cleared to under the scene.
+    pub clear_color: [f32; 4],
     /// The lock object holding the current lock. While it is alive no other
     /// client may lock (ext-session-lock-v1), which is what keeps a second
     /// client from locking and then unlocking someone else's lock. `None` while
@@ -1852,6 +1857,7 @@ impl ShojiWM {
             // Started locked (a login screen made of the lock screen): only
             // lock surfaces are drawn until a locker locks and unlocks.
             session_lock_active: runtime.start_locked(),
+            clear_color: DEFAULT_CLEAR_COLOR,
             session_locker: None,
             initial_config_enabled: false,
             session_lock_surfaces: HashMap::new(),
@@ -3146,6 +3152,7 @@ impl ShojiWM {
                 }
                 HostMessage::DragView(command) => self.apply_drag_view_command(command),
                 HostMessage::StartLocked => self.start_session_locked(),
+                HostMessage::ClearColor(color) => self.set_clear_color(color),
                 HostMessage::BackgroundEffect(config) => {
                     if self.configured_background_effect != config {
                         self.configured_background_effect = config;
@@ -3372,6 +3379,7 @@ impl ShojiWM {
         self.end_runtime_input_grab(None);
         self.dnd.reset_views(Instant::now());
         self.config_cursor_override = None;
+        self.set_clear_color(DEFAULT_CLEAR_COLOR);
         // The new config reports the hooks it listens to only when it has
         // any: start from none, so the old config's do not stay on.
         self.apply_runtime_event_config_update(RuntimeEventConfigUpdate::default());
@@ -3424,6 +3432,16 @@ impl ShojiWM {
         self.request_tty_maintenance("config-hot-reload");
         self.schedule_redraw();
         info!(runtime = self.config_runtime.name(), "hot reloaded config");
+    }
+
+    fn set_clear_color(&mut self, color: [f32; 4]) {
+        if self.clear_color != color {
+            self.clear_color = color;
+            // The damage trackers only repaint what changed; the clear shows
+            // wherever nothing is drawn.
+            self.request_full_damage();
+            self.schedule_redraw();
+        }
     }
 
     /// `COMPOSITOR.session.startLocked`: lock before the first client runs.

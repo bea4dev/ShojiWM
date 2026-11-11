@@ -88,6 +88,10 @@ pub enum HostMessage {
     /// [`RuntimeLauncher::start_locked`](super::RuntimeLauncher::start_locked).
     /// Honored only while the config first loads, before any client runs.
     StartLocked,
+    /// The colour under everything on every output, premultiplied RGBA
+    /// (`COMPOSITOR.output.setClearColor`). Sent while the config first
+    /// loads, it is in force from the first frame.
+    ClearColor([f32; 4]),
 }
 
 /// When a runtime that keeps a clock per output (see `SchedulerTickRequest`)

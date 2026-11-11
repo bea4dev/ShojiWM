@@ -1428,7 +1428,7 @@ pub fn init_winit(
                                     &mut framebuffer,
                                     0,
                                     &elements,
-                                    [0.1, 0.1, 0.1, 1.0],
+                                    state.clear_color,
                                 )
                             };
                             timing.render_elapsed_ms =

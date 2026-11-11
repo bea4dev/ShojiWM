@@ -515,7 +515,7 @@ export interface WireOutputComposition {
 const LAYER_NAMES = new Set<LayerName>(["background", "bottom", "top", "overlay"]);
 
 /** Premultiplied RGBA in 0..1. */
-function parseColor(value: CompositionColor): number[] {
+export function parseColor(value: CompositionColor): number[] {
   let rgba: number[];
   if (typeof value === "string") {
     const hex = value.trim().replace(/^#/, "");

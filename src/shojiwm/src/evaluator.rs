@@ -6716,6 +6716,43 @@ COMPOSITOR.process.once("locker", { command: ["true"] });
     }
 
     #[test]
+    fn embedded_runtime_sends_the_clear_color_while_the_config_loads() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-clear-color-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r##"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.window.composition = () => <Label text="clear color test" />;
+COMPOSITOR.output.setClearColor("#ff000080");
+"##,
+        )
+        .unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("initial", None).unwrap();
+
+        let color = std::iter::from_fn(|| evaluator.host.pop())
+            .find_map(|message| match message {
+                HostMessage::ClearColor(color) => Some(color),
+                _ => None,
+            })
+            .expect("setClearColor was not sent");
+        let alpha = (128.0_f64 / 255.0) as f32;
+        assert_eq!(color, [alpha, 0.0, 0.0, alpha]);
+        std::fs::remove_dir_all(test_dir).ok();
+    }
+
+    #[test]
     fn embedded_runtime_reports_keyboard_layout_changes_and_reload() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

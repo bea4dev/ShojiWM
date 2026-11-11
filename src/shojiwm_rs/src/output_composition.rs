@@ -91,7 +91,7 @@ impl CompositionColor {
     pub const TRANSPARENT: Self = Self([0.0; 4]);
 
     /// Premultiplied, clamped to 0..1.
-    fn premultiplied(self) -> [f32; 4] {
+    pub(crate) fn premultiplied(self) -> [f32; 4] {
         let [r, g, b, a] = self.0.map(|channel| {
             if channel.is_finite() {
                 channel.clamp(0.0, 1.0)
