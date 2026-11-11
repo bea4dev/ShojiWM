@@ -59,6 +59,7 @@ pub(crate) type WindowListener<E> = Rc<dyn Fn(Window, &E)>;
 pub(crate) struct Listeners {
     pub enable: Vec<RefListener<EnableEvent>>,
     pub disable: Vec<RefListener<DisableEvent>>,
+    pub reload: Vec<Rc<dyn Fn() -> Result<(), String>>>,
     pub open: Vec<Listener<Window>>,
     pub initial_configure: Vec<Listener<Window>>,
     pub first_commit: Vec<Listener<Window>>,

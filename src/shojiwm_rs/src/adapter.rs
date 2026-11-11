@@ -998,16 +998,50 @@ impl ConfigRuntime for ReactiveRuntime {
         Ok(())
     }
 
+    /// A compiled config is not swapped: its `on_reload` listeners read
+    /// their data again. Without one a reload is unsupported.
     fn prepare_reload(&mut self) -> Result<ReloadPreparation, RuntimeError> {
-        Err(RuntimeError::Unsupported(
-            "hot reload of a compiled Rust config",
-        ))
+        let listeners = with_registry(|registry| registry.listeners.reload.clone());
+        if listeners.is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "hot reload of a compiled Rust config",
+            ));
+        }
+        let result = guard(|| {
+            batch(|| {
+                listeners
+                    .iter()
+                    .try_for_each(|listener| listener())
+                    .map_err(RuntimeError::RuntimeProtocol)
+            })
+        });
+        publish();
+        result.map(|()| ReloadPreparation::Ready)
     }
 
+    /// The compositor has dropped what it held for the config (event hooks,
+    /// the input grab, overlays), expecting a fresh one to report its own:
+    /// send everything again.
     fn reload(&mut self) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Unsupported(
-            "hot reload of a compiled Rust config",
-        ))
+        if with_registry(|registry| registry.listeners.reload.is_empty()) {
+            return Err(RuntimeError::Unsupported(
+                "hot reload of a compiled Rust config",
+            ));
+        }
+        crate::input_grab::reset();
+        with_registry(|registry| {
+            let pending = &mut registry.pending;
+            pending.key_bindings = true;
+            pending.pointer = true;
+            pending.processes = true;
+            pending.event_filter = true;
+            pending.debug = true;
+        });
+        compositor::reconfigure_outputs(true);
+        compositor::reconfigure_input(true);
+        compositor::COMPOSITOR.workspace.reconfigure();
+        publish();
+        Ok(())
     }
 
     fn request(

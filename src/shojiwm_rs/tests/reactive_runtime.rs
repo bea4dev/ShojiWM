@@ -868,3 +868,73 @@ fn lock_keys_are_reported_apart_from_the_layout() {
         Some(caps(false))
     );
 }
+
+#[test]
+fn a_reload_asks_the_config_to_read_its_data_again() {
+    use shojiwm_rs::{ReloadPreparation, RuntimeError};
+    use std::{cell::Cell, rc::Rc};
+
+    let launch = |setup: Box<dyn Fn()>| {
+        let host = RuntimeHost::detached();
+        let args = CommonArgs::parse(&[], &[]);
+        let mut runtime =
+            RuntimeBoot::new(Box::new(ConfigBuilder::new(setup)), &args).launch(host.clone());
+        runtime.preload().unwrap();
+        runtime.enable().unwrap();
+        while host.pop().is_some() {}
+        (runtime, host)
+    };
+
+    // A config that keeps no data has nothing to read again.
+    let (mut runtime, _host) = launch(Box::new(|| {}));
+    assert!(matches!(
+        runtime.prepare_reload(),
+        Err(RuntimeError::Unsupported(_))
+    ));
+
+    let broken = Rc::new(Cell::new(false));
+    let (mut runtime, host) = launch(Box::new({
+        let broken = broken.clone();
+        move || {
+            COMPOSITOR.key.bind("first", "Super+A", || {});
+            let broken = broken.clone();
+            COMPOSITOR.on_reload(move || {
+                if broken.get() {
+                    return Err("settings.json: expected a value at line 3".to_owned());
+                }
+                COMPOSITOR.key.unbind("first");
+                COMPOSITOR.key.bind("second", "Super+B", || {});
+                Ok(())
+            });
+        }
+    }));
+
+    let bindings = |host: &RuntimeHost| -> Option<Vec<String>> {
+        std::iter::from_fn(|| host.pop())
+            .filter_map(|message| match message {
+                HostMessage::KeyBindings(update) => Some(
+                    update
+                        .entries
+                        .into_iter()
+                        .map(|entry| entry.id)
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .last()
+    };
+
+    // What the listener registered is in force once the reload is through:
+    // the compositor forgets the config's hooks in between, so everything
+    // is sent again.
+    assert_eq!(runtime.prepare_reload().unwrap(), ReloadPreparation::Ready);
+    runtime.reload().unwrap();
+    assert_eq!(bindings(&host).unwrap(), ["second"]);
+
+    // A refusal is the reload's error and changes nothing.
+    broken.set(true);
+    let error = runtime.prepare_reload().unwrap_err();
+    assert!(error.to_string().contains("expected a value at line 3"));
+    assert_eq!(bindings(&host), None);
+    assert!(runtime.invoke_key_binding("second", 0).unwrap().invoked);
+}
