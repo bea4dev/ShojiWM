@@ -904,6 +904,7 @@ impl OutputConfig {
             subpixel: None,
             hdr: None,
             icc: None,
+            direct_scanout: None,
         }
     }
 
@@ -919,6 +920,7 @@ impl OutputConfig {
             subpixel: None,
             hdr: None,
             icc: None,
+            direct_scanout: None,
         }
     }
 }
