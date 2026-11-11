@@ -151,7 +151,8 @@ pub struct ShaderEffectSpec {
     pub clip_rect: Option<SnappedLogicalRect>,
     pub clip_radius: f32,
     /// What the effect belongs to (radius, border, clip, scale), for
-    /// `EffectContext`. Its rect is relative to the working texture.
+    /// `EffectContext`. Its rect is relative to the working texture, or for a
+    /// framebuffer backdrop to the content inside its capture padding.
     pub frame: EffectFrame,
 }
 
@@ -885,6 +886,57 @@ pub fn framebuffer_backdrop_element_for_output_rects_with_popup_source(
     alpha: f32,
     popup_source: Option<GlesTexture>,
 ) -> Result<Option<StableBackdropFramebufferElement>, ShaderEffectError> {
+    framebuffer_backdrop_element(
+        renderer,
+        state,
+        rects,
+        effect,
+        output_geo,
+        scale,
+        alpha,
+        popup_source,
+        EffectFrame::plain(None, scale.x),
+    )
+}
+
+/// A window slot effect over `rect` whose `backdropSource()` is the
+/// framebuffer under the slot, not the window. `frame` is the window within
+/// the working texture, as for the slot's captured inputs.
+pub fn framebuffer_backdrop_element_for_window_effect(
+    renderer: &mut GlesRenderer,
+    state: &mut ShaderEffectElementState,
+    rect: LogicalRect,
+    frame: EffectFrame,
+    effect: CompiledEffect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Result<Option<StableBackdropFramebufferElement>, ShaderEffectError> {
+    framebuffer_backdrop_element(
+        renderer,
+        state,
+        &[rect],
+        effect,
+        output_geo,
+        scale,
+        alpha,
+        None,
+        frame,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn framebuffer_backdrop_element(
+    renderer: &mut GlesRenderer,
+    state: &mut ShaderEffectElementState,
+    rects: &[LogicalRect],
+    effect: CompiledEffect,
+    output_geo: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    alpha: f32,
+    popup_source: Option<GlesTexture>,
+    frame: EffectFrame,
+) -> Result<Option<StableBackdropFramebufferElement>, ShaderEffectError> {
     let Some(rect) = crate::backend::window::bounding_box_for_rects(rects) else {
         return Ok(None);
     };
@@ -936,7 +988,7 @@ pub fn framebuffer_backdrop_element_for_output_rects_with_popup_source(
             render_scale: scale.x as f32,
             clip_rect: None,
             clip_radius: 0.0,
-            frame: EffectFrame::plain(None, scale.x),
+            frame,
         },
     )?;
     element.popup_source = popup_source;
@@ -2264,6 +2316,16 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
         }
 
         let sample_src = inner.sample_src;
+        let effect_frame = match (self.frame.rect, sample_src) {
+            (Some(rect), Some(src)) => EffectFrame {
+                rect: Some(Rectangle::new(
+                    rect.loc + Point::from((src.loc.x.round() as i32, src.loc.y.round() as i32)),
+                    rect.size,
+                )),
+                ..self.frame
+            },
+            _ => self.frame,
+        };
         let mut guard = frame.renderer();
         let renderer = guard.as_mut();
         let mut pipeline = self
@@ -2281,7 +2343,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 sample_src,
                 Some((dst.size.w, dst.size.h)),
                 &self.shader,
-                self.frame,
+                effect_frame,
                 pipeline,
                 BackdropFinishMode::DeferToDisplay,
             )
@@ -2295,7 +2357,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 sample_src,
                 Some((dst.size.w, dst.size.h)),
                 &self.shader,
-                self.frame,
+                effect_frame,
                 pipeline,
                 BackdropFinishMode::DeferToDisplay,
             )
@@ -2308,7 +2370,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 sample_src,
                 Some((dst.size.w, dst.size.h)),
                 &self.shader,
-                self.frame,
+                effect_frame,
                 pipeline,
                 BackdropFinishMode::DeferToDisplay,
             )
