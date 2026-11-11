@@ -10,3 +10,8 @@ edition = "2024"
 shojiwm_lib = { path = "../shojiwm_lib" }
 serde_json = "1.0.140"
 tracing = "0.1.41"
+
+[dev-dependencies]
+smithay = { git = "https://github.com/bea4dev/smithay.git", rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa", default-features = false }
+wayland-client = "0.31.14"
+wayland-protocols = { version = "0.32.12", features = ["client"] }
