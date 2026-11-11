@@ -40,6 +40,9 @@ pub struct RuntimeOutputConfig {
     /// Path of the monitor's ICC profile (`~/` allowed). Applied while the
     /// output runs SDR.
     pub icc: Option<String>,
+    /// Variable refresh rate (adaptive sync). Unset or `false` keeps it off.
+    #[serde(default)]
+    pub vrr: Option<bool>,
 }
 
 /// `hdr`: a plain switch, or the settings of an HDR output.
@@ -420,6 +423,18 @@ mod tests {
         let icc = |name: &str| update.outputs[name].as_ref().unwrap().icc.clone();
         assert_eq!(icc("DP-1").as_deref(), Some("~/.local/share/icc/DP-1.icc"));
         assert_eq!(icc("eDP-1"), None);
+    }
+
+    #[test]
+    fn runtime_output_config_parses_vrr() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{"DP-1":{"vrr":true},"DP-2":{"vrr":false},"eDP-1":{}}}"#,
+        )
+        .expect("display config update should parse");
+        let vrr = |name: &str| update.outputs[name].as_ref().unwrap().vrr;
+        assert_eq!(vrr("DP-1"), Some(true));
+        assert_eq!(vrr("DP-2"), Some(false));
+        assert_eq!(vrr("eDP-1"), None);
     }
 
     /// `hdr.sdrLuminance` takes cd/m² or the keyword that follows the backlight.

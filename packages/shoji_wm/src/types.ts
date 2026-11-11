@@ -1435,6 +1435,20 @@ export interface OutputExtendConfigEntry {
    * 有効で、HDR の出力では無視されます。
    */
   icc?: string;
+  /**
+   * Variable refresh rate (adaptive sync, FreeSync, G-Sync Compatible): the
+   * panel waits for each frame instead of refreshing at a fixed rate. Only
+   * outputs whose connector reports `vrr_capable` take it; switching it may
+   * cost a modeset. Default `false`. A config can turn it on and off at any
+   * time through `reconfigure()`, for example only while a fullscreen game
+   * has focus.
+   * 可変リフレッシュレート（アダプティブシンク、FreeSync、G-Sync Compatible）。
+   * パネルは一定の間隔ではなく、フレームごとにそれを待って更新します。コネクターが
+   * `vrr_capable` を示す出力だけが対応し、切り替えにはモードセットを伴うことが
+   * あります。既定は `false`。フルスクリーンのゲームにフォーカスがある間だけなど、
+   * `reconfigure()` でいつでも切り替えられます。
+   */
+  vrr?: boolean;
 }
 
 /**

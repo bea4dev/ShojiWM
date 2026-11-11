@@ -267,6 +267,22 @@ Notes:
 - Screenshots and screen recordings are taken before the conversion, so they
   stay plain sRGB.
 
+### Variable refresh rate (`vrr`)
+
+With `vrr: true` the panel waits for each frame instead of refreshing at a fixed
+rate (adaptive sync, FreeSync, G-Sync Compatible), so games and video below the
+panel's refresh rate do not stutter. Tty only, and only on outputs whose
+connector reports `vrr_capable`; others log a warning and stay fixed. Switching
+it can cost a modeset on some drivers. Default `false`.
+
+```ts
+display['DP-1'] = {vrr: true};
+```
+
+`COMPOSITOR.output.reconfigure()` runs the configure function again, so VRR can
+follow what is on screen, for example on only while a fullscreen window has
+focus. In a Rust config it is the `vrr` field of `RuntimeOutputConfig`.
+
 ## Switching panels off (DPMS)
 
 `mode: 'disabled'` takes an output out of the desktop, so its windows move
