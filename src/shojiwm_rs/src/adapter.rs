@@ -756,6 +756,16 @@ fn sync_layers(output_name: &str, layers: &[WaylandLayerSnapshot]) {
     for layer in layers {
         next.insert(layer.id.clone(), layer.clone());
     }
+    let mut order = global.layer_order.get_untracked();
+    order.retain(|id| {
+        previous
+            .get(id)
+            .is_some_and(|layer| layer.output_name != output_name)
+    });
+    order.extend(layers.iter().map(|layer| layer.id.clone()));
+    if order != global.layer_order.get_untracked() {
+        global.layer_order.set(order);
+    }
     if next == previous {
         return;
     }

@@ -47,7 +47,7 @@ use shojiwm_lib::{
         WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
         WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
         WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
-        window_model::{LayerEdgeSnapshot, LayerExclusiveZoneSnapshot},
+        window_model::{LayerEdgeSnapshot, LayerExclusiveZoneSnapshot, LayerKindSnapshot},
     },
 };
 
@@ -1167,6 +1167,31 @@ impl LayerController {
             runtime::global()
                 .layers
                 .with(|layers| layers.values().cloned().collect())
+        })
+    }
+
+    /// All layers from the bottom of the stack to its top: background,
+    /// bottom, top, overlay, and within one of those in the order the core
+    /// stacks them.
+    pub fn stacked(&self) -> Vec<WaylandLayerSnapshot> {
+        let rank = |layer: &WaylandLayerSnapshot| match layer.layer {
+            LayerKindSnapshot::Background => 0,
+            LayerKindSnapshot::Bottom => 1,
+            LayerKindSnapshot::Top => 2,
+            LayerKindSnapshot::Overlay => 3,
+        };
+        untrack(|| {
+            let global = runtime::global();
+            let mut stacked: Vec<WaylandLayerSnapshot> = global.layers.with(|layers| {
+                global.layer_order.with(|order| {
+                    order
+                        .iter()
+                        .filter_map(|id| layers.get(id).cloned())
+                        .collect()
+                })
+            });
+            stacked.sort_by_key(rank);
+            stacked
         })
     }
 
