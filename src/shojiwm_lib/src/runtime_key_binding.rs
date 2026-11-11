@@ -18,6 +18,13 @@ pub struct RuntimeKeyBindingEntry {
     /// many milliseconds of being pressed.
     #[serde(default)]
     pub within: Option<u32>,
+    /// Also fire while the session is locked (volume, brightness keys).
+    #[serde(default)]
+    pub locked: bool,
+    /// Fire again at the keyboard's repeat delay and rate while the key is
+    /// held.
+    #[serde(default)]
+    pub repeat: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Default)]
@@ -54,11 +61,28 @@ impl RuntimeKeyBindingEntry {
                 self.shortcut.clone(),
             ));
         }
+        let is_key = !shortcut.is_modifier_only()
+            && shortcut.wheel_direction.is_none()
+            && shortcut.mouse_button.is_none();
+        if self.repeat && !(is_key && self.on == RuntimeKeyBindingPhase::Press) {
+            return Err(RuntimeKeyBindingParseError::RepeatRequiresKeyPress(
+                self.shortcut.clone(),
+            ));
+        }
+        // While locked the pointer belongs to the lock screen, and a tap of a
+        // bare modifier is how a locker is usually typed into.
+        if self.locked && !is_key {
+            return Err(RuntimeKeyBindingParseError::LockedRequiresKey(
+                self.shortcut.clone(),
+            ));
+        }
         Ok(CompiledRuntimeKeyBinding {
             id: self.id.clone(),
             phase: self.on,
             shortcut,
             within_ms: self.within,
+            locked: self.locked,
+            repeat: self.repeat,
         })
     }
 }
@@ -87,6 +111,8 @@ pub struct CompiledRuntimeKeyBinding {
     pub shortcut: RuntimeKeyShortcut,
     /// Tap bindings: the longest press, in ms, that still counts as a tap.
     pub within_ms: Option<u32>,
+    pub locked: bool,
+    pub repeat: bool,
 }
 
 impl CompiledRuntimeKeyBinding {
@@ -191,6 +217,10 @@ pub enum RuntimeKeyBindingParseError {
     MouseButtonRequiresPress(String),
     #[error("`within` on `{0}` only applies to modifier-only tap bindings")]
     WithinRequiresTap(String),
+    #[error("`repeat` on `{0}` only applies to a key with `on: \"press\"`")]
+    RepeatRequiresKeyPress(String),
+    #[error("`locked` on `{0}` only applies to a key, not a tap, wheel or mouse button")]
+    LockedRequiresKey(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
     UnknownModifier { shortcut: String, modifier: String },
     #[error("shortcut `{shortcut}` contains duplicate modifier `{modifier}`")]
@@ -391,7 +421,68 @@ mod tests {
             shortcut: shortcut.to_string(),
             on,
             within: None,
+            locked: false,
+            repeat: false,
         }
+    }
+
+    #[test]
+    fn repeat_needs_a_key_on_press() {
+        let repeat = |shortcut: &str, on| RuntimeKeyBindingEntry {
+            repeat: true,
+            ..entry(shortcut, on)
+        };
+        let binding = repeat("XF86AudioRaiseVolume", RuntimeKeyBindingPhase::Press)
+            .compile()
+            .unwrap();
+        assert!(binding.repeat && !binding.locked);
+        for (shortcut, on) in [
+            ("XF86AudioRaiseVolume", RuntimeKeyBindingPhase::Release),
+            ("Super", RuntimeKeyBindingPhase::Release),
+            ("Super+WheelScrollUp", RuntimeKeyBindingPhase::Press),
+            ("Super+MouseBack", RuntimeKeyBindingPhase::Press),
+        ] {
+            assert!(matches!(
+                repeat(shortcut, on).compile(),
+                Err(RuntimeKeyBindingParseError::RepeatRequiresKeyPress(_)),
+            ));
+        }
+    }
+
+    #[test]
+    fn locked_needs_a_key() {
+        let locked = |shortcut: &str, on| RuntimeKeyBindingEntry {
+            locked: true,
+            ..entry(shortcut, on)
+        };
+        for on in [
+            RuntimeKeyBindingPhase::Press,
+            RuntimeKeyBindingPhase::Release,
+        ] {
+            assert!(locked("XF86MonBrightnessUp", on).compile().unwrap().locked);
+        }
+        for (shortcut, on) in [
+            ("Super", RuntimeKeyBindingPhase::Release),
+            ("Super+WheelScrollUp", RuntimeKeyBindingPhase::Press),
+            ("Super+MouseForward", RuntimeKeyBindingPhase::Press),
+        ] {
+            assert!(matches!(
+                locked(shortcut, on).compile(),
+                Err(RuntimeKeyBindingParseError::LockedRequiresKey(_)),
+            ));
+        }
+    }
+
+    #[test]
+    fn options_default_off_on_the_wire() {
+        let entry: RuntimeKeyBindingEntry =
+            serde_json::from_str(r#"{"id":"a","shortcut":"Super+T","on":"press"}"#).unwrap();
+        assert!(!entry.locked && !entry.repeat);
+        let entry: RuntimeKeyBindingEntry = serde_json::from_str(
+            r#"{"id":"a","shortcut":"XF86AudioMute","locked":true,"repeat":true}"#,
+        )
+        .unwrap();
+        assert!(entry.locked && entry.repeat);
     }
 
     #[test]

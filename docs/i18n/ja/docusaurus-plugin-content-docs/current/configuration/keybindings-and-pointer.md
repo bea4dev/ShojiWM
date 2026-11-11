@@ -81,6 +81,30 @@ COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
 
+### リピートとロック中のバインド
+
+`repeat: true` を付けると、キーを押している間ハンドラーが繰り返し呼ばれます。
+キーボードの `repeatDelay` の後、毎秒 `repeatRate` 回です（[入力](./input.md)を
+参照）。他のキーを押すと止まります。`locked: true` を付けると、セッションが
+ロックされている間も発火します。通常のバインドはロック画面に吸収されるので、
+音量、明るさ、メディアキーに使ってください。どちらもキーとデフォルトの
+`on: "press"` が必要で、マウスボタン、ホイール方向、タップには使えません。
+
+```ts
+COMPOSITOR.key.bind('volume-up', 'XF86AudioRaiseVolume', raiseVolume, {locked: true, repeat: true});
+```
+
+Rust では `bind_with` で同じオプションを渡します。
+
+```rust
+COMPOSITOR.key.bind_with(
+    "volume-up",
+    "XF86AudioRaiseVolume",
+    KeyBindOptions::new().locked().repeat(),
+    || COMPOSITOR.process.spawn(Command::exec(["wpctl", "set-volume", "@DEFAULT_SINK@", "5%+"])),
+);
+```
+
 ### 終了とリロード
 
 `Super+Shift+Q`（終了）と `Super+Shift+R`（設定のリロード）はコンポジター組み込みで、

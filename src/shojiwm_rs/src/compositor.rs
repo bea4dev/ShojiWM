@@ -417,6 +417,38 @@ impl ProcessController {
 /// `COMPOSITOR.key`.
 pub struct KeyController;
 
+/// How a key binding fires ([`KeyController::bind_with`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyBindOptions {
+    pub on: RuntimeKeyBindingPhase,
+    /// Also fire while the session is locked. Keys only.
+    pub locked: bool,
+    /// Fire again at the keyboard's repeat delay and rate while held. Keys
+    /// on press only.
+    pub repeat: bool,
+}
+
+impl KeyBindOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn on_release(mut self) -> Self {
+        self.on = RuntimeKeyBindingPhase::Release;
+        self
+    }
+
+    pub fn locked(mut self) -> Self {
+        self.locked = true;
+        self
+    }
+
+    pub fn repeat(mut self) -> Self {
+        self.repeat = true;
+        self
+    }
+}
+
 impl KeyController {
     /// Bind `shortcut` (e.g. `"Super+Shift+Left"`, `"XF86AudioPlay"`) to
     /// `handler`, firing on press.
@@ -443,6 +475,40 @@ impl KeyController {
                 shortcut: shortcut.to_owned(),
                 on: phase,
                 within: None,
+                locked: false,
+                repeat: false,
+            },
+            handler,
+        );
+    }
+
+    /// Bind with [`KeyBindOptions`]: the phase, and whether the binding also
+    /// fires while the session is locked and repeats while held.
+    ///
+    /// ```no_run
+    /// # use shojiwm_rs::prelude::*;
+    /// COMPOSITOR.key.bind_with(
+    ///     "volume-up",
+    ///     "XF86AudioRaiseVolume",
+    ///     KeyBindOptions::new().locked().repeat(),
+    ///     || COMPOSITOR.process.spawn(Command::exec(["wpctl", "set-volume", "@DEFAULT_SINK@", "5%+"])),
+    /// );
+    /// ```
+    pub fn bind_with(
+        &self,
+        id: &str,
+        shortcut: &str,
+        options: KeyBindOptions,
+        handler: impl Fn() + 'static,
+    ) {
+        self.bind_entry(
+            RuntimeKeyBindingEntry {
+                id: id.to_owned(),
+                shortcut: shortcut.to_owned(),
+                on: options.on,
+                within: None,
+                locked: options.locked,
+                repeat: options.repeat,
             },
             handler,
         );
@@ -458,6 +524,8 @@ impl KeyController {
                 shortcut: modifier.to_owned(),
                 on: RuntimeKeyBindingPhase::Release,
                 within: Some(within_ms),
+                locked: false,
+                repeat: false,
             },
             handler,
         );

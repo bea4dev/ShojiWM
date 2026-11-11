@@ -356,6 +356,61 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
+    /// `locked` and `repeat` reach the compositor with the binding, and are
+    /// left off when not asked for.
+    #[test]
+    fn typescript_runtime_sends_key_binding_options() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-key-options-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, Label } from "shoji_wm";
+COMPOSITOR.key.bind("louder", "XF86AudioRaiseVolume", () => {}, { locked: true, repeat: true });
+COMPOSITOR.key.bind("plain", "Super+T", () => {});
+COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
+"#,
+        )
+        .expect("test config should be written");
+        let args = CommonArgs::parse(
+            &[
+                "--dev".to_string(),
+                "--config".to_string(),
+                config_path.display().to_string(),
+                "--runtime-dir".to_string(),
+                repository_root.display().to_string(),
+            ],
+            TypeScriptLauncher.extra_args(),
+        );
+        let host = RuntimeHost::detached();
+        let mut runtime =
+            shojiwm_lib::runtime_api::RuntimeBoot::new(Box::new(TypeScriptLauncher), &args)
+                .launch(host.clone());
+        runtime.preload().expect("config should preload");
+        runtime.enable().expect("config should enable");
+
+        let entries = std::iter::from_fn(|| host.pop())
+            .filter_map(|message| match message {
+                HostMessage::KeyBindings(update) => Some(update.entries),
+                _ => None,
+            })
+            .last()
+            .expect("key bindings should be sent");
+        let flags = entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.locked, entry.repeat))
+            .collect::<Vec<_>>();
+        assert_eq!(flags, [("louder", true, true), ("plain", false, false)]);
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
     /// `defineRegion` / `bindHotCorner` reach the compositor as pointer config,
     /// and region events reach `onPointerRegion` and the hot corner handler.
     #[test]

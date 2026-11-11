@@ -80,6 +80,31 @@ then no longer opens the launcher on release. The default config uses 300 ms.
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
 
+### Repeating and locked bindings
+
+`repeat: true` fires the handler again while the key is held, after the
+keyboard's `repeatDelay` and then `repeatRate` times a second (see
+[Input](./input.md)). Pressing any other key stops it. `locked: true` lets the
+binding fire while the session is locked, where every other binding is
+swallowed by the lock screen; use it for volume, brightness and media keys.
+Both need a key and the default `on: "press"` phase, so mouse buttons, wheel
+directions and taps are rejected.
+
+```ts
+COMPOSITOR.key.bind('volume-up', 'XF86AudioRaiseVolume', raiseVolume, {locked: true, repeat: true});
+```
+
+In Rust the same options go through `bind_with`:
+
+```rust
+COMPOSITOR.key.bind_with(
+    "volume-up",
+    "XF86AudioRaiseVolume",
+    KeyBindOptions::new().locked().repeat(),
+    || COMPOSITOR.process.spawn(Command::exec(["wpctl", "set-volume", "@DEFAULT_SINK@", "5%+"])),
+);
+```
+
 ### Quit and reload
 
 `Super+Shift+Q` (quit) and `Super+Shift+R` (reload the config) are built into

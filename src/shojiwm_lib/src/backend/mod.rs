@@ -158,6 +158,7 @@ pub fn run_tty_udev(
             SessionEvent::PauseSession => {
                 info!("pausing tty session");
                 state.tty_session_active = false;
+                state.stop_key_binding_repeat();
                 libinput.suspend();
                 pause_tty_session(state);
             }

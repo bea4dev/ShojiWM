@@ -440,6 +440,7 @@ pub fn apply_keyboard_config(state: &mut ShojiWM) {
     {
         let delay = keyboard.repeat_delay.unwrap_or(200);
         handle.change_repeat_info(rate.max(0), delay.max(0));
+        state.keyboard_repeat_info = (rate.max(0), delay.max(0));
     }
 
     let active_keyboard = state
