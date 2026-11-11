@@ -1277,6 +1277,15 @@ impl ConfigRuntime for ReactiveRuntime {
                         );
                     });
                 }
+                RuntimeEvent::LidSwitch(lid) => {
+                    batch(|| {
+                        runtime::global().lid_switch.set(Some(lid));
+                        emit(
+                            |listeners| listeners.lid_switch.clone(),
+                            |listener| listener(&lid),
+                        );
+                    });
+                }
                 RuntimeEvent::PointerMove(event) => {
                     let invoked = batch(|| {
                         emit(

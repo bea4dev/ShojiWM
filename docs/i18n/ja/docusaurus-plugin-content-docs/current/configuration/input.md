@@ -62,6 +62,24 @@ input.global = {
 };
 ```
 
+## ノートパソコンの蓋
+
+`COMPOSITOR.event.onLidSwitch` は蓋の開閉を通知します。蓋を閉じている間だけ
+内蔵パネルを消す設定は次のとおりです。
+
+```ts
+COMPOSITOR.event.onLidSwitch(({closed}) => {
+  COMPOSITOR.output.setPower(closed ? 'off' : 'on', {output: 'eDP-1'});
+});
+```
+
+通知はスケジューラーのティックで届きます。有効化や再読み込みの後の最初のティックで
+現在の状態を、その後は変化のたびに通知します。蓋のスイッチが一度も報告していない間は
+何も通知しないので、蓋のない機械ではこのイベントは来ません。二つのティックの間に
+閉じて開いた場合はまとめられます。登録すると購読解除の関数が返ります。Rust の設定では
+`COMPOSITOR.event.on_lid_switch(|lid| ...)` がすぐに呼ばれ、
+`COMPOSITOR.input.lid_switch()` が最後の状態を持つシグナルです（最初の報告までは `None`）。
+
 ## ポインター（マウス）設定
 
 `pointer` — `InputDeviceConfig.pointer` オブジェクト。
