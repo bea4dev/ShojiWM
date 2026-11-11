@@ -64,6 +64,7 @@ pub mod runtime_workspace;
 pub mod ssd;
 pub mod state;
 pub mod virtual_input;
+pub mod virtual_keyboard;
 pub mod window_decoration;
 pub mod wlr_foreign_toplevel;
 pub mod workspace_manager;

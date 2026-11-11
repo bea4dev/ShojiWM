@@ -1124,6 +1124,7 @@ crate::delegate_hyprland_toplevel_export!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
 crate::delegate_output_power!(ShojiWM);
 crate::delegate_virtual_pointer!(ShojiWM);
+crate::delegate_virtual_keyboard!(ShojiWM);
 
 impl crate::protocols::virtual_pointer::VirtualPointerHandler for ShojiWM {
     fn virtual_pointer_input(

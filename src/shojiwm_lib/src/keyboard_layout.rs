@@ -20,6 +20,10 @@ impl ShojiWM {
     /// Send the keyboard's layout and lock keys to the config, each only when
     /// it changed.
     pub fn sync_keyboard_state(&mut self) {
+        // A virtual keyboard's keymap is not a layout the user chose.
+        if self.virtual_keymap_active() {
+            return;
+        }
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };

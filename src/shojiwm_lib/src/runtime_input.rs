@@ -464,6 +464,12 @@ pub fn apply_keyboard_config_for_backend_device<D: SmithayInputDevice>(
     state: &mut ShojiWM,
     device: &D,
 ) {
+    if device
+        .id()
+        .starts_with(crate::virtual_keyboard::DEVICE_ID_PREFIX)
+    {
+        return;
+    }
     let snapshot = snapshot_for_backend_device(&state.runtime_input_devices, device).cloned();
     if let Some(snapshot) = &snapshot
         && snapshot.kind.keyboard
@@ -491,8 +497,12 @@ fn apply_keyboard_xkb_config(
     log_label: &'static str,
 ) {
     if state.runtime_applied_xkb_config == keyboard {
+        // The same config, after a virtual keyboard: its keymap goes back
+        // without the focus round trip a new layout gets.
+        state.restore_session_keymap();
         return;
     }
+    state.active_virtual_keymap = None;
     let Some(handle) = state.seat.get_keyboard() else {
         return;
     };

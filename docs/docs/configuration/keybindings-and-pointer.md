@@ -151,8 +151,17 @@ printf 'key Super+T\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
 printf 'key XF86AudioRaiseVolume 800\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
 ```
 
-Tools like `wtype` use the virtual keyboard protocol, which types into the
-focused window but never reaches a binding.
+### Virtual keyboards
+
+Tools like `wtype` use `zwp_virtual_keyboard_v1` and upload a keymap of their
+own. Their keys take the same path as a keyboard's: `wtype -M logo -k space -m
+logo` fires a `Super+space` binding, `wtype -k F13` a binding on `F13`, and
+text they type reaches the focused window with the keymap they sent, so
+characters missing from your layout still arrive. Bindings match the keysyms
+of that keymap, whatever keycodes the tool chose. While a virtual keyboard
+types, the focused window runs its keymap; your layout comes back with the
+next key from another keyboard or when the tool exits, and the layout reported
+to the config does not change.
 
 ### Virtual pointers
 

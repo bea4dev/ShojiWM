@@ -5,9 +5,8 @@
 //! Both are fed to [`ShojiWM::process_input_event`] as an input backend of
 //! their own, so they take the same path as libinput events: pointer
 //! constraints, input grabs, the config's key binds and pointer handlers.
-//! Smithay's `zwp_virtual_keyboard_v1` is different: it writes to the
-//! focused client directly, which is right for typing text but never reaches
-//! a key bind.
+//! `zwp_virtual_keyboard_v1` clients come through here too, with a keymap
+//! of their own (see [`crate::virtual_keyboard`]).
 
 use std::time::Duration;
 
@@ -421,6 +420,8 @@ impl ShojiWM {
     /// Press then release `chord` on a virtual keyboard, through the same
     /// path as a real key press.
     pub fn inject_key_chord(&mut self, chord: &str, hold_ms: u32) -> Result<(), String> {
+        // The chord names keys of the session's layout.
+        self.restore_session_keymap();
         let keyboard = self
             .seat
             .get_keyboard()
