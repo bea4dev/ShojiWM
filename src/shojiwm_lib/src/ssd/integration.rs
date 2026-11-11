@@ -5071,6 +5071,7 @@ impl ShojiWM {
                 "managed rect debug: apply start"
             );
         }
+        let mut moved_any = false;
         let windows = {
             timescope::scope!("ssd apply managed collect candidates");
             self.window_decorations
@@ -5574,6 +5575,7 @@ impl ShojiWM {
             }
             self.window_scene_generation = self.window_scene_generation.wrapping_add(1);
             self.schedule_redraw();
+            moved_any = true;
         }
 
         // Closing snapshots are not present in `window_decorations`, but
@@ -5583,13 +5585,10 @@ impl ShojiWM {
         // whole closing window, not just opacity/transform it.
         self.apply_managed_window_rects_to_closing_snapshots(dirty_window_ids);
 
-        // Do not refresh pointer focus synchronously from apply_managed_window_rects.
-        // This can be called from inside pointer grab motion handling.
-        /*
-        if applied_any_rect {
-            let now_msec = std::time::Duration::from(self.clock.now()).as_millis() as u32;
-            self.refresh_pointer_focus(now_msec);
-        }*/
+        // A window may have moved under a pointer that stays still.
+        if moved_any {
+            self.queue_pointer_focus_refresh();
+        }
     }
 
     fn apply_managed_window_rects_to_closing_snapshots(

@@ -5162,7 +5162,11 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "shojiwm_lib",
+ "smithay",
  "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]
