@@ -1669,6 +1669,7 @@ impl ShojiWM {
         let plasma_virtual_desktop_state =
             crate::plasma_virtual_desktop::PlasmaVirtualDesktopState::new(&dh);
         crate::xdg_toplevel_tag::init_xdg_toplevel_tag(&dh);
+        smithay::wayland::content_type::ContentTypeState::new::<Self>(&dh);
         let plasma_shell_state = crate::protocols::plasma_shell::PlasmaShellState::new(&dh);
         let ext_workspace_manager_state =
             crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
@@ -3242,6 +3243,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: None,
             foreign_toplevel_id: None,
+            content_type: None,
             id: "__warmup__".into(),
             title: "warmup".into(),
             app_id: Some("shoji_wm.warmup".into()),

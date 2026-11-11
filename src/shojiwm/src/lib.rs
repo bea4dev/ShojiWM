@@ -316,6 +316,7 @@ COMPOSITOR.window.composition = (window) => <Label text={{window.title}} />;
             plasma: None,
             minimized_geometry: None,
             foreign_toplevel_id: None,
+            content_type: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: Some("test".into()),
@@ -398,6 +399,7 @@ COMPOSITOR.window.composition = (window) => (
         runtime.enable().expect("config should enable");
 
         let mut window = shojiwm_lib::ssd::WaylandWindowSnapshot {
+            content_type: None,
             output_name: None,
             plasma: None,
             minimized_geometry: None,
@@ -937,6 +939,7 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             plasma: None,
             minimized_geometry: None,
             foreign_toplevel_id: None,
+            content_type: None,
             id: "w1".into(),
             title: "hello".into(),
             app_id: None,

@@ -57,6 +57,10 @@ pub struct WaylandWindowSnapshot {
     /// by; `None` until the window is mapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_toplevel_id: Option<String>,
+    /// What the client says it shows, from `wp-content-type-v1`; `None` when it
+    /// said nothing or `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<WindowContentType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -966,6 +970,7 @@ impl ShojiWM {
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            content_type: window_content_type(toplevel.wl_surface()),
         }
     }
 
@@ -993,6 +998,7 @@ impl ShojiWM {
                 plasma: None,
                 minimized_geometry: None,
                 foreign_toplevel_id: None,
+                content_type: None,
             };
         };
 
@@ -1071,6 +1077,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            content_type: None,
         }
     }
 
@@ -1336,6 +1343,33 @@ fn anchor_to_edge_snapshot(anchor: WlrAnchor) -> Option<LayerEdgeSnapshot> {
     }
 }
 
+/// The `wp-content-type-v1` hint of a window, which a config can use to pick
+/// VRR or a scaling filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowContentType {
+    Photo,
+    Video,
+    Game,
+}
+
+pub(crate) fn window_content_type(surface: &WlSurface) -> Option<WindowContentType> {
+    use smithay::reexports::wayland_protocols::wp::content_type::v1::server::wp_content_type_v1::Type;
+    let content_type = with_states(surface, |states| {
+        *states
+            .cached_state
+            .get::<smithay::wayland::content_type::ContentTypeSurfaceCachedState>()
+            .current()
+            .content_type()
+    });
+    match content_type {
+        Type::Photo => Some(WindowContentType::Photo),
+        Type::Video => Some(WindowContentType::Video),
+        Type::Game => Some(WindowContentType::Game),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PointerHitTargetSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
@@ -1343,6 +1377,7 @@ mod tests {
     #[test]
     fn foreign_toplevel_id_is_sent_once_known() {
         let mut snapshot = WaylandWindowSnapshot {
+            content_type: None,
             id: "0x1".into(),
             title: String::new(),
             app_id: None,

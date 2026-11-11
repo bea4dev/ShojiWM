@@ -65,6 +65,7 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 | `isTransient`     | `boolean`                 | A child (dialog) of another window           |
 | `parentId`        | `string \| undefined`     | Parent window id, if transient               |
 | `foreignToplevelId` | `string \| undefined`   | The window's `ext-foreign-toplevel-list-v1` identifier, once mapped |
+| `contentType`     | `"photo" \| "video" \| "game" \| undefined` | What the client says it shows (`wp-content-type-v1`) |
 | `sizeConstraints` | `WindowSizeConstraints`   | Min/max size from the client                 |
 | `interaction`     | snapshot                  | Current pointer/drag interaction state       |
 
@@ -77,6 +78,13 @@ clients see. Those key a window by its `ext-foreign-toplevel-list-v1`
 `identifier` (which `ext-image-capture-source-v1` also captures by), and
 `foreignToplevelId` is that value, so a config can hand a client the window it
 means. In a Rust config it is `window.foreign_toplevel_id()`.
+
+A client can say what a surface shows with `wp-content-type-v1`: `"photo"`,
+`"video"` or `"game"`. `contentType` is that value for the window's main
+surface, and `undefined` when the client said nothing. It changes with the
+client's next commit, so a config can follow it, for example to change an
+output's settings while a game is focused. In a Rust config it is
+`window.content_type()`, a `WindowContentType`.
 
 ### Client-side and server-side decorations
 

@@ -65,6 +65,7 @@ COMPOSITOR.window.composition = (window) => (
 | `isTransient`     | `boolean`                 | 別ウィンドウの子（ダイアログ）                    |
 | `parentId`        | `string \| undefined`     | トランジェントの場合の親ウィンドウ id             |
 | `foreignToplevelId` | `string \| undefined` | マップ後の `ext-foreign-toplevel-list-v1` 識別子 |
+| `contentType` | `"photo" \| "video" \| "game" \| undefined` | クライアントが `wp-content-type-v1` で示した表示内容 |
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
@@ -78,6 +79,12 @@ COMPOSITOR.window.composition = (window) => (
 `ext-image-capture-source-v1` もこれでキャプチャ対象を指定します）でウィンドウを
 区別し、`foreignToplevelId` はその値です。これで config からクライアントに対象の
 ウィンドウを伝えられます。Rust の config では `window.foreign_toplevel_id()` です。
+
+クライアントは `wp-content-type-v1` でサーフェスの表示内容（`"photo"`、`"video"`、
+`"game"`）を示せます。`contentType` はウィンドウのメインサーフェスのその値で、
+クライアントが何も示していなければ `undefined` です。クライアントの次のコミットで
+変わるので、ゲームにフォーカスがある間だけ出力の設定を変えるといった config が
+書けます。Rust の config では `window.content_type()`（`WindowContentType`）です。
 
 ### クライアント側／サーバー側装飾
 

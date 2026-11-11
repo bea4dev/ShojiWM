@@ -4394,6 +4394,7 @@ mod tests {
             plasma: None,
             minimized_geometry: None,
             foreign_toplevel_id: None,
+            content_type: None,
             id: "1".into(),
             title: "Kitty".into(),
             app_id: Some("kitty".into()),

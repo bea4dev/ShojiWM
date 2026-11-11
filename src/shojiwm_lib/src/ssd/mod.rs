@@ -60,7 +60,7 @@ pub use window_model::{
     PointerHitTargetSnapshot, PointerModifierStateSnapshot, PointerMoveEventSnapshot,
     PointerMovePointSnapshot, PopupParentKindSnapshot, TransformOrigin, WaylandLayerSnapshot,
     WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
-    WindowActivateRequestEventSnapshot, WindowActivateRequestSourceSnapshot,
+    WindowActivateRequestEventSnapshot, WindowActivateRequestSourceSnapshot, WindowContentType,
     WindowDecorationClientSnapshot, WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
     WindowDecorationPolicyContextSnapshot, WindowDecorationPolicyReasonSnapshot,
     WindowDecorationProtocolSnapshot, WindowDecorationStateSnapshot,

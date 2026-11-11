@@ -22,6 +22,7 @@ fn snapshot(id: &str, title: &str, focused: bool) -> WaylandWindowSnapshot {
         plasma: None,
         minimized_geometry: None,
         foreign_toplevel_id: None,
+        content_type: None,
         id: id.into(),
         title: title.into(),
         app_id: Some("test".into()),
