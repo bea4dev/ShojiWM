@@ -24,6 +24,8 @@ export interface WaylandWindowSnapshot {
   readonly minimizedGeometry?: WindowPosition;
   /** The window's `ext-foreign-toplevel-list-v1` identifier; absent until mapped. / `ext-foreign-toplevel-list-v1` での識別子。マップされるまでは省略。 */
   readonly foreignToplevelId?: string;
+  /** The window's `xdg-toplevel-tag-v1` tag, if the client set one. / クライアントが `xdg-toplevel-tag-v1` で設定したタグ。 */
+  readonly tag?: string;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
@@ -300,6 +302,15 @@ export interface WaylandWindow {
    * ウィンドウを識別します。マップされるまでは `undefined`。
    */
   readonly foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
+  /**
+   * The tag the client gave the window with `xdg-toplevel-tag-v1`, such as
+   * "main window" or "settings". Untranslated and stable across restarts, so
+   * window rules can tell a program's windows apart. `undefined` until set.
+   * クライアントが `xdg-toplevel-tag-v1` で設定したタグ（"main window"、
+   * "settings" など）。翻訳されず再起動後も変わらないので、ウィンドウルールで
+   * 同じプログラムのウィンドウを区別できます。設定されるまでは `undefined`。
+   */
+  readonly tag: import("./signals").ReadonlySignal<string | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -3657,6 +3668,7 @@ export interface ReactiveWaylandWindowSignals {
   plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
   foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
+  tag: import("./signals").ReadonlySignal<string | undefined>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   output: import("./signals").ReadonlySignal<string | undefined>;

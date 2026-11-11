@@ -57,6 +57,10 @@ pub struct WaylandWindowSnapshot {
     /// by; `None` until the window is mapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_toplevel_id: Option<String>,
+    /// The tag the client gave the window with `xdg-toplevel-tag-v1`, such as
+    /// "main window" or "settings": untranslated and stable across restarts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -966,6 +970,7 @@ impl ShojiWM {
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            tag: toplevel_tag(toplevel.wl_surface()),
         }
     }
 
@@ -993,6 +998,7 @@ impl ShojiWM {
                 plasma: None,
                 minimized_geometry: None,
                 foreign_toplevel_id: None,
+                tag: None,
             };
         };
 
@@ -1071,6 +1077,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            tag: None,
         }
     }
 
@@ -1336,6 +1343,16 @@ fn anchor_to_edge_snapshot(anchor: WlrAnchor) -> Option<LayerEdgeSnapshot> {
     }
 }
 
+fn toplevel_tag(surface: &WlSurface) -> Option<String> {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::xdg_toplevel_tag::XdgToplevelTagSurfaceData>()
+            .and_then(|data| data.tag())
+            .map(|tag| tag.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PointerHitTargetSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
@@ -1343,6 +1360,7 @@ mod tests {
     #[test]
     fn foreign_toplevel_id_is_sent_once_known() {
         let mut snapshot = WaylandWindowSnapshot {
+            tag: None,
             id: "0x1".into(),
             title: String::new(),
             app_id: None,

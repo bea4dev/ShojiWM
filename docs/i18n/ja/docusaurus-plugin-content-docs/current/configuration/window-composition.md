@@ -65,6 +65,7 @@ COMPOSITOR.window.composition = (window) => (
 | `isTransient`     | `boolean`                 | 別ウィンドウの子（ダイアログ）                    |
 | `parentId`        | `string \| undefined`     | トランジェントの場合の親ウィンドウ id             |
 | `foreignToplevelId` | `string \| undefined` | マップ後の `ext-foreign-toplevel-list-v1` 識別子 |
+| `tag` | `string \| undefined` | クライアントが `xdg-toplevel-tag-v1` で付けたタグ（`"settings"` など） |
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
@@ -78,6 +79,12 @@ COMPOSITOR.window.composition = (window) => (
 `ext-image-capture-source-v1` もこれでキャプチャ対象を指定します）でウィンドウを
 区別し、`foreignToplevelId` はその値です。これで config からクライアントに対象の
 ウィンドウを伝えられます。Rust の config では `window.foreign_toplevel_id()` です。
+
+種類の違うウィンドウを持つプログラムは、`xdg-toplevel-tag-v1` でそれぞれにタグを
+付けられます（`"main window"`、`"settings"`、オーバーレイなど）。タグは翻訳されず
+再起動後も変わらないので、あるプログラムの設定ウィンドウだけをフロートにするなど、
+`appId` だけでは書けないウィンドウルールに使えます。クライアントが設定するまでは
+`undefined` で、後の変更にも追従します。Rust の config では `window.tag()` です。
 
 ### クライアント側／サーバー側装飾
 

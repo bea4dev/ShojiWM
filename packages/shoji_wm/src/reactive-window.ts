@@ -43,6 +43,7 @@ interface MutableWindowSignals {
   plasma: Signal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: Signal<WindowPosition | undefined>;
   foreignToplevelId: Signal<string | undefined>;
+  tag: Signal<string | undefined>;
   icon: Signal<WindowIcon | undefined>;
   interaction: Signal<WindowCompositionInteractionSnapshot>;
   decoration: Signal<WindowDecorationState>;
@@ -83,6 +84,7 @@ export function createReactiveWindow(
     plasma: signal(snapshot.plasma),
     minimizedGeometry: signal(snapshot.minimizedGeometry),
     foreignToplevelId: signal(snapshot.foreignToplevelId),
+    tag: signal(snapshot.tag),
     icon: signal(snapshot.icon),
     interaction: signal(snapshot.interaction),
     decoration: signal(snapshot.decoration),
@@ -186,6 +188,7 @@ export function createReactiveWindow(
     plasma: signals.plasma,
     minimizedGeometry: signals.minimizedGeometry,
     foreignToplevelId: signals.foreignToplevelId,
+    tag: signals.tag,
     icon: signals.icon,
     interaction: signals.interaction,
     decoration: signals.decoration,
@@ -240,6 +243,7 @@ export function createReactiveWindow(
         signals.isTransient.value = nextSnapshot.isTransient;
         signals.parentId.value = nextSnapshot.parentId;
         signals.foreignToplevelId.value = nextSnapshot.foreignToplevelId;
+        signals.tag.value = nextSnapshot.tag;
         signals.output.value = nextSnapshot.outputName;
         // Object fields: every snapshot from Rust deserializes to a *new*
         // object reference with identical content. A naive write would

@@ -210,6 +210,23 @@ impl Session {
         self.roundtrip();
         surface
     }
+
+    /// Attaches and commits a `width`x`height` shm buffer to `surface`.
+    pub fn attach_buffer(&mut self, surface: &wl_surface::WlSurface, width: i32, height: i32) {
+        let qh = self.queue.handle();
+        let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
+        let stride = width * 4;
+        let file = tempfile("shm");
+        file.set_len((stride * height) as u64).unwrap();
+        let pool = shm.create_pool(file.as_fd(), stride * height, &qh, ());
+        let buffer =
+            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        self.files.push(file);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width, height);
+        surface.commit();
+        self.roundtrip();
+    }
 }
 
 #[derive(Default)]

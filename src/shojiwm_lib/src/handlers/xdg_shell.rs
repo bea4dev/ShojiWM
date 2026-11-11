@@ -39,7 +39,7 @@ fn xdg_popup_debug_enabled() -> bool {
     std::env::var_os("SHOJI_XDG_POPUP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
-fn mark_toplevel_metadata_dirty(
+pub(crate) fn mark_toplevel_metadata_dirty(
     state: &mut ShojiWM,
     surface: &ToplevelSurface,
     reason: &'static str,
