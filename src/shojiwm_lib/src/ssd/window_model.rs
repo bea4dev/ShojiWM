@@ -57,6 +57,10 @@ pub struct WaylandWindowSnapshot {
     /// by; `None` until the window is mapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_toplevel_id: Option<String>,
+    /// The process behind the window's client, from its socket credentials
+    /// (`_NET_WM_PID` for an X11 window on Xwayland); `None` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -522,6 +526,10 @@ pub struct WaylandLayerSnapshot {
     pub margin: LayerMarginSnapshot,
     pub keyboard_interactivity: KeyboardInteractivitySnapshot,
     pub desired_size: LayerDesiredSizeSnapshot,
+    /// The process behind the layer surface's client, from its socket
+    /// credentials; `None` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -966,12 +974,17 @@ impl ShojiWM {
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            pid: toplevel
+                .wl_surface()
+                .client()
+                .and_then(|client| crate::state::client_pid(&client)),
         }
     }
 
     fn snapshot_x11_window(&self, window: &Window) -> WaylandWindowSnapshot {
         let Some(x11) = window.x11_surface() else {
             return WaylandWindowSnapshot {
+                pid: None,
                 output_name: None,
                 id: "unknown".into(),
                 title: String::new(),
@@ -1071,6 +1084,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
             foreign_toplevel_id: foreign_toplevel_id(window),
+            pid: x11.pid().and_then(|pid| i32::try_from(pid).ok()),
         }
     }
 
@@ -1143,6 +1157,10 @@ impl ShojiWM {
                 width: state.size.w,
                 height: state.size.h,
             },
+            pid: layer
+                .wl_surface()
+                .client()
+                .and_then(|client| crate::state::client_pid(&client)),
         }
     }
 
@@ -1364,6 +1382,7 @@ mod tests {
             plasma: None,
             minimized_geometry: None,
             foreign_toplevel_id: None,
+            pid: None,
         };
         let unmapped = serde_json::to_value(&snapshot).expect("serialize unmapped");
         assert!(unmapped.get("foreignToplevelId").is_none());

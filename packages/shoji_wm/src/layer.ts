@@ -27,6 +27,7 @@ function cloneSnapshot(snapshot: WaylandLayerSnapshot): WaylandLayerSnapshot {
     margin: { ...snapshot.margin },
     keyboardInteractivity: snapshot.keyboardInteractivity,
     desiredSize: { ...snapshot.desiredSize },
+    pid: snapshot.pid,
   };
 }
 

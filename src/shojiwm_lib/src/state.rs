@@ -3238,6 +3238,7 @@ impl ShojiWM {
 
     pub fn warmup_decoration_runtime(&mut self) {
         let snapshot = WaylandWindowSnapshot {
+            pid: None,
             output_name: None,
             plasma: None,
             minimized_geometry: None,
@@ -5910,6 +5911,17 @@ pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub xwayland_refresh_override: bool,
     identity: WaylandClientIdentity,
+}
+
+/// The pid of the process behind a Wayland client, from its socket
+/// credentials. `None` for an Xwayland bridge such as xwayland-satellite: the
+/// windows it carries belong to the X11 clients behind it.
+pub(crate) fn client_pid(client: &smithay::reexports::wayland_server::Client) -> Option<i32> {
+    let data = client.get_data::<ClientState>()?;
+    if data.xwayland_refresh_override {
+        return None;
+    }
+    data.identity.pid
 }
 
 impl ClientData for ClientState {

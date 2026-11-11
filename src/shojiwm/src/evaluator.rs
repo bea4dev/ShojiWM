@@ -4390,6 +4390,7 @@ mod tests {
 
     fn make_window(is_focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
+            pid: None,
             output_name: None,
             plasma: None,
             minimized_geometry: None,
@@ -4805,6 +4806,7 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         }));
 
         let layer = WaylandLayerSnapshot {
+            pid: None,
             id: "layer-1".into(),
             namespace: Some("test".into()),
             layer: shojiwm_lib::ssd::window_model::LayerKindSnapshot::Top,

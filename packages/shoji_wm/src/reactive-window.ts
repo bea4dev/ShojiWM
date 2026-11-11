@@ -186,6 +186,7 @@ export function createReactiveWindow(
     plasma: signals.plasma,
     minimizedGeometry: signals.minimizedGeometry,
     foreignToplevelId: signals.foreignToplevelId,
+    pid: snapshot.pid,
     icon: signals.icon,
     interaction: signals.interaction,
     decoration: signals.decoration,

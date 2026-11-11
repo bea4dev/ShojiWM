@@ -24,6 +24,8 @@ export interface WaylandWindowSnapshot {
   readonly minimizedGeometry?: WindowPosition;
   /** The window's `ext-foreign-toplevel-list-v1` identifier; absent until mapped. / `ext-foreign-toplevel-list-v1` での識別子。マップされるまでは省略。 */
   readonly foreignToplevelId?: string;
+  /** The process behind the window's client, from its socket credentials; absent when unknown. / クライアントのソケット資格情報から得たプロセス ID。不明なら省略。 */
+  readonly pid?: number;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
@@ -191,6 +193,8 @@ export interface WaylandLayerSnapshot {
   readonly keyboardInteractivity: WaylandLayerKeyboardInteractivity;
   /** Size the client asked for in its layer-shell `set_size` request. */
   readonly desiredSize: WaylandLayerDesiredSize;
+  /** The process behind the layer surface's client, from its socket credentials; absent when unknown. / クライアントのソケット資格情報から得たプロセス ID。不明なら省略。 */
+  readonly pid?: number;
 }
 
 /**
@@ -300,6 +304,13 @@ export interface WaylandWindow {
    * ウィンドウを識別します。マップされるまでは `undefined`。
    */
   readonly foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
+  /**
+   * The process behind the window's client, from its socket credentials
+   * (`_NET_WM_PID` for an X11 window on Xwayland). `undefined` when unknown.
+   * クライアントのソケット資格情報から得たプロセス ID（Xwayland 上の X11
+   * ウィンドウでは `_NET_WM_PID`）。不明なら `undefined`。
+   */
+  readonly pid: number | undefined;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -401,6 +412,8 @@ export interface WaylandLayer {
   readonly keyboardInteractivity: import("./signals").ReadonlySignal<WaylandLayerKeyboardInteractivity>;
   /** Reactive size the client requested. / クライアントが要求したリアクティブなサイズ。 */
   readonly desiredSize: import("./signals").ReadonlySignal<WaylandLayerDesiredSize>;
+  /** The process behind the layer surface's client, from its socket credentials; `undefined` when unknown. / クライアントのソケット資格情報から得たプロセス ID。不明なら `undefined`。 */
+  readonly pid: number | undefined;
   /** Animation controller for this layer surface. / このレイヤーサーフェス用のアニメーションコントローラー。 */
   readonly animation: import("./animation").AnimationController;
 }

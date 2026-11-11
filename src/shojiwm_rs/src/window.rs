@@ -214,6 +214,13 @@ impl Window {
             .unwrap_or_default()
     }
 
+    /// The process behind the window's client, from its socket credentials
+    /// (`_NET_WM_PID` for an X11 window on Xwayland); `None` when unknown or
+    /// once the window is gone.
+    pub fn pid(&self) -> Option<i32> {
+        self.entry().and_then(|entry| entry.snapshot.borrow().pid)
+    }
+
     /// The window's rect: the managed rect when the composition set one,
     /// otherwise the compositor's. Not tracked.
     pub fn rect(&self) -> Rect {
@@ -336,6 +343,7 @@ impl Window {
 
 fn empty_snapshot() -> WaylandWindowSnapshot {
     WaylandWindowSnapshot {
+        pid: None,
         output_name: None,
         plasma: None,
         minimized_geometry: None,

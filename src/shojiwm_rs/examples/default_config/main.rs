@@ -1393,6 +1393,7 @@ mod tests {
 
     fn window(id: &str, focused: bool) -> WaylandWindowSnapshot {
         WaylandWindowSnapshot {
+            pid: None,
             output_name: None,
             plasma: None,
             minimized_geometry: None,

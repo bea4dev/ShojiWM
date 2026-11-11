@@ -68,7 +68,7 @@ COMPOSITOR.window.composition = (window) => (
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
-非リアクティブなヘルパー: `id`（安定した文字列）、`position` / `rect`（現在の論理
+非リアクティブなヘルパー: `id`（安定した文字列）、`pid`（後述）、`position` / `rect`（現在の論理
 ジオメトリ）、`state`（ウィンドウごとのストア。[状態とシグナル](./state-and-signals.md)
 を参照）、`transform`（GPU トランスフォーム）、`animation`
 （[アニメーション](./animations.md) を参照）。
@@ -78,6 +78,14 @@ COMPOSITOR.window.composition = (window) => (
 `ext-image-capture-source-v1` もこれでキャプチャ対象を指定します）でウィンドウを
 区別し、`foreignToplevelId` はその値です。これで config からクライアントに対象の
 ウィンドウを伝えられます。Rust の config では `window.foreign_toplevel_id()` です。
+
+`pid` はウィンドウのクライアントのプロセス ID で、Wayland ソケットの資格情報から
+読み取ります（Xwayland 上の X11 ウィンドウでは `_NET_WM_PID`）。不明なら
+`undefined` です。xwayland-satellite のような Xwayland ブリッジ経由のウィンドウには
+ありません。ブリッジのプロセスはウィンドウのプロセスではないためです。レイヤー
+サーフェスも同じ `pid` を持ちます（レイヤーのスナップショットや `onCreateLayer` の
+`layer.pid`）。Rust の config では `window.pid()` と、レイヤーのスナップショットの
+`pid` フィールドです。
 
 ### クライアント側／サーバー側装飾
 
