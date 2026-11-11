@@ -272,6 +272,12 @@ pub struct ShojiWM {
     pub display_handle: DisplayHandle,
 
     pub space: Space<Window>,
+    /// Every xdg toplevel's window, from `new_toplevel` to `toplevel_destroyed`. The close path
+    /// finds its window here, not in `space`: when a client disconnects, its surfaces die at
+    /// once but `toplevel_destroyed` runs only at the next dispatch, and a `space.refresh()`
+    /// between the two has already dropped the dead window from the space. The window's
+    /// taskbar handles, decoration state and runtime entry must still go.
+    pub xdg_toplevel_windows: Vec<Window>,
     pub loop_signal: LoopSignal,
     pub loop_handle: LoopHandle<'static, ShojiWM>,
 
@@ -1865,6 +1871,7 @@ impl ShojiWM {
             display_handle: dh,
 
             space,
+            xdg_toplevel_windows: Vec::new(),
             loop_signal,
             loop_handle,
             socket_name,
