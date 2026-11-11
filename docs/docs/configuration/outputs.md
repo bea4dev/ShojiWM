@@ -354,6 +354,22 @@ makes one at startup should give it a `name`, so a reload finds it instead of
 making a second one: creating an output whose name is taken fails with a
 warning in the log.
 
+## Night light (gamma)
+
+ShojiWM implements `wlr-gamma-control`, so night light tools such as
+[`wlsunset`](https://git.sr.ht/~kennylevinsen/wlsunset) and `gammastep` can
+warm the colours of each panel:
+
+```sh
+wlsunset -l 52.4 -L 4.9
+```
+
+The ramps go into the output's gamma LUT on the GPU, so they cost nothing per
+frame and show on screen only, not in screenshots or screencasts. One client at
+a time controls an output; when it exits, the output's normal colours come back.
+A switch to another VT and back restores the ramps. Outputs without a gamma LUT
+(nested sessions, drivers without one) refuse the client.
+
 ## Frame pacing (triple buffering)
 
 `COMPOSITOR.rendering.framePacing` chooses how frames are paced on each output.

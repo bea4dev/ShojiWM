@@ -5,6 +5,7 @@
 
 pub mod colorimetry;
 pub mod drm_metadata;
+pub mod gamma_lut;
 pub mod icc;
 pub mod primaries;
 

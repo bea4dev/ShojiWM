@@ -12745,6 +12745,7 @@ fn connector_connected(
 pub(crate) fn forget_output(state: &mut ShojiWM, output: &Output) {
     let output_name = output.name();
     state.output_color.remove(&output_name);
+    state.forget_output_gamma(output);
     state.space.unmap_output(output);
     state.remove_output_global(output);
     state.screencopy_state.remove_output(output);
@@ -13226,6 +13227,11 @@ pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
                 ),
             );
         }
+    }
+    if !changed_outputs.is_empty() {
+        // The colour mode change cleared the CRTC's gamma LUT with the rest
+        // of its colour state.
+        state.reapply_gamma();
     }
     announce_output_icc_profiles(state);
     if !changed_outputs.is_empty() || icc_changed {
@@ -16640,4 +16646,41 @@ fn tty_window_stack_elements(
     stats.max_window_elapsed_ms = max_window_elapsed_ms;
     stats.max_window_id = max_window_id;
     Ok(())
+}
+
+/// The DRM CRTC that scans out `output`, with its device.
+fn output_crtc<'a>(state: &'a ShojiWM, output: &Output) -> Option<(&'a DrmDevice, crtc::Handle)> {
+    state.tty_backends.values().find_map(|backend| {
+        backend.surfaces.iter().find_map(|(crtc, surface)| {
+            (surface.output == *output).then(|| (backend.drm_output_manager.device(), *crtc))
+        })
+    })
+}
+
+/// Entries per channel of `output`'s gamma LUT; `None` for an output with no
+/// CRTC (nested) or a driver without one.
+pub fn output_gamma_size(state: &ShojiWM, output: &Output) -> Option<u32> {
+    let (device, crtc) = output_crtc(state, output)?;
+    crate::color::gamma_lut::crtc_gamma_size(device, crtc)
+}
+
+/// Load `ramps` into `output`'s gamma LUT, or its default for `None`.
+pub fn set_output_gamma(state: &ShojiWM, output: &Output, ramps: Option<&[u16]>) -> bool {
+    let Some((device, crtc)) = output_crtc(state, output) else {
+        return false;
+    };
+    match crate::color::gamma_lut::set_crtc_gamma(device, crtc, ramps) {
+        Ok(()) => {
+            debug!(
+                output = %output.name(),
+                entries = ramps.map_or(0, |ramps| ramps.len() / 3),
+                "applied gamma"
+            );
+            true
+        }
+        Err(error) => {
+            warn!(output = %output.name(), ?error, "could not set gamma");
+            false
+        }
+    }
 }

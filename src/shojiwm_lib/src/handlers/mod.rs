@@ -1123,6 +1123,7 @@ crate::delegate_screencopy!(ShojiWM);
 crate::delegate_hyprland_toplevel_export!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
 crate::delegate_output_power!(ShojiWM);
+crate::delegate_gamma_control!(ShojiWM);
 crate::delegate_color_management!(ShojiWM);
 crate::delegate_wlr_foreign_toplevel!(ShojiWM);
 crate::workspace_manager::delegate_ext_workspace_manager!(ShojiWM);
