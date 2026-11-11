@@ -56,6 +56,7 @@ cat > "$XDG_CONFIG_HOME/xdg-desktop-portal/shojiwm-portals.conf" <<'EOF'
 [preferred]
 default=gtk
 org.freedesktop.impl.portal.ScreenCast=shojiwm
+org.freedesktop.impl.portal.Screenshot=shojiwm
 EOF
 
 echo ">> reloading systemd + restarting xdg-desktop-portal"
@@ -67,5 +68,5 @@ echo ""
 echo "done. tail logs with:"
 echo "  journalctl --user -fu xdg-desktop-portal-shojiwm -u xdg-desktop-portal"
 echo ""
-echo "note: this config routes only ScreenCast to shojiwm. Other portal"
+echo "note: this config routes ScreenCast and Screenshot to shojiwm. Other portal"
 echo "interfaces use xdg-desktop-portal-gtk via default=gtk."

@@ -38,6 +38,10 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::{self, ExtImageCopyCaptureManagerV1},
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
+};
 
 const MAX_THUMBNAIL_DIM: u32 = 320;
 
@@ -172,6 +176,21 @@ struct DiscoveryState {
     capture_manager: Option<ExtImageCopyCaptureManagerV1>,
     output_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
     toplevel_source_manager: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+
+    /// Per wlr-foreign-toplevel handle: whether it is activated and the
+    /// outputs it is on. ext-foreign-toplevel-list carries neither.
+    wlr_toplevels: Vec<(ZwlrForeignToplevelHandleV1, bool, Vec<wl_output::WlOutput>)>,
+    focused_output: Option<wl_output::WlOutput>,
+}
+
+impl DiscoveryState {
+    fn refresh_focused_output(&mut self) {
+        self.focused_output = self
+            .wlr_toplevels
+            .iter()
+            .find(|(_, activated, _)| *activated)
+            .and_then(|(_, _, outputs)| outputs.first().cloned());
+    }
 }
 
 struct AppData {
@@ -248,6 +267,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
             }
             "ext_foreign_toplevel_list_v1" => {
                 registry.bind::<ExtForeignToplevelListV1, _, _>(name, version.min(1), qh, ());
+            }
+            "zwlr_foreign_toplevel_manager_v1" => {
+                registry.bind::<ZwlrForeignToplevelManagerV1, _, _>(name, version.min(3), qh, ());
             }
             "ext_image_copy_capture_manager_v1" => {
                 let m = registry.bind::<ExtImageCopyCaptureManagerV1, _, _>(
@@ -400,6 +422,62 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for AppData {
     }
 }
 
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for AppData {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrForeignToplevelManagerV1,
+        _: zwlr_foreign_toplevel_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+
+    wayland_client::event_created_child!(AppData, ZwlrForeignToplevelManagerV1, [
+        zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppData {
+    fn event(
+        app: &mut Self,
+        proxy: &ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let mut state = app.state.lock().unwrap();
+        let index = match state.wlr_toplevels.iter().position(|(h, _, _)| h == proxy) {
+            Some(index) => index,
+            None => {
+                state.wlr_toplevels.push((proxy.clone(), false, Vec::new()));
+                state.wlr_toplevels.len() - 1
+            }
+        };
+        match event {
+            zwlr_foreign_toplevel_handle_v1::Event::State { state: states } => {
+                let activated = zwlr_foreign_toplevel_handle_v1::State::Activated as u32;
+                state.wlr_toplevels[index].1 = states.chunks_exact(4).any(|chunk| {
+                    u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) == activated
+                });
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::OutputEnter { output } => {
+                state.wlr_toplevels[index].2.push(output);
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::OutputLeave { output } => {
+                state.wlr_toplevels[index].2.retain(|o| *o != output);
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
+                state.wlr_toplevels.remove(index);
+                proxy.destroy();
+            }
+            _ => {}
+        }
+        state.refresh_focused_output();
+    }
+}
+
 // Empty/no-op dispatch for everything else we touch.
 macro_rules! empty_dispatch {
     ($t:ty) => {
@@ -490,7 +568,15 @@ fn capture_output_thumbnail(
         (s.capture_manager.clone()?, s.output_source_manager.clone()?)
     };
     let source = output_mgr.create_source(output, qh, ());
-    let thumbnail = capture_via_source(event_queue, app, qh, &manager, &source);
+    let thumbnail = capture_via_source(
+        event_queue,
+        app,
+        qh,
+        &manager,
+        &source,
+        THUMBNAIL_PATIENCE,
+        decode_thumbnail,
+    );
     source.destroy();
     thumbnail
 }
@@ -509,20 +595,37 @@ fn capture_toplevel_thumbnail(
         )
     };
     let source = toplevel_mgr.create_source(toplevel, qh, ());
-    let thumbnail = capture_via_source(event_queue, app, qh, &manager, &source);
+    let thumbnail = capture_via_source(
+        event_queue,
+        app,
+        qh,
+        &manager,
+        &source,
+        THUMBNAIL_PATIENCE,
+        decode_thumbnail,
+    );
     source.destroy();
     thumbnail
 }
 
-/// Run one capture cycle against a freshly-created `ExtImageCaptureSourceV1`.
-/// Returns the decoded thumbnail on success, `None` on any failure path.
-fn capture_via_source(
+/// How long a thumbnail capture may take before the picker moves on.
+const THUMBNAIL_PATIENCE: std::time::Duration = std::time::Duration::from_millis(100);
+/// The compositor completes a frame at the output's next render pass, which
+/// can be a few vblanks away while something animates.
+const CAPTURE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Run one capture cycle against a freshly-created `ExtImageCaptureSourceV1`
+/// and hand the captured SHM bytes to `decode`. `None` on any failure path,
+/// including no frame within `patience`.
+fn capture_via_source<T>(
     event_queue: &mut EventQueue<AppData>,
     app: &mut AppData,
     qh: &QueueHandle<AppData>,
     manager: &ExtImageCopyCaptureManagerV1,
     source: &ExtImageCaptureSourceV1,
-) -> Option<image::Handle> {
+    patience: std::time::Duration,
+    decode: impl FnOnce(&[u8], u32, u32, wl_shm::Format) -> Option<T>,
+) -> Option<T> {
     // Reset per-capture state.
     {
         let mut c = app.capture.lock().unwrap();
@@ -581,7 +684,7 @@ fn capture_via_source(
     frame.capture();
 
     // Drain until ready/failed (or we give up).
-    let mut tries = 0;
+    let deadline = std::time::Instant::now() + patience;
     let outcome = loop {
         if event_queue.roundtrip(app).is_err() {
             break false;
@@ -593,14 +696,18 @@ fn capture_via_source(
         if c.frame_failed {
             break false;
         }
-        tries += 1;
-        if tries > 12 {
+        drop(c);
+        if std::time::Instant::now() >= deadline {
             break false;
         }
+        std::thread::sleep(std::time::Duration::from_millis(2));
     };
 
-    let thumbnail = if outcome {
-        unsafe { decode_buffer(ptr, size, width, height, format) }
+    let decoded = if outcome {
+        // SAFETY: `ptr` maps `size` bytes of the memfd the compositor wrote
+        // into; `ready` means the write is complete.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.as_ptr(), size) };
+        decode(bytes, width, height, format)
     } else {
         None
     };
@@ -610,10 +717,10 @@ fn capture_via_source(
     wl_buffer.destroy();
     pool.destroy();
     if let Err(error) = unsafe { rustix::mm::munmap(ptr.as_ptr().cast(), size) } {
-        tracing::warn!(%error, "failed to unmap thumbnail buffer");
+        tracing::warn!(%error, "failed to unmap capture buffer");
     }
 
-    thumbnail
+    decoded
 }
 
 /// (wl_buffer, mmap ptr, pool, memfd) — all four must stay alive together.
@@ -634,8 +741,7 @@ fn allocate_shm_buffer(
     let size = stride as usize * height as usize;
     let pool_size = i32::try_from(size).ok()?;
     let memfd =
-        rustix::fs::memfd_create("shojiwm-portal-thumbnail", rustix::fs::MemfdFlags::CLOEXEC)
-            .ok()?;
+        rustix::fs::memfd_create("shojiwm-portal-capture", rustix::fs::MemfdFlags::CLOEXEC).ok()?;
     rustix::fs::ftruncate(&memfd, size as u64).ok()?;
     let ptr = unsafe {
         rustix::mm::mmap(
@@ -654,18 +760,26 @@ fn allocate_shm_buffer(
     Some((buffer, ptr, pool, memfd))
 }
 
-/// Convert the BGRx / ARGB SHM buffer into an iced RGBA image, downscaled to
-/// at most `MAX_THUMBNAIL_DIM` on the longest edge to keep widget memory
-/// bounded.
-unsafe fn decode_buffer(
-    ptr: NonNull<u8>,
-    size: usize,
+/// Red, green and blue of the pixel at byte offset `i` of an SHM buffer.
+fn pixel_rgb(bytes: &[u8], i: usize, format: wl_shm::Format) -> (u8, u8, u8) {
+    match format {
+        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => {
+            (bytes[i], bytes[i + 1], bytes[i + 2])
+        }
+        // Xrgb8888 / Argb8888, the formats preferred above, are B, G, R, X|A
+        // in memory.
+        _ => (bytes[i + 2], bytes[i + 1], bytes[i]),
+    }
+}
+
+/// Convert the SHM buffer into an iced RGBA image, downscaled to at most
+/// `MAX_THUMBNAIL_DIM` on the longest edge to keep widget memory bounded.
+fn decode_thumbnail(
+    bytes: &[u8],
     width: u32,
     height: u32,
     format: wl_shm::Format,
 ) -> Option<image::Handle> {
-    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(ptr.as_ptr(), size) };
-
     // Compute downscale factor (integer nearest-neighbour).
     let longest = width.max(height);
     let factor = longest.div_ceil(MAX_THUMBNAIL_DIM).max(1);
@@ -682,16 +796,7 @@ unsafe fn decode_buffer(
             if i + 3 >= bytes.len() {
                 continue;
             }
-            // SHM byte order for Xrgb8888 / Argb8888 is B, G, R, X|A.
-            let (r, g, b) = match format {
-                wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => {
-                    (bytes[i + 2], bytes[i + 1], bytes[i])
-                }
-                wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => {
-                    (bytes[i], bytes[i + 1], bytes[i + 2])
-                }
-                _ => (bytes[i + 2], bytes[i + 1], bytes[i]),
-            };
+            let (r, g, b) = pixel_rgb(bytes, i, format);
             let o = ((y * dst_w + x) * 4) as usize;
             rgba[o] = r;
             rgba[o + 1] = g;
@@ -700,6 +805,140 @@ unsafe fn decode_buffer(
         }
     }
     Some(image::Handle::from_rgba(dst_w, dst_h, rgba))
+}
+
+/// A full-resolution capture, opaque RGBA rows top to bottom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+fn decode_full(bytes: &[u8], width: u32, height: u32, format: wl_shm::Format) -> Option<Capture> {
+    let pixels = width as usize * height as usize;
+    if bytes.len() < pixels * 4 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(pixels * 4);
+    for i in (0..pixels * 4).step_by(4) {
+        let (r, g, b) = pixel_rgb(bytes, i, format);
+        rgba.extend_from_slice(&[r, g, b, 0xff]);
+    }
+    Some(Capture {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Which outputs a one-shot capture takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputTarget {
+    /// The output of the focused window, or the first output (by position)
+    /// when no window has focus.
+    Focused,
+    /// Every output, by position.
+    All,
+}
+
+/// Capture outputs at full resolution over a fresh connection, each with its
+/// name.
+pub fn capture_outputs(target: &OutputTarget) -> Result<Vec<(String, Capture)>, String> {
+    let conn = Connection::connect_to_env().map_err(|e| format!("wayland connect: {e}"))?;
+    let mut event_queue: EventQueue<AppData> = conn.new_event_queue();
+    let qh = event_queue.handle();
+    let _registry = conn.display().get_registry(&qh, ());
+    let mut app = AppData {
+        state: Arc::new(Mutex::new(DiscoveryState::default())),
+        capture: Arc::new(Mutex::new(CaptureState::default())),
+    };
+    // Globals, then their initial events (output names, toplevel state).
+    for _ in 0..3 {
+        event_queue
+            .roundtrip(&mut app)
+            .map_err(|e| format!("wayland roundtrip: {e}"))?;
+    }
+    let (chosen, manager, output_mgr) = {
+        let s = app.state.lock().unwrap();
+        let outputs: Vec<(String, (i32, i32), wl_output::WlOutput)> = s
+            .outputs
+            .iter()
+            .filter(|o| !o.info.name.is_empty())
+            .map(|o| (o.info.name.clone(), o.info.position, o.proxy.clone()))
+            .collect();
+        let focused = s.focused_output.as_ref().and_then(|focused| {
+            outputs
+                .iter()
+                .find(|(_, _, proxy)| proxy == focused)
+                .map(|(name, _, _)| name.clone())
+        });
+        let listed: Vec<(String, (i32, i32))> = outputs
+            .iter()
+            .map(|(name, position, _)| (name.clone(), *position))
+            .collect();
+        let chosen: Vec<(String, wl_output::WlOutput)> =
+            choose_outputs(target, &listed, focused.as_deref())
+                .into_iter()
+                .filter_map(|name| {
+                    outputs
+                        .iter()
+                        .find(|(n, _, _)| *n == name)
+                        .map(|(_, _, proxy)| (name, proxy.clone()))
+                })
+                .collect();
+        (
+            chosen,
+            s.capture_manager
+                .clone()
+                .ok_or("compositor lacks ext_image_copy_capture_manager_v1")?,
+            s.output_source_manager
+                .clone()
+                .ok_or("compositor lacks ext_output_image_capture_source_manager_v1")?,
+        )
+    };
+    if chosen.is_empty() {
+        return Err("no output to capture".to_owned());
+    }
+    chosen
+        .into_iter()
+        .map(|(name, output)| {
+            let source = output_mgr.create_source(&output, &qh, ());
+            let capture = capture_via_source(
+                &mut event_queue,
+                &mut app,
+                &qh,
+                &manager,
+                &source,
+                CAPTURE_PATIENCE,
+                decode_full,
+            );
+            source.destroy();
+            capture
+                .map(|capture| (name.clone(), capture))
+                .ok_or_else(|| format!("capturing {name} failed"))
+        })
+        .collect()
+}
+
+/// The names of the outputs `target` means among `outputs` (name, position).
+fn choose_outputs(
+    target: &OutputTarget,
+    outputs: &[(String, (i32, i32))],
+    focused: Option<&str>,
+) -> Vec<String> {
+    let mut by_position = outputs.to_vec();
+    by_position.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+    let names = by_position.into_iter().map(|(name, _)| name);
+    match target {
+        OutputTarget::All => names.collect(),
+        OutputTarget::Focused => focused
+            .map(str::to_owned)
+            .into_iter()
+            .chain(names)
+            .take(1)
+            .collect(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -892,4 +1131,43 @@ fn run_stream(
         std::thread::sleep(tick);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outputs() -> Vec<(String, (i32, i32))> {
+        vec![("DP-2".into(), (1920, 0)), ("eDP-1".into(), (0, 0))]
+    }
+
+    #[test]
+    fn all_outputs_come_by_position() {
+        assert_eq!(
+            choose_outputs(&OutputTarget::All, &outputs(), Some("DP-2")),
+            ["eDP-1", "DP-2"]
+        );
+    }
+
+    #[test]
+    fn the_focused_output_falls_back_to_the_first_by_position() {
+        let focused = OutputTarget::Focused;
+        assert_eq!(choose_outputs(&focused, &outputs(), Some("DP-2")), ["DP-2"]);
+        assert_eq!(choose_outputs(&focused, &outputs(), None), ["eDP-1"]);
+        assert!(choose_outputs(&focused, &[], None).is_empty());
+    }
+
+    #[test]
+    fn full_captures_are_opaque_rgba() {
+        // One pixel each of red and blue, as B G R X in memory.
+        let xrgb = [0, 0, 255, 0, 255, 0, 0, 0];
+        let capture = decode_full(&xrgb, 2, 1, wl_shm::Format::Xrgb8888).unwrap();
+        assert_eq!(capture.rgba, [255, 0, 0, 255, 0, 0, 255, 255]);
+
+        let xbgr = [255, 0, 0, 0, 0, 0, 255, 0];
+        let capture = decode_full(&xbgr, 2, 1, wl_shm::Format::Xbgr8888).unwrap();
+        assert_eq!(capture.rgba, [255, 0, 0, 255, 0, 0, 255, 255]);
+
+        assert_eq!(decode_full(&xrgb, 2, 2, wl_shm::Format::Xrgb8888), None);
+    }
 }

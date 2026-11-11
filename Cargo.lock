@@ -8328,6 +8328,7 @@ dependencies = [
  "iced",
  "libspa",
  "pipewire",
+ "png 0.18.1",
  "rustix 1.1.4",
  "serde",
  "tokio",

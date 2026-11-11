@@ -167,6 +167,7 @@ if [[ $INSTALL_PORTAL -eq 1 ]]; then
 [preferred]
 default=gtk
 org.freedesktop.impl.portal.ScreenCast=shojiwm
+org.freedesktop.impl.portal.Screenshot=shojiwm
 EOF
 
     echo ">> reloading systemd user services"
