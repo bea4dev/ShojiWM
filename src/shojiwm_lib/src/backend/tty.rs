@@ -2495,6 +2495,37 @@ mod vblank_grid_tests {
 }
 
 #[cfg(test)]
+mod auto_hdr_tests {
+    use super::is_hdr_content;
+    use crate::color::{ColorPrimaries, ImageDescription, TransferCharacteristics};
+
+    fn description(tf: TransferCharacteristics) -> ImageDescription {
+        ImageDescription {
+            primaries: ColorPrimaries::Bt2020,
+            tf,
+            luminances: None,
+            max_cll: None,
+            max_fall: None,
+            target_luminance: None,
+        }
+    }
+
+    #[test]
+    fn pq_and_extended_linear_content_count_as_hdr() {
+        assert!(is_hdr_content(Some(&description(
+            TransferCharacteristics::St2084Pq
+        ))));
+        assert!(is_hdr_content(Some(&description(
+            TransferCharacteristics::ExtLinear
+        ))));
+        assert!(!is_hdr_content(Some(&description(
+            TransferCharacteristics::Srgb
+        ))));
+        assert!(!is_hdr_content(None));
+    }
+}
+
+#[cfg(test)]
 mod implicit_sync_tests {
     use super::drivers_take_part_in_implicit_sync as trusted;
 
@@ -3524,6 +3555,7 @@ pub fn render_if_needed(
     state.needs_redraw = false;
     let mut processed_outputs: Vec<String> = Vec::new();
 
+    refresh_auto_hdr_outputs(state);
     queue_tty_redraws(state);
 
     let nodes: Vec<_> = state.tty_backends.keys().copied().collect();
@@ -12512,12 +12544,7 @@ fn connector_connected(
     // TypeScript config evaluates, so a config-side `hdr: true` usually
     // isn't visible here yet — refresh_tty_output_color_modes re-resolves
     // once the display config update lands.
-    let hdr_requested = state
-        .runtime_output_configs
-        .get(&output_name)
-        .and_then(|config| config.hdr.as_ref())
-        .is_some_and(|hdr| hdr.enabled())
-        || crate::color::hdr_output_requested_via_env(&output_name);
+    let hdr_requested = output_hdr_requested(state, &output_name);
     // Same lookup as `hdr_requested`: the config may not have arrived yet at
     // connect time, in which case this is empty and refresh_tty_output_color_modes
     // re-resolves with the real values once the display config lands.
@@ -13119,6 +13146,109 @@ fn hdr_render_supports_fp16(state: &crate::state::ShojiWM, node: DrmNode) -> boo
 /// a live switch: the connector properties persist across smithay's
 /// commits (legacy SET_PROPERTY), and the render path re-reads
 /// `output_color` every frame to engage or drop the PQ encode pass.
+/// `hdr: true`, or `"auto"` while the output shows fullscreen HDR content.
+fn output_hdr_requested(state: &crate::state::ShojiWM, output_name: &str) -> bool {
+    let mode = state
+        .runtime_output_configs
+        .get(output_name)
+        .and_then(|config| config.hdr.as_ref())
+        .map(|hdr| hdr.mode());
+    let configured = match mode {
+        Some(crate::config::RuntimeHdrMode::On) => true,
+        Some(crate::config::RuntimeHdrMode::Auto) => state.auto_hdr_outputs.contains(output_name),
+        Some(crate::config::RuntimeHdrMode::Off) | None => false,
+    };
+    configured || crate::color::hdr_output_requested_via_env(output_name)
+}
+
+/// Content a client marked as HDR: PQ, or scRGB (extended linear, which goes past SDR white).
+fn is_hdr_content(description: Option<&crate::color::ImageDescription>) -> bool {
+    description.is_some_and(|description| {
+        matches!(
+            description.tf,
+            crate::color::TransferCharacteristics::St2084Pq
+                | crate::color::TransferCharacteristics::ExtLinear
+        )
+    })
+}
+
+/// The image description of the topmost window on `output` when that window is committed
+/// fullscreen and covers the output. Unlike the fullscreen fast path this ignores
+/// animations and does not care whether the output is HDR, so the answer stays put once
+/// the output has switched.
+fn fullscreen_content_description(
+    state: &crate::state::ShojiWM,
+    output: &Output,
+) -> Option<crate::color::ImageDescription> {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+    let output_geo = state.space.output_geometry(output)?;
+    let output_name = output.name();
+    let window = state
+        .windows_for_output_top_to_bottom(output)
+        .into_iter()
+        .find(|window| {
+            state
+                .window_decorations
+                .get(*window)
+                .is_some_and(|decoration| {
+                    decoration.managed_window_allows_render_on_output(output_name.as_str())
+                })
+                && state
+                    .space
+                    .element_geometry(window)
+                    .is_some_and(|geometry| geometry.intersection(output_geo).is_some())
+        })?;
+    let toplevel = window.toplevel()?;
+    let fullscreen = toplevel.with_committed_state(|committed| {
+        committed.is_some_and(|committed| committed.states.contains(State::Fullscreen))
+    });
+    let covers = state
+        .space
+        .element_geometry(window)
+        .is_some_and(|geometry| geometry.intersection(output_geo) == Some(output_geo));
+    if !fullscreen || !covers {
+        return None;
+    }
+    crate::protocols::color_management::surface_image_description(toplevel.wl_surface())
+}
+
+/// Re-decide which `hdr: "auto"` outputs show fullscreen HDR content, and switch the ones
+/// that changed. Runs before each render, after the commits that may have changed it.
+fn refresh_auto_hdr_outputs(state: &mut crate::state::ShojiWM) {
+    let auto_outputs: Vec<Output> = state
+        .space
+        .outputs()
+        .filter(|output| {
+            state
+                .runtime_output_configs
+                .get(output.name().as_str())
+                .and_then(|config| config.hdr.as_ref())
+                .is_some_and(|hdr| hdr.mode() == crate::config::RuntimeHdrMode::Auto)
+        })
+        .cloned()
+        .collect();
+    if auto_outputs.is_empty() && state.auto_hdr_outputs.is_empty() {
+        return;
+    }
+    let wanted: std::collections::BTreeSet<String> = auto_outputs
+        .iter()
+        .filter(|output| is_hdr_content(fullscreen_content_description(state, output).as_ref()))
+        .map(|output| output.name())
+        .collect();
+    if wanted == state.auto_hdr_outputs {
+        return;
+    }
+    for output in wanted.symmetric_difference(&state.auto_hdr_outputs) {
+        info!(
+            output = %output,
+            hdr_content = wanted.contains(output),
+            "auto HDR: fullscreen HDR content changed"
+        );
+    }
+    state.auto_hdr_outputs = wanted;
+    refresh_tty_output_color_modes(state);
+}
+
 pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
     let mut changed_outputs = Vec::new();
     let icc_changed = refresh_output_icc_profiles(state);
@@ -13140,12 +13270,7 @@ pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
             let Some(current) = state.output_color.get(&output_name).copied() else {
                 continue;
             };
-            let hdr_requested = state
-                .runtime_output_configs
-                .get(&output_name)
-                .and_then(|config| config.hdr.as_ref())
-                .is_some_and(|hdr| hdr.enabled())
-                || crate::color::hdr_output_requested_via_env(&output_name);
+            let hdr_requested = output_hdr_requested(state, &output_name);
             let hdr_luminance_override = output_hdr_luminance_override(state, &output_name);
             let desired_mode = if hdr_render_supports_fp16(state, node) {
                 crate::color::resolve_output_mode(

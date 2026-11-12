@@ -175,7 +175,7 @@ instead, which turns HDR on as well:
 
 | Option | Meaning |
 | --- | --- |
-| `hdr.enabled` | `false` keeps the settings but drives the output as SDR. Default `true` |
+| `hdr.enabled` | `false` keeps the settings but drives the output as SDR; `"auto"` uses them only for fullscreen HDR content (below). Default `true` |
 | `hdr.sdrLuminance` | Brightness of SDR white (ordinary windows): cd/m² (10–1000), or `"backlight"` to follow the brightness setting. Default: follow the backlight on laptops, 203 elsewhere |
 | `hdr.sdrGamut` | Colors: `"native"` (default) as in SDR mode, or `"srgb"` for exact colors |
 | `hdr.maxLuminance` | The display's real peak in cd/m², when its EDID omits it (otherwise 1000 is assumed). Range 50–10000 |
@@ -224,6 +224,21 @@ How it looks:
   (peak ÷ SDR white) from the color-management protocol, so the higher
   `hdr.sdrLuminance` is, the less room is left for highlights.
 - Screenshots and screen recordings stay SDR.
+
+`hdr: "auto"` (or `hdr: { enabled: "auto", ... }`) keeps the output SDR and
+switches it to HDR only while a fullscreen window that covers the whole output
+shows HDR content, that is a surface tagged PQ or extended linear through the
+color-management protocol (mpv, Chrome, games through Vulkan). It switches back
+when the window leaves fullscreen, closes, or goes back to SDR content. The
+same EDID check applies, and each switch may cost a modeset, so expect a short
+blank on some displays. Clients are offered HDR color spaces as soon as an
+output has `hdr` set, `"auto"` included, so a client can start HDR content
+before the switch; until the output switches, that content is converted to
+SDR.
+
+```ts
+display['DP-1'] = { hdr: 'auto' };
+```
 
 Notes:
 

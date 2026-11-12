@@ -325,7 +325,7 @@ impl OutputColorState {
 }
 
 /// True while the runtime display config opts any output into HDR
-/// (`hdr: true`). Kept in an atomic because the protocol layer's
+/// (`hdr: true` or `"auto"`). Kept in an atomic because the protocol layer's
 /// capability checks run per-request without access to compositor state.
 static SESSION_HDR_CONFIGURED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

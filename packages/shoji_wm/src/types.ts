@@ -1415,15 +1415,21 @@ export interface OutputExtendConfigEntry {
    * the defaults; an object sets the HDR settings and turns HDR on (unless it
    * says `enabled: false`). SDR content keeps its look at `sdrLuminance`; HDR
    * content from color-managed clients (Chrome, mpv, games) is shown up to the
-   * display's peak.
+   * display's peak. `"auto"` keeps the output SDR and switches it to HDR
+   * while a fullscreen window that covers it shows HDR content (PQ or
+   * extended linear), then back when that window leaves fullscreen or
+   * changes content. Each switch may cost a modeset.
    * この出力の EDID が ST 2084 対応を示す場合、HDR10(PQ/BT.2020)で
    * 駆動します（実験的機能）。`true` は既定の設定で、オブジェクトを渡すと
    * HDR の設定をしたうえで HDR を有効にします（`enabled: false` を除く）。
    * SDR の内容は `sdrLuminance` の明るさでそのまま表示され、色管理に対応した
    * クライアント（Chrome・mpv・ゲーム）の HDR の内容はディスプレイの最大輝度
-   * まで表示されます。
+   * まで表示されます。`"auto"` は出力を SDR のままにし、出力を覆う全画面の
+   * ウィンドウが HDR の内容（PQ または拡張リニア）を表示している間だけ HDR に
+   * 切り替え、全画面が終わるか内容が変わると SDR に戻します。切り替えのたびに
+   * モードセットを伴うことがあります。
    */
-  hdr?: boolean | OutputHdrConfig;
+  hdr?: boolean | "auto" | OutputHdrConfig;
   /**
    * Path of this monitor's ICC profile (`~/` allowed), e.g. one made with
    * DisplayCAL. Colors are converted from sRGB to what the profile describes,
@@ -1443,10 +1449,13 @@ export interface OutputExtendConfigEntry {
  */
 export interface OutputHdrConfig {
   /**
-   * `false` keeps these settings but drives the output as SDR. Default `true`.
-   * `false` にすると設定を残したまま SDR で駆動します。既定は `true`。
+   * `false` keeps these settings but drives the output as SDR; `"auto"` uses
+   * them only while fullscreen HDR content is shown (see `hdr: "auto"`).
+   * Default `true`.
+   * `false` にすると設定を残したまま SDR で駆動し、`"auto"` は全画面の HDR の
+   * 内容を表示している間だけ使います（`hdr: "auto"` を参照）。既定は `true`。
    */
-  enabled?: boolean;
+  enabled?: boolean | "auto";
   /**
    * What SDR white (ordinary windows) is shown at: a luminance in cd/m²
    * (10..=1000), or `"backlight"` to follow the panel's brightness setting,

@@ -8370,7 +8370,7 @@ COMPOSITOR.output.configure(() => ({{
         .flatten()
         .expect("TEST-1 should be configured");
         let hdr = config.hdr.expect("hdr should be configured");
-        assert!(hdr.enabled());
+        assert_eq!(hdr.mode(), shojiwm_lib::config::RuntimeHdrMode::On);
         let options = hdr.options().expect("hdr should carry its settings");
         assert_eq!(options.max_luminance, Some(420.0));
         assert_eq!(options.min_luminance, Some(0.05));

@@ -883,9 +883,10 @@ pub struct OutputChangeEvent {
 /// One output's entry in a display configuration.
 pub use shojiwm_lib::config::{
     RuntimeDisplayModePreference as OutputResolution, RuntimeHdrConfig as OutputHdr,
-    RuntimeHdrOptions as OutputHdrOptions, RuntimeOutputMode as OutputMode,
-    RuntimeOutputPositionPreference as OutputPosition, RuntimeOutputTransform as OutputTransform,
-    RuntimeSdrGamut as SdrGamut, RuntimeSdrLuminance as SdrLuminance,
+    RuntimeHdrMode as OutputHdrMode, RuntimeHdrOptions as OutputHdrOptions,
+    RuntimeOutputMode as OutputMode, RuntimeOutputPositionPreference as OutputPosition,
+    RuntimeOutputTransform as OutputTransform, RuntimeSdrGamut as SdrGamut,
+    RuntimeSdrLuminance as SdrLuminance,
 };
 
 /// Builder helpers for [`RuntimeOutputConfig`].

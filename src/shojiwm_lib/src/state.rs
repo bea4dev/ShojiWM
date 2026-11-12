@@ -320,6 +320,8 @@ pub struct ShojiWM {
     pub active_idle_inhibit_labels: Vec<String>,
     pub session_lock_state: SessionLockManagerState,
     pub session_lock_active: bool,
+    /// Outputs with `hdr: "auto"` that currently show fullscreen HDR content.
+    pub auto_hdr_outputs: std::collections::BTreeSet<String>,
     /// The lock object holding the current lock. While it is alive no other
     /// client may lock (ext-session-lock-v1), which is what keeps a second
     /// client from locking and then unlocking someone else's lock. `None` while
@@ -1852,6 +1854,7 @@ impl ShojiWM {
             // Started locked (a login screen made of the lock screen): only
             // lock surfaces are drawn until a locker locks and unlocks.
             session_lock_active: runtime.start_locked(),
+            auto_hdr_outputs: Default::default(),
             session_locker: None,
             initial_config_enabled: false,
             session_lock_surfaces: HashMap::new(),
@@ -3709,11 +3712,14 @@ impl ShojiWM {
         // The HDR opt-in lives in this config: widen/narrow the protocol
         // advertisement and re-resolve connected outputs, which connect
         // before the TypeScript config evaluates.
-        crate::color::set_session_hdr_configured(
-            self.runtime_output_configs
-                .values()
-                .any(|config| config.hdr.as_ref().is_some_and(|hdr| hdr.enabled())),
-        );
+        crate::color::set_session_hdr_configured(self.runtime_output_configs.values().any(
+            |config| {
+                config
+                    .hdr
+                    .as_ref()
+                    .is_some_and(|hdr| hdr.mode() != crate::config::RuntimeHdrMode::Off)
+            },
+        ));
         crate::backend::tty::refresh_tty_output_color_modes(self);
         self.apply_runtime_display_configuration();
         self.notify_runtime_outputs_changed();

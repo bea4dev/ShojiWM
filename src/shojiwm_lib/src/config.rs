@@ -42,28 +42,56 @@ pub struct RuntimeOutputConfig {
     pub icc: Option<String>,
 }
 
-/// `hdr`: a plain switch, or the settings of an HDR output.
+/// `hdr`: a switch, or the settings of an HDR output.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RuntimeHdrConfig {
-    Enabled(bool),
+    Mode(RuntimeHdrMode),
     Options(RuntimeHdrOptions),
 }
 
+/// `hdr` or `hdr.enabled`: `false`, `true`, or `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeHdrMode {
+    Off,
+    On,
+    /// SDR, switching to HDR10 while the topmost fullscreen window on the
+    /// output shows HDR content (a PQ or scRGB image description).
+    Auto,
+}
+
+impl<'de> serde::Deserialize<'de> for RuntimeHdrMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Switch(bool),
+            Word(String),
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Switch(true) => Ok(Self::On),
+            Wire::Switch(false) => Ok(Self::Off),
+            Wire::Word(word) if word == "auto" => Ok(Self::Auto),
+            Wire::Word(word) => Err(serde::de::Error::custom(format!(
+                "hdr must be true, false or \"auto\", got {word:?}"
+            ))),
+        }
+    }
+}
+
 impl RuntimeHdrConfig {
-    /// Whether the output should be driven as HDR10. The settings form turns
-    /// it on unless it says `enabled: false`.
-    pub fn enabled(&self) -> bool {
+    /// The settings form turns HDR on unless it says otherwise in `enabled`.
+    pub fn mode(&self) -> RuntimeHdrMode {
         match self {
-            Self::Enabled(enabled) => *enabled,
-            Self::Options(options) => options.enabled.unwrap_or(true),
+            Self::Mode(mode) => *mode,
+            Self::Options(options) => options.enabled.unwrap_or(RuntimeHdrMode::On),
         }
     }
 
     /// The settings, if any were given.
     pub fn options(&self) -> Option<&RuntimeHdrOptions> {
         match self {
-            Self::Enabled(_) => None,
+            Self::Mode(_) => None,
             Self::Options(options) => Some(options),
         }
     }
@@ -74,8 +102,8 @@ impl RuntimeHdrConfig {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeHdrOptions {
     /// Unset means on: giving settings turns HDR on. `false` keeps the
-    /// settings but drives the output as SDR.
-    pub enabled: Option<bool>,
+    /// settings but drives the output as SDR; `"auto"` switches.
+    pub enabled: Option<RuntimeHdrMode>,
     /// What SDR white is shown at on an HDR output: a fixed luminance, or
     /// following the panel's backlight. Unset follows the backlight when the
     /// output has one, else `SHOJI_SDR_NITS`, else 203 (ITU-R BT.2408).
@@ -392,10 +420,13 @@ mod tests {
         )
         .expect("display config update should parse");
         let hdr = |name: &str| update.outputs[name].as_ref().unwrap().hdr.clone();
-        assert_eq!(hdr("HDMI-A-3"), Some(RuntimeHdrConfig::Enabled(true)));
+        assert_eq!(
+            hdr("HDMI-A-3"),
+            Some(RuntimeHdrConfig::Mode(RuntimeHdrMode::On))
+        );
         assert_eq!(hdr("eDP-1"), None);
         let dp2 = hdr("DP-2").unwrap();
-        assert!(dp2.enabled());
+        assert_eq!(dp2.mode(), RuntimeHdrMode::On);
         assert_eq!(
             dp2.options(),
             Some(&RuntimeHdrOptions {
@@ -405,7 +436,35 @@ mod tests {
                 ..Default::default()
             })
         );
-        assert!(!hdr("DP-3").unwrap().enabled());
+        assert_eq!(hdr("DP-3").unwrap().mode(), RuntimeHdrMode::Off);
+    }
+
+    #[test]
+    fn runtime_output_config_parses_auto_hdr() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{
+                "DP-1":{"hdr":"auto"},
+                "DP-2":{"hdr":{"enabled":"auto","sdrLuminance":250}}
+            }}"#,
+        )
+        .expect("display config update should parse");
+        let mode = |name: &str| {
+            update.outputs[name]
+                .as_ref()
+                .unwrap()
+                .hdr
+                .as_ref()
+                .unwrap()
+                .mode()
+        };
+        assert_eq!(mode("DP-1"), RuntimeHdrMode::Auto);
+        assert_eq!(mode("DP-2"), RuntimeHdrMode::Auto);
+        assert!(
+            serde_json::from_str::<RuntimeDisplayConfigUpdate>(
+                r#"{"outputs":{"DP-1":{"hdr":"always"}}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
