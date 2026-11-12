@@ -158,10 +158,16 @@ own. Their keys take the same path as a keyboard's: `wtype -M logo -k space -m
 logo` fires a `Super+space` binding, `wtype -k F13` a binding on `F13`, and
 text they type reaches the focused window with the keymap they sent, so
 characters missing from your layout still arrive. Bindings match the keysyms
-of that keymap, whatever keycodes the tool chose. While a virtual keyboard
-types, the focused window runs its keymap; your layout comes back with the
-next key from another keyboard or when the tool exits, and the layout reported
-to the config does not change.
+of that keymap, whatever keycodes the tool chose; a `code:<xkb keycode>`
+binding matches the key of your layout that carries the same keysym. While a
+virtual keyboard types, the focused window runs its keymap; your layout comes
+back with the next key from another keyboard or when the tool exits, and the
+layout reported to the config does not change.
+
+An input method such as fcitx5 grabs the keyboard and sends the keys it does
+not handle back through a virtual keyboard of its own. Those keys go straight
+to the focused window in your layout, without key bindings, since the key
+already passed them on its way to the input method.
 
 ### Virtual pointers
 

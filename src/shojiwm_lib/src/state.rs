@@ -62,7 +62,6 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
-        input_method::InputMethodManagerState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         presentation::PresentationState,
@@ -525,6 +524,9 @@ pub struct ShojiWM {
     /// Set while the seat runs a virtual keyboard's keymap.
     pub active_virtual_keymap: Option<crate::virtual_keyboard::ActiveVirtualKeymap>,
     pub next_virtual_keymap_serial: u64,
+    /// Clients that asked for a `zwp_input_method_v2`.
+    pub input_method_clients:
+        std::collections::HashSet<smithay::reexports::wayland_server::backend::ClientId>,
     pub runtime_active_keyboard_device: Option<RuntimeInputDeviceSnapshot>,
     pub runtime_input_devices: BTreeMap<String, RuntimeInputDeviceSnapshot>,
     pub runtime_libinput_devices: HashMap<String, input::Device>,
@@ -1703,7 +1705,7 @@ impl ShojiWM {
         let fixes_state = FixesState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         TextInputManagerState::new::<Self>(&dh);
-        InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
+        crate::protocols::input_method::InputMethodManagerGlobal::create(&dh);
         crate::protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<Self>(&dh);
         RelativePointerManagerState::new::<Self>(&dh);
         PointerConstraintsState::new::<Self>(&dh);
@@ -1970,6 +1972,7 @@ impl ShojiWM {
             virtual_keyboards: HashMap::new(),
             active_virtual_keymap: None,
             next_virtual_keymap_serial: 0,
+            input_method_clients: Default::default(),
             runtime_active_keyboard_device: None,
             runtime_input_devices: Default::default(),
             runtime_libinput_devices: Default::default(),

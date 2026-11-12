@@ -341,9 +341,10 @@ impl ShojiWM {
                 if let Some(vt) = vt_switch_target(modifiers, &handle).filter(|_| pressed) {
                     return FilterResult::Intercept(KeyboardAction::ChangeVt(vt));
                 }
+                let keycode = data.bind_keycode(&handle);
                 match locked_bindings
                     .iter()
-                    .find(|binding| binding.matches(phase, modifiers, &handle))
+                    .find(|binding| binding.matches(phase, modifiers, &handle, keycode))
                 {
                     Some(binding) => FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(
                         binding.id.clone(),
@@ -1291,9 +1292,10 @@ impl ShojiWM {
                                 return FilterResult::Intercept(KeyboardAction::DismissPopup);
                             }
 
+                            let keycode = data.bind_keycode(&handle);
                             if let Some(binding_id) = runtime_key_bindings
                                 .iter()
-                                .find(|binding| binding.matches(key_phase, modifiers, &handle))
+                                .find(|binding| binding.matches(key_phase, modifiers, &handle, keycode))
                                 .map(|binding| binding.id.clone())
                             {
                                 return FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(

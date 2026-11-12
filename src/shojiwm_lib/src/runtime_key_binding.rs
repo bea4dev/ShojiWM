@@ -121,8 +121,9 @@ impl CompiledRuntimeKeyBinding {
         phase: RuntimeKeyBindingPhase,
         modifiers: &ModifiersState,
         handle: &KeysymHandle<'_>,
+        keycode: Option<u32>,
     ) -> bool {
-        self.phase == phase && self.shortcut.matches(modifiers, handle)
+        self.phase == phase && self.shortcut.matches(modifiers, handle, keycode)
     }
 
     pub fn matches_wheel(
@@ -156,11 +157,18 @@ pub struct RuntimeKeyShortcut {
 }
 
 impl RuntimeKeyShortcut {
-    pub fn matches(&self, modifiers: &ModifiersState, handle: &KeysymHandle<'_>) -> bool {
+    /// `keycode` is the key a `code:N` shortcut compares N with
+    /// (`ShojiWM::bind_keycode`).
+    pub fn matches(
+        &self,
+        modifiers: &ModifiersState,
+        handle: &KeysymHandle<'_>,
+        keycode: Option<u32>,
+    ) -> bool {
         // Modifier-only shortcuts are not matched here; they are dispatched as a
         // release "tap" by the input layer (see process_input_event).
-        if let Some(keycode) = self.keycode {
-            return self.modifiers_match(modifiers) && handle.raw_code().raw() == keycode;
+        if let Some(code) = self.keycode {
+            return self.modifiers_match(modifiers) && keycode == Some(code);
         }
         let Some(keysym) = self.keysym else {
             return false;
