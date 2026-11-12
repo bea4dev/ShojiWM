@@ -196,8 +196,10 @@ impl Scene3dTarget {
             for (_, framebuffers) in retired {
                 framebuffers.delete(gl);
             }
-            if previous.is_some() && reuse.is_none() {
-                previous.unwrap().delete(gl);
+            if reuse.is_none()
+                && let Some(previous) = previous
+            {
+                previous.delete(gl);
             }
             let framebuffers = match reuse {
                 Some(framebuffers) => framebuffers,
