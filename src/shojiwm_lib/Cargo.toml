@@ -7,17 +7,9 @@ edition = "2024"
 [dependencies]
 bitflags = "2.11.0"
 thiserror = "2.0.12"
-smithay = {
-    git = "https://github.com/bea4dev/smithay.git",
-    rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa",
-    features = ["use_system_lib", "xwayland"]
-}
-smithay-drm-extras = {
-    git = "https://github.com/bea4dev/smithay.git",
-    rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa",
-    package = "smithay-drm-extras",
-    default-features = false
-}
+# The fork's rev is in the workspace's Cargo.toml.
+smithay = { workspace = true, features = ["use_system_lib", "xwayland"] }
+smithay-drm-extras = { workspace = true }
 # xwayland-satellite, run in-process on its own thread (see
 # `xwayland_satellite.rs`). Renamed so the crate does not clash with that module.
 satellite = {

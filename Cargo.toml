@@ -8,6 +8,12 @@ members = [
     "src/xdg-desktop-portal-shojiwm",
 ]
 
+# The smithay fork, pinned once for every crate that uses it: bump the rev
+# here only, or two copies of smithay end up in one build.
+[workspace.dependencies]
+smithay = { git = "https://github.com/bea4dev/smithay.git", rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa" }
+smithay-drm-extras = { git = "https://github.com/bea4dev/smithay.git", rev = "c1253794ee2a7c466e88bb20dfdaabb4ccbfb2aa", default-features = false }
+
 # Iteration profile for the edit-test loop: same optimization level, but
 # parallel codegen, no LTO, and incremental rebuilds. Runtime perf is close
 # enough for testing; benchmark and tag releases with `release` only.
