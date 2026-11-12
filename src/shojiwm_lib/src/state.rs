@@ -497,6 +497,10 @@ pub struct ShojiWM {
     pub runtime_pending_reap: Vec<Child>,
     pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
+    /// The held `repeat` binding, if any (see `start_key_binding_repeat`).
+    pub key_binding_repeat: Option<crate::input::KeyBindingRepeat>,
+    /// The seat keyboard's (rate, delay), which smithay does not read back.
+    pub keyboard_repeat_info: (i32, i32),
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
     pub pointer_regions: crate::runtime_pointer_region::PointerRegionTracker,
     /// `COMPOSITOR.cursor.setAppLockIgnored`.
@@ -1697,6 +1701,7 @@ impl ShojiWM {
 
         // Notify clients that we have a keyboard, for the sake of the example we assume that keyboard is always present.
         // You may want to track keyboard hot-plug in real compositor.
+        // Delay 200 ms, rate 25 Hz, as `keyboard_repeat_info` starts out.
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
 
         // Notify clients that we have a pointer (mouse)
@@ -1927,6 +1932,8 @@ impl ShojiWM {
             runtime_pending_reap: Default::default(),
             runtime_key_binding_entries: Default::default(),
             runtime_key_bindings: Vec::new(),
+            key_binding_repeat: None,
+            keyboard_repeat_info: (25, 200),
             runtime_window_move_modifier: None,
             pointer_regions: Default::default(),
             app_lock_ignored_setting: false,

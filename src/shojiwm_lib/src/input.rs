@@ -3,7 +3,7 @@ use smithay::{
         input::{
             AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, Event, GestureBeginEvent,
             GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend,
-            InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+            InputEvent, KeyState, KeyboardKeyEvent, Keycode, PointerAxisEvent, PointerButtonEvent,
             PointerMotionEvent,
         },
         session::Session,
@@ -44,6 +44,12 @@ use crate::{
     },
     state::{ShojiWM, TrackedDecorationInteractionTarget},
 };
+
+/// A `repeat` key binding whose key is held down.
+pub struct KeyBindingRepeat {
+    keycode: Keycode,
+    timer: smithay::reexports::calloop::RegistrationToken,
+}
 
 enum KeyboardAction {
     Forward,
@@ -310,7 +316,18 @@ impl ShojiWM {
         serial: Serial,
     ) {
         let pressed = event.state() == KeyState::Pressed;
-        let vt = self.seat.get_keyboard().unwrap().input(
+        let phase = if pressed {
+            crate::runtime_key_binding::RuntimeKeyBindingPhase::Press
+        } else {
+            crate::runtime_key_binding::RuntimeKeyBindingPhase::Release
+        };
+        let locked_bindings = self
+            .runtime_key_bindings
+            .iter()
+            .filter(|binding| binding.locked)
+            .cloned()
+            .collect::<Vec<_>>();
+        let action = self.seat.get_keyboard().unwrap().input(
             self,
             event.key_code(),
             event.state(),
@@ -321,16 +338,94 @@ impl ShojiWM {
                 // VT switching stays available: it shows another VT, not the
                 // session, and it is the way out when the locker never shows
                 // up (e.g. a session started locked whose locker failed).
-                match vt_switch_target(modifiers, &handle).filter(|_| pressed) {
-                    Some(vt) => FilterResult::Intercept(vt),
+                if let Some(vt) = vt_switch_target(modifiers, &handle).filter(|_| pressed) {
+                    return FilterResult::Intercept(KeyboardAction::ChangeVt(vt));
+                }
+                match locked_bindings
+                    .iter()
+                    .find(|binding| binding.matches(phase, modifiers, &handle))
+                {
+                    Some(binding) => FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(
+                        binding.id.clone(),
+                    )),
                     None => FilterResult::Forward,
                 }
             },
         );
-        if let Some(vt) = vt {
-            self.change_vt(vt);
+        match action {
+            Some(KeyboardAction::ChangeVt(vt)) => self.change_vt(vt),
+            Some(KeyboardAction::RuntimeKeyBinding(binding_id)) => {
+                self.run_runtime_key_binding(&binding_id);
+                if pressed {
+                    self.start_key_binding_repeat(event.key_code(), &binding_id);
+                }
+            }
+            _ => {}
         }
         let _ = self.display_handle.flush_clients();
+    }
+
+    /// Stop repeating a held binding: another key went down, its own key
+    /// came up, or the session went away.
+    pub fn stop_key_binding_repeat(&mut self) {
+        if let Some(repeat) = self.key_binding_repeat.take() {
+            self.loop_handle.remove(repeat.timer);
+        }
+    }
+
+    fn stop_key_binding_repeat_for_key(&mut self, keycode: Keycode, state: KeyState) {
+        let ends_repeat = match state {
+            KeyState::Pressed => true,
+            KeyState::Released => self
+                .key_binding_repeat
+                .as_ref()
+                .is_some_and(|repeat| repeat.keycode == keycode),
+        };
+        if ends_repeat {
+            self.stop_key_binding_repeat();
+        }
+    }
+
+    /// After `binding_id` fired on the press of `keycode`, fire it again at
+    /// the keyboard's repeat delay and rate while the key stays down, if the
+    /// binding asked for that.
+    fn start_key_binding_repeat(&mut self, keycode: Keycode, binding_id: &str) {
+        self.stop_key_binding_repeat();
+        if !self
+            .runtime_key_bindings
+            .iter()
+            .any(|binding| binding.id == binding_id && binding.repeat)
+        {
+            return;
+        }
+        let (rate, delay) = self.keyboard_repeat_info;
+        if rate <= 0 {
+            return;
+        }
+        let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(rate));
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_millis(u64::from(delay.max(0).unsigned_abs())),
+        );
+        let id = binding_id.to_string();
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, state| {
+            let held = state
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.pressed_keys().contains(&keycode));
+            let allowed = state.runtime_key_bindings.iter().any(|binding| {
+                binding.id == id && binding.repeat && (binding.locked || !state.session_lock_active)
+            });
+            if !held || !allowed {
+                state.key_binding_repeat = None;
+                return smithay::reexports::calloop::timer::TimeoutAction::Drop;
+            }
+            state.run_runtime_key_binding(&id);
+            smithay::reexports::calloop::timer::TimeoutAction::ToDuration(interval)
+        });
+        match inserted {
+            Ok(timer) => self.key_binding_repeat = Some(KeyBindingRepeat { keycode, timer }),
+            Err(error) => warn!(?error, binding_id, "failed to start key binding repeat"),
+        }
     }
 
     fn change_vt(&mut self, vt: i32) {
@@ -1053,6 +1148,7 @@ impl ShojiWM {
                 let device = event.device();
                 crate::runtime_input::apply_keyboard_config_for_backend_device(self, &device);
                 let serial = SERIAL_COUNTER.next_serial();
+                self.stop_key_binding_repeat_for_key(event.key_code(), event.state());
                 if self.session_lock_active {
                     self.forward_locked_keyboard_event::<I>(&event, serial);
                     return;
@@ -1270,6 +1366,9 @@ impl ShojiWM {
                     KeyboardAction::ReloadConfig => self.reload_decoration_runtime(),
                     KeyboardAction::RuntimeKeyBinding(binding_id) => {
                         self.run_runtime_key_binding(&binding_id);
+                        if event.state() == KeyState::Pressed {
+                            self.start_key_binding_repeat(event.key_code(), &binding_id);
+                        }
                     }
                     KeyboardAction::LogMarker(digit) => {
                         tracing::info!(marker = digit, "log marker");

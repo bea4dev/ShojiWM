@@ -1974,6 +1974,20 @@ export interface KeyBindingOptions {
    * 離したときだけ発火します。長押し（ドラッグや途中でやめた組み合わせ）では発火しません。
    */
   within?: number;
+  /**
+   * Also fire while the session is locked, e.g. volume and brightness keys.
+   * Keys only, not taps, wheel or mouse buttons.
+   * セッションのロック中も発火します（音量・明るさキーなど）。キー専用で、タップ、
+   * ホイール、マウスボタンには使えません。
+   */
+  locked?: boolean;
+  /**
+   * Fire again at the keyboard's repeat delay and rate while the key is held.
+   * Keys with `on: "press"` only.
+   * キーを押している間、キーボードのリピート遅延と速度で繰り返し発火します。
+   * `on: "press"` のキー専用です。
+   */
+  repeat?: boolean;
 }
 
 /**
