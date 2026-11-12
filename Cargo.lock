@@ -5168,6 +5168,7 @@ dependencies = [
  "tracing",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-plasma",
  "wayland-protocols-wlr",
 ]
 
