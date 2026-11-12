@@ -1547,6 +1547,7 @@ impl ShojiRuntimeBridge {
                 force_rect_size: flags & (1 << 5) != 0,
                 tiled: flags & (1 << 6) != 0,
                 allow_tearing,
+                confine_pointer: flags & (1 << 13) != 0,
                 z_index: (flags & (1 << 11) != 0).then_some(fields[14] as i32),
                 surface_policy: (flags & (1 << 12) != 0).then_some(
                     shojiwm_lib::ssd::SurfacePolicy {

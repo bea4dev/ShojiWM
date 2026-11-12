@@ -6716,6 +6716,48 @@ COMPOSITOR.process.once("locker", { command: ["true"] });
     }
 
     #[test]
+    fn embedded_runtime_sends_confine_pointer_on_fresh_and_cached_evaluations() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-confine-pointer-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { COMPOSITOR, ClientWindow, ManagedWindow } from "shoji_wm";
+COMPOSITOR.window.composition = (window) => (
+  <ManagedWindow confinePointer={window.appId.value === "game"}>
+    <ClientWindow />
+  </ManagedWindow>
+);
+"#,
+        )
+        .unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("initial", None).unwrap();
+
+        let game = make_named_window("0xa", "game", true, false);
+        for now in [100, 200] {
+            let result = evaluator.evaluate_window(&game, now).unwrap();
+            assert!(result.managed_window.confine_pointer, "evaluation at {now}");
+        }
+        let editor = make_named_window("0xb", "editor", true, false);
+        let result = evaluator.evaluate_window(&editor, 300).unwrap();
+        assert!(!result.managed_window.confine_pointer);
+        std::fs::remove_dir_all(test_dir).ok();
+    }
+
+    #[test]
     fn embedded_runtime_reports_keyboard_layout_changes_and_reload() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

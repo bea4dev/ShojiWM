@@ -471,6 +471,7 @@ function snapshotManagedWindow(
       // `wp_tearing_control` hint; a concrete value overrides that hint (see ManagedWindowProps).
       allowTearing:
         props?.allowTearing === undefined ? undefined : read(props.allowTearing),
+      confinePointer: props?.confinePointer === undefined ? false : read(props.confinePointer),
       zIndex: props?.zIndex === undefined ? undefined : read(props.zIndex),
       transform: {
         ...transform,

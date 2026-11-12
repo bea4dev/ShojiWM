@@ -806,6 +806,11 @@ pub struct ManagedWindowState {
     /// `backend::tty` (`should_tear`).
     #[serde(default)]
     pub allow_tearing: Option<bool>,
+    /// `<ManagedWindow confinePointer>`: while the window has keyboard focus, pointer motion
+    /// that starts over its client area stays there, whether or not the client asks for a
+    /// pointer confinement. Applied in `input` (`confine_pointer_window_area`).
+    #[serde(default)]
+    pub confine_pointer: bool,
     #[serde(default)]
     pub z_index: Option<i32>,
     #[serde(default)]
@@ -831,6 +836,7 @@ impl Default for ManagedWindowState {
             force_rect_size: false,
             tiled: false,
             allow_tearing: None,
+            confine_pointer: false,
             z_index: None,
             transform: WindowTransform::default(),
             surface_policy: None,
