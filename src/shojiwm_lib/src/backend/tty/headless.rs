@@ -75,6 +75,7 @@ impl HeadlessTarget {
             overlay_details: Vec::new(),
             cursor_plane_assigned: false,
             states,
+            cross_gpu_pending: None,
         })
     }
 

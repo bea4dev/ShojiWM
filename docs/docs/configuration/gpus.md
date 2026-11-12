@@ -114,6 +114,13 @@ copy across PCIe). With the render GPU on a hybrid laptop's discrete GPU, the
 built-in panel becomes such a display, and the discrete GPU can no longer
 power down while the session runs.
 
+The proprietary NVIDIA driver cannot render into a LINEAR dmabuf. With NVIDIA
+as the render GPU, such frames are rendered into a LINEAR GBM surface instead:
+the compositing runs in the GPU's own memory layout, and the driver copies the
+frame into the LINEAR buffer once, when it is swapped, as NVIDIA's own PRIME
+render offload does. The session log then says `rendering cross-gpu frames into
+a LINEAR gbm surface`.
+
 The GPU driving such a display waits for the render GPU's frame on its own
 (through the frame's fence), so the CPU moves on at once and
 [`framePacing = "throughput"`](outputs.md#frame-pacing-triple-buffering) keeps

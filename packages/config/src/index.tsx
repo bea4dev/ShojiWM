@@ -82,7 +82,7 @@ COMPOSITOR.window.decoration.kdeDefaultMode(() => "server");
 COMPOSITOR.rendering.framePacing = "throughput";
 
 // select your GPU
-COMPOSITOR.gpu.selectRender(gpus => gpus.find(gpu => gpu.bootVga));
+COMPOSITOR.gpu.selectRender(gpus => gpus.find(gpu => gpu.vendor === "nvidia"));
 
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 

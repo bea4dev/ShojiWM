@@ -107,6 +107,12 @@ SHOJI_RENDER_GPU=pci-0000:03:00.0 shoji_wm --tty
 またぐ LINEAR のコピー）。ハイブリッドノートで dGPU を合成用にすると内蔵パネルがこの
 扱いになり、セッション中は dGPU が省電力状態に入れなくなります。
 
+NVIDIA のプロプライエタリドライバは LINEAR の dmabuf に直接描画できません。合成用 GPU が
+NVIDIA の場合は、LINEAR の GBM サーフェスに描画します。合成そのものは NVIDIA 本来の
+メモリ配置で行い、スワップ時にドライバが LINEAR へ 1 回コピーします（NVIDIA 自身の PRIME
+レンダーオフロードと同じ方式）。セッションログには
+`rendering cross-gpu frames into a LINEAR gbm surface` と出ます。
+
 こうしたディスプレイを表示する GPU は、合成用 GPU のフレームの完成を自分で（フレームの
 フェンスを使って）待ちます。そのため CPU はすぐ次の作業に戻れ、
 [`framePacing = "throughput"`](outputs.md#フレームの出し方トリプルバッファ) による

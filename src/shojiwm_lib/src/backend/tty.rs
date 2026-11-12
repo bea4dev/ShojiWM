@@ -1089,6 +1089,21 @@ struct DeferredSubmit {
     frame_target: Duration,
 }
 
+/// A cross-GPU frame on its way from the render GPU to the output's (see
+/// `finish_cross_gpu_frame`).
+struct CrossGpuStaging {
+    generation: u64,
+    /// The frame is the `ahead_submit` one; otherwise it is the `deferred_submit` one, of
+    /// `deferred_generation`.
+    ahead: bool,
+    deferred_generation: u64,
+    clear_color: Color32F,
+    frame_flags: FrameFlags,
+    /// For an ahead frame: the flip it waited for completed before the frame was staged, so
+    /// `frame_finish` left its submission (with this `redraw_needed`) to the staging.
+    flip_done: Option<bool>,
+}
+
 struct SurfaceData {
     output: Output,
     target: SurfaceTarget,
@@ -1198,6 +1213,10 @@ struct SurfaceData {
     /// An ahead render already ran for the flip in flight (it may have had no damage);
     /// another one waits for the flip, so a burst of redraw requests does not re-render.
     ahead_attempted: bool,
+    /// A cross-GPU frame (the `deferred_submit` or the `ahead_submit` one) that is not staged
+    /// in the `DrmCompositor` yet: the render GPU is still working on it.
+    cross_gpu_staging: Option<CrossGpuStaging>,
+    cross_gpu_staging_generation: u64,
     /// The vblank the newest submitted (or held) frame was rendered for; an ahead frame
     /// targets the vblank after it. `None` while what is in flight is not a rendered
     /// frame (a cursor-only commit) or nothing is.
@@ -1228,55 +1247,468 @@ struct SurfaceData {
 /// layout every GPU can import (NVIDIA as an external-only texture). It is also why all of the
 /// effect and snapshot machinery keeps running on a single renderer.
 struct CrossGpuTarget {
-    swapchain: smithay::backend::allocator::Swapchain<GbmAllocator<DrmDeviceFd>>,
+    buffers: CrossGpuBuffers,
     size: Size<i32, Buffer>,
     damage_tracker: OutputDamageTracker,
-    /// The buffer on screen (or about to be). Holding the slot keeps the swapchain from
-    /// handing it out for rendering while the secondary GPU may still read it.
-    current: Option<smithay::backend::allocator::Slot<smithay::backend::allocator::gbm::GbmBuffer>>,
     id: Id,
-    /// Bumped whenever `current` changes, which is all the damage the output's GPU needs.
+    /// Bumped whenever the buffer on screen changes, which is all the damage the output's GPU
+    /// needs.
     commit: CommitCounter,
     /// How the output's GPU waits for the render GPU was logged.
     wait_logged: bool,
 }
 
+/// Where the render GPU puts the LINEAR frames.
+enum CrossGpuBuffers {
+    /// LINEAR dmabufs the render GPU renders into directly.
+    Swapchain {
+        swapchain: smithay::backend::allocator::Swapchain<GbmAllocator<DrmDeviceFd>>,
+        /// The buffer on screen (or about to be). Holding the slot keeps the swapchain from
+        /// handing it out for rendering while the secondary GPU may still read it.
+        current:
+            Option<smithay::backend::allocator::Slot<smithay::backend::allocator::gbm::GbmBuffer>>,
+    },
+    /// A render GPU that cannot render into LINEAR dmabufs (NVIDIA: LINEAR is external-only
+    /// there) renders into a LINEAR GBM window surface instead; see `LinearWindowTarget`.
+    Window(LinearWindowTarget),
+}
+
 impl CrossGpuTarget {
-    fn new(gbm: &Device<DrmDeviceFd>, output: &Output) -> Self {
+    fn new(gbm: &Device<DrmDeviceFd>, renderer: &GlesRenderer, output: &Output) -> Self {
         let size = output
             .current_mode()
             .map(|mode| Size::<i32, Buffer>::from((mode.size.w, mode.size.h)))
             .unwrap_or_else(|| Size::from((1, 1)));
+        let linear_renderable = renderer.egl_context().dmabuf_render_formats().contains(
+            &smithay::backend::allocator::Format {
+                code: Fourcc::Argb8888,
+                modifier: smithay::backend::allocator::Modifier::Linear,
+            },
+        );
+        let window = (!linear_renderable).then(|| {
+            LinearWindowTarget::new(gbm, renderer.egl_context().display(), size)
+                .inspect(|_| {
+                    info!(
+                        output = %output.name(),
+                        "the render gpu cannot render into LINEAR dmabufs; \
+                         rendering cross-gpu frames into a LINEAR gbm surface"
+                    )
+                })
+                .inspect_err(|error| {
+                    warn!(
+                        output = %output.name(),
+                        ?error,
+                        "the render gpu cannot render into LINEAR dmabufs, and no LINEAR gbm \
+                         surface could be made either; this output will stay dark"
+                    )
+                })
+                .ok()
+        });
+        let buffers = match window.flatten() {
+            Some(window) => CrossGpuBuffers::Window(window),
+            None => CrossGpuBuffers::Swapchain {
+                swapchain: smithay::backend::allocator::Swapchain::new(
+                    GbmAllocator::new(gbm.clone(), BufferObjectFlags::RENDERING),
+                    size.w as u32,
+                    size.h as u32,
+                    Fourcc::Argb8888,
+                    vec![smithay::backend::allocator::Modifier::Linear],
+                ),
+                current: None,
+            },
+        };
         Self {
-            swapchain: smithay::backend::allocator::Swapchain::new(
-                GbmAllocator::new(gbm.clone(), BufferObjectFlags::RENDERING),
-                size.w as u32,
-                size.h as u32,
-                Fourcc::Argb8888,
-                vec![smithay::backend::allocator::Modifier::Linear],
-            ),
+            buffers,
             size,
             damage_tracker: OutputDamageTracker::from_output(output),
-            current: None,
             id: Id::new(),
             commit: CommitCounter::default(),
             wait_logged: false,
         }
     }
 
-    /// The swapchain contents predate whatever invalidated them (a mode change, power-off).
+    /// The buffer contents predate whatever invalidated them (a mode change, power-off).
     fn reset(&mut self, output: &Output) {
-        self.current = None;
-        self.swapchain.reset_buffers();
         self.damage_tracker = OutputDamageTracker::from_output(output);
-        if let Some(mode) = output.current_mode()
-            && (mode.size.w, mode.size.h) != (self.size.w, self.size.h)
-        {
+        let resized = output
+            .current_mode()
+            .filter(|mode| (mode.size.w, mode.size.h) != (self.size.w, self.size.h));
+        if let Some(mode) = resized {
             self.size = Size::from((mode.size.w, mode.size.h));
-            self.swapchain
-                .resize(self.size.w as u32, self.size.h as u32);
+        }
+        match &mut self.buffers {
+            CrossGpuBuffers::Swapchain { swapchain, current } => {
+                *current = None;
+                swapchain.reset_buffers();
+                if resized.is_some() {
+                    swapchain.resize(self.size.w as u32, self.size.h as u32);
+                }
+            }
+            CrossGpuBuffers::Window(window) => {
+                window.settle();
+                window.current = None;
+                window.offscreen_age = 0;
+                if resized.is_some() {
+                    window.offscreen = None;
+                }
+                if resized.is_some()
+                    && let Err(error) = window.resize(self.size)
+                {
+                    warn!(output = %output.name(), ?error, "failed to resize the cross-gpu gbm surface");
+                }
+            }
         }
     }
+}
+
+/// A LINEAR GBM surface on the render GPU, rendered to as an EGL window.
+///
+/// The NVIDIA driver imports LINEAR dmabufs only as external textures, so it cannot render
+/// into one. Its EGL window surfaces on GBM can be LINEAR all the same: the driver renders in
+/// its own layout and copies the frame into the LINEAR buffer when it is swapped, the way its
+/// PRIME render offload hands frames to another GPU. That one copy is the least a frame has to
+/// go through to reach another GPU, and the compositing itself runs in the fast layout.
+///
+/// The frame is not rendered into the window directly, though. A window's buffer is laid out
+/// bottom row first, the other way up from a framebuffer object's, and the effects that read
+/// back the framebuffer they render into expect the latter. So the frame is rendered into an
+/// offscreen texture, as on every other path, and that texture is drawn into the window turned
+/// over (a copy within the render GPU's memory).
+struct LinearWindowTarget {
+    /// What the frame is rendered into; `None` until the first frame and after a resize.
+    offscreen: Option<GlesTexture>,
+    /// The damage tracker's buffer age of `offscreen`: 1 once it holds the previous frame.
+    offscreen_age: usize,
+    /// A frame was swapped and its buffer not locked yet (`lock_front`). Locking waits for
+    /// the render GPU to finish the frame, so it waits until the frame's fence is reached.
+    swapped: bool,
+    // Dropped in this order: buffers go back to the surface before it goes.
+    /// The frame on screen (or about to be), locked so the surface does not render into it.
+    current: Option<(usize, smithay::backend::allocator::gbm::GbmBuffer)>,
+    /// The surface's buffers exported once each (by `gbm_bo` pointer): the output's GPU
+    /// caches its imports by dmabuf identity.
+    dmabufs: HashMap<usize, smithay::backend::allocator::dmabuf::Dmabuf>,
+    egl_surface: smithay::backend::egl::EGLSurface,
+    gbm_surface: std::sync::Arc<smithay::reexports::gbm::Surface<()>>,
+    gbm: Device<DrmDeviceFd>,
+    display: EGLDisplay,
+}
+
+/// The GBM surface as an EGL native window.
+struct LinearGbmWindow(std::sync::Arc<smithay::reexports::gbm::Surface<()>>);
+
+// `EGLSurface` is `Send` and asks the same of what backs it; the surface is only ever used
+// on the main thread.
+unsafe impl Send for LinearGbmWindow {}
+
+unsafe impl smithay::backend::egl::native::EGLNativeSurface for LinearGbmWindow {
+    unsafe fn create(
+        &self,
+        display: &std::sync::Arc<smithay::backend::egl::display::EGLDisplayHandle>,
+        config_id: smithay::backend::egl::ffi::egl::types::EGLConfig,
+    ) -> Result<*const std::ffi::c_void, smithay::backend::egl::EGLError> {
+        use smithay::{backend::egl::ffi::egl, reexports::gbm::AsRaw};
+        let attributes = [egl::NONE as egl::types::EGLint];
+        let surface = unsafe {
+            egl::CreatePlatformWindowSurfaceEXT(
+                display.handle,
+                config_id,
+                self.0.as_raw() as *mut _,
+                attributes.as_ptr(),
+            )
+        };
+        if surface == egl::NO_SURFACE {
+            return Err(smithay::backend::egl::EGLError::from(
+                unsafe { egl::GetError() } as u32,
+            ));
+        }
+        Ok(surface)
+    }
+
+    fn identifier(&self) -> Option<String> {
+        Some("cross-gpu LINEAR gbm surface".into())
+    }
+}
+
+impl LinearWindowTarget {
+    fn new(
+        gbm: &Device<DrmDeviceFd>,
+        display: &EGLDisplay,
+        size: Size<i32, Buffer>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (gbm_surface, egl_surface) = Self::create_surface(gbm, display, size)?;
+        Ok(Self {
+            offscreen: None,
+            offscreen_age: 0,
+            swapped: false,
+            current: None,
+            dmabufs: HashMap::new(),
+            egl_surface,
+            gbm_surface,
+            gbm: gbm.clone(),
+            display: display.clone(),
+        })
+    }
+
+    fn create_surface(
+        gbm: &Device<DrmDeviceFd>,
+        display: &EGLDisplay,
+        size: Size<i32, Buffer>,
+    ) -> Result<
+        (
+            std::sync::Arc<smithay::reexports::gbm::Surface<()>>,
+            smithay::backend::egl::EGLSurface,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let gbm_surface = std::sync::Arc::new(gbm.create_surface_with_modifiers2::<()>(
+            size.w.max(1) as u32,
+            size.h.max(1) as u32,
+            Format::Argb8888,
+            [smithay::backend::allocator::Modifier::Linear].into_iter(),
+            BufferObjectFlags::RENDERING,
+        )?);
+        let config = argb8888_window_config(display)?;
+        let pixel_format = smithay::backend::egl::display::PixelFormat {
+            hardware_accelerated: true,
+            color_bits: 24,
+            alpha_bits: 8,
+            depth_bits: 0,
+            stencil_bits: 0,
+            stereoscopy: false,
+            multisampling: None,
+            srgb: false,
+        };
+        let egl_surface = unsafe {
+            smithay::backend::egl::EGLSurface::new(
+                display,
+                pixel_format,
+                config,
+                LinearGbmWindow(gbm_surface.clone()),
+            )?
+        };
+        Ok((gbm_surface, egl_surface))
+    }
+
+    fn resize(&mut self, size: Size<i32, Buffer>) -> Result<(), Box<dyn std::error::Error>> {
+        self.settle();
+        self.current = None;
+        self.dmabufs.clear();
+        let (gbm_surface, egl_surface) = Self::create_surface(&self.gbm, &self.display, size)?;
+        self.egl_surface = egl_surface;
+        self.gbm_surface = gbm_surface;
+        Ok(())
+    }
+
+    /// The texture to render the frame into, made for `size` when there is none.
+    fn offscreen(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Buffer>,
+    ) -> Result<GlesTexture, Box<dyn std::error::Error>> {
+        if let Some(texture) = &self.offscreen {
+            return Ok(texture.clone());
+        }
+        let texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size)?;
+        self.offscreen = Some(texture.clone());
+        self.offscreen_age = 0;
+        Ok(texture)
+    }
+
+    /// Draw `offscreen` into the EGL surface and swap it into a LINEAR buffer. The returned
+    /// sync point is reached once that buffer holds the frame; `lock_front` then makes it
+    /// `current`.
+    fn swap(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Buffer>,
+    ) -> Result<smithay::backend::renderer::sync::SyncPoint, Box<dyn std::error::Error>> {
+        use smithay::backend::{
+            egl::fence::EGLFence,
+            renderer::{Frame as _, sync::SyncPoint},
+        };
+        let texture = self
+            .offscreen
+            .clone()
+            .ok_or("no cross-gpu frame to present")?;
+        // Every swap is locked exactly once (GBM's rule).
+        self.lock_front()?;
+        unsafe {
+            renderer
+                .egl_context()
+                .make_current_with_surface(&self.egl_surface)?;
+        }
+        draw_to_back_buffer()?;
+        {
+            let output_size = Size::<i32, Physical>::from((size.w, size.h));
+            let whole = Rectangle::from_size(output_size);
+            let mut framebuffer = renderer.bind(&mut self.egl_surface)?;
+            // Turned over: the window's rows run the other way from the texture's.
+            let mut frame =
+                renderer.render(&mut framebuffer, output_size, Transform::Flipped180)?;
+            // Opaque, so nothing of what the window buffer held before blends in.
+            frame.render_texture_from_to(
+                &texture,
+                Rectangle::from_size(size.to_f64()),
+                whole,
+                &[whole],
+                &[whole],
+                Transform::Normal,
+                1.0,
+                None,
+                &[],
+            )?;
+            let _ = frame.finish()?;
+        }
+        unsafe {
+            renderer
+                .egl_context()
+                .make_current_with_surface(&self.egl_surface)?;
+        }
+        self.egl_surface.swap_buffers(None)?;
+        // The copy into the LINEAR buffer happens at the swap, so the fence goes after it.
+        let sync = match EGLFence::create(renderer.egl_context().display()) {
+            Ok(fence) => {
+                renderer.with_context(|gl| unsafe { gl.Flush() })?;
+                SyncPoint::from(fence)
+            }
+            Err(_) => {
+                renderer.with_context(|gl| unsafe { gl.Finish() })?;
+                SyncPoint::signaled()
+            }
+        };
+        self.swapped = true;
+        Ok(sync)
+    }
+
+    /// Make the buffer of the last swap `current`. This blocks until the render GPU has
+    /// finished the frame, so it is called once the frame's fence is reached.
+    fn lock_front(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        use smithay::{
+            backend::allocator::{dmabuf::AsDmabuf, gbm::GbmBuffer},
+            reexports::gbm::AsRaw,
+        };
+        if !std::mem::take(&mut self.swapped) {
+            return Ok(());
+        }
+        let bo = unsafe { self.gbm_surface.lock_front_buffer() }
+            .map_err(|_| "failed to lock the cross-gpu gbm surface's front buffer")?;
+        let key = bo.as_raw() as usize;
+        let buffer = GbmBuffer::from_bo(bo, false);
+        if !self.dmabufs.contains_key(&key) {
+            self.dmabufs.insert(key, buffer.export()?);
+        }
+        // The previous frame's buffer goes back to the surface here.
+        self.current = Some((key, buffer));
+        Ok(())
+    }
+
+    /// Lock a swap nothing is going to take on any more (its frame was dropped), so the
+    /// surface can be swapped or destroyed again.
+    fn settle(&mut self) {
+        if let Err(error) = self.lock_front() {
+            warn!(?error, "failed to settle the cross-gpu gbm surface");
+        }
+    }
+
+    fn current_dmabuf(&self) -> Option<smithay::backend::allocator::dmabuf::Dmabuf> {
+        let (key, _) = self.current.as_ref()?;
+        self.dmabufs.get(key).cloned()
+    }
+}
+
+/// Point the current context's drawing at the back buffer of the window it is current with.
+///
+/// The renderer's context is made current without a surface first, which leaves the default
+/// framebuffer's draw buffer at `GL_NONE`; the NVIDIA driver keeps it there once a window is
+/// current, and everything drawn into the window is dropped.
+fn draw_to_back_buffer() -> Result<(), Box<dyn std::error::Error>> {
+    const GL_FRAMEBUFFER: u32 = 0x8D40;
+    const GL_BACK: u32 = 0x0405;
+    type BindFramebuffer = unsafe extern "system" fn(u32, u32);
+    type DrawBuffers = unsafe extern "system" fn(i32, *const u32);
+    type ReadBuffer = unsafe extern "system" fn(u32);
+    static FUNCTIONS: OnceLock<Option<(usize, usize, usize)>> = OnceLock::new();
+    let functions = FUNCTIONS.get_or_init(|| {
+        let load = |name: &str| {
+            let name = std::ffi::CString::new(name).ok()?;
+            let function =
+                unsafe { smithay::backend::egl::ffi::egl::GetProcAddress(name.as_ptr()) };
+            (!function.is_null()).then_some(function as usize)
+        };
+        Some((
+            load("glBindFramebuffer")?,
+            load("glDrawBuffers")?,
+            load("glReadBuffer")?,
+        ))
+    });
+    let &Some((bind_framebuffer, draw_buffers, read_buffer)) = functions else {
+        return Err("glDrawBuffers is not available".into());
+    };
+    unsafe {
+        let bind_framebuffer: BindFramebuffer = std::mem::transmute(bind_framebuffer);
+        let draw_buffers: DrawBuffers = std::mem::transmute(draw_buffers);
+        let read_buffer: ReadBuffer = std::mem::transmute(read_buffer);
+        // The draw buffer is state of the framebuffer bound, so the window's goes first.
+        bind_framebuffer(GL_FRAMEBUFFER, 0);
+        draw_buffers(1, &GL_BACK);
+        read_buffer(GL_BACK);
+    }
+    Ok(())
+}
+
+/// An EGL config for windows of ARGB8888 GBM surfaces. The renderer's context has no config
+/// (`EGL_KHR_no_config_context`), so any config of a matching format works with it.
+fn argb8888_window_config(
+    display: &EGLDisplay,
+) -> Result<smithay::backend::egl::ffi::egl::types::EGLConfig, Box<dyn std::error::Error>> {
+    use smithay::backend::egl::ffi::egl;
+    let handle = display.get_display_handle();
+    let attributes = [
+        egl::SURFACE_TYPE as egl::types::EGLint,
+        egl::WINDOW_BIT as egl::types::EGLint,
+        egl::RENDERABLE_TYPE as egl::types::EGLint,
+        egl::OPENGL_ES3_BIT as egl::types::EGLint,
+        egl::RED_SIZE as egl::types::EGLint,
+        8,
+        egl::GREEN_SIZE as egl::types::EGLint,
+        8,
+        egl::BLUE_SIZE as egl::types::EGLint,
+        8,
+        egl::ALPHA_SIZE as egl::types::EGLint,
+        8,
+        egl::NONE as egl::types::EGLint,
+    ];
+    let mut configs: [egl::types::EGLConfig; 64] = [std::ptr::null(); 64];
+    let mut count = 0;
+    let chosen = unsafe {
+        egl::ChooseConfig(
+            handle.handle,
+            attributes.as_ptr(),
+            configs.as_mut_ptr(),
+            configs.len() as egl::types::EGLint,
+            &mut count,
+        )
+    };
+    if chosen == egl::FALSE {
+        return Err("eglChooseConfig failed".into());
+    }
+    configs[..count.max(0) as usize]
+        .iter()
+        .copied()
+        .find(|&config| {
+            let mut visual = 0;
+            let queried = unsafe {
+                egl::GetConfigAttrib(
+                    handle.handle,
+                    config,
+                    egl::NATIVE_VISUAL_ID as egl::types::EGLint,
+                    &mut visual,
+                )
+            };
+            queried != egl::FALSE && visual as u32 == Fourcc::Argb8888 as u32
+        })
+        .ok_or_else(|| "no EGL config for ARGB8888 windows".into())
 }
 
 fn cross_gpu_slot_dmabuf(
@@ -1371,7 +1803,7 @@ fn cross_gpu_cpu_wait_forced() -> bool {
 /// the other outputs) is not held up by the render GPU. Without them the CPU blocks until
 /// the frame is done; smithay's `Renderer::wait` also ends there when importing fails.
 fn wait_for_render_gpu(
-    target: &mut CrossGpuTarget,
+    wait_logged: &mut bool,
     scanout_renderer: &mut GlesRenderer,
     sync: &smithay::backend::renderer::sync::SyncPoint,
     output: &Output,
@@ -1381,8 +1813,8 @@ fn wait_for_render_gpu(
         && smithay::backend::egl::fence::EGLFence::supports_importing(
             scanout_renderer.egl_context().display(),
         );
-    if !target.wait_logged && !sync.is_reached() {
-        target.wait_logged = true;
+    if !*wait_logged && !sync.is_reached() {
+        *wait_logged = true;
         info!(
             output = %output.name(),
             gpu_wait,
@@ -1404,8 +1836,16 @@ fn wait_for_render_gpu(
     }
 }
 
-/// The render GPU's half of `render_cross_gpu_frame`: the frame in a LINEAR buffer, and that
-/// buffer as an element for the output's GPU.
+/// The render GPU's half of a cross-GPU frame.
+enum CrossGpuFrame {
+    /// The frame is ready for the output's GPU (see `CrossGpuTarget::frame_element`).
+    Ready,
+    /// The render GPU is still working on it: the output's GPU takes it on once this sync
+    /// point is reached (`finish_cross_gpu_frame`), without the CPU waiting for it.
+    Pending(smithay::backend::renderer::sync::SyncPoint),
+}
+
+/// The render GPU's half of `render_cross_gpu_frame`: the frame in a LINEAR buffer.
 fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
     target: &mut CrossGpuTarget,
     renderer: &mut GlesRenderer,
@@ -1413,107 +1853,133 @@ fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
     output: &Output,
     elements: &[E],
     clear_color: Color32F,
-) -> Result<(CrossGpuFrameElement, RenderElementStates), Box<dyn std::error::Error>> {
+) -> Result<(CrossGpuFrame, RenderElementStates), Box<dyn std::error::Error>> {
     if output
         .current_mode()
         .is_some_and(|mode| (mode.size.w, mode.size.h) != (target.size.w, target.size.h))
     {
         target.reset(output);
     }
-    let slot = target
-        .swapchain
-        .acquire()?
-        .ok_or("no free buffer to render the cross-gpu frame into")?;
-    let mut dmabuf = cross_gpu_slot_dmabuf(&slot)?;
-    let (changed, sync, states) = {
-        let mut framebuffer = renderer.bind(&mut dmabuf)?;
-        let rendered = target.damage_tracker.render_output(
-            renderer,
-            &mut framebuffer,
-            slot.age() as usize,
-            elements,
-            clear_color,
-        )?;
-        let changed = rendered.damage.is_some_and(|damage| !damage.is_empty());
-        (changed, rendered.sync, rendered.states)
-    };
-    if changed || target.current.is_none() {
-        // The secondary GPU takes no part in the render GPU's implicit sync, so it is
-        // told explicitly to wait for this frame.
-        wait_for_render_gpu(target, scanout_renderer, &sync, output);
-        target.swapchain.submitted(&slot);
-        target.commit.increment();
-        target.current = Some(slot);
+    match &mut target.buffers {
+        CrossGpuBuffers::Swapchain { swapchain, current } => {
+            let slot = swapchain
+                .acquire()?
+                .ok_or("no free buffer to render the cross-gpu frame into")?;
+            let mut dmabuf = cross_gpu_slot_dmabuf(&slot)?;
+            let (changed, sync, states) = {
+                let mut framebuffer = renderer.bind(&mut dmabuf)?;
+                let rendered = target.damage_tracker.render_output(
+                    renderer,
+                    &mut framebuffer,
+                    slot.age() as usize,
+                    elements,
+                    clear_color,
+                )?;
+                let changed = rendered.damage.is_some_and(|damage| !damage.is_empty());
+                (changed, rendered.sync, rendered.states)
+            };
+            if changed || current.is_none() {
+                // The secondary GPU takes no part in the render GPU's implicit sync, so it is
+                // told explicitly to wait for this frame.
+                wait_for_render_gpu(&mut target.wait_logged, scanout_renderer, &sync, output);
+                swapchain.submitted(&slot);
+                target.commit.increment();
+                *current = Some(slot);
+            }
+            Ok((CrossGpuFrame::Ready, states))
+        }
+        CrossGpuBuffers::Window(window) => {
+            // A swap whose frame was dropped is locked first (this may wait for it).
+            window.settle();
+            if !window.gbm_surface.has_free_buffers() {
+                return Err("no free buffer to render the cross-gpu frame into".into());
+            }
+            let mut offscreen = window.offscreen(renderer, target.size)?;
+            let (changed, states) = {
+                let mut framebuffer = renderer.bind(&mut offscreen)?;
+                let rendered = target.damage_tracker.render_output(
+                    renderer,
+                    &mut framebuffer,
+                    window.offscreen_age,
+                    elements,
+                    clear_color,
+                )?;
+                let changed = rendered.damage.is_some_and(|damage| !damage.is_empty());
+                (changed, rendered.states)
+            };
+            window.offscreen_age = 1;
+            if !changed && window.current.is_some() {
+                return Ok((CrossGpuFrame::Ready, states));
+            }
+            let sync = window.swap(renderer, target.size)?;
+            target.commit.increment();
+            if !target.wait_logged {
+                target.wait_logged = true;
+                info!(
+                    output = %output.name(),
+                    exportable = sync.is_exportable(),
+                    "cross-gpu frames: the output's gpu takes each frame on once the render \
+                     gpu's fence is reached"
+                );
+            }
+            Ok((CrossGpuFrame::Pending(sync), states))
+        }
     }
-    let current = target
-        .current
-        .as_ref()
-        .expect("cross-gpu buffer was just set");
-    let texture = scanout_renderer.import_dmabuf(&cross_gpu_slot_dmabuf(current)?, None)?;
-    let transform = output.current_transform();
-    let element = CrossGpuFrameElement {
-        texture: TextureRenderElement::from_static_texture(
-            target.id.clone(),
-            scanout_renderer.context_id(),
-            (0.0, 0.0),
-            texture,
-            1,
-            transform,
-            None,
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        ),
-        commit: target.commit,
-        size: transform
-            .transform_size(target.size)
-            .to_logical(1, Transform::Normal)
-            .to_physical(1),
-    };
-    Ok((element, states))
 }
 
-/// Render `elements` for a `CrossGpuTarget` output: on `renderer` (the render GPU) into the
-/// target's LINEAR buffer, then on `scanout_renderer` (the output's GPU) from that buffer
-/// into the output's framebuffer.
-#[allow(clippy::too_many_arguments)]
-fn render_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
+impl CrossGpuTarget {
+    /// The frame in the LINEAR buffer on screen, as an element for the output's GPU. A frame
+    /// that was `Pending` must have reached its sync point.
+    fn frame_element(
+        &mut self,
+        scanout_renderer: &mut GlesRenderer,
+        output: &Output,
+    ) -> Result<CrossGpuFrameElement, Box<dyn std::error::Error>> {
+        let dmabuf = match &mut self.buffers {
+            CrossGpuBuffers::Swapchain { current, .. } => {
+                cross_gpu_slot_dmabuf(current.as_ref().ok_or("no cross-gpu frame yet")?)?
+            }
+            CrossGpuBuffers::Window(window) => {
+                window.lock_front()?;
+                window.current_dmabuf().ok_or("no cross-gpu frame yet")?
+            }
+        };
+        let texture = scanout_renderer.import_dmabuf(&dmabuf, None)?;
+        let transform = output.current_transform();
+        Ok(CrossGpuFrameElement {
+            texture: TextureRenderElement::from_static_texture(
+                self.id.clone(),
+                scanout_renderer.context_id(),
+                (0.0, 0.0),
+                texture,
+                1,
+                transform,
+                None,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            ),
+            commit: self.commit,
+            size: transform
+                .transform_size(self.size)
+                .to_logical(1, Transform::Normal)
+                .to_physical(1),
+        })
+    }
+}
+
+/// The output's GPU's half of a cross-GPU frame: stage the frame in the output's
+/// `DrmCompositor`. Returns whether the frame is empty.
+fn stage_cross_gpu_frame(
     target: &mut CrossGpuTarget,
-    renderer: &mut GlesRenderer,
     scanout_renderer: &mut GlesRenderer,
     drm_output: &mut GbmDrmOutput,
     output: &Output,
-    elements: &[E],
     clear_color: Color32F,
     frame_flags: FrameFlags,
-) -> Result<TtyRenderFrameResult, Box<dyn std::error::Error>> {
-    let prepared = prepare_cross_gpu_frame(
-        target,
-        renderer,
-        scanout_renderer,
-        output,
-        elements,
-        clear_color,
-    );
-    let (element, states) = match prepared {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            // A frame lost, not the session: nothing went to the kernel yet.
-            warn!(output = %output.name(), ?err, "failed to render the cross-gpu frame");
-            return Ok(TtyRenderFrameResult {
-                is_empty: true,
-                primary_scanout: false,
-                primary_plane_kind: "cross-gpu",
-                overlay_plane_count: 0,
-                overlay_details: Vec::new(),
-                cursor_plane_assigned: false,
-                states: RenderElementStates {
-                    states: Default::default(),
-                },
-            });
-        }
-    };
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let element = target.frame_element(scanout_renderer, output)?;
     // The cursor is in the frame already; nothing of a client can go on a plane of this GPU.
     let frame_flags = frame_flags
         .difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT)
@@ -1525,17 +1991,72 @@ fn render_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
     {
         let _ = element.sync.wait();
     }
-    Ok(TtyRenderFrameResult {
-        is_empty: result.is_empty,
+    Ok(result.is_empty)
+}
+
+/// Render `elements` for a `CrossGpuTarget` output: on `renderer` (the render GPU) into the
+/// target's LINEAR buffer, then on `scanout_renderer` (the output's GPU) from that buffer
+/// into the output's framebuffer. When the render GPU's half is still running, the second
+/// half is left to `finish_cross_gpu_frame` (`cross_gpu_pending`).
+#[allow(clippy::too_many_arguments)]
+fn render_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
+    target: &mut CrossGpuTarget,
+    renderer: &mut GlesRenderer,
+    scanout_renderer: &mut GlesRenderer,
+    drm_output: &mut GbmDrmOutput,
+    output: &Output,
+    elements: &[E],
+    clear_color: Color32F,
+    frame_flags: FrameFlags,
+) -> Result<TtyRenderFrameResult, Box<dyn std::error::Error>> {
+    let mut result = TtyRenderFrameResult {
+        is_empty: true,
         primary_scanout: false,
         primary_plane_kind: "cross-gpu",
         overlay_plane_count: 0,
         overlay_details: Vec::new(),
         cursor_plane_assigned: false,
-        // The client elements' states (for presentation feedback and dmabuf feedback) come
-        // from the render GPU's pass; this GPU only saw the one texture.
-        states,
-    })
+        states: RenderElementStates {
+            states: Default::default(),
+        },
+        cross_gpu_pending: None,
+    };
+    let prepared = prepare_cross_gpu_frame(
+        target,
+        renderer,
+        scanout_renderer,
+        output,
+        elements,
+        clear_color,
+    );
+    let (frame, states) = match prepared {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            // A frame lost, not the session: nothing went to the kernel yet.
+            warn!(output = %output.name(), ?err, "failed to render the cross-gpu frame");
+            return Ok(result);
+        }
+    };
+    // The client elements' states (for presentation feedback and dmabuf feedback) come from
+    // the render GPU's pass; the output's GPU only sees the one texture.
+    result.states = states;
+    match frame {
+        CrossGpuFrame::Ready => {
+            result.is_empty = stage_cross_gpu_frame(
+                target,
+                scanout_renderer,
+                drm_output,
+                output,
+                clear_color,
+                frame_flags,
+            )?;
+        }
+        CrossGpuFrame::Pending(sync) => {
+            result.is_empty = false;
+            result.cross_gpu_pending = Some(sync);
+        }
+    }
+    Ok(result)
 }
 
 impl SurfaceData {
@@ -1591,6 +2112,8 @@ impl SurfaceData {
             ahead_submit: None,
             ahead_held_client_buffers: Vec::new(),
             ahead_attempted: false,
+            cross_gpu_staging: None,
+            cross_gpu_staging_generation: 0,
             in_flight_frame_target: None,
             fullscreen_fast_path_active: false,
             powered_off: false,
@@ -1869,6 +2392,16 @@ fn render_ahead_allowed(surface: &SurfaceData, policy_allows: bool) -> bool {
 }
 
 fn drop_ahead_frame(surface: &mut SurfaceData) {
+    // Every caller drops the deferred frame too, so a frame still on the render GPU is
+    // dropped whichever it was.
+    if let Some(staging) = surface.cross_gpu_staging.take()
+        && staging.flip_done.is_some()
+    {
+        // Its flip completed and `frame_finish` left the surface waiting for this frame:
+        // nothing is in flight any more.
+        surface.frame_pending = false;
+        surface.in_flight_frame_target = None;
+    }
     surface.ahead_submit = None;
     surface.ahead_held_client_buffers.clear();
     surface.ahead_attempted = false;
@@ -2070,6 +2603,9 @@ struct TtyRenderFrameResult {
     overlay_details: Vec<String>,
     cursor_plane_assigned: bool,
     states: RenderElementStates,
+    /// A cross-GPU frame the render GPU is still working on: rendered, but not staged in the
+    /// `DrmCompositor` yet (see `CrossGpuFrame::Pending`).
+    cross_gpu_pending: Option<smithay::backend::renderer::sync::SyncPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2948,6 +3484,19 @@ fn frame_finish(
     };
     // The flip is done, so the next one may get a frame rendered ahead of it.
     surface.ahead_attempted = false;
+    if surface.ahead_submit.is_some()
+        && let Some(staging) = surface
+            .cross_gpu_staging
+            .as_mut()
+            .filter(|staging| staging.ahead)
+    {
+        // The frame rendered ahead is still on the render GPU; `finish_cross_gpu_frame`
+        // submits it once it is staged. Until then it is the frame in flight.
+        staging.flip_done = Some(redraw_needed);
+        surface.frame_pending = true;
+        surface.redraw_state = TtyRedrawState::WaitingForVBlank { redraw_needed };
+        return;
+    }
     if let Some(ahead) = surface.ahead_submit.take() {
         // A frame was rendered ahead while this flip was in flight; it goes next. It
         // carries the cursor, so a pending fast-path move is superseded.
@@ -3303,6 +3852,167 @@ fn submit_ahead_frame(
         }
     }
     submit_deferred_frame(state, loop_handle, node, crtc, generation, false);
+}
+
+/// Have `finish_cross_gpu_frame` take the cross-GPU frame of `generation` on once `sync`
+/// is reached, without the CPU waiting for the render GPU in the meantime.
+fn schedule_cross_gpu_staging(
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    generation: u64,
+    sync: smithay::backend::renderer::sync::SyncPoint,
+) {
+    use smithay::reexports::calloop::{Interest, Mode, PostAction, generic::Generic};
+    if let Some(fence) = sync.export() {
+        let callback_loop_handle = loop_handle.clone();
+        let inserted = loop_handle.insert_source(
+            Generic::new(fence, Interest::READ, Mode::OneShot),
+            move |_, _, state| {
+                finish_cross_gpu_frame(state, &callback_loop_handle, node, crtc, generation);
+                Ok(PostAction::Remove)
+            },
+        );
+        if inserted.is_ok() {
+            return;
+        }
+    }
+    // No fence to watch: wait for the frame here, and take it on once this render is over.
+    let _ = sync.wait();
+    let callback_loop_handle = loop_handle.clone();
+    loop_handle.insert_idle(move |state| {
+        finish_cross_gpu_frame(state, &callback_loop_handle, node, crtc, generation);
+    });
+}
+
+/// The render GPU finished the cross-GPU frame of `generation`: stage it on the output's
+/// GPU and submit it the way it was held (`deferred_submit`, or `ahead_submit` once its
+/// flip is done).
+fn finish_cross_gpu_frame(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    generation: u64,
+) {
+    let (staging, staged) = {
+        let Some(BackendData {
+            renderer, surfaces, ..
+        }) = state.tty_backends.get_mut(&node)
+        else {
+            return;
+        };
+        let Some(surface) = surfaces.get_mut(&crtc) else {
+            return;
+        };
+        // Gone when the frame was dropped (power-off, a mode change, a paused session).
+        let Some(staging) = surface
+            .cross_gpu_staging
+            .take_if(|staging| staging.generation == generation)
+        else {
+            return;
+        };
+        let staged = match (surface.cross_gpu.as_mut(), &mut surface.target) {
+            (Some(target), SurfaceTarget::Drm(drm_output)) => {
+                timescope::scope!("tty stage cross-gpu frame");
+                stage_cross_gpu_frame(
+                    target,
+                    renderer,
+                    drm_output,
+                    &surface.output,
+                    staging.clear_color,
+                    staging.frame_flags,
+                )
+                .map(|_| ())
+            }
+            _ => Err("the output has no cross-gpu target any more".into()),
+        };
+        if ShojiWM::motion_trace_enabled() {
+            let frame_target = if staging.ahead {
+                surface.ahead_submit.as_ref()
+            } else {
+                surface.deferred_submit.as_ref()
+            }
+            .map(|submit| submit.frame_target);
+            let wall = Duration::from(state.clock.now());
+            info!(
+                output = %surface.output.name(),
+                ahead = staging.ahead,
+                flip_done = staging.flip_done.is_some(),
+                wall_ms = wall.as_secs_f64() * 1000.0,
+                frame_time_ms = frame_target.map(|target| target.as_secs_f64() * 1000.0),
+                // Negative: the frame reached the output's GPU after the vblank it was for.
+                slack_ms = frame_target
+                    .map(|target| (target.as_secs_f64() - wall.as_secs_f64()) * 1000.0),
+                "motion trace: cross-gpu staged"
+            );
+        }
+        if let Err(error) = &staged {
+            warn!(
+                output = %surface.output.name(),
+                ?error,
+                "failed to stage the cross-gpu frame; rendering a new one"
+            );
+            if staging.ahead {
+                surface.ahead_submit = None;
+                surface.ahead_held_client_buffers.clear();
+                if staging.flip_done.is_some() {
+                    surface.frame_pending = false;
+                    surface.in_flight_frame_target = None;
+                    surface.redraw_state = TtyRedrawState::Idle;
+                }
+            } else {
+                surface.deferred_submit = None;
+                surface.deferred_submit_generation =
+                    surface.deferred_submit_generation.wrapping_add(1);
+                surface.frame_pending = false;
+                surface.redraw_state = TtyRedrawState::Idle;
+                surface.held_client_buffers.clear();
+            }
+        }
+        (staging, staged)
+    };
+    if staged.is_err() {
+        state.schedule_redraw();
+        return;
+    }
+    if !staging.ahead {
+        submit_deferred_frame(
+            state,
+            loop_handle,
+            node,
+            crtc,
+            staging.deferred_generation,
+            false,
+        );
+        return;
+    }
+    // An ahead frame goes once the flip before it is done; `frame_finish` did not submit it
+    // if that flip completed first.
+    let Some(flip_redraw_needed) = staging.flip_done else {
+        return;
+    };
+    let ahead = {
+        let Some(surface) = state
+            .tty_backends
+            .get_mut(&node)
+            .and_then(|backend| backend.surfaces.get_mut(&crtc))
+        else {
+            return;
+        };
+        let Some(ahead) = surface.ahead_submit.take() else {
+            return;
+        };
+        surface.held_client_buffers = std::mem::take(&mut surface.ahead_held_client_buffers);
+        surface.cursor_move_pending = false;
+        let redraw_needed = flip_redraw_needed
+            || surface.redraw_state
+                == TtyRedrawState::WaitingForVBlank {
+                    redraw_needed: true,
+                };
+        (ahead, redraw_needed)
+    };
+    submit_ahead_frame(state, loop_handle, node, crtc, ahead.0, ahead.1);
 }
 
 /// Deadline for a commit that wants to land on the next vblank while carrying
@@ -5659,6 +6369,7 @@ fn render_surface(
                                                     .cursor_element
                                                     .is_some(),
                                                 states: result.states,
+                                                cross_gpu_pending: None,
                                             }
                                         })
                                 } else {
@@ -5719,6 +6430,7 @@ fn render_surface(
                                                     .cursor_element
                                                     .is_some(),
                                                 states: result.states,
+                                                cross_gpu_pending: None,
                                             }
                                         })
                                 }
@@ -5728,7 +6440,7 @@ fn render_surface(
                     }
                 }
             };
-        let result = match render_frame_result {
+        let mut result = match render_frame_result {
             Ok(result) => result,
             Err(err) => {
                 if error_chain_has_drm_test_failed(err.as_ref())
@@ -6073,8 +6785,12 @@ fn render_surface(
             // `frame_pending`/`WaitingForVBlank` are set for both paths, so
             // the existing throttling treats the held frame as in-flight and
             // the cursor fast path patches it instead of committing.
+            // A cross-GPU frame still on the render GPU is held like a deferred one, and
+            // staged and submitted by `finish_cross_gpu_frame`.
+            let cross_gpu_pending = result.cross_gpu_pending.take();
             let mut deferred = false;
             if !rendering_ahead
+                && cross_gpu_pending.is_none()
                 && !should_tear
                 && cursor_fast_path_enabled()
                 && result.cursor_plane_assigned
@@ -6116,7 +6832,11 @@ fn render_surface(
                         .map(|(anchor_mono, _, _)| anchor_mono),
                     frame_target: frame_time,
                 });
-            } else if deferred {
+            } else if deferred || cross_gpu_pending.is_some() {
+                if cross_gpu_pending.is_some() {
+                    surface.deferred_submit_generation =
+                        surface.deferred_submit_generation.wrapping_add(1);
+                }
                 surface.deferred_submit = Some(DeferredSubmit {
                     feedback: output_presentation_feedback,
                     total_cpu_elapsed,
@@ -6216,6 +6936,21 @@ fn render_surface(
                 }
                 surface.queued_at = Some(queue_started_at);
                 surface.queued_cpu_duration = total_cpu_elapsed;
+            }
+            surface.cross_gpu_staging = None;
+            if let Some(sync) = cross_gpu_pending {
+                surface.cross_gpu_staging_generation =
+                    surface.cross_gpu_staging_generation.wrapping_add(1);
+                let generation = surface.cross_gpu_staging_generation;
+                surface.cross_gpu_staging = Some(CrossGpuStaging {
+                    generation,
+                    ahead: rendering_ahead,
+                    deferred_generation: surface.deferred_submit_generation,
+                    clear_color: frame_clear_color.into(),
+                    frame_flags,
+                    flip_done: None,
+                });
+                schedule_cross_gpu_staging(loop_handle, node, crtc, generation, sync);
             }
             surface.frame_pending = true;
             surface.in_flight_frame_target = Some(frame_time);
@@ -12752,6 +13487,17 @@ fn connector_connected(
         }
     };
 
+    let cross_gpu = cross_gpu_render.and_then(|(render_node, gbm, _)| {
+        info!(
+            ?node,
+            ?render_node,
+            output = %output.name(),
+            "output is on another gpu than clients render with; rendering it there and copying"
+        );
+        let render_backend = state.tty_backends.get(&render_node)?;
+        Some(CrossGpuTarget::new(&gbm, &render_backend.renderer, &output))
+    });
+
     let backend = state.tty_backends.get_mut(&node).unwrap();
 
     let supports_async_flip = drm_output.supports_async_page_flip();
@@ -12762,15 +13508,6 @@ fn connector_connected(
         supports_async_flip,
         "tty surface async page-flip (tearing) capability"
     );
-    let cross_gpu = cross_gpu_render.map(|(render_node, gbm, _)| {
-        info!(
-            ?node,
-            ?render_node,
-            output = %output.name(),
-            "output is on another gpu than clients render with; rendering it there and copying"
-        );
-        CrossGpuTarget::new(&gbm, &output)
-    });
     let surface = SurfaceData::new(
         output.clone(),
         SurfaceTarget::Drm(drm_output),
@@ -16694,4 +17431,166 @@ fn tty_window_stack_elements(
     stats.max_window_elapsed_ms = max_window_elapsed_ms;
     stats.max_window_id = max_window_id;
     Ok(())
+}
+
+/// Cross-GPU frames on real GPUs: what the output's GPU reads must match what it would have
+/// rendered itself. Needs two GPUs: `SHOJI_TEST_RENDER_NODE` (the render GPU, e.g. NVIDIA's
+/// `/dev/dri/renderD129`) and `SHOJI_TEST_SCANOUT_NODE` (the output's GPU).
+#[cfg(test)]
+mod cross_gpu_hardware_tests {
+    use super::*;
+    use smithay::{
+        backend::renderer::element::solid::SolidColorRenderElement,
+        output::{PhysicalProperties, Subpixel},
+        utils::DeviceFd,
+    };
+
+    const SIZE: (i32, i32) = (640, 400);
+
+    fn open(variable: &str) -> (Device<DrmDeviceFd>, GlesRenderer) {
+        let path = std::env::var(variable).unwrap_or_else(|_| panic!("set {variable}"));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let fd = DrmDeviceFd::new(DeviceFd::from(std::os::fd::OwnedFd::from(file)));
+        let gbm = Device::new(fd).unwrap();
+        let egl = unsafe { EGLDisplay::new(gbm.clone()) }.unwrap();
+        let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl).unwrap()) }.unwrap();
+        (gbm, renderer)
+    }
+
+    fn output() -> Output {
+        let output = Output::new(
+            "cross-gpu-test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+                serial_number: String::new(),
+            },
+        );
+        let mode = WlMode {
+            size: SIZE.into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            Some(smithay::output::Scale::Integer(1)),
+            Some((0, 0).into()),
+        );
+        output
+    }
+
+    /// `elements` rendered on `renderer`, read back row by row.
+    fn read_back<E: RenderElement<GlesRenderer>>(
+        renderer: &mut GlesRenderer,
+        elements: &[E],
+    ) -> Vec<u8> {
+        let size = Size::<i32, Buffer>::from(SIZE);
+        let mut texture =
+            Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size).unwrap();
+        let mut framebuffer = renderer.bind(&mut texture).unwrap();
+        let mut tracker = OutputDamageTracker::new(SIZE, 1.0, Transform::Normal);
+        tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                elements,
+                Color32F::new(0.0, 0.0, 0.0, 1.0),
+            )
+            .unwrap();
+        let mapping = renderer
+            .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
+            .unwrap();
+        renderer.map_texture(&mapping).unwrap().to_vec()
+    }
+
+    fn scene(square_x: i32, commit: &mut CommitCounter, id: &Id) -> Vec<SolidColorRenderElement> {
+        commit.increment();
+        vec![
+            // A red square near the top, over a blue bottom half: wrong way up or left
+            // behind where the square was, it shows.
+            SolidColorRenderElement::new(
+                id.clone(),
+                Rectangle::new((square_x, 20).into(), (100, 100).into()),
+                *commit,
+                Color32F::new(1.0, 0.0, 0.0, 1.0),
+                Kind::Unspecified,
+            ),
+            SolidColorRenderElement::new(
+                Id::new(),
+                Rectangle::new((0, SIZE.1 / 2).into(), (SIZE.0, SIZE.1 / 2).into()),
+                CommitCounter::default(),
+                Color32F::new(0.0, 0.0, 1.0, 1.0),
+                Kind::Unspecified,
+            ),
+        ]
+    }
+
+    fn differing_pixels(a: &[u8], b: &[u8]) -> usize {
+        a.chunks(4)
+            .zip(b.chunks(4))
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(a, b)| a.abs_diff(*b) > 2))
+            .count()
+    }
+
+    #[test]
+    #[ignore = "needs two GPUs (SHOJI_TEST_RENDER_NODE, SHOJI_TEST_SCANOUT_NODE)"]
+    fn cross_gpu_frames_match_rendering_on_the_output_gpu() {
+        let (render_gbm, mut render) = open("SHOJI_TEST_RENDER_NODE");
+        let (_scanout_gbm, mut scanout) = open("SHOJI_TEST_SCANOUT_NODE");
+        let output = output();
+        let mut target = CrossGpuTarget::new(&render_gbm, &render, &output);
+        eprintln!(
+            "buffers: {}",
+            match target.buffers {
+                CrossGpuBuffers::Swapchain { .. } => "LINEAR swapchain",
+                CrossGpuBuffers::Window(_) => "LINEAR gbm window",
+            }
+        );
+        let id = Id::new();
+        let mut commit = CommitCounter::default();
+        for (frame, square_x) in [0, 300, 300, 120].into_iter().enumerate() {
+            let elements = scene(square_x, &mut commit, &id);
+            let expected = read_back(&mut scanout, &elements);
+            let (prepared, _) = prepare_cross_gpu_frame(
+                &mut target,
+                &mut render,
+                &mut scanout,
+                &output,
+                &elements,
+                Color32F::new(0.0, 0.0, 0.0, 1.0),
+            )
+            .unwrap();
+            if let CrossGpuFrame::Pending(sync) = prepared {
+                // The event loop waits on the exported fence; here the CPU does.
+                assert!(
+                    sync.export().is_some(),
+                    "the frame's fence cannot be exported"
+                );
+                sync.wait().unwrap();
+            }
+            let element = target.frame_element(&mut scanout, &output).unwrap();
+            let actual = read_back(&mut scanout, &[element]);
+            let differing = differing_pixels(&expected, &actual);
+            let row = |pixels: &[u8], y: i32| {
+                let offset = ((y * SIZE.0 + 50) * 4) as usize;
+                pixels[offset..offset + 4].to_vec()
+            };
+            eprintln!(
+                "frame {frame}: {differing} pixels differ; at x=50 y=50 expected {:?} got {:?}, \
+                 y=350 expected {:?} got {:?}",
+                row(&expected, 50),
+                row(&actual, 50),
+                row(&expected, 350),
+                row(&actual, 350),
+            );
+            assert_eq!(differing, 0, "frame {frame}");
+        }
+    }
 }
