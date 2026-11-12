@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     time::{Duration, Instant},
 };
@@ -832,23 +832,50 @@ fn grow_mask(mask: &mut [f32], width: i32, height: i32, radius: i32) {
     let (width, height) = (width as usize, height as usize);
     let radius = radius as usize;
     let mut line = Vec::new();
+    let mut window = VecDeque::new();
     for y in 0..height {
         line.clear();
         line.extend_from_slice(&mask[y * width..(y + 1) * width]);
-        for x in 0..width {
-            let start = x.saturating_sub(radius);
-            let end = (x + radius + 1).min(width);
-            mask[y * width + x] = line[start..end].iter().copied().fold(0.0, f32::max);
-        }
+        max_filter_line(&line, radius, &mut window, |x, value| {
+            mask[y * width + x] = value
+        });
     }
     for x in 0..width {
         line.clear();
         line.extend((0..height).map(|y| mask[y * width + x]));
-        for y in 0..height {
-            let start = y.saturating_sub(radius);
-            let end = (y + radius + 1).min(height);
-            mask[y * width + x] = line[start..end].iter().copied().fold(0.0, f32::max);
+        max_filter_line(&line, radius, &mut window, |y, value| {
+            mask[y * width + x] = value
+        });
+    }
+}
+
+/// The highest value within `radius` of each index along a line. `window`
+/// holds the indices that can still be a maximum, their values decreasing,
+/// so each index goes in and out once: the cost does not grow with the
+/// radius.
+fn max_filter_line(
+    line: &[f32],
+    radius: usize,
+    window: &mut VecDeque<usize>,
+    mut write: impl FnMut(usize, f32),
+) {
+    window.clear();
+    let mut next = 0;
+    for index in 0..line.len() {
+        let end = (index + radius + 1).min(line.len());
+        while next < end {
+            while window.back().is_some_and(|&back| line[back] <= line[next]) {
+                window.pop_back();
+            }
+            window.push_back(next);
+            next += 1;
         }
+        let start = index.saturating_sub(radius);
+        while window.front().is_some_and(|&front| front < start) {
+            window.pop_front();
+        }
+        // `index` itself is in its window, so the window is never empty.
+        write(index, line[window[0]]);
     }
 }
 
@@ -1009,6 +1036,27 @@ mod tests {
         assert_eq!(mask[7 + 1], 0.5);
         assert_eq!(mask[5 * 7 + 5], 0.5);
         assert_eq!(mask[0], 0.0);
+    }
+
+    #[test]
+    fn grow_mask_takes_the_highest_value_in_reach() {
+        let (width, height, radius) = (13usize, 5usize, 3usize);
+        let mask: Vec<f32> = (0..width * height)
+            .map(|index| ((index * 7919) % 101) as f32 / 100.0)
+            .collect();
+        let mut grown = mask.clone();
+        grow_mask(&mut grown, width as i32, height as i32, radius as i32);
+        for y in 0..height {
+            for x in 0..width {
+                let mut expected = 0.0f32;
+                for sy in y.saturating_sub(radius)..(y + radius + 1).min(height) {
+                    for sx in x.saturating_sub(radius)..(x + radius + 1).min(width) {
+                        expected = expected.max(mask[sy * width + sx]);
+                    }
+                }
+                assert_eq!(grown[y * width + x], expected, "at ({x}, {y})");
+            }
+        }
     }
 
     #[test]

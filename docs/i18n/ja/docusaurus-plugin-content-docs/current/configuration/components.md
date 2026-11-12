@@ -364,6 +364,17 @@ Button::new().child(
 （`"start" | "center" | "end"`）・`textOverflow`（既定の `"clip"`、または枠に
 収まらないラベルの末尾を「…」にする `"ellipsis"`）・`lineHeight`。
 
+`textShadow` はテキストをオフセット・ぼかし・色付けしてその下に描きます。
+`{x, y, blur, spread, color}` 1 つで、CSS の `text-shadow` と同じ意味、長さは論理
+ピクセルです。`spread` はぼかす前にグリフを太らせ、淡い光でなく濃いグローにします。
+オフセットなしでぼかすとグローになります。影はラベルの枠の外まで描かれますが、親の
+`overflow` によるクリップは受けます。
+
+```tsx
+<Label text={title} style={{ color: '#ffffff', textShadow: { y: 1, color: '#000000b3' } }} />
+<Label text={title} style={{ color: '#000000', textShadow: { blur: 6, color: '#ffffffcc' } }} />
+```
+
 ```tsx
 const style: SSDStyle = {
   height: 28,

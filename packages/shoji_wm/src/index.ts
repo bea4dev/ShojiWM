@@ -710,6 +710,7 @@ export type {
   PaintShaderHandle,
   PaintOutsets,
   BoxShadowValue,
+  TextShadowValue,
   UnitStageHandle,
   WindowEffectAssignment,
   WindowEffectHandle,

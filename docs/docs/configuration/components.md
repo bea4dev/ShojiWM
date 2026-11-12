@@ -373,6 +373,17 @@ number), `fontFamily` (string or string array of fallbacks), `textAlign`
 (`"start" | "center" | "end"`), `textOverflow` (`"clip"`, the default, or
 `"ellipsis"` to end a label too long for its box in "…"), `lineHeight`.
 
+`textShadow` draws the text again under it, offset, blurred and tinted: one
+`{x, y, blur, spread, color}` value, CSS `text-shadow` semantics, lengths in
+logical pixels. `spread` grows the glyphs before the blur, for a dense glow
+rather than a faint halo. With no offset and a blur it is a glow. The shadow
+may reach past the label's box; the parent's `overflow` still clips it.
+
+```tsx
+<Label text={title} style={{ color: '#ffffff', textShadow: { y: 1, color: '#000000b3' } }} />
+<Label text={title} style={{ color: '#000000', textShadow: { blur: 6, color: '#ffffffcc' } }} />
+```
+
 ```tsx
 const style: SSDStyle = {
   height: 28,
