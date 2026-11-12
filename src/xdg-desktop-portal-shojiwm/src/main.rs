@@ -1,3 +1,4 @@
+mod external_picker;
 mod i18n;
 mod picker;
 mod pipewire_stream;
