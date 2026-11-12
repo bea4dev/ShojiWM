@@ -929,6 +929,7 @@ interface RuntimeWindowAction {
     | "fullscreen"
     | "unfullscreen"
     | "focus"
+    | "focusOnRequest"
     | "scheduleAnimation"
     | "cancelAnimation";
   animation?: RuntimeManagedWindowAnimation;
@@ -3755,6 +3756,12 @@ function createRuntimeCacheEntry(
       entry.pendingActions.push({
         windowId: latestSnapshot.id,
         action: "focus",
+      });
+    },
+    focusOnRequest() {
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "focusOnRequest",
       });
     },
     scheduleAnimation(options) {

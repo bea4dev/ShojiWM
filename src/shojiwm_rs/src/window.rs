@@ -286,8 +286,19 @@ impl Window {
         self.act(WaylandWindowAction::Unfullscreen);
     }
 
+    /// Focus the window on the config's own initiative, at its open for
+    /// one. The compositor refuses it for a window that opened before the
+    /// one the keyboard is meant for while the user has used neither.
     pub fn focus(&self) {
         self.act(WaylandWindowAction::Focus);
+    }
+
+    /// Focus the window because it was asked for by name: a pick in a dock
+    /// or a switcher the config serves, a request over its socket, a layout
+    /// that decides the focus itself. Never refused the way [`Self::focus`]
+    /// is.
+    pub fn focus_on_request(&self) {
+        self.act(WaylandWindowAction::FocusOnRequest);
     }
 
     /// Let the compositor animate the managed rect / offset / opacity.

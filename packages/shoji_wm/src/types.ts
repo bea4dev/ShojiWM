@@ -348,6 +348,17 @@ export interface WaylandWindow {
    * `COMPOSITOR.event.onFocus` リスナーに通知します。
    */
   focus(): void;
+  /**
+   * Like `focus()`, for a window the user asked for by name: a pick in a dock
+   * or a switcher the config serves, a request over its socket. `focus()` is
+   * refused for a window that opened before the one that has the keyboard
+   * while the user has used neither; this is not.
+   * `focus()` と同じですが、ユーザーが名指しで求めたウィンドウ用です（設定が
+   * 提供するドックやスイッチャーでの選択、ソケット経由の要求など）。どちらの
+   * ウィンドウもまだ使われていない間、キーボードを持つウィンドウより先に開いた
+   * ウィンドウへの `focus()` は拒否されますが、こちらは拒否されません。
+   */
+  focusOnRequest(): void;
   /** Schedule a managed-window animation (position, size, etc.) via the SSD pipeline. / SSD パイプライン経由でマネージドウィンドウのアニメーション（位置・サイズ等）をスケジュールします。 */
   scheduleAnimation(options: ManagedWindowScheduleAnimationOptions): void;
   /** Cancel a running animation on this window. Pass a channel name to cancel only that channel. / 実行中のアニメーションをキャンセルします。チャンネル名を渡すとそのチャンネルのみキャンセルします。 */
@@ -3983,6 +3994,7 @@ export interface WaylandWindowActions {
   fullscreen(): void;
   unfullscreen(): void;
   focus(): void;
+  focusOnRequest(): void;
   scheduleAnimation(options: ManagedWindowScheduleAnimationOptions): void;
   cancelAnimation(channel?: string): void;
   setCloseAnimationDuration(durationMs: number): void;
