@@ -106,7 +106,9 @@ the first tick after enable or a reload, then each move, with moves between two
 ticks coalesced. In a Rust config it is
 `COMPOSITOR.event.on_keyboard_focus_change(|focus| ...)`, and
 `COMPOSITOR.input.keyboard_focus()` is a signal holding the last report
-(`focus.window_id`).
+(`focus.window_id`). There the report also names the window the keyboard is
+meant for (`focus.focused_window_id`), the one whose `is_focused` is true, as
+of now where the windows' own signals change with the next frame.
 
 ## Pointer (mouse) settings
 

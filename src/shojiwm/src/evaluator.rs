@@ -984,6 +984,12 @@ impl EmbeddedDecorationEvaluator {
     }
 
     pub fn set_keyboard_focus(&self, focus: KeyboardFocusSnapshot) {
+        // The event is the keyboard moving. The window it is meant for is
+        // `isFocused` in TypeScript, so a change of that alone is not sent.
+        let focus = KeyboardFocusSnapshot {
+            window_id: focus.window_id,
+            focused_window_id: None,
+        };
         if let Ok(mut current) = self.keyboard_focus.lock() {
             *current = Some(focus);
         }
@@ -6855,8 +6861,9 @@ COMPOSITOR.event.onDisable((event) => event.persist("focus", focus));
 "#,
         )
         .unwrap();
-        let focus = |window: Option<&str>| KeyboardFocusSnapshot {
+        let focus = |window: Option<&str>, meant_for: &str| KeyboardFocusSnapshot {
             window_id: window.map(str::to_owned),
+            focused_window_id: Some(meant_for.to_owned()),
         };
         let evaluator = EmbeddedDecorationEvaluator::for_paths(
             repository_root.join("tools/decoration-runtime.ts"),
@@ -6865,13 +6872,15 @@ COMPOSITOR.event.onDisable((event) => event.persist("focus", focus));
         .with_working_dir(&repository_root);
         evaluator.lifecycle_enable("initial", None).unwrap();
         evaluator.scheduler_tick(1.0, None, &[]).unwrap();
-        for (tick, window) in [
-            (2.0, Some("1")),
-            (3.0, Some("1")),
-            (4.0, None),
-            (5.0, Some("2")),
+        // The window the keyboard is meant for is not the event's: a
+        // change of it alone reaches no listener.
+        for (tick, window, meant_for) in [
+            (2.0, Some("1"), "1"),
+            (3.0, Some("1"), "2"),
+            (4.0, None, "2"),
+            (5.0, Some("2"), "2"),
         ] {
-            evaluator.set_keyboard_focus(focus(window));
+            evaluator.set_keyboard_focus(focus(window, meant_for));
             evaluator.scheduler_tick(tick, None, &[]).unwrap();
         }
         let state = evaluator.lifecycle_disable("reload").unwrap();

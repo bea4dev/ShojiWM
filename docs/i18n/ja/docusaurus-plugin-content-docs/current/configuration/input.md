@@ -80,6 +80,9 @@ COMPOSITOR.event.onKeyboardFocusChange(({windowId}) => {
 現在のウィンドウを、その後は移動のたびに通知し、二つのティックの間の移動はまとめられます。
 Rust の設定では `COMPOSITOR.event.on_keyboard_focus_change(|focus| ...)` で、
 `COMPOSITOR.input.keyboard_focus()` が最後の通知を持つシグナルです（`focus.window_id`）。
+Rust ではこの通知に、キーボードの宛先であるウィンドウ（`is_focused` が真のウィンドウ）も
+含まれます（`focus.focused_window_id`）。ウィンドウ自身のシグナルは次のフレームで変わりますが、
+こちらはその時点の値です。
 
 ## ポインター（マウス）設定
 
