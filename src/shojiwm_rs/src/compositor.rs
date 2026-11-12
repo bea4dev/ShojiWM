@@ -52,7 +52,7 @@ use shojiwm_lib::{
 };
 
 pub use shojiwm_lib::cursor::{
-    CursorPositionSnapshot, RuntimeCursorPositionTarget as CursorPosition,
+    CursorPositionSnapshot, CursorTransform, RuntimeCursorPositionTarget as CursorPosition,
 };
 pub use shojiwm_lib::frame_pacing::FramePacing;
 use shojiwm_lib::runtime_pointer_region::PointerRegionSpec;
@@ -309,6 +309,32 @@ impl CursorController {
             .map(shojiwm_lib::cursor::CursorOverride::parse)
             .transpose()?;
         runtime::send(HostMessage::CursorOverride(kind));
+        Ok(())
+    }
+
+    /// Draw the cursor image scaled along its own axes, then rotated, both
+    /// around its hotspot, until called again; `None` (or the identity) draws
+    /// it as is. `rotate` is in degrees, clockwise; a negative scale mirrors
+    /// the image. Scales must be non-zero and within ±8. While a transform is
+    /// set the cursor is drawn into the frame instead of on the cursor plane.
+    /// Not shown in a nested (windowed) session, where the host draws the
+    /// cursor.
+    ///
+    /// ```no_run
+    /// use shojiwm_rs::prelude::*;
+    ///
+    /// let _ = COMPOSITOR.cursor.set_transform(Some(CursorTransform {
+    ///     rotate: -12.0,
+    ///     scale_x: 1.3,
+    ///     scale_y: 0.85,
+    /// }));
+    /// ```
+    pub fn set_transform(&self, transform: Option<CursorTransform>) -> Result<(), String> {
+        let transform = match transform {
+            Some(transform) => transform.validated()?,
+            None => None,
+        };
+        runtime::send(HostMessage::CursorTransform(transform));
         Ok(())
     }
 

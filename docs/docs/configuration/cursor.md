@@ -119,6 +119,29 @@ A typical use is [during a drag](./drag-and-drop.md#changing-the-cursor-during-a
 In a nested (windowed) session the host draws the cursor, so the override
 has no visible effect there.
 
+## Rotating and stretching the cursor
+
+`setTransform(transform)` draws the cursor image scaled along its own axes,
+then rotated, both around the hotspot, until it is called again. `rotate` is
+in degrees, clockwise; a negative scale mirrors the image. Omitted fields keep
+their identity value, and `null` draws the cursor as is.
+
+```ts
+// Lean into the direction of travel and stretch along it.
+COMPOSITOR.cursor.setTransform({ rotate: -12, scaleX: 1.3, scaleY: 0.85 });
+COMPOSITOR.cursor.setTransform(null); // back to normal
+```
+
+Scales must be non-zero and within ±8; anything else throws. The transform
+applies to theme cursors and client cursor surfaces alike, and stacks with
+`overrideKind`. While a transform is set, the cursor is drawn into the frame
+instead of on the display's cursor plane, so every pointer move repaints the
+area under it, as with any software cursor. The Rust SDK takes the same
+values as `COMPOSITOR.cursor.set_transform(Some(CursorTransform { .. }))`.
+
+In a nested (windowed) session the host draws the cursor, so the transform
+has no visible effect there.
+
 ## Ignoring app pointer locks
 
 Games and other apps can lock the cursor in place or confine it to their

@@ -82,6 +82,9 @@ pub enum HostMessage {
     CursorPosition(crate::cursor::RuntimeCursorPositionTarget),
     /// Show one cursor everywhere, or stop (`COMPOSITOR.cursor.overrideKind`).
     CursorOverride(Option<crate::cursor::CursorOverride>),
+    /// Rotate and scale the cursor image, or stop
+    /// (`COMPOSITOR.cursor.setTransform`).
+    CursorTransform(Option<crate::cursor::CursorTransform>),
     /// Show, move, restyle or dispose of a drag view (`drag.show()`).
     DragView(crate::dnd::DragViewCommand),
     /// Start the session locked (`COMPOSITOR.session.startLocked`), like

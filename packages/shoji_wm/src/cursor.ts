@@ -121,6 +121,28 @@ export const CURSOR_CONTROLLER: CursorController = {
     ).__SHOJI_CURSOR_OVERRIDE__;
     native?.(kind);
   },
+  setTransform(transform) {
+    if (transform !== null && (typeof transform !== "object" || Array.isArray(transform))) {
+      throw new Error("cursor setTransform: transform must be an object or null");
+    }
+    const rotate = transform?.rotate ?? 0;
+    const scaleX = transform?.scaleX ?? 1;
+    const scaleY = transform?.scaleY ?? 1;
+    if (!Number.isFinite(rotate)) {
+      throw new Error("cursor setTransform: rotate must be a finite number");
+    }
+    for (const [name, scale] of [["scaleX", scaleX], ["scaleY", scaleY]] as const) {
+      if (!Number.isFinite(scale) || scale === 0 || Math.abs(scale) > 8) {
+        throw new Error(`cursor setTransform: ${name} must be non-zero and within ±8`);
+      }
+    }
+    const native = (
+      globalThis as {
+        __SHOJI_CURSOR_TRANSFORM__?: (rotate: number, scaleX: number, scaleY: number) => void;
+      }
+    ).__SHOJI_CURSOR_TRANSFORM__;
+    native?.(rotate, scaleX, scaleY);
+  },
 };
 
 export function takePendingCursorConfig():

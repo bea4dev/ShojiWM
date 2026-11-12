@@ -64,6 +64,64 @@ impl CursorOverride {
     }
 }
 
+/// `COMPOSITOR.cursor.setTransform`: the cursor image is scaled along its own
+/// axes, then rotated, both around the hotspot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorTransform {
+    /// Degrees, clockwise on screen.
+    pub rotate: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+}
+
+impl Default for CursorTransform {
+    fn default() -> Self {
+        Self {
+            rotate: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        }
+    }
+}
+
+impl CursorTransform {
+    /// The largest scale on either axis; bounds the texture the cursor is
+    /// redrawn into.
+    pub const MAX_SCALE: f64 = 8.0;
+
+    /// `None` for the identity, which draws the cursor untouched (and lets it
+    /// back onto the cursor plane).
+    pub fn validated(self) -> Result<Option<Self>, String> {
+        if !self.rotate.is_finite() {
+            return Err(format!(
+                "cursor transform: rotate must be finite, got {}",
+                self.rotate
+            ));
+        }
+        for (name, scale) in [("scaleX", self.scale_x), ("scaleY", self.scale_y)] {
+            if !scale.is_finite() || scale == 0.0 || scale.abs() > Self::MAX_SCALE {
+                return Err(format!(
+                    "cursor transform: {name} must be non-zero and within ±{}, got {scale}",
+                    Self::MAX_SCALE
+                ));
+            }
+        }
+        let identity =
+            self.rotate.rem_euclid(360.0) == 0.0 && self.scale_x == 1.0 && self.scale_y == 1.0;
+        Ok((!identity).then_some(self))
+    }
+
+    /// The linear part in screen space (y down): `rotate · scale`, as
+    /// `[[a, b], [c, d]]` mapping `(x, y)` to `(a x + b y, c x + d y)`.
+    pub fn matrix(&self) -> [[f64; 2]; 2] {
+        let (sin, cos) = self.rotate.to_radians().sin_cos();
+        [
+            [cos * self.scale_x, -sin * self.scale_y],
+            [sin * self.scale_x, cos * self.scale_y],
+        ]
+    }
+}
+
 fn center_anchor() -> crate::runtime_pointer_region::PointerRegionAnchor {
     crate::runtime_pointer_region::PointerRegionAnchor::Center
 }
