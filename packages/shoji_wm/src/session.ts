@@ -1,10 +1,11 @@
 import type { SessionController } from "./types";
-import { configureLockBackground } from "./session-lock";
+import { configureLockBackground, isSessionLocked } from "./session-lock";
 
 let startLocked = false;
 
 export const SESSION_CONTROLLER: SessionController = {
   configureLockBackground,
+  isLocked: isSessionLocked,
   get startLocked(): boolean {
     return startLocked;
   },

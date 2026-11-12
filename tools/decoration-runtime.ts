@@ -1,5 +1,6 @@
 interface EmbeddedRuntimeBridge {
   configureLockBackground(background: import("../packages/shoji_wm/src/session-lock").LockBackgroundSelection): boolean;
+  isSessionLocked(): boolean;
   createOverlay(output: string, placement: string, maxDuration: number, effect: unknown, persistent: boolean): number;
   waitOverlay(id: number): Promise<void>;
   waitOverlayClosed(id: number): Promise<void>;
@@ -898,6 +899,7 @@ interface RuntimeWindowAction {
     | "fullscreen"
     | "unfullscreen"
     | "focus"
+    | "unfocus"
     | "scheduleAnimation"
     | "cancelAnimation";
   animation?: RuntimeManagedWindowAnimation;
@@ -3689,6 +3691,12 @@ function createRuntimeCacheEntry(
       entry.pendingActions.push({
         windowId: latestSnapshot.id,
         action: "focus",
+      });
+    },
+    unfocus() {
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "unfocus",
       });
     },
     scheduleAnimation(options) {

@@ -115,6 +115,12 @@ async function revealDesktop(output: string, unlock: () => void) {
 アニメーションは組み込まれていません。シェーダーと、動きを減らす設定向けの代替は
 設定側で用意してください。
 
+## ロック状態
+
+`COMPOSITOR.session.isLocked()`（Rust では `COMPOSITOR.session.is_locked()`）は、
+現在セッションがロックされているかどうかを返します。`locked: true` で登録した
+キーバインドはどちらの状態でも発火するので、これを読んで区別できます。
+
 ## Rust
 
 Rust SDK にも同じ API があります。

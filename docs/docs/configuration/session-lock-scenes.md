@@ -119,6 +119,12 @@ async function revealDesktop(output: string, unlock: () => void) {
 
 No animation is built in. Bring your own shader and a reduced-motion fallback.
 
+## Lock state
+
+`COMPOSITOR.session.isLocked()` (`COMPOSITOR.session.is_locked()` in Rust)
+says whether the session is locked now. A key binding registered with
+`locked: true` fires in both states and can read it to tell them apart.
+
 ## Rust
 
 The Rust SDK has the same API:

@@ -1377,6 +1377,12 @@ impl SessionController {
     pub fn configure_lock_background(&self, background: LockBackground) -> Result<bool, String> {
         crate::overlay::configure_lock_background(background)
     }
+
+    /// Whether the session is locked now. A key binding registered `locked`
+    /// reads it to tell which of the two states fired it.
+    pub fn is_locked(&self) -> bool {
+        shojiwm_lib::backend::lock_scene::is_locked()
+    }
 }
 
 /// `COMPOSITOR.debug`.
