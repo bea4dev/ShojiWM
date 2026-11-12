@@ -471,7 +471,11 @@ impl ShojiWM {
                 flags |= bit;
             }
         };
-        set(flag::ACTIVE, snapshot.is_focused);
+        // Not on minimized windows: when a minimize leaves nothing else to
+        // take the keyboard, the snapshot keeps `is_focused` on the minimized
+        // window, and a taskbar toggling on `active` would never restore it.
+        // `states_for_snapshot` applies the same correction for wlr clients.
+        set(flag::ACTIVE, snapshot.is_focused && !minimized);
         set(flag::MINIMIZED, minimized);
         set(flag::MAXIMIZED, snapshot.is_maximized);
         set(flag::FULLSCREEN, snapshot.is_fullscreen);
