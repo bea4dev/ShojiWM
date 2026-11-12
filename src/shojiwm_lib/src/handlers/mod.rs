@@ -107,6 +107,7 @@ impl SeatHandler for ShojiWM {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let previous_owner = self.window_keyboard_focus_owner.clone();
         self.sync_window_keyboard_focus_from_surface(focused);
+        self.sync_pointer_constraint_with_keyboard_focus(focused);
 
         // The TS runtime only observes focus through `isFocused` snapshot
         // diffs taken when a window is re-evaluated. A window that is skipped
@@ -157,6 +158,13 @@ impl PointerConstraintsHandler for ShojiWM {
             return;
         }
         if pointer.current_focus().as_ref() != Some(surface) {
+            return;
+        }
+        let keyboard_focus = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if !crate::input::surface_has_keyboard_focus(surface, keyboard_focus.as_ref()) {
             return;
         }
         let Some((focused_surface, surface_origin)) = self.pointer_contents.surface.as_ref() else {

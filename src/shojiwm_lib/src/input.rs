@@ -3898,6 +3898,20 @@ impl ShojiWM {
         &mut self,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
+        let keyboard_focus = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        self.activate_pointer_constraint_with_keyboard_focus(location, keyboard_focus.as_ref());
+    }
+
+    /// `keyboard_focus` is passed in because the keyboard is locked while
+    /// smithay reports a focus change.
+    fn activate_pointer_constraint_with_keyboard_focus(
+        &mut self,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
+        keyboard_focus: Option<&WlSurface>,
+    ) {
         if self.app_lock_ignored {
             return;
         }
@@ -3907,7 +3921,9 @@ impl ShojiWM {
         let Some((surface, surface_origin)) = self.surface_under(location) else {
             return;
         };
-        if pointer.current_focus().as_ref() != Some(&surface) {
+        if pointer.current_focus().as_ref() != Some(&surface)
+            || !surface_has_keyboard_focus(&surface, keyboard_focus)
+        {
             return;
         }
 
@@ -3924,6 +3940,46 @@ impl ShojiWM {
             }
         });
     }
+
+    /// A client's lock or confinement holds only while its surface has the
+    /// keyboard, as in sway and Hyprland: the keyboard moving to `focused`
+    /// releases the one under the pointer, or takes a persistent one back.
+    pub(crate) fn sync_pointer_constraint_with_keyboard_focus(
+        &mut self,
+        focused: Option<&WlSurface>,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some((surface, _)) = self.pointer_contents.surface.clone() else {
+            return;
+        };
+        if surface_has_keyboard_focus(&surface, focused) {
+            self.activate_pointer_constraint_with_keyboard_focus(
+                pointer.current_location(),
+                focused,
+            );
+            return;
+        }
+        with_pointer_constraint(&surface, &pointer, |constraint| {
+            if let Some(constraint) = constraint.filter(|constraint| constraint.is_active()) {
+                constraint.deactivate();
+            }
+        });
+    }
+}
+
+/// Whether the keyboard focus is `surface` or the surface it is a
+/// subsurface of.
+pub(crate) fn surface_has_keyboard_focus(
+    surface: &WlSurface,
+    keyboard_focus: Option<&WlSurface>,
+) -> bool {
+    let mut root = surface.clone();
+    while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+        root = parent;
+    }
+    keyboard_focus == Some(&root)
 }
 
 fn resize_edges_to_cursor_icon(edges: ResizeEdges) -> CursorIcon {
