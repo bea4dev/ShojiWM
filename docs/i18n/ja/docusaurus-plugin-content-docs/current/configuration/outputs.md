@@ -314,6 +314,38 @@ COMPOSITOR.output.setPower('on');
   スクリーンショットや画面共有は、点灯するまで失敗します（画面共有ポータルは
   再試行します）。
 
+## ディスプレイのない出力（ヘッドレス）
+
+`COMPOSITOR.output.create` はコネクターのない出力を追加し、その名前を返します。
+`COMPOSITOR.output.remove` で取り除きます。
+
+```ts
+const name = COMPOSITOR.output.create({width: 1280, height: 720}); // 'HEADLESS-1'
+COMPOSITOR.output.create({name: 'stream', width: 1920, height: 1080, scale: 1.5});
+COMPOSITOR.output.remove(name);
+```
+
+`name` を省くと、使われていない最小の `n` で `HEADLESS-<n>` になります。`scale` は
+初期スケールで、ほかの出力と同じく `configure` で変えられます。Rust の設定では
+`COMPOSITOR.output.create(HeadlessOutputOptions { width: 1280, height: 720, ..Default::default() })`
+です。
+
+以後は、誰も見ていないだけの通常の出力です:
+
+- クライアントから見え（`wl_output`、`xdg-output`）、レイヤーサーフェスを置いたり
+  ウィンドウを移したりできます。
+- `COMPOSITOR.output.list` に含まれ、作成・削除で出力変更イベントが起きるので、
+  `configure` が配置します。指定がなければ、接続中の出力の右、y 0 に、作った順に
+  並びます。
+- ポインターは実際の画面と同じように移動できます。
+- スクリーンショットや画面共有（`grim -o`、画面共有ポータル）が使えます。描画は
+  60 Hz で、それらとその出力上のクライアントのためだけに行われます。
+
+ヘッドレス出力は TTY セッションでのみ使え、ネスト実行にはありません。削除するか
+コンポジターが終了するまで残り、設定の再読み込みでも消えません。起動時に作る
+設定では `name` を付けてください。再読み込みで 2 つ目を作らずに済みます。
+使用中の名前で作ろうとすると、ログに警告を出して失敗します。
+
 ## フレームの出し方（トリプルバッファ）
 
 `COMPOSITOR.rendering.framePacing` は、各出力でフレームをどう出すかを決めます。

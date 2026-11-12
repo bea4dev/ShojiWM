@@ -38,6 +38,7 @@ pub mod foreign_toplevel;
 pub mod frame_pacing;
 pub mod grabs;
 pub mod handlers;
+pub mod headless_output;
 pub mod input;
 pub mod keyboard_layout;
 pub mod log_rate_limit;

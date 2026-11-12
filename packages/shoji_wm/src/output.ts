@@ -1,5 +1,6 @@
 import type {
   DisplayConfigDraft,
+  HeadlessOutputOptions,
   OutputConfigEntry,
   OutputConfigureContext,
   OutputConfigureFactory,
@@ -323,6 +324,60 @@ export function setOutputPower(
   native?.(power, options.output ?? "", options.wakeOnInput === true);
 }
 
+type NativeHeadlessOutput = (
+  action: "create" | "remove",
+  name: string,
+  width: number,
+  height: number,
+  scale: number,
+) => void;
+
+function nativeHeadlessOutput(): NativeHeadlessOutput | undefined {
+  return (globalThis as { __SHOJI_HEADLESS_OUTPUT__?: NativeHeadlessOutput })
+    .__SHOJI_HEADLESS_OUTPUT__;
+}
+
+/** Names given to headless outputs that the output state may not show yet. */
+const createdHeadlessOutputs = new Set<string>();
+
+export function createHeadlessOutput(options: HeadlessOutputOptions): string {
+  const { width, height, scale } = options;
+  for (const [field, value] of [
+    ["width", width],
+    ["height", height],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new TypeError(
+        `headless output ${field} must be a positive integer, got ${String(value)}`,
+      );
+    }
+  }
+  if (scale !== undefined && !(Number.isFinite(scale) && scale > 0)) {
+    throw new TypeError(
+      `headless output scale must be a positive number, got ${String(scale)}`,
+    );
+  }
+  let name = options.name;
+  if (name === undefined) {
+    let n = 1;
+    while (
+      currentOutputState[`HEADLESS-${n}`] ||
+      createdHeadlessOutputs.has(`HEADLESS-${n}`)
+    ) {
+      n += 1;
+    }
+    name = `HEADLESS-${n}`;
+  }
+  createdHeadlessOutputs.add(name);
+  nativeHeadlessOutput()?.("create", name, width, height, scale ?? 0);
+  return name;
+}
+
+export function removeHeadlessOutput(outputName: string): void {
+  createdHeadlessOutputs.delete(outputName);
+  nativeHeadlessOutput()?.("remove", outputName, 0, 0, 0);
+}
+
 export const OUTPUT_CONTROLLER: OutputController = {
   get list() {
     return Object.values(currentOutputState)
@@ -356,6 +411,12 @@ export const OUTPUT_CONTROLLER: OutputController = {
   },
   setPower(power, options) {
     setOutputPower(power, options);
+  },
+  create(options) {
+    return createHeadlessOutput(options);
+  },
+  remove(outputName) {
+    removeHeadlessOutput(outputName);
   },
 };
 

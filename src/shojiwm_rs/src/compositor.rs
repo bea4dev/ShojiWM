@@ -16,7 +16,8 @@
 //! inside callbacks.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
     sync::{Arc, Mutex},
 };
@@ -25,6 +26,7 @@ use shojiwm_lib::{
     activation_environment::RuntimeEnvOperation,
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
+    headless_output::RuntimeHeadlessOutputRequest,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     output_power::RuntimeOutputPowerRequest,
     runtime_api::HostMessage,
@@ -980,6 +982,61 @@ impl OutputController {
             wake_on_input: options.wake_on_input,
         }));
     }
+
+    /// `create({ name?, width, height, scale? })`: add an output with no
+    /// connector and return its name. It is an ordinary output from then on:
+    /// clients see it, the display configuration places it (right of the
+    /// connected outputs unless told otherwise), the pointer crosses onto it
+    /// and screen capture records it. Without a name it is `HEADLESS-<n>`,
+    /// the lowest `n` free. Only the TTY backend has headless outputs.
+    pub fn create(&self, options: HeadlessOutputOptions) -> String {
+        let name = options.name.unwrap_or_else(|| {
+            let outputs = untrack(|| runtime::global().outputs.get());
+            CREATED_HEADLESS.with_borrow(|created| {
+                (1..)
+                    .map(|n| format!("HEADLESS-{n}"))
+                    .find(|name| !outputs.contains_key(name) && !created.contains(name))
+                    .unwrap()
+            })
+        });
+        CREATED_HEADLESS.with_borrow_mut(|created| created.insert(name.clone()));
+        runtime::send(HostMessage::HeadlessOutput(
+            RuntimeHeadlessOutputRequest::Create {
+                name: name.clone(),
+                width: options.width,
+                height: options.height,
+                scale: options.scale,
+            },
+        ));
+        name
+    }
+
+    /// `remove(name)`: remove an output [`create`](Self::create) made.
+    pub fn remove(&self, name: &str) {
+        CREATED_HEADLESS.with_borrow_mut(|created| created.remove(name));
+        runtime::send(HostMessage::HeadlessOutput(
+            RuntimeHeadlessOutputRequest::Remove {
+                name: name.to_string(),
+            },
+        ));
+    }
+}
+
+thread_local! {
+    /// Names this config gave headless outputs, which the output snapshots
+    /// may not show yet.
+    static CREATED_HEADLESS: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+/// Options of [`OutputController::create`].
+#[derive(Debug, Clone, Default)]
+pub struct HeadlessOutputOptions {
+    pub name: Option<String>,
+    /// Size in pixels.
+    pub width: i32,
+    pub height: i32,
+    /// The scale it starts with; the display configuration can change it.
+    pub scale: Option<f64>,
 }
 
 pub use shojiwm_lib::output_power::OutputPowerMode as OutputPower;

@@ -887,6 +887,11 @@ fn set_display_state(state: BTreeMap<String, shojiwm_lib::ssd::WaylandOutputSnap
         current: state.clone(),
     };
     batch(|| {
+        // Layers are synced per output when its effects are evaluated, which
+        // a removed output never is again.
+        for output in &event.removed {
+            sync_layers(&output.name, &[]);
+        }
         global.outputs.set(state);
         animation::sync_output_poll_groups();
         compositor::reconfigure_outputs(false);

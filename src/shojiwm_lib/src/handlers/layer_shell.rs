@@ -54,12 +54,21 @@ impl WlrLayerShellHandler for ShojiWM {
         _layer_kind: Layer,
         namespace: String,
     ) {
-        // A client may still hold the wl_output of a disconnected monitor; that
-        // Output is out of the space and would never render or close the layer.
+        // A client may still hold the wl_output of a disconnected monitor and
+        // ask for a layer on it before it handles the global's removal. That
+        // layer belongs to the gone output, so it is closed like the ones the
+        // removal closed, never placed on another output.
+        if let Some(wl_output) = &wl_output
+            && !Output::from_resource(wl_output)
+                .is_some_and(|output| self.space.outputs().any(|candidate| *candidate == output))
+        {
+            debug!(%namespace, "layer surface asked for a removed output; closing it");
+            surface.send_close();
+            return;
+        }
         let output = wl_output
             .as_ref()
             .and_then(Output::from_resource)
-            .filter(|output| self.space.outputs().any(|candidate| candidate == output))
             .or_else(|| {
                 let pos = self.seat.get_pointer()?.current_location();
                 let pos_i = pos.to_i32_floor();
