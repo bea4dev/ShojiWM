@@ -148,15 +148,21 @@ pub struct ManagedRuntimeService {
     pub last_started_generation: u64,
 }
 
+/// The variables another compositor's session leaves behind. A process
+/// started here must not see them at all: programs check whether
+/// `HYPRLAND_INSTANCE_SIGNATURE` or `SWAYSOCK` is set, not whether it is
+/// empty, and then talk to a compositor that is not running.
+pub(crate) const FOREIGN_COMPOSITOR_ENV: [&str; 5] = [
+    "NIRI_SOCKET",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+    "SWAYSOCK",
+    "I3SOCK",
+    "LABWC_PID",
+];
+
 fn prepare_runtime_process_environment(command: &mut Command) {
-    for key in [
-        "NIRI_SOCKET",
-        "HYPRLAND_INSTANCE_SIGNATURE",
-        "SWAYSOCK",
-        "I3SOCK",
-        "LABWC_PID",
-    ] {
-        command.env(key, "");
+    for key in FOREIGN_COMPOSITOR_ENV {
+        command.env_remove(key);
     }
 
     command.env("XDG_CURRENT_DESKTOP", "ShojiWM");
@@ -256,5 +262,24 @@ mod tests {
         assert_eq!(delays, [1, 2, 4, 8, 16, 30, 30, 30]);
         assert!(!backoff.is_due(now + Duration::from_secs(29)));
         assert!(backoff.is_due(now + SERVICE_SPAWN_RETRY_MAX));
+    }
+    #[test]
+    fn another_compositors_variables_are_unset_in_a_child() {
+        // `${VAR+set}` is empty only when VAR is unset; an empty VAR is set.
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "for v in NIRI_SOCKET HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK I3SOCK LABWC_PID; do \
+             eval \"[ -z \\\"\\${$v+set}\\\" ]\" || exit 1; done",
+        ]);
+        for key in FOREIGN_COMPOSITOR_ENV {
+            command.env(key, "left-over");
+        }
+        prepare_runtime_process_environment(&mut command);
+        let status = command.status().expect("sh runs");
+        assert!(
+            status.success(),
+            "a foreign compositor variable is still set"
+        );
     }
 }
