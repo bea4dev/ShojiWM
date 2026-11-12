@@ -548,6 +548,9 @@ pub struct ShojiWM {
     pub consumed_pointer_buttons: HashSet<(String, u32)>,
     pub modifier_tap: crate::modifier_tap::ModifierTapTracker,
     pub pending_tap_binding_ids: Vec<String>,
+    /// A binding whose key the keyboard filter left to the client, run right
+    /// after.
+    pub non_consuming_key_binding_id: Option<String>,
     /// A pointer focus refresh waits in an idle callback.
     pub pointer_focus_refresh_queued: bool,
     /// The lid switch's last state; `None` until one reports.
@@ -1994,6 +1997,7 @@ impl ShojiWM {
             consumed_pointer_buttons: HashSet::new(),
             modifier_tap: Default::default(),
             pending_tap_binding_ids: Vec::new(),
+            non_consuming_key_binding_id: None,
             pointer_focus_refresh_queued: false,
             lid_closed: None,
             lid_initial: false,

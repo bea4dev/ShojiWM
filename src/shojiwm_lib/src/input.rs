@@ -167,6 +167,30 @@ fn modifier_class_of_keysym(keysym: u32) -> Option<crate::runtime_key_binding::M
     }
 }
 
+impl ShojiWM {
+    /// What the keyboard filter answers for a binding its key matched: the
+    /// key is taken for it, or left to the client with the binding kept for
+    /// [`Self::take_non_consuming_key_binding`].
+    fn key_binding_filter_result(
+        &mut self,
+        binding: &crate::runtime_key_binding::CompiledRuntimeKeyBinding,
+    ) -> FilterResult<KeyboardAction> {
+        if binding.non_consuming {
+            self.non_consuming_key_binding_id = Some(binding.id.clone());
+            FilterResult::Forward
+        } else {
+            FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(binding.id.clone()))
+        }
+    }
+
+    /// The binding to run for a key the filter forwarded.
+    fn take_non_consuming_key_binding(&mut self) -> Option<KeyboardAction> {
+        self.non_consuming_key_binding_id
+            .take()
+            .map(KeyboardAction::RuntimeKeyBinding)
+    }
+}
+
 fn unfocused_popup_focus_debug_enabled() -> bool {
     std::env::var_os("SHOJI_UNFOCUSED_POPUP_FOCUS_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -345,13 +369,12 @@ impl ShojiWM {
                     .iter()
                     .find(|binding| binding.matches(phase, modifiers, &handle))
                 {
-                    Some(binding) => FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(
-                        binding.id.clone(),
-                    )),
+                    Some(binding) => data.key_binding_filter_result(binding),
                     None => FilterResult::Forward,
                 }
             },
         );
+        let action = self.take_non_consuming_key_binding().or(action);
         match action {
             Some(KeyboardAction::ChangeVt(vt)) => self.change_vt(vt),
             Some(KeyboardAction::RuntimeKeyBinding(binding_id)) => {
@@ -1291,14 +1314,11 @@ impl ShojiWM {
                                 return FilterResult::Intercept(KeyboardAction::DismissPopup);
                             }
 
-                            if let Some(binding_id) = runtime_key_bindings
+                            if let Some(binding) = runtime_key_bindings
                                 .iter()
                                 .find(|binding| binding.matches(key_phase, modifiers, &handle))
-                                .map(|binding| binding.id.clone())
                             {
-                                return FilterResult::Intercept(KeyboardAction::RuntimeKeyBinding(
-                                    binding_id,
-                                ));
+                                return data.key_binding_filter_result(binding);
                             }
 
                             if matches!(
@@ -1358,6 +1378,7 @@ impl ShojiWM {
                         },
                     )
                     .unwrap_or(KeyboardAction::Forward);
+                let action = self.take_non_consuming_key_binding().unwrap_or(action);
                 self.refresh_app_lock_ignored();
 
                 match action {
@@ -1684,17 +1705,21 @@ impl ShojiWM {
                 }
 
                 if button_state == ButtonState::Pressed {
-                    let binding_id = self
+                    let binding = self
                         .runtime_key_bindings
                         .iter()
                         .find(|binding| {
                             binding.matches_mouse_button(button, &self.current_keyboard_modifiers)
                         })
-                        .map(|binding| binding.id.clone());
-                    if let Some(binding_id) = binding_id {
-                        self.consumed_pointer_buttons.insert(button_key);
-                        self.run_runtime_key_binding(&binding_id);
-                        return;
+                        .map(|binding| (binding.id.clone(), binding.non_consuming));
+                    if let Some((binding_id, non_consuming)) = binding {
+                        if non_consuming {
+                            self.run_runtime_key_binding(&binding_id);
+                        } else {
+                            self.consumed_pointer_buttons.insert(button_key);
+                            self.run_runtime_key_binding(&binding_id);
+                            return;
+                        }
                     }
                 }
 

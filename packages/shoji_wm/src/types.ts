@@ -2020,6 +2020,14 @@ export interface KeyBindingOptions {
    * `on: "press"` のキー専用です。
    */
   repeat?: boolean;
+  /**
+   * Keys and mouse buttons only: run the handler and still deliver the key or
+   * the button to the client it was meant for, instead of taking it. A bare
+   * modifier tap and a wheel direction are rejected.
+   * キーとマウスボタン専用: ハンドラーを実行しつつ、キーやボタンを奪わずに本来の
+   * クライアントへも届けます。修飾キー単体のタップとホイール方向は拒否されます。
+   */
+  nonConsuming?: boolean;
 }
 
 /**
@@ -2031,14 +2039,16 @@ export interface KeyBindingOptions {
  * `"Super+WheelScrollUp"` or `"Super+MouseForward"`. `"Super+code:10"` names
  * the physical key with xkb keycode 10 (the evdev code plus 8), whatever the
  * layout puts on it.
- * `MouseBack` and `MouseForward` use the standard Linux side-button codes.
+ * `MouseLeft`, `MouseRight`, `MouseMiddle`, `MouseBack` and `MouseForward` use
+ * the standard Linux button codes.
  * Side-button shortcuts only accept `on: "press"`; their release is consumed
  * with the press, while unmatched buttons keep reaching applications.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
  * `shortcut` は `"Super+T"`、`"Super+Shift+Left"`、`"Super+WheelScrollUp"`、
  * `"Super+MouseForward"` のような記法を使います。`"Super+code:10"` は、
  * レイアウトに関係なく xkb キーコード 10（evdev コード + 8）の物理キーを指します。
- * `MouseBack` と `MouseForward` は Linux 標準のサイドボタンのコードを使います。
+ * `MouseLeft`、`MouseRight`、`MouseMiddle`、`MouseBack`、`MouseForward` は
+ * Linux 標準のボタンコードを使います。
  * サイドボタンのショートカットは `on: "press"` のみ指定でき、リリースも押下と一緒に
  * 消費されます。一致しなかったボタンはこれまでどおりアプリケーションに届きます。
  *
