@@ -757,10 +757,12 @@ fn sync_layers(output_name: &str, layers: &[WaylandLayerSnapshot]) {
         next.insert(layer.id.clone(), layer.clone());
     }
     let mut order = global.layer_order.get_untracked();
+    // The core hands one output's evaluation the layers of every output.
     order.retain(|id| {
-        previous
-            .get(id)
-            .is_some_and(|layer| layer.output_name != output_name)
+        !layers.iter().any(|layer| layer.id == *id)
+            && previous
+                .get(id)
+                .is_some_and(|layer| layer.output_name != output_name)
     });
     order.extend(layers.iter().map(|layer| layer.id.clone()));
     if order != global.layer_order.get_untracked() {
