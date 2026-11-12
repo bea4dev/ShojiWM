@@ -13,6 +13,7 @@ use super::{
 use crate::{
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
+    power::{PowerStateSnapshot, ResumeSnapshot},
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
@@ -42,6 +43,7 @@ pub struct RuntimeHandle {
     keyboard_layout: Option<KeyboardLayoutSnapshot>,
     keyboard_locks: Option<KeyboardLocksSnapshot>,
     lid_switch: Option<LidSwitchSnapshot>,
+    power_state: Option<PowerStateSnapshot>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -73,6 +75,7 @@ impl RuntimeHandle {
             keyboard_layout: None,
             keyboard_locks: None,
             lid_switch: None,
+            power_state: None,
         }
     }
 
@@ -162,6 +165,20 @@ impl RuntimeHandle {
         true
     }
 
+    /// Returns whether the power state differs from the last one sent.
+    pub fn sync_power_state(&mut self, state: PowerStateSnapshot) -> bool {
+        if self.power_state.as_ref() == Some(&state) {
+            return false;
+        }
+        self.power_state = Some(state.clone());
+        self.post(0.0, RuntimeEvent::PowerState(state));
+        true
+    }
+
+    pub fn post_resume(&mut self, resume: ResumeSnapshot) {
+        self.post(0.0, RuntimeEvent::Resume(resume));
+    }
+
     /// Forget what was sent, so the next sync re-sends everything. Used after
     /// a reload, whose fresh config has not seen any state yet.
     pub fn reset_synced_state(&mut self) {
@@ -170,6 +187,7 @@ impl RuntimeHandle {
         self.keyboard_layout = None;
         self.keyboard_locks = None;
         self.lid_switch = None;
+        self.power_state = None;
     }
 
     pub fn evaluate_window(

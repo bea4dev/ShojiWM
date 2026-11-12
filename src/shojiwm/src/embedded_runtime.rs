@@ -295,6 +295,10 @@ pub struct NativeSchedulerRequest {
     pub keyboard_layout: Option<shojiwm_lib::keyboard_layout::KeyboardLayoutSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lid_switch: Option<shojiwm_lib::lid_switch::LidSwitchSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_state: Option<shojiwm_lib::power::PowerStateSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<shojiwm_lib::power::ResumeSnapshot>,
 }
 
 enum BridgeRequest {
@@ -2561,6 +2565,31 @@ fn op_shoji_cursor_set_position(
     }
 }
 
+/// `COMPOSITOR.power`: `takeOver` (`action` is `"take-over"`, with `lid`), or a
+/// logind action such as `"suspend"`. Sent like any other host side effect.
+#[op2(fast)]
+fn op_shoji_power(
+    state: &mut OpState,
+    #[string] action: &str,
+    lid: bool,
+) -> Result<(), std::io::Error> {
+    use shojiwm_lib::power::{PowerAction, RuntimePowerRequest};
+    let request = if action == "take-over" {
+        RuntimePowerRequest::TakeOver { lid }
+    } else {
+        RuntimePowerRequest::Perform(PowerAction::parse(action).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown power action `{action}`"),
+            )
+        })?)
+    };
+    if let Some(host) = isolate_host(state) {
+        host.send(shojiwm_lib::runtime_api::HostMessage::Power(request));
+    }
+    Ok(())
+}
+
 /// `COMPOSITOR.cursor.getPosition`: the compositor publishes the cursor after every
 /// pointer motion, so this reads it without a round trip.
 #[op2]
@@ -2660,6 +2689,7 @@ extension!(
         op_shoji_process_id,
         op_shoji_wake_compositor,
         op_shoji_output_power,
+        op_shoji_power,
         op_shoji_headless_output,
         op_shoji_input_grab,
         op_shoji_cursor_set_position,

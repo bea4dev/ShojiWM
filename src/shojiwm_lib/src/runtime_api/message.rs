@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use crate::{
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
+    power::{PowerStateSnapshot, ResumeSnapshot},
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
@@ -202,6 +203,10 @@ pub enum RuntimeEvent {
     KeyboardLocks(KeyboardLocksSnapshot),
     /// The laptop lid was closed or opened.
     LidSwitch(LidSwitchSnapshot),
+    /// External power or logind's lid settings changed.
+    PowerState(PowerStateSnapshot),
+    /// The system came back from a suspend or hibernation.
+    Resume(ResumeSnapshot),
     /// Pointer hook the config asked to receive asynchronously. A result, if
     /// any, comes back as `HostMessage::PointerHookResult`.
     PointerMove(PointerMoveEventSnapshot),

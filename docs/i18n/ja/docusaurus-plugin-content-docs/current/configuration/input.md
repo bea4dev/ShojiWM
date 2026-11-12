@@ -80,6 +80,16 @@ COMPOSITOR.event.onLidSwitch(({closed}) => {
 `COMPOSITOR.event.on_lid_switch(|lid| ...)` がすぐに呼ばれ、
 `COMPOSITOR.input.lid_switch()` が最後の状態を持つシグナルです（最初の報告までは `None`）。
 
+`initial` は、そのイベントが蓋の動きではなく、もともとの状態を伝えているときに `true` です。
+スイッチが立ち上がったとき（起動時や別の VT から戻ったとき）に報告した状態や、
+リロード後の設定が最初に受け取る状態がこれに当たります。ノートパソコンによっては、
+蓋が開いていてもこの形で「閉じている」と報告するので、動作のきっかけには
+`initial: false` のイベントだけを使ってください。
+
+このイベントは蓋の状態を知らせるだけです。systemd-logind は `logind.conf` のとおりに
+蓋に反応してサスペンドし、その順序は設定とは無関係です。蓋の動作を設定で決めるには、
+蓋を logind から引き受けます。[電源と蓋](power.md)を参照してください。
+
 ## ポインター（マウス）設定
 
 `pointer` — `InputDeviceConfig.pointer` オブジェクト。

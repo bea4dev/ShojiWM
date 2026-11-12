@@ -5155,6 +5155,7 @@ dependencies = [
  "xcursor",
  "xkbcommon",
  "xwayland-satellite",
+ "zbus",
 ]
 
 [[package]]

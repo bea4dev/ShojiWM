@@ -74,6 +74,7 @@ pub mod input_grab;
 pub mod ipc;
 pub mod output_composition;
 pub mod overlay;
+pub mod power;
 mod published;
 pub mod reactive;
 mod runtime;
@@ -125,6 +126,9 @@ pub mod prelude {
             perspective, pick_plane, project_point, screen_camera, transform3d,
         },
         overlay::{Overlay, OverlayHandle, OverlayPlacement, snapshot_source},
+        power::{
+            LogindLidActions, PowerAction, PowerStateSnapshot, PowerTakeOverOptions, ResumeSnapshot,
+        },
         reactive::{
             Get, Memo, Prop, ReadSignal, Scope, Signal, batch, derive, effect, memo, on_cleanup,
             signal, untrack,
@@ -153,7 +157,7 @@ pub use shojiwm_lib::runtime_api::{self, *};
 pub use shojiwm_lib::ssd;
 /// Config types the compositor consumes (outputs, input, processes, ...).
 pub use shojiwm_lib::{
-    config, cursor, frame_pacing, keyboard_layout, runtime_debug, runtime_input,
+    config, cursor, frame_pacing, keyboard_layout, lid_switch, runtime_debug, runtime_input,
     runtime_input_grab, runtime_key_binding, runtime_pointer_region, runtime_process,
     runtime_workspace,
 };

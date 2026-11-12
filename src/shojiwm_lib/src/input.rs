@@ -2619,6 +2619,11 @@ impl ShojiWM {
                 );
                 self.runtime_gesture_pinch_fingers = 0;
             }
+            InputEvent::DeviceAdded { device }
+                if device.has_capability(smithay::backend::input::DeviceCapability::Switch) =>
+            {
+                self.switch_device_added();
+            }
             InputEvent::SwitchToggle { event } => {
                 if event.switch() == Some(Switch::Lid) {
                     self.lid_switch_toggled(event.state() == SwitchState::On);

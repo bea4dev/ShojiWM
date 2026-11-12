@@ -22,6 +22,7 @@ import {
 import { createWindowGrid } from "./window-grid";
 import { createFlip3D } from "./flip-3d";
 import { installDragAndDrop } from "./drag-and-drop";
+import { bindLidPolicy } from "./lid-policy";
 import { createWindowComposition, windowStackOrder } from "./window-composition";
 import {
   captionButtonAt,
@@ -45,6 +46,18 @@ COMPOSITOR.env.publish();
 COMPOSITOR.cursor.configure({
   theme: "Bibata-Modern-Ice",
   size: 24,
+});
+
+// Closing the lid does what logind.conf says ("logind"); set onBattery or
+// onExternalPower to "suspend", "hibernate", "ignore", ... to choose. While it
+// is shut with another display on, the built-in panel stays dark. See
+// ./lid-policy.ts for the callbacks and the guards against a stuck lid switch.
+bindLidPolicy({
+  onBattery: (_context) => {
+    COMPOSITOR.power.suspend();
+  },
+  onExternalPower: "ignore",
+  internalPanelOff: true,
 });
 
 COMPOSITOR.process.once("GTK-CSD-control-buttons", {

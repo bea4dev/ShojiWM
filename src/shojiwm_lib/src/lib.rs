@@ -48,6 +48,7 @@ pub mod output_power;
 pub mod plasma_virtual_desktop;
 pub mod plasma_window_management;
 pub mod pointer_dispatch;
+pub mod power;
 pub mod presentation;
 pub mod presentation_test_client;
 pub mod process_env;

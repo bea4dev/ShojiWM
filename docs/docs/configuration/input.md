@@ -108,6 +108,16 @@ an unsubscribe function. In a Rust config it is
 `COMPOSITOR.input.lid_switch()` is a signal holding the last state (`None`
 before the first report).
 
+`initial` is `true` when the event tells where the lid already was rather than
+a movement: the state the switch reported when it came up (at startup, or back
+from another VT), or the state a reloaded config starts with. Some laptops'
+switches report closed this way while the lid is open, so start actions only on
+events with `initial: false`.
+
+These events only report the lid: systemd-logind still suspends on it as
+`logind.conf` says, in no defined order with the config. To decide what the lid
+does, take it from logind; see [Power and the lid](power.md).
+
 ## Pointer (mouse) settings
 
 `pointer` — an `InputDeviceConfig.pointer` object.

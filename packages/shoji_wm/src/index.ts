@@ -71,6 +71,14 @@ import type {
   OutputPower,
   OutputPowerOptions,
   HeadlessOutputOptions,
+  LogindLidActions,
+  PowerAction,
+  PowerController,
+  PowerState,
+  PowerStateListener,
+  PowerTakeOverOptions,
+  ResumeEvent,
+  ResumeListener,
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
@@ -214,6 +222,7 @@ import {
 } from "./pointer";
 import { INPUT_CONTROLLER, installInputDeviceChangeEmitter } from "./input";
 import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
+import { POWER_CONTROLLER } from "./power";
 import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { SESSION_CONTROLLER } from "./session";
@@ -423,6 +432,7 @@ export {
   type WindowStartCloseListener,
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
+export { POWER_CONTROLLER, emitPowerState, emitResume } from "./power";
 export { createReactiveLayer } from "./reactive-layer";
 export {
   OUTPUT_CONTROLLER,
@@ -689,6 +699,14 @@ export type {
   OutputPower,
   OutputPowerOptions,
   HeadlessOutputOptions,
+  LogindLidActions,
+  PowerAction,
+  PowerController,
+  PowerState,
+  PowerStateListener,
+  PowerTakeOverOptions,
+  ResumeEvent,
+  ResumeListener,
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
@@ -1177,6 +1195,7 @@ function createCompositorDefinition(): CompositorDefinition {
     },
     rendering: {},
     output: OUTPUT_CONTROLLER,
+    power: POWER_CONTROLLER,
     workspace: WORKSPACE_CONTROLLER,
     env: ENV_CONTROLLER,
     process: PROCESS_CONTROLLER,

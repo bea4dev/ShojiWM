@@ -91,6 +91,7 @@ pub struct Compositor {
     pub debug: DebugController,
     pub dnd: crate::dnd::DndController,
     pub session: SessionController,
+    pub power: crate::power::PowerController,
 }
 
 /// The one compositor. Use it like the TypeScript global.
@@ -111,6 +112,7 @@ pub const COMPOSITOR: Compositor = Compositor {
     debug: DebugController,
     dnd: crate::dnd::DndController,
     session: SessionController,
+    power: crate::power::PowerController,
 };
 
 /// Passed to [`Compositor::on_enable`] listeners.

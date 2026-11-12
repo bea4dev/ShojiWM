@@ -24,6 +24,7 @@ use crate::{
     cursor::RuntimeCursorConfigUpdate,
     headless_output::RuntimeHeadlessOutputRequest,
     output_power::RuntimeOutputPowerRequest,
+    power::RuntimePowerRequest,
     runtime_debug::RuntimeDebugConfigUpdate,
     runtime_input::RuntimeInputConfigUpdate,
     runtime_key_binding::RuntimeKeyBindingConfigUpdate,
@@ -52,6 +53,8 @@ pub enum HostMessage {
     /// Switch outputs on or off (`COMPOSITOR.output.setPower`).
     OutputPower(RuntimeOutputPowerRequest),
     HeadlessOutput(RuntimeHeadlessOutputRequest),
+    /// Take the lid from logind, or suspend and the like (`COMPOSITOR.power`).
+    Power(RuntimePowerRequest),
     /// Result of a posted (fire-and-forget) pointer or gesture hook.
     PointerHookResult(DecorationPointerMoveAsyncInvocation),
     /// A hot reload prepared in the background is done. `Ok` makes the

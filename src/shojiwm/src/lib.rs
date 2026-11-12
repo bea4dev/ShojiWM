@@ -221,6 +221,8 @@ impl ConfigRuntime for TypeScriptRuntime {
                 self.evaluator.set_keyboard_layout(layout);
             }
             RuntimeEvent::LidSwitch(lid) => self.evaluator.set_lid_switch(lid),
+            RuntimeEvent::PowerState(state) => self.evaluator.set_power_state(state),
+            RuntimeEvent::Resume(resume) => self.evaluator.push_resume(resume),
             // The TypeScript API has no lock key state.
             RuntimeEvent::KeyboardLocks(_) => {}
             RuntimeEvent::PointerMove(event) => self.evaluator.pointer_move_async(event, now),

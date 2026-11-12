@@ -3222,6 +3222,112 @@ export interface CompositorEffectController extends CompositorEffectConfig {
  * });
  * ```
  */
+/**
+ * A systemd-logind action, named as in `logind.conf`.
+ * systemd-logind のアクション。`logind.conf` での名前です。
+ */
+export type PowerAction =
+  | "suspend"
+  | "hibernate"
+  | "hybrid-sleep"
+  | "suspend-then-hibernate"
+  | "sleep"
+  | "lock"
+  | "poweroff"
+  | "reboot"
+  | "halt";
+
+/**
+ * What logind does when the lid closes, by situation: its `HandleLidSwitch`,
+ * `HandleLidSwitchExternalPower` and `HandleLidSwitchDocked` settings.
+ * 蓋を閉じたときの logind の動作（状況別）。`HandleLidSwitch`・
+ * `HandleLidSwitchExternalPower`・`HandleLidSwitchDocked` の設定値です。
+ */
+export interface LogindLidActions {
+  /** On battery. / バッテリー駆動時。 */
+  lid: string;
+  /** On external power. / 外部電源接続時。 */
+  externalPower: string;
+  /** With another display connected. / 他のディスプレイ接続時。 */
+  docked: string;
+}
+
+/** `COMPOSITOR.power.state`. */
+export interface PowerState {
+  /**
+   * Whether the machine runs on external power; `undefined` until known and
+   * in a nested session.
+   * 外部電源で動いているか。分かるまでとネスト実行中は `undefined`。
+   */
+  externalPower?: boolean;
+  /**
+   * logind's lid settings; `undefined` until logind answers and in a nested
+   * session.
+   * logind の蓋の設定。logind が応答するまでとネスト実行中は `undefined`。
+   */
+  logindLidActions?: LogindLidActions;
+}
+
+export interface ResumeEvent {
+  /**
+   * What the lid switch reported last; `undefined` without one. A broken
+   * switch can still report closed after the lid was opened.
+   * 蓋スイッチが最後に報告した状態。スイッチが無ければ `undefined`。壊れたスイッチは
+   * 蓋を開けた後も「閉じている」と報告し続けることがあります。
+   */
+  lidClosed?: boolean;
+}
+
+export type ResumeListener = (event: ResumeEvent) => void;
+export type PowerStateListener = (state: PowerState) => void;
+
+export interface PowerTakeOverOptions {
+  /**
+   * Handle the lid switch instead of logind, which then leaves it alone: the
+   * config decides, through `COMPOSITOR.event.onLidSwitch`, and suspends with
+   * `COMPOSITOR.power.suspend()`. Default `false`.
+   * 蓋スイッチの処理を logind から引き受けます。logind は蓋に反応しなくなり、
+   * 設定が `COMPOSITOR.event.onLidSwitch` で判断して、`COMPOSITOR.power.suspend()`
+   * などでスリープさせます。既定は `false`。
+   */
+  lid?: boolean;
+}
+
+/**
+ * `COMPOSITOR.power`: suspend and the like through systemd-logind, and the lid
+ * switch taken from it. Only the TTY backend talks to logind; in a nested
+ * session these do nothing.
+ * `COMPOSITOR.power`: systemd-logind を通じたスリープなどの操作と、蓋スイッチの
+ * 引き受け。logind とやり取りするのは TTY バックエンドだけで、ネスト実行中は何もしません。
+ */
+export interface PowerController {
+  /**
+   * What the config handles instead of logind. Say it again after every
+   * reload: a reloaded config that does not gives the lid back to logind.
+   * logind の代わりに設定が扱うものを宣言します。リロードのたびに宣言し直してください。
+   * 宣言しなかったリロード後の設定では、蓋は logind に戻ります。
+   */
+  takeOver(options: PowerTakeOverOptions): void;
+  /** Ask logind to suspend. / logind にサスペンドを依頼します。 */
+  suspend(): void;
+  /** Ask logind to hibernate. / logind にハイバネートを依頼します。 */
+  hibernate(): void;
+  /** Ask logind for `action`. / logind に `action` を依頼します。 */
+  perform(action: PowerAction): void;
+  /** The latest power state; `undefined` before the first report. / 最新の電源状態。最初の報告までは `undefined`。 */
+  readonly state: PowerState | undefined;
+  /** Calls `listener` when the power state changes. / 電源状態が変わると `listener` を呼びます。 */
+  onStateChange(listener: PowerStateListener): () => void;
+  /**
+   * Calls `listener` when the system is back from a suspend or hibernation,
+   * whoever started it. Whether this or the lid opening comes first is not
+   * defined.
+   * サスペンドやハイバネートから復帰したときに `listener` を呼びます（誰が始めたかに
+   * よらず）。これと蓋が開いた通知のどちらが先に届くかは決まっていません。
+   */
+  onResume(listener: ResumeListener): () => void;
+}
+
 export interface CompositorDefinition {
   /**
    * Lifecycle and window/layer/output/input event bus.
@@ -3466,6 +3572,19 @@ export interface CompositorDefinition {
    * ```
    */
   session: SessionController;
+  /**
+   * Suspend and the like through systemd-logind, and the lid switch.
+   * systemd-logind を通じたスリープなどの操作と、蓋スイッチ。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.power.takeOver({ lid: true });
+   * COMPOSITOR.event.onLidSwitch(({ closed, initial }) => {
+   *   if (closed && !initial) COMPOSITOR.power.suspend();
+   * });
+   * ```
+   */
+  power: PowerController;
   runtime: RuntimeController;
   /**
    * Per-window scene-tree composition. Assign a function to control what chrome

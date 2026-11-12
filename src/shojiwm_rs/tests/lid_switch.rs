@@ -13,13 +13,13 @@ use smithay::backend::input::{
 };
 
 thread_local! {
-    static LIDS: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    static LIDS: RefCell<Vec<LidSwitchSnapshot>> = const { RefCell::new(Vec::new()) };
 }
 
 fn setup() {
     COMPOSITOR
         .event
-        .on_lid_switch(|lid| LIDS.with(|lids| lids.borrow_mut().push(lid.closed)));
+        .on_lid_switch(|lid| LIDS.with(|lids| lids.borrow_mut().push(*lid)));
 }
 
 #[derive(Debug)]
@@ -111,8 +111,15 @@ fn toggle(session: &mut common::Session, switch: Switch, state: SwitchState) {
         });
 }
 
-fn lids() -> Vec<bool> {
+fn lids() -> Vec<LidSwitchSnapshot> {
     LIDS.with(|lids| lids.borrow().clone())
+}
+
+fn moved(closed: bool) -> LidSwitchSnapshot {
+    LidSwitchSnapshot {
+        closed,
+        initial: false,
+    }
 }
 
 #[test]
@@ -121,10 +128,10 @@ fn lid_switch_reaches_the_config() {
     assert_eq!(COMPOSITOR.input.lid_switch().get_untracked(), None);
 
     toggle(&mut session, Switch::Lid, SwitchState::On);
-    assert_eq!(lids(), [true]);
+    assert_eq!(lids(), [moved(true)]);
     assert_eq!(
         COMPOSITOR.input.lid_switch().get_untracked(),
-        Some(LidSwitchSnapshot { closed: true })
+        Some(moved(true))
     );
 
     // Libinput repeats a switch's state; the config hears changes only.
@@ -132,9 +139,25 @@ fn lid_switch_reaches_the_config() {
     // Tablet mode is a different switch.
     toggle(&mut session, Switch::TabletMode, SwitchState::Off);
     toggle(&mut session, Switch::Lid, SwitchState::Off);
-    assert_eq!(lids(), [true, false]);
+    assert_eq!(lids(), [moved(true), moved(false)]);
     assert_eq!(
         COMPOSITOR.input.lid_switch().get_untracked(),
-        Some(LidSwitchSnapshot { closed: false })
+        Some(moved(false))
+    );
+
+    // A switch that comes up closed (at startup, or back from another VT)
+    // reports where it is, which is not a movement.
+    session
+        .state
+        .process_input_event(InputEvent::<Switches>::DeviceAdded {
+            device: SwitchDevice,
+        });
+    toggle(&mut session, Switch::Lid, SwitchState::On);
+    assert_eq!(
+        lids().last(),
+        Some(&LidSwitchSnapshot {
+            closed: true,
+            initial: true,
+        })
     );
 }

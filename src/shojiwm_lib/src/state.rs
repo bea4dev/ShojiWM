@@ -548,6 +548,13 @@ pub struct ShojiWM {
     pub pointer_focus_refresh_queued: bool,
     /// The lid switch's last state; `None` until one reports.
     pub lid_closed: Option<bool>,
+    /// Whether `lid_closed` is the state the switch came up in rather than a
+    /// movement (see [`crate::lid_switch::LidSwitchSnapshot::initial`]).
+    pub lid_initial: bool,
+    /// Until when a lid toggle is a newly added switch reporting its state.
+    pub lid_switch_initial_until: Option<Instant>,
+    /// logind and the power supplies (see [`crate::power`]).
+    pub power: crate::power::PowerState,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -1983,6 +1990,9 @@ impl ShojiWM {
             pending_tap_binding_ids: Vec::new(),
             pointer_focus_refresh_queued: false,
             lid_closed: None,
+            lid_initial: false,
+            lid_switch_initial_until: None,
+            power: Default::default(),
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect: None,
@@ -3122,6 +3132,7 @@ impl ShojiWM {
                 HostMessage::OutputPower(request) => {
                     self.apply_runtime_output_power_request(request);
                 }
+                HostMessage::Power(request) => self.apply_runtime_power_request(request),
                 HostMessage::HeadlessOutput(request) => {
                     self.apply_runtime_headless_output_request(request);
                 }
@@ -3380,8 +3391,10 @@ impl ShojiWM {
         // any: start from none, so the old config's do not stay on.
         self.apply_runtime_event_config_update(RuntimeEventConfigUpdate::default());
         self.sync_runtime_display_state();
+        self.power_reload_starting();
         let reload_result = self.config_runtime.reload();
         self.drain_runtime_host_messages();
+        self.power_reload_finished(reload_result.is_ok());
         if let Err(error) = reload_result {
             self.report_hot_reload_failure(error);
             return;

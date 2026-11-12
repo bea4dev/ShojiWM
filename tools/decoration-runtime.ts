@@ -350,6 +350,10 @@ import {
   type InputDeviceInfo,
   type KeyboardLayoutChangeEvent,
   type LidSwitchEvent,
+  type PowerState,
+  type ResumeEvent,
+  emitPowerState,
+  emitResume,
   type WindowCompositionFunction,
   type OutputStateSnapshot,
   type OutputInfo,
@@ -554,6 +558,8 @@ interface SchedulerTickRequest {
   inputState?: Record<string, InputDeviceInfo>;
   keyboardLayout?: KeyboardLayoutChangeEvent;
   lidSwitch?: LidSwitchEvent;
+  powerState?: PowerState;
+  resume?: ResumeEvent;
 }
 
 interface WindowClosedRequest {
@@ -1946,8 +1952,15 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             if (request.keyboardLayout) {
               events.emitKeyboardLayoutChange(request.keyboardLayout);
             }
+            // Power state first: a lid policy reads it when the lid moves.
+            if (request.powerState) {
+              emitPowerState(request.powerState);
+            }
             if (request.lidSwitch) {
               events.emitLidSwitch(request.lidSwitch);
+            }
+            if (request.resume) {
+              emitResume(request.resume);
             }
             const tick = processSchedulerTick(request.output);
             if (statsEnabled && tick.dirty) stats.schedulerTickDirty++;

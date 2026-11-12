@@ -134,6 +134,7 @@ pub fn run_tty_udev(
 
     let udev = UdevBackend::new(&seat_name)?;
     crate::backlight::start_monitor(&event_loop.handle());
+    crate::power::start(&mut state, &event_loop.handle());
 
     let mut libinput =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());

@@ -71,6 +71,17 @@ export type KeyboardLayoutChangeListener = (event: KeyboardLayoutChangeEvent) =>
 export interface LidSwitchEvent {
   /** Whether the laptop lid is closed. */
   readonly closed: boolean;
+  /**
+   * `true` when this is where the lid already was, not a movement: the state
+   * the switch reported when it came up (at startup, or back from another
+   * VT), or the state a reloaded config starts with. A broken switch can
+   * report closed this way while the lid is open, so act on movements only.
+   * 動きではなく、もともとの状態であることを表します（起動時や別の VT から戻ったときに
+   * スイッチが報告した状態、またはリロード後の設定が最初に受け取る状態）。壊れたスイッチは
+   * 蓋が開いていてもこの形で「閉じている」と報告することがあるため、動作のきっかけには
+   * `initial` でない通知だけを使ってください。
+   */
+  readonly initial: boolean;
 }
 
 export type LidSwitchListener = (event: LidSwitchEvent) => void;
@@ -497,7 +508,9 @@ export interface CompositorEventController {
   /**
    * Reports the laptop lid on the first scheduler tick after enable/reload and
    * whenever it closes or opens. Nothing is reported until a lid switch does;
-   * a close and reopen between two ticks are coalesced.
+   * a close and reopen between two ticks are coalesced. On its own this only
+   * reports: systemd-logind still suspends on the lid unless the config takes
+   * it with `COMPOSITOR.power.takeOver`.
    */
   onLidSwitch(listener: LidSwitchListener): () => void;
   /**

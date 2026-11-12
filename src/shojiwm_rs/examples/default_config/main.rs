@@ -13,6 +13,7 @@
 mod drag_and_drop;
 mod flip_3d;
 mod island_glass;
+mod lid_policy;
 mod window_animation;
 mod window_grid;
 mod window_manager;
@@ -132,6 +133,17 @@ fn setup() {
     ]);
     COMPOSITOR.env.publish();
     COMPOSITOR.cursor.configure("Bibata-Modern-Ice", 24);
+
+    // Closing the lid does what logind.conf says (`Logind`); set on_battery
+    // or on_external_power to `Perform(PowerAction::Suspend)`, `Ignore`, ...
+    // to choose. While it is shut with another display on, the built-in panel
+    // stays dark. See lid_policy.rs for the callbacks and the guards against a
+    // stuck lid switch.
+    lid_policy::bind_lid_policy(lid_policy::LidPolicyOptions {
+        on_battery: lid_policy::LidCloseAction::Logind,
+        on_external_power: lid_policy::LidCloseAction::Logind,
+        ..Default::default()
+    });
 
     COMPOSITOR.process.once(
         "GTK-CSD-control-buttons",

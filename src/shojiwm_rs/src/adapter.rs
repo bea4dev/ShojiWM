@@ -1291,6 +1291,17 @@ impl ConfigRuntime for ReactiveRuntime {
                         );
                     });
                 }
+                RuntimeEvent::PowerState(state) => {
+                    runtime::global().power_state.set(Some(state));
+                }
+                RuntimeEvent::Resume(resume) => {
+                    batch(|| {
+                        emit(
+                            |listeners| listeners.resume.clone(),
+                            |listener| listener(&resume),
+                        );
+                    });
+                }
                 RuntimeEvent::PointerMove(event) => {
                     let invoked = batch(|| {
                         emit(
