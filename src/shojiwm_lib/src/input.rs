@@ -1564,6 +1564,23 @@ impl ShojiWM {
                 }
                 if self.runtime_input_grab.is_some() {
                     self.input_grab_pointer_button(button, button_state, event.time_msec());
+                    // A grab can start while a button is held: a decoration's press handler
+                    // starts it. That press opened the pointer's implicit grab, and only the
+                    // release ends it; kept from the pointer, the release left it open, and the
+                    // next press was taken for a press of a button already down and lost. The
+                    // grab took the pointer's focus, so the release reaches no client.
+                    if button_state == ButtonState::Released && pointer.is_grabbed() {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+                        pointer.frame(self);
+                    }
                     return;
                 }
 
