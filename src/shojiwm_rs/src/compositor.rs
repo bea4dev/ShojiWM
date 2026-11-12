@@ -452,6 +452,13 @@ impl KeyBindOptions {
 }
 
 impl KeyController {
+    /// Whether the binding handler running now runs again because its key is
+    /// held ([`KeyBindOptions::repeat`]). False for the press and outside a
+    /// handler.
+    pub fn is_repeat(&self) -> bool {
+        shojiwm_lib::runtime_key_binding::is_repeat()
+    }
+
     /// Bind `shortcut` (e.g. `"Super+Shift+Left"`, `"XF86AudioPlay"`) to
     /// `handler`, firing on press.
     pub fn bind(&self, id: &str, shortcut: &str, handler: impl Fn() + 'static) {

@@ -1285,6 +1285,11 @@ impl ShojiRuntimeBridge {
         Ok(shojiwm_lib::backend::lock_scene::is_locked())
     }
 
+    #[fast]
+    fn is_key_repeat(&self) -> bool {
+        shojiwm_lib::runtime_key_binding::is_repeat()
+    }
+
     fn create_overlay(
         &self,
         #[string] output: String,

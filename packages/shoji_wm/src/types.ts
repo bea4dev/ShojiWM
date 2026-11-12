@@ -2065,6 +2065,13 @@ export interface KeyBindingController {
     handler: () => void,
     options?: KeyBindingOptions,
   ): void;
+  /**
+   * Whether the binding handler running now runs again because its key is
+   * held (`repeat: true`). False for the press and outside a handler.
+   * 実行中のバインドハンドラーが、キーを押し続けたことによるリピートで呼ばれて
+   * いるかどうか。押した時の呼び出しとハンドラーの外では false です。
+   */
+  isRepeat(): boolean;
 }
 
 /**

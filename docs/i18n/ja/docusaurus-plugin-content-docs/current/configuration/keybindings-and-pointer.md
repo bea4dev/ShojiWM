@@ -98,6 +98,11 @@ COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', withi
 COMPOSITOR.key.bind('volume-up', 'XF86AudioRaiseVolume', raiseVolume, {locked: true, repeat: true});
 ```
 
+ハンドラーの中では、`COMPOSITOR.key.isRepeat()`（Rust では
+`COMPOSITOR.key.is_repeat()`）が、押し続けたキーのリピートで呼ばれたときは
+true、押した時の呼び出しでは false を返します。押した時だけ処理したり、
+リピートを別に扱ったりできます。
+
 Rust では `bind_with` で同じオプションを渡します。
 
 ```rust
