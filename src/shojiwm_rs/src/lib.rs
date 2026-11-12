@@ -70,6 +70,7 @@ pub mod assets;
 pub mod compositor;
 pub mod dnd;
 pub mod effect;
+pub mod gpu;
 pub mod input_grab;
 pub mod ipc;
 pub mod output_composition;
@@ -114,6 +115,7 @@ pub mod prelude {
             render_to_if_dirty, save, saved, shader_input, shader_stage, state_source,
             state_texture, unit, window_source, xray_backdrop_source,
         },
+        gpu::{GpuSnapshot, GpuVendor, RenderGpuChoice},
         input_grab::{
             InputGrab, InputGrabCancelReason, InputGrabKeyEvent, InputGrabOptions,
             InputGrabPointerButtonEvent, InputGrabPointerMotionEvent, InputGrabScrollEvent,

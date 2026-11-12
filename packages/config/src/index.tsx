@@ -81,6 +81,9 @@ COMPOSITOR.window.decoration.kdeDefaultMode(() => "server");
 // enable triple buffer mode for massive performance
 COMPOSITOR.rendering.framePacing = "throughput";
 
+// select your GPU
+COMPOSITOR.gpu.selectRender(gpus => gpus.find(gpu => gpu.bootVga));
+
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 
 // Window switcher (Super+Tab): "flip-3d" stacks the windows in 3D

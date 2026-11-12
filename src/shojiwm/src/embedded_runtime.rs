@@ -298,6 +298,8 @@ pub struct NativeSchedulerRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_state: Option<shojiwm_lib::power::PowerStateSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<Vec<shojiwm_lib::gpu::GpuSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<shojiwm_lib::power::ResumeSnapshot>,
 }
 

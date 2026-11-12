@@ -110,6 +110,8 @@ pub(crate) type DecorationPolicyFn = Rc<
 >;
 pub(crate) type KdeDefaultDecorationFn =
     Rc<dyn Fn(&WindowDecorationClientSnapshot) -> WindowDecorationModeSnapshot>;
+pub(crate) type RenderGpuFn =
+    Rc<dyn Fn(&[shojiwm_lib::gpu::GpuSnapshot]) -> shojiwm_lib::gpu::RenderGpuChoice>;
 pub(crate) type OutputConfigureFn =
     Rc<dyn Fn(&crate::compositor::OutputContext) -> BTreeMap<String, Option<RuntimeOutputConfig>>>;
 pub(crate) type InputConfigureFn =
@@ -139,6 +141,8 @@ pub(crate) struct Registry {
     pub composition: Option<CompositionFn>,
     pub decoration_policy: Option<DecorationPolicyFn>,
     pub kde_default_decoration: Option<KdeDefaultDecorationFn>,
+    /// `COMPOSITOR.gpu.select_render`.
+    pub render_gpu: Option<RenderGpuFn>,
     pub key_bindings: Vec<RuntimeKeyBindingEntry>,
     pub key_handlers: HashMap<String, Rc<dyn Fn()>>,
     pub window_move_modifier: Option<String>,
@@ -193,6 +197,7 @@ pub(crate) struct GlobalSignals {
     pub keyboard_locks: Signal<Option<KeyboardLocksSnapshot>>,
     pub lid_switch: Signal<Option<LidSwitchSnapshot>>,
     pub power_state: Signal<Option<PowerStateSnapshot>>,
+    pub gpus: Signal<Vec<shojiwm_lib::gpu::GpuSnapshot>>,
 }
 
 pub(crate) fn global() -> GlobalSignals {
@@ -208,6 +213,7 @@ pub(crate) fn global() -> GlobalSignals {
                 keyboard_locks: scope.signal(None),
                 lid_switch: scope.signal(None),
                 power_state: scope.signal(None),
+                gpus: scope.signal(Vec::new()),
             }
         })
     })

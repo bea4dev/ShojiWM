@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 
 use super::{
-    ConfigRuntime, DecorationRequest, EffectRequest, InputRequest, NullRuntime, ReloadPreparation,
-    RuntimeError, RuntimeEvent, RuntimeHost, RuntimeReply, RuntimeRequest, SchedulerTickRequest,
-    WindowRequest, WorkspaceRequest,
+    ConfigRuntime, DecorationRequest, EffectRequest, GpuRequest, InputRequest, NullRuntime,
+    ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeHost, RuntimeReply, RuntimeRequest,
+    SchedulerTickRequest, WindowRequest, WorkspaceRequest,
 };
 use crate::{
+    gpu::{GpuSnapshot, RenderGpuChoice},
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
     power::{PowerStateSnapshot, ResumeSnapshot},
@@ -44,6 +45,7 @@ pub struct RuntimeHandle {
     keyboard_locks: Option<KeyboardLocksSnapshot>,
     lid_switch: Option<LidSwitchSnapshot>,
     power_state: Option<PowerStateSnapshot>,
+    gpu_state: Option<Vec<GpuSnapshot>>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -76,6 +78,7 @@ impl RuntimeHandle {
             keyboard_locks: None,
             lid_switch: None,
             power_state: None,
+            gpu_state: None,
         }
     }
 
@@ -175,6 +178,29 @@ impl RuntimeHandle {
         true
     }
 
+    /// Returns whether the GPUs differ from the last ones sent.
+    pub fn sync_gpu_state(&mut self, gpus: &[GpuSnapshot]) -> bool {
+        if self.gpu_state.as_deref() == Some(gpus) {
+            return false;
+        }
+        self.gpu_state = Some(gpus.to_vec());
+        self.post(0.0, RuntimeEvent::GpuState(gpus.to_vec()));
+        true
+    }
+
+    /// The config's render GPU; [`RenderGpuChoice::Auto`] when it has no
+    /// opinion.
+    pub fn select_render_gpu(
+        &mut self,
+        gpus: &[GpuSnapshot],
+    ) -> Result<RenderGpuChoice, RuntimeError> {
+        match self.request(0.0, RuntimeRequest::Gpu(GpuRequest::SelectRender { gpus }))? {
+            RuntimeReply::RenderGpu(choice) => Ok(choice),
+            RuntimeReply::Unhandled | RuntimeReply::Done => Ok(RenderGpuChoice::Auto),
+            other => Err(mismatch("render gpu", &other)),
+        }
+    }
+
     pub fn post_resume(&mut self, resume: ResumeSnapshot) {
         self.post(0.0, RuntimeEvent::Resume(resume));
     }
@@ -188,6 +214,7 @@ impl RuntimeHandle {
         self.keyboard_locks = None;
         self.lid_switch = None;
         self.power_state = None;
+        self.gpu_state = None;
     }
 
     pub fn evaluate_window(

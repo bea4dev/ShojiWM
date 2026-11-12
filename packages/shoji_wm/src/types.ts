@@ -3328,6 +3328,157 @@ export interface PowerController {
   onResume(listener: ResumeListener): () => void;
 }
 
+/** GPU vendor, from its PCI vendor id. / PCI ベンダー ID から判定した GPU のベンダー。 */
+export type GpuVendor = "intel" | "amd" | "nvidia" | "other";
+
+/** One GPU of the seat. / シートの GPU 1 台分の情報。 */
+export interface GpuInfo {
+  /**
+   * Where the GPU sits, e.g. `"pci-0000:03:00.0"` (udev's `ID_PATH`). It stays
+   * the same across reboots: name a GPU by this in a config.
+   * GPU の接続位置（例: `"pci-0000:03:00.0"`。udev の `ID_PATH`）。再起動しても
+   * 変わらないので、設定で GPU を指すときはこれを使います。
+   */
+  readonly id: string;
+  /**
+   * `"card1"`. Numbered in probe order, so it can change between boots and
+   * when a GPU is plugged in again: for logs and display only, never for a
+   * config to match on.
+   * `"card1"`。認識された順に番号が付くため、起動ごとや抜き差しで変わることがあります。
+   * ログや表示用で、設定での照合には使わないでください。
+   */
+  readonly dynamicCardId: string;
+  /**
+   * `"/dev/dri/renderD129"`; numbered like `dynamicCardId`, so it can change
+   * too. `null` for a display-only device.
+   * `"/dev/dri/renderD129"`。`dynamicCardId` と同じく番号は変わりえます。
+   * 表示専用のデバイスでは `null`。
+   */
+  readonly renderNode: string | null;
+  readonly vendor: GpuVendor;
+  /** PCI vendor id; 0 when not on PCI. / PCI ベンダー ID。PCI 以外では 0。 */
+  readonly vendorId: number;
+  /** PCI device id; 0 when not on PCI. / PCI デバイス ID。PCI 以外では 0。 */
+  readonly deviceId: number;
+  /**
+   * Kernel driver: `"i915"`, `"xe"`, `"amdgpu"`, `"nvidia"`, `"nouveau"`, ...
+   * カーネルドライバ名。
+   */
+  readonly driver: string | null;
+  /**
+   * Model name from the hardware database, e.g. `"Navi 32 [Radeon RX 7800 XT]"`.
+   * ハードウェアデータベースのモデル名。
+   */
+  readonly name: string | null;
+  /**
+   * The firmware showed the boot screen on this GPU (on a hybrid laptop,
+   * usually the integrated one).
+   * ファームウェアが起動画面を表示した GPU（ハイブリッドノートでは通常は内蔵 GPU）。
+   */
+  readonly bootVga: boolean;
+  /**
+   * The kernel reports the GPU as removable (a Thunderbolt eGPU and the like).
+   * カーネルが取り外し可能と報告している GPU（Thunderbolt の eGPU など）。
+   */
+  readonly removable: boolean;
+  /**
+   * Connectors with a display connected, named like outputs (`"DP-1"`).
+   * ディスプレイが繋がっているコネクタ。出力と同じ名前（`"DP-1"`）です。
+   */
+  readonly outputs: readonly string[];
+  /**
+   * Everything is composited on this GPU. Inside `selectRender` it marks the
+   * GPU ShojiWM would pick on its own.
+   * すべての合成をこの GPU で行っています。`selectRender` の中では、ShojiWM が自動で
+   * 選ぶ GPU を示します。
+   */
+  readonly isRender: boolean;
+  /**
+   * ShojiWM opened the GPU: it drives its displays and could composite on it.
+   * `SHOJI_TTY_DRM_DEVICE` can leave GPUs out.
+   * ShojiWM がこの GPU を開いて使っています（画面の表示や合成に使えます）。
+   * `SHOJI_TTY_DRM_DEVICE` で除外された GPU は `false` です。
+   */
+  readonly inUse: boolean;
+}
+
+export type GpuChangeListener = (gpus: readonly GpuInfo[]) => void;
+
+/**
+ * Picks the GPU to composite on: a GPU, its `id`, `"auto"` or nothing for
+ * ShojiWM's own pick.
+ * 合成に使う GPU を選びます。GPU・その `id` を返すか、`"auto"` か何も返さなければ自動選択です。
+ */
+export type RenderGpuResolver = (
+  gpus: readonly GpuInfo[],
+) => GpuInfo | string | "auto" | null | undefined;
+
+/**
+ * `COMPOSITOR.gpu`: the seat's GPUs, and the one everything is composited on.
+ * Only the TTY backend has GPUs to report; in a nested session the list stays
+ * empty.
+ * `COMPOSITOR.gpu`: シートの GPU と、合成に使う GPU。報告されるのは TTY バックエンド
+ * だけで、ネスト実行中は一覧が空のままです。
+ */
+export interface GpuController {
+  /**
+   * Every GPU, ordered by `id`. Empty until the first report after
+   * `onEnable`; use `onChange` to be told.
+   * すべての GPU（`id` 順）。`onEnable` 後の最初の報告までは空なので、`onChange` で
+   * 受け取ってください。
+   */
+  readonly list: readonly GpuInfo[];
+  /** The GPU everything is composited on. / 合成に使っている GPU。 */
+  readonly render: GpuInfo | undefined;
+  /** The GPU with this `id`. / この `id` の GPU。 */
+  get(id: string): GpuInfo | undefined;
+  /**
+   * Calls `listener` with every GPU when one is added or removed, a display
+   * is connected or disconnected, and first after enable/reload.
+   * GPU の追加・取り外し、ディスプレイの接続・切断のとき、および enable/reload 後の
+   * 最初に、すべての GPU を渡して `listener` を呼びます。
+   */
+  onChange(listener: GpuChangeListener): () => void;
+  /**
+   * Chooses the GPU everything is composited on (like Hyprland's
+   * `AQ_DRM_DEVICES`). Register it at the top level of the config: it is
+   * asked once at startup, before `onEnable` and before any GPU is opened,
+   * and only when there is more than one GPU. Changing it takes effect at the
+   * next start; the environment variable `SHOJI_RENDER_GPU` wins over it.
+   * Displays on other GPUs keep working: their frames are composited on this
+   * GPU and copied over.
+   * すべてを合成する GPU を選びます（Hyprland の `AQ_DRM_DEVICES` に相当）。設定の
+   * トップレベルで登録してください。起動時に一度だけ、`onEnable` より前・どの GPU も
+   * 開く前に、GPU が 2 台以上あるときだけ呼ばれます。変更は次回の起動から反映され、
+   * 環境変数 `SHOJI_RENDER_GPU` が優先されます。他の GPU に繋がった画面もそのまま
+   * 使え、その画面はこの GPU で合成してから転送されます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.gpu.selectRender((gpus) =>
+   *   gpus.find((gpu) => gpu.vendor === "amd" && !gpu.bootVga) ?? "auto"
+   * );
+   * ```
+   */
+  selectRender(resolver: RenderGpuResolver): void;
+  /**
+   * Environment that makes a program render on `gpu` (PRIME render offload),
+   * for `COMPOSITOR.process.spawn`'s `env`.
+   * プログラムを `gpu` で描画させるための環境変数（PRIME レンダーオフロード）。
+   * `COMPOSITOR.process.spawn` の `env` に渡します。
+   *
+   * @example
+   * ```ts
+   * const dgpu = COMPOSITOR.gpu.list.find((gpu) => !gpu.bootVga);
+   * COMPOSITOR.process.spawn({
+   *   command: "steam",
+   *   env: dgpu ? COMPOSITOR.gpu.offloadEnv(dgpu) : {},
+   * });
+   * ```
+   */
+  offloadEnv(gpu: GpuInfo): Record<string, string>;
+}
+
 export interface CompositorDefinition {
   /**
    * Lifecycle and window/layer/output/input event bus.
@@ -3585,6 +3736,17 @@ export interface CompositorDefinition {
    * ```
    */
   power: PowerController;
+  /**
+   * The seat's GPUs, and the one everything is composited on.
+   * シートの GPU と、合成に使う GPU。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.gpu.selectRender((gpus) => gpus.find((gpu) => gpu.driver === "amdgpu"));
+   * COMPOSITOR.gpu.onChange((gpus) => console.log(gpus.map((gpu) => gpu.name)));
+   * ```
+   */
+  gpu: GpuController;
   runtime: RuntimeController;
   /**
    * Per-window scene-tree composition. Assign a function to control what chrome

@@ -142,6 +142,7 @@ fn setup() {
 | `COMPOSITOR.effect.overlay(output, { effect })` | `COMPOSITOR.effect.overlay(output, Overlay::new(effect))` (returns at once; `on_ready` / `on_closed` instead of awaiting) |
 | `COMPOSITOR.session.configureLockBackground({ windowIds, layerIds })` | `COMPOSITOR.session.configure_lock_background(LockBackground { window_ids, layer_ids })` |
 | `COMPOSITOR.rendering.framePacing = ..` | `COMPOSITOR.rendering.frame_pacing(..)` / `frame_pacing_with(\|output\| ..)` |
+| `COMPOSITOR.gpu.selectRender((gpus) => ..)` / `COMPOSITOR.gpu.list` / `onChange` | `COMPOSITOR.gpu.select_render(\|gpus\| ..)` / `COMPOSITOR.gpu.list()` (signal) |
 | `COMPOSITOR.rendering.composition = (output) => <DefaultComposition />` | `COMPOSITOR.rendering.composition(\|output\| OutputStack::default_stacking())` |
 | `<Layers>`, `<Windows>`, `<Scene3D>`, `<Plane>`, `renderTexture()` | `Layers::new`, `Windows::all` / `Windows::only`, `Scene3D::new`, `Plane::new`, `RenderTexture::new` |
 | `COMPOSITOR.input.grab({ onKey, ... })` | `COMPOSITOR.input.grab(InputGrabOptions::new().on_key(..))` |

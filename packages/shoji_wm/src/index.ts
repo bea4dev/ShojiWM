@@ -75,6 +75,11 @@ import type {
   PowerAction,
   PowerController,
   PowerState,
+  GpuChangeListener,
+  GpuController,
+  GpuInfo,
+  GpuVendor,
+  RenderGpuResolver,
   PowerStateListener,
   PowerTakeOverOptions,
   ResumeEvent,
@@ -223,6 +228,7 @@ import {
 import { INPUT_CONTROLLER, installInputDeviceChangeEmitter } from "./input";
 import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
 import { POWER_CONTROLLER } from "./power";
+import { GPU_CONTROLLER } from "./gpu";
 import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { SESSION_CONTROLLER } from "./session";
@@ -433,6 +439,7 @@ export {
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
 export { POWER_CONTROLLER, emitPowerState, emitResume } from "./power";
+export { GPU_CONTROLLER, emitGpuState, resolveRenderGpu } from "./gpu";
 export { createReactiveLayer } from "./reactive-layer";
 export {
   OUTPUT_CONTROLLER,
@@ -703,6 +710,11 @@ export type {
   PowerAction,
   PowerController,
   PowerState,
+  GpuChangeListener,
+  GpuController,
+  GpuInfo,
+  GpuVendor,
+  RenderGpuResolver,
   PowerStateListener,
   PowerTakeOverOptions,
   ResumeEvent,
@@ -1196,6 +1208,7 @@ function createCompositorDefinition(): CompositorDefinition {
     rendering: {},
     output: OUTPUT_CONTROLLER,
     power: POWER_CONTROLLER,
+    gpu: GPU_CONTROLLER,
     workspace: WORKSPACE_CONTROLLER,
     env: ENV_CONTROLLER,
     process: PROCESS_CONTROLLER,

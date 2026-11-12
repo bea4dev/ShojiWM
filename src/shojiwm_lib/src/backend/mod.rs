@@ -224,6 +224,17 @@ pub fn run_tty_udev(
     }
 
     let selected_devices = select_tty_devices(&candidates)?;
+    state.tty_gpu_paths = candidates
+        .iter()
+        .map(|candidate| (candidate.node, candidate.path.clone()))
+        .collect();
+    let mut render_gpu_error = None;
+    let selected_devices = choose_render_gpu(
+        &mut state,
+        &candidates,
+        selected_devices,
+        &mut render_gpu_error,
+    );
     state.tty_device_paths = selected_devices
         .iter()
         .map(|candidate| (candidate.node, candidate.path.clone()))
@@ -236,7 +247,7 @@ pub fn run_tty_udev(
         "selected tty drm devices"
     );
 
-    for (index, candidate) in selected_devices.into_iter().enumerate() {
+    for candidate in selected_devices {
         let outputs_before = state.space.outputs().count();
         info!(
             ?candidate.node,
@@ -253,8 +264,22 @@ pub fn run_tty_udev(
         );
         match added {
             Ok(()) => {}
-            // The first one is the GPU clients render with; there is no session without it.
-            Err(err) if index == 0 => return Err(err),
+            // The first GPU that comes up composites everything (see `tty::device_added`).
+            // One that fails before that leaves the job to the next one.
+            Err(err) if state.dmabuf_global.is_none() => {
+                warn!(
+                    ?candidate.node,
+                    path = ?candidate.path,
+                    ?err,
+                    "failed to initialize the gpu meant to composite; trying the next one"
+                );
+                if state.tty_backends.contains_key(&candidate.node) {
+                    device_removed(&mut state, candidate.node);
+                }
+                continue;
+            }
+            // It became the render GPU and failed after that: no session without it.
+            Err(err) if state.tty_render_node == Some(candidate.node) => return Err(err),
             Err(err) => {
                 warn!(
                     ?candidate.node,
@@ -279,20 +304,27 @@ pub fn run_tty_udev(
         }
     }
 
+    if state.dmabuf_global.is_none() {
+        return Err("no gpu could be initialized to composite on".into());
+    }
+    state.refresh_gpus();
+
     let udev_loop_handle = event_loop.handle();
     let mut udev_session = session.clone();
     event_loop
         .handle()
         .insert_source(udev, move |event, _, state| {
             state.record_event_source_wake("udev");
+            'event: {
             match event {
                 UdevEvent::Added { device_id, path } => {
                     let Ok(node) = DrmNode::from_dev_id(device_id) else {
                         warn!(?device_id, ?path, "failed to resolve added drm node");
-                        return;
+                        break 'event;
                     };
+                    state.tty_gpu_paths.insert(node, path.clone());
                     if state.tty_backends.contains_key(&node) {
-                        return;
+                        break 'event;
                     }
                     info!(?node, ?path, "udev added drm device");
                     if std::env::var_os("SHOJI_TTY_DRM_DEVICE").is_none() {
@@ -311,7 +343,7 @@ pub fn run_tty_udev(
                 UdevEvent::Changed { device_id } => {
                     let Ok(node) = DrmNode::from_dev_id(device_id) else {
                         warn!(?device_id, "failed to resolve changed drm node");
-                        return;
+                        break 'event;
                     };
                     info!(?node, "udev drm device changed");
                     if !state.tty_session_active {
@@ -330,11 +362,11 @@ pub fn run_tty_udev(
                             ) {
                             state.pending_tty_device_changes.push(node);
                         }
-                        return;
+                        break 'event;
                     }
                     if !state.tty_backends.contains_key(&node) {
                         tty::open_tty_device(state, node);
-                        return;
+                        break 'event;
                     }
                     if let Err(err) = device_changed(state, node) {
                         if tty::error_chain_has_permission_denied(err.as_ref()) {
@@ -362,7 +394,7 @@ pub fn run_tty_udev(
                             if !state.pending_tty_device_changes.contains(&node) {
                                 state.pending_tty_device_changes.push(node);
                             }
-                            return;
+                            break 'event;
                         }
                         warn!(?node, ?err, "failed to process drm device change");
                     }
@@ -370,12 +402,16 @@ pub fn run_tty_udev(
                 UdevEvent::Removed { device_id } => {
                     let Ok(node) = DrmNode::from_dev_id(device_id) else {
                         warn!(?device_id, "failed to resolve removed drm node");
-                        return;
+                        break 'event;
                     };
                     device_removed(state, node);
                     state.tty_device_paths.remove(&node);
+                    state.tty_gpu_paths.remove(&node);
                 }
             }
+            }
+            // Displays come and go with these events, and so do GPUs.
+            state.refresh_gpus();
         })?;
 
     if state.space.outputs().next().is_none() {
@@ -387,6 +423,13 @@ pub fn run_tty_udev(
 
     info!(socket = ?state.socket_name, "set wayland display for tty backend");
     state.enable_initial_decoration_runtime();
+    // Shown only now: a config that loads clears the config error in `enable`.
+    if let Some(error) = render_gpu_error
+        && state.config_error_report.is_none()
+    {
+        state.config_error_report = Some(crate::config_error::ConfigErrorReport::runtime(error));
+        state.schedule_redraw();
+    }
     state.warp_cursor_to_initial_output_center();
     state.warmup_decoration_runtime();
 
@@ -535,6 +578,125 @@ struct TtyDeviceCandidate {
     path: PathBuf,
     connected_connectors: Vec<String>,
     is_primary: bool,
+}
+
+/// Put the render GPU first: the first GPU opened composites everything (see
+/// `tty::device_added`). `SHOJI_RENDER_GPU` picks it, else the config
+/// (`COMPOSITOR.gpu.selectRender`), else the order of `select_tty_devices` stays.
+fn choose_render_gpu<'a>(
+    state: &mut ShojiWM,
+    candidates: &'a [TtyDeviceCandidate],
+    selected: Vec<&'a TtyDeviceCandidate>,
+    config_error: &mut Option<String>,
+) -> Vec<&'a TtyDeviceCandidate> {
+    // Nothing to choose from: the config is not even asked, so a single-GPU
+    // machine starts exactly as before.
+    if candidates.len() < 2 {
+        return selected;
+    }
+    let auto = selected.first().map(|candidate| candidate.node);
+    let mut gpus = candidates
+        .iter()
+        .map(|candidate| {
+            let mut gpu = crate::gpu::describe_gpu(&candidate.path);
+            gpu.is_render = auto == Some(candidate.node);
+            gpu.in_use = selected
+                .iter()
+                .any(|selected| selected.node == candidate.node);
+            (gpu, candidate)
+        })
+        .collect::<Vec<_>>();
+    gpus.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
+    let (gpus, gpu_candidates): (Vec<_>, Vec<_>) = gpus.into_iter().unzip();
+
+    let from_env = crate::gpu::render_gpu_env_override();
+    let chosen_by_env = from_env.is_some();
+    let source = if chosen_by_env {
+        "SHOJI_RENDER_GPU"
+    } else {
+        "COMPOSITOR.gpu.selectRender"
+    };
+    let choice = match from_env {
+        Some(crate::gpu::RenderGpuChoice::Gpu(choice)) => choice,
+        Some(crate::gpu::RenderGpuChoice::Auto) => {
+            info!("SHOJI_RENDER_GPU=auto: choosing the render gpu automatically");
+            return selected;
+        }
+        None => match state.config_runtime.select_render_gpu(&gpus) {
+            Ok(crate::gpu::RenderGpuChoice::Auto) => return selected,
+            Ok(crate::gpu::RenderGpuChoice::Gpu(choice)) => choice,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "the config failed to choose the render gpu; choosing automatically"
+                );
+                *config_error = Some(format!("{source} failed: {error}"));
+                return selected;
+            }
+        },
+    };
+    let Some(index) = gpus.iter().position(|gpu| gpu.matches(&choice)) else {
+        let known = gpus.iter().map(|gpu| gpu.id.as_str()).collect::<Vec<_>>();
+        warn!(%choice, source, ?known, "the render gpu named matches no gpu; choosing automatically");
+        if chosen_by_env {
+            return selected;
+        }
+        *config_error = Some(format!(
+            "{source} chose {choice:?}, which matches no GPU (known: {known:?})"
+        ));
+        return selected;
+    };
+    let chosen = gpu_candidates[index];
+    let others_excluded = std::env::var_os("SHOJI_TTY_DRM_DEVICE").is_some();
+    match put_render_gpu_first(
+        &selected,
+        chosen,
+        |candidate| candidate.node,
+        others_excluded,
+    ) {
+        Some(reordered) => {
+            info!(
+                gpu = %gpus[index].id,
+                card = %gpus[index].dynamic_card_id,
+                source,
+                "chose the render gpu"
+            );
+            reordered
+        }
+        None => {
+            warn!(
+                gpu = %gpus[index].id,
+                source,
+                "the render gpu named is left out by SHOJI_TTY_DRM_DEVICE; choosing automatically"
+            );
+            selected
+        }
+    }
+}
+
+/// `selected` with `chosen` moved (or, when it was not going to be opened,
+/// added) to the front. `None` when `SHOJI_TTY_DRM_DEVICE` named the GPUs to
+/// open and `chosen` is not one of them: that list is not overridden.
+fn put_render_gpu_first<T: Copy, K: PartialEq>(
+    selected: &[T],
+    chosen: T,
+    key: impl Fn(T) -> K,
+    others_excluded: bool,
+) -> Option<Vec<T>> {
+    let chosen_key = key(chosen);
+    let present = selected.iter().any(|&item| key(item) == chosen_key);
+    if !present && others_excluded {
+        return None;
+    }
+    let mut reordered = Vec::with_capacity(selected.len() + usize::from(!present));
+    reordered.push(chosen);
+    reordered.extend(
+        selected
+            .iter()
+            .copied()
+            .filter(|&item| key(item) != chosen_key),
+    );
+    Some(reordered)
 }
 
 fn select_tty_devices(
@@ -688,4 +850,31 @@ pub(crate) fn connected_drm_connectors(card_path: &Path) -> Vec<String> {
             (status.trim() == "connected").then_some(name)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod render_gpu_tests {
+    use super::put_render_gpu_first;
+
+    fn first(selected: &[u32], chosen: u32, others_excluded: bool) -> Option<Vec<u32>> {
+        put_render_gpu_first(selected, chosen, |gpu| gpu, others_excluded)
+    }
+
+    #[test]
+    fn the_chosen_gpu_moves_to_the_front() {
+        assert_eq!(first(&[1, 2, 3], 3, false), Some(vec![3, 1, 2]));
+        assert_eq!(first(&[1, 2, 3], 1, false), Some(vec![1, 2, 3]));
+        // A list SHOJI_TTY_DRM_DEVICE made is reordered all the same.
+        assert_eq!(first(&[1, 2], 2, true), Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn a_gpu_that_was_not_going_to_be_opened_is_added() {
+        assert_eq!(first(&[1], 2, false), Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn a_gpu_left_out_by_shoji_tty_drm_device_stays_out() {
+        assert_eq!(first(&[1], 2, true), None);
+    }
 }

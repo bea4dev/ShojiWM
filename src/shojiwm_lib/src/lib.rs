@@ -36,6 +36,7 @@ pub mod dnd;
 pub mod drawing;
 pub mod foreign_toplevel;
 pub mod frame_pacing;
+pub mod gpu;
 pub mod grabs;
 pub mod handlers;
 pub mod headless_output;

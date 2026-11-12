@@ -12,8 +12,8 @@ use tracing::warn;
 
 use shojiwm_lib::{
     runtime_api::{
-        ConfigRuntime, DecorationRequest, EffectRequest, InputRequest, LaunchContext, RuntimeError,
-        RuntimeEvent, RuntimeLauncher, RuntimeReply, RuntimeRequest, WindowRequest,
+        ConfigRuntime, DecorationRequest, EffectRequest, GpuRequest, InputRequest, LaunchContext,
+        RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply, RuntimeRequest, WindowRequest,
         WorkspaceRequest, cli::ArgSpec,
     },
     ssd::{DecorationEvaluator, WindowDecorationDecisionSnapshot},
@@ -207,6 +207,9 @@ impl ConfigRuntime for TypeScriptRuntime {
             RuntimeRequest::Workspace(WorkspaceRequest::Activate(event)) => {
                 RuntimeReply::Handler(Box::new(evaluator.workspace_activate(event, now)?))
             }
+            RuntimeRequest::Gpu(GpuRequest::SelectRender { gpus }) => {
+                RuntimeReply::RenderGpu(evaluator.select_render_gpu(gpus)?)
+            }
         };
         evaluator.forward_published_state();
         Ok(reply)
@@ -222,6 +225,7 @@ impl ConfigRuntime for TypeScriptRuntime {
             }
             RuntimeEvent::LidSwitch(lid) => self.evaluator.set_lid_switch(lid),
             RuntimeEvent::PowerState(state) => self.evaluator.set_power_state(state),
+            RuntimeEvent::GpuState(gpus) => self.evaluator.set_gpu_state(gpus),
             RuntimeEvent::Resume(resume) => self.evaluator.push_resume(resume),
             // The TypeScript API has no lock key state.
             RuntimeEvent::KeyboardLocks(_) => {}

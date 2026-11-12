@@ -1237,6 +1237,8 @@ struct CrossGpuTarget {
     id: Id,
     /// Bumped whenever `current` changes, which is all the damage the output's GPU needs.
     commit: CommitCounter,
+    /// How the output's GPU waits for the render GPU was logged.
+    wait_logged: bool,
 }
 
 impl CrossGpuTarget {
@@ -1258,6 +1260,7 @@ impl CrossGpuTarget {
             current: None,
             id: Id::new(),
             commit: CommitCounter::default(),
+            wait_logged: false,
         }
     }
 
@@ -1351,6 +1354,56 @@ impl RenderElement<GlesRenderer> for CrossGpuFrameElement {
     }
 }
 
+/// `SHOJI_CROSS_GPU_CPU_WAIT` (set to anything): the CPU waits for each cross-GPU frame, as it always did
+/// before the output's GPU could wait on its own (a fallback, should a driver pair
+/// mishandle the other's fences).
+fn cross_gpu_cpu_wait_forced() -> bool {
+    crate::env_flag!("SHOJI_CROSS_GPU_CPU_WAIT")
+}
+
+/// Make the output's GPU wait for the render GPU to finish `sync`'s frame before it reads
+/// that frame.
+///
+/// With native fences on both sides (`EGL_ANDROID_native_fence_sync`) the render GPU's
+/// fence goes to the output's GPU as a sync file and the wait is queued there: the CPU moves
+/// right on, so rendering ahead (`COMPOSITOR.rendering.framePacing = "throughput"`) still
+/// overlaps one frame's GPU work with the next frame's CPU work, and the event loop (input,
+/// the other outputs) is not held up by the render GPU. Without them the CPU blocks until
+/// the frame is done; smithay's `Renderer::wait` also ends there when importing fails.
+fn wait_for_render_gpu(
+    target: &mut CrossGpuTarget,
+    scanout_renderer: &mut GlesRenderer,
+    sync: &smithay::backend::renderer::sync::SyncPoint,
+    output: &Output,
+) {
+    let gpu_wait = !cross_gpu_cpu_wait_forced()
+        && sync.is_exportable()
+        && smithay::backend::egl::fence::EGLFence::supports_importing(
+            scanout_renderer.egl_context().display(),
+        );
+    if !target.wait_logged && !sync.is_reached() {
+        target.wait_logged = true;
+        info!(
+            output = %output.name(),
+            gpu_wait,
+            "cross-gpu frames: {}",
+            if gpu_wait {
+                "the output's gpu waits for the render gpu's fence"
+            } else {
+                "the cpu waits for the render gpu (no fence the output's gpu can import)"
+            }
+        );
+    }
+    if gpu_wait {
+        if let Err(error) = scanout_renderer.wait(sync) {
+            warn!(output = %output.name(), ?error, "cross-gpu fence wait failed; waiting on the cpu");
+            let _ = sync.wait();
+        }
+    } else {
+        let _ = sync.wait();
+    }
+}
+
 /// The render GPU's half of `render_cross_gpu_frame`: the frame in a LINEAR buffer, and that
 /// buffer as an element for the output's GPU.
 fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
@@ -1385,8 +1438,9 @@ fn prepare_cross_gpu_frame<E: RenderElement<GlesRenderer>>(
         (changed, rendered.sync, rendered.states)
     };
     if changed || target.current.is_none() {
-        // The secondary GPU takes no part in the render GPU's implicit sync: wait here.
-        let _ = sync.wait();
+        // The secondary GPU takes no part in the render GPU's implicit sync, so it is
+        // told explicitly to wait for this frame.
+        wait_for_render_gpu(target, scanout_renderer, &sync, output);
         target.swapchain.submitted(&slot);
         target.commit.increment();
         target.current = Some(slot);

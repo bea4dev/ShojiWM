@@ -12,9 +12,9 @@ use std::{
 
 use shojiwm_lib::{
     runtime_api::{
-        ConfigRuntime, DecorationRequest, EffectRequest, HostMessage, InputRequest, LaunchContext,
-        ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeLauncher, RuntimeReply,
-        RuntimeRequest, SchedulerTickRequest, WindowRequest, WorkspaceRequest,
+        ConfigRuntime, DecorationRequest, EffectRequest, GpuRequest, HostMessage, InputRequest,
+        LaunchContext, ReloadPreparation, RuntimeError, RuntimeEvent, RuntimeLauncher,
+        RuntimeReply, RuntimeRequest, SchedulerTickRequest, WindowRequest, WorkspaceRequest,
     },
     runtime_workspace::{RuntimeWorkspaceCreateEvent, RuntimeWorkspaceMoveWindowEvent},
     ssd::{
@@ -1252,6 +1252,12 @@ impl ConfigRuntime for ReactiveRuntime {
                     };
                     RuntimeReply::Handler(Box::new(handler_invocation(invoked)))
                 }
+                RuntimeRequest::Gpu(GpuRequest::SelectRender { gpus }) => {
+                    match with_registry(|registry| registry.render_gpu.clone()) {
+                        Some(select) => RuntimeReply::RenderGpu(untrack(|| select(gpus))),
+                        None => RuntimeReply::Unhandled,
+                    }
+                }
             })
         });
         publish();
@@ -1294,6 +1300,7 @@ impl ConfigRuntime for ReactiveRuntime {
                 RuntimeEvent::PowerState(state) => {
                     runtime::global().power_state.set(Some(state));
                 }
+                RuntimeEvent::GpuState(gpus) => runtime::global().gpus.set(gpus),
                 RuntimeEvent::Resume(resume) => {
                     batch(|| {
                         emit(

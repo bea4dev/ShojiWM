@@ -69,9 +69,9 @@ runtime can start with a handful of requests and grow.
 |---|---|
 | `RuntimeLauncher` | One per language. `name`, `default_config_path`, `extra_args`, `launch`. |
 | `ConfigRuntime` | The running config. `preload`, `enable`, `prepare_reload`, `reload`, `request`, `post`, `shutdown`. Called on the compositor thread only. |
-| `RuntimeRequest<'a>` | Needs an answer this turn: decoration evaluation (full / cached / policy / handlers / close), scheduler tick, window requests, input hooks, effects, workspace activation. Borrows its snapshots, never serialized. |
+| `RuntimeRequest<'a>` | Needs an answer this turn: decoration evaluation (full / cached / policy / handlers / close), scheduler tick, window requests, input hooks, effects, workspace activation, the render GPU (once at startup, before `enable`). Borrows its snapshots, never serialized. |
 | `RuntimeReply` | The direct answer. Side effects are not part of it. |
-| `RuntimeEvent` | Fire and forget: display / input / keyboard-layout state, async pointer and gesture hooks. |
+| `RuntimeEvent` | Fire and forget: display / input / keyboard-layout / GPU state, async pointer and gesture hooks. |
 | `RuntimeHost` | Clone + Send handle back to the compositor: `send(HostMessage)` and `wake()`. |
 | `HostMessage` | Config deltas (outputs, workspaces, key bindings, pointer, input, event filter, processes, debug, cursor, env) async hook results, and `ReloadReady` for a reload prepared in the background. |
 | `RuntimeConfigDelta` | Helper that publishes a reply's worth of deltas in the canonical order. |

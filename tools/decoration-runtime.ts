@@ -354,6 +354,9 @@ import {
   type ResumeEvent,
   emitPowerState,
   emitResume,
+  type GpuInfo,
+  emitGpuState,
+  resolveRenderGpu,
   type WindowCompositionFunction,
   type OutputStateSnapshot,
   type OutputInfo,
@@ -546,6 +549,14 @@ interface KdeDecorationDefaultRequest {
   client: WindowDecorationClient;
 }
 
+interface SelectRenderGpuRequest {
+  requestId: number;
+  kind: "selectRenderGpu";
+  gpus: GpuInfo[];
+  /** Applied before the config loads, as `lifecycleEnable` does. */
+  environment?: Record<string, string>;
+}
+
 interface SchedulerTickRequest {
   requestId: number;
   kind: "schedulerTick";
@@ -559,6 +570,7 @@ interface SchedulerTickRequest {
   keyboardLayout?: KeyboardLayoutChangeEvent;
   lidSwitch?: LidSwitchEvent;
   powerState?: PowerState;
+  gpus?: GpuInfo[];
   resume?: ResumeEvent;
 }
 
@@ -781,6 +793,7 @@ type RuntimeRequest =
   | EvaluatePreviewRequest
   | WindowDecorationPolicyRequest
   | KdeDecorationDefaultRequest
+  | SelectRenderGpuRequest
   | SchedulerTickRequest
   | WindowClosedRequest
   | StartCloseRequest
@@ -847,6 +860,16 @@ interface WindowDecorationPolicySuccess {
   ok: true;
   kind: "windowDecorationPolicy";
   decision: WindowDecorationDecision;
+}
+
+interface SelectRenderGpuSuccess {
+  requestId: number;
+  ok: true;
+  kind: "selectRenderGpu";
+  /** `null`: ShojiWM's own pick. */
+  gpuId: string | null;
+  /** The resolver threw; the config stays loaded. */
+  error?: string;
 }
 
 interface KdeDecorationDefaultSuccess {
@@ -1701,6 +1724,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           case "lifecycleDisable":
           case "windowDecorationPolicy":
           case "kdeDecorationDefault":
+          case "selectRenderGpu":
           case "workspaceActivate":
           case "pointerRegion":
           case "inputGrab":
@@ -1713,6 +1737,27 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           requestId: request.requestId,
           ok: true,
           kind: "drainPreload",
+        });
+      } else if (request.kind === "selectRenderGpu") {
+        // Asked at startup before `lifecycleEnable`, so the config may load
+        // here; it sees the same environment `lifecycleEnable` would give it.
+        applyRuntimeEnvironment(request.environment);
+        await loadRuntimeConfig();
+        let gpuId: string | null = null;
+        let error: string | undefined;
+        try {
+          gpuId = resolveRenderGpu(request.gpus);
+        } catch (thrown) {
+          error = thrown instanceof Error
+            ? (thrown.stack ?? thrown.message)
+            : String(thrown);
+        }
+        await writeResponse(embeddedBridge, {
+          requestId: request.requestId,
+          ok: true,
+          kind: "selectRenderGpu",
+          gpuId,
+          ...(error === undefined ? {} : { error }),
         });
       } else if (request.kind === "lifecycleEnable") {
         applyRuntimeEnvironment(request.environment);
@@ -1958,6 +2003,9 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             }
             if (request.lidSwitch) {
               events.emitLidSwitch(request.lidSwitch);
+            }
+            if (request.gpus) {
+              emitGpuState(request.gpus);
             }
             if (request.resume) {
               emitResume(request.resume);
@@ -5394,6 +5442,7 @@ function writeResponse(
     | DrainPreloadSuccess
     | WindowDecorationPolicySuccess
     | KdeDecorationDefaultSuccess
+    | SelectRenderGpuSuccess
     | RuntimeFailure,
 ): Promise<void> {
   return writeResponseWithRuntimeUpdates(

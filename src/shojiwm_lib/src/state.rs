@@ -359,6 +359,10 @@ pub struct ShojiWM {
     pub tty_device_paths: HashMap<DrmNode, std::path::PathBuf>,
     /// The GPU clients render with (the one the linux-dmabuf global advertises). Never closed.
     pub tty_render_node: Option<DrmNode>,
+    /// Every GPU of the seat (TTY backend), opened or not, for `COMPOSITOR.gpu`.
+    pub tty_gpu_paths: HashMap<DrmNode, std::path::PathBuf>,
+    /// What `COMPOSITOR.gpu` reports; see `crate::gpu`.
+    pub gpus: Vec<crate::gpu::GpuSnapshot>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
     pub window_decoration_negotiations: crate::window_decoration::WindowDecorationNegotiationMap,
     pub window_primary_output_names: HashMap<Window, String>,
@@ -1882,6 +1886,8 @@ impl ShojiWM {
             tty_session: None,
             tty_device_paths: HashMap::new(),
             tty_render_node: None,
+            tty_gpu_paths: HashMap::new(),
+            gpus: Vec::new(),
             window_decorations: HashMap::new(),
             window_decoration_negotiations: HashMap::new(),
             window_primary_output_names: HashMap::new(),
@@ -2878,6 +2884,7 @@ impl ShojiWM {
         let frame_time_ms = frame.map(|(_, time)| time);
         self.sync_keyboard_state();
         self.sync_lid_switch();
+        self.sync_gpu_state();
         self.refresh_runtime_processes();
         let managed_window_animation_active = !self.managed_window_animations.is_empty();
         if !force

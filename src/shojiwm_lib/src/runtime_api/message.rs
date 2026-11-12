@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    gpu::{GpuSnapshot, RenderGpuChoice},
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
     power::{PowerStateSnapshot, ResumeSnapshot},
@@ -43,6 +44,7 @@ pub enum RuntimeRequest<'a> {
     Input(InputRequest<'a>),
     Effect(EffectRequest<'a>),
     Workspace(WorkspaceRequest<'a>),
+    Gpu(GpuRequest<'a>),
 }
 
 /// Which clock a scheduler tick advances.
@@ -167,6 +169,15 @@ pub enum WorkspaceRequest<'a> {
     Activate(&'a RuntimeWorkspaceActivateRequestSnapshot),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum GpuRequest<'a> {
+    /// Which GPU composites everything. Asked once at startup, before any GPU
+    /// is opened and before `enable`, and only when there is more than one
+    /// GPU. Answered with [`RuntimeReply::RenderGpu`]; `Unhandled` keeps
+    /// ShojiWM's own pick (the GPU marked `is_render`).
+    SelectRender { gpus: &'a [GpuSnapshot] },
+}
+
 /// The direct answer to a [`RuntimeRequest`]. Side effects that are not part
 /// of the answer go through `RuntimeHost` instead.
 #[derive(Debug, Clone)]
@@ -184,6 +195,7 @@ pub enum RuntimeReply {
     BackgroundEffect(Option<BackgroundEffectConfig>),
     LayerEffects(LayerEffectEvaluationResult),
     PopupEffects(PopupEffectEvaluationResult),
+    RenderGpu(RenderGpuChoice),
     /// Handled, nothing to report.
     Done,
     /// The runtime does not implement this request; the compositor falls back
@@ -203,6 +215,9 @@ pub enum RuntimeEvent {
     KeyboardLocks(KeyboardLocksSnapshot),
     /// The laptop lid was closed or opened.
     LidSwitch(LidSwitchSnapshot),
+    /// The GPUs changed: one was added or removed, or a display was
+    /// connected to or disconnected from one.
+    GpuState(Vec<GpuSnapshot>),
     /// External power or logind's lid settings changed.
     PowerState(PowerStateSnapshot),
     /// The system came back from a suspend or hibernation.
