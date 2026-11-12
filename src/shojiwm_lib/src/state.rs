@@ -4221,7 +4221,11 @@ impl ShojiWM {
                 );
             }
             let already_dirty = self.runtime_dirty_window_ids.contains(&window_id);
-            if managed_only.contains(&window_id) && !already_dirty {
+            // Turns that only move a window stay managed-only together: a swipe
+            // sends more of them than there are frames.
+            if managed_only.contains(&window_id)
+                && (!already_dirty || self.runtime_managed_only_window_ids.contains(&window_id))
+            {
                 self.runtime_managed_only_window_ids
                     .insert(window_id.clone());
             } else {

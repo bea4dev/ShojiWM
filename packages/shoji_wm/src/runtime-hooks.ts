@@ -1121,6 +1121,18 @@ export function trackSignalWrite(signal: object): void {
       ) {
         continue;
       }
+      // Read by nothing but the window's ManagedWindow props: the managed
+      // mark below is all it needs. A dirty mark here would ask for a full
+      // re-evaluation, and the runtime then drops the managed-only mark of a
+      // window that has one: a tiled strip scrolled by a swipe re-evaluated
+      // every tile in full on each step.
+      if (
+        managedWindows?.has(windowId) &&
+        !structuralWindows?.has(windowId) &&
+        !dependentWindowNodes?.has(windowId)
+      ) {
+        continue;
+      }
       markWindowDirty(windowId);
     }
   }
@@ -1153,7 +1165,7 @@ export function trackSignalWrite(signal: object): void {
   }
   if (managedWindows) {
     for (const windowId of managedWindows) {
-      dirtyManagedWindowIds.add(windowId);
+      markManagedWindowDirty(windowId);
     }
   }
   if (structuralWindows) {

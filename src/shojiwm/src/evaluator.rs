@@ -5923,6 +5923,125 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// Scrolling a tiled strip by swipe moves its tiles through their
+    /// ManagedWindow rects alone: every step reports them managed-only, so the
+    /// compositor takes the managed-window path instead of re-evaluating each
+    /// tile's whole tree.
+    #[test]
+    fn tiled_scroll_swipe_reports_tiles_managed_only() {
+        use shojiwm_lib::ssd::window_model::{
+            GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
+        };
+
+        let evaluator = real_config_evaluator();
+        let mut display_state = std::collections::BTreeMap::new();
+        display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
+        evaluator.set_display_state(display_state);
+        evaluator
+            .lifecycle_enable("reload", Some(&tiled_workspace_persisted_state()))
+            .expect("tiled lifecycle should succeed");
+        // Enough tiles to scroll; the last one opened has focus and the strip
+        // ends scrolled to it.
+        let ids = ["0xa", "0xb", "0xc", "0xd", "0xe", "0xf"];
+        let mut now = 0;
+        let mut previous: Option<&str> = None;
+        for id in ids {
+            let window = make_named_window(id, "kitty", false, false);
+            evaluator
+                .evaluate_window_preview(&window, now)
+                .expect("preview should evaluate");
+            if let Some(previous) = previous {
+                let unfocused = make_named_window(previous, "kitty", false, false);
+                evaluator
+                    .evaluate_window(&unfocused, now + 25)
+                    .expect("defocus evaluation should succeed");
+            }
+            let focused = make_named_window(id, "kitty", true, false);
+            evaluator
+                .evaluate_window(&focused, now + 50)
+                .expect("evaluation should succeed");
+            previous = Some(id);
+            now += 100;
+        }
+        // Past the open animations.
+        now += 2000;
+        for id in ids {
+            evaluator
+                .evaluate_cached_window(id, None, now, true)
+                .expect("cached evaluation should succeed");
+        }
+
+        let mut total_x = 0.0;
+        let mut swipe = |phase: GestureSwipePhaseSnapshot, delta_x: f64, timestamp: u64| {
+            total_x += delta_x;
+            GestureSwipeEventSnapshot {
+                phase,
+                fingers: 3,
+                position: None,
+                delta_x,
+                delta_y: 0.0,
+                total_x,
+                total_y: 0.0,
+                velocity_x: delta_x * 100.0,
+                velocity_y: 0.0,
+                output_name: Some("TEST-1".into()),
+                device: None,
+                timestamp,
+            }
+        };
+        now += 10;
+        evaluator
+            .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Begin, 0.0, now), now)
+            .expect("begin should evaluate");
+        // Scroll back towards the first tile, past the axis lock.
+        let mut previous_x = None;
+        for step in 0..6 {
+            now += 8;
+            let invocation = evaluator
+                .gesture_swipe(&swipe(GestureSwipePhaseSnapshot::Update, 15.0, now), now)
+                .expect("update should evaluate");
+            if step < 2 {
+                continue;
+            }
+            let mut dirty = invocation.dirty_window_ids.clone();
+            dirty.sort();
+            assert_eq!(dirty, ids, "step {step}: every tile moves");
+            let mut managed = invocation.dirty_managed_window_ids.clone();
+            managed.sort();
+            assert_eq!(
+                managed, ids,
+                "step {step}: the tiles only move, so none needs a full re-evaluation"
+            );
+            assert!(
+                invocation.dirty_window_node_ids.is_empty(),
+                "step {step}: no node changes: {:?}",
+                invocation.dirty_window_node_ids
+            );
+            // What the compositor then asks for: the managed window alone, at
+            // its new place.
+            for id in ids {
+                let result = evaluator
+                    .evaluate_cached_window(id, None, now, false)
+                    .expect("cached evaluation should succeed");
+                assert!(result.managed_window_only, "step {step}: {id} managed only");
+                if id == "0xa" {
+                    let x = result
+                        .managed_window
+                        .rect
+                        .expect("tiled window should have a managed rect")
+                        .x;
+                    if let Some(previous_x) = previous_x {
+                        assert!(
+                            x > previous_x,
+                            "step {step}: the strip scrolls: {previous_x} -> {x}"
+                        );
+                    }
+                    previous_x = Some(x);
+                }
+            }
+        }
+    }
+
     /// Frame-driven kinetic scrolling: ticks stamped with fractional frame
     /// times (the compositor's predicted presentation times) move the glide by
     /// exactly one frame's worth each, even with wall-clock requests that run
