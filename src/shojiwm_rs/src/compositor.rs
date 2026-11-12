@@ -27,6 +27,7 @@ use shojiwm_lib::{
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
     headless_output::RuntimeHeadlessOutputRequest,
+    keyboard_focus::KeyboardFocusSnapshot,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     output_power::RuntimeOutputPowerRequest,
     runtime_api::HostMessage,
@@ -840,6 +841,13 @@ impl InputController {
         runtime::global().keyboard_locks.read_only()
     }
 
+    /// The window that has the keyboard (`None` until the compositor
+    /// reports it). A window stays `is_focused` while a panel borrows the
+    /// keyboard; this says who the keys go to.
+    pub fn keyboard_focus(&self) -> ReadSignal<Option<KeyboardFocusSnapshot>> {
+        runtime::global().keyboard_focus.read_only()
+    }
+
     /// Take all keyboard, pointer button, scroll and swipe input until
     /// [`InputGrab::release`]; see [`crate::input_grab`]. A new grab
     /// replaces (and cancels) the current one.
@@ -1438,6 +1446,9 @@ listeners! {
     on_keyboard_layout_change => keyboard_layout: &KeyboardLayoutSnapshot;
     /// Caps Lock or Num Lock was switched on or off.
     on_keyboard_locks_change => keyboard_locks: &KeyboardLocksSnapshot;
+    /// The keyboard moved to another window, or to none of them: to a
+    /// layer surface, the lock screen or nothing.
+    on_keyboard_focus_change => keyboard_focus: &KeyboardFocusSnapshot;
     on_create_layer => create_layer: &WaylandLayerSnapshot;
     on_update_layer => update_layer: &WaylandLayerSnapshot;
     on_destroy_layer => destroy_layer: &WaylandLayerSnapshot;

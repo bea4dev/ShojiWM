@@ -349,6 +349,7 @@ import {
   type InputConfigDraft,
   type InputDeviceInfo,
   type KeyboardLayoutChangeEvent,
+  type KeyboardFocusChangeEvent,
   type WindowCompositionFunction,
   type OutputStateSnapshot,
   type OutputInfo,
@@ -552,6 +553,7 @@ interface SchedulerTickRequest {
   displayState?: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
   keyboardLayout?: KeyboardLayoutChangeEvent;
+  keyboardFocus?: { windowId: string | null };
 }
 
 interface WindowClosedRequest {
@@ -1943,6 +1945,13 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
           if (request.kind === "schedulerTick") {
             if (request.keyboardLayout) {
               events.emitKeyboardLayoutChange(request.keyboardLayout);
+            }
+            if (request.keyboardFocus) {
+              const focus: KeyboardFocusChangeEvent =
+                request.keyboardFocus.windowId == null
+                  ? {}
+                  : { windowId: request.keyboardFocus.windowId };
+              events.emitKeyboardFocusChange(focus);
             }
             const tick = processSchedulerTick(request.output);
             if (statsEnabled && tick.dirty) stats.schedulerTickDirty++;

@@ -62,6 +62,25 @@ input.global = {
 };
 ```
 
+## キーボードを持つウィンドウ
+
+`COMPOSITOR.event.onKeyboardFocusChange` は、キーの送り先のウィンドウ（ウィンドウ
+自身のサーフェスまたはそのポップアップ経由）を通知します。レイヤーサーフェス、ロック画面、
+または何もキーボードを持たない間は `windowId: undefined` です。パネルがキーボードを
+借りている間もウィンドウは `isFocused` のままですが、このイベントは実際にキーを
+受け取る先を示します。
+
+```ts
+COMPOSITOR.event.onKeyboardFocusChange(({windowId}) => {
+  ipc.broadcast('keyboard-focus', windowId ?? null);
+});
+```
+
+通知はスケジューラーのティックで届きます。有効化や再読み込みの後の最初のティックで
+現在のウィンドウを、その後は移動のたびに通知し、二つのティックの間の移動はまとめられます。
+Rust の設定では `COMPOSITOR.event.on_keyboard_focus_change(|focus| ...)` で、
+`COMPOSITOR.input.keyboard_focus()` が最後の通知を持つシグナルです（`focus.window_id`）。
+
 ## ポインター（マウス）設定
 
 `pointer` — `InputDeviceConfig.pointer` オブジェクト。

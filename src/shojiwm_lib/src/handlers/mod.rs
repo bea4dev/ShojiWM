@@ -107,6 +107,7 @@ impl SeatHandler for ShojiWM {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let previous_owner = self.window_keyboard_focus_owner.clone();
         self.sync_window_keyboard_focus_from_surface(focused);
+        self.keyboard_focus_moved(focused);
 
         // The TS runtime only observes focus through `isFocused` snapshot
         // diffs taken when a window is re-evaluated. A window that is skipped
@@ -276,6 +277,7 @@ impl SessionLockHandler for ShojiWM {
                     SERIAL_COUNTER.next_serial(),
                 );
             }
+            self.sync_keyboard_focus();
         }
         self.session_lock_surfaces
             .retain(|_, surface| surface.alive());

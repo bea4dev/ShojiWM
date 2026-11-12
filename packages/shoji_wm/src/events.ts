@@ -68,6 +68,23 @@ export interface KeyboardLayoutChangeEvent {
 
 export type KeyboardLayoutChangeListener = (event: KeyboardLayoutChangeEvent) => void;
 
+
+export interface KeyboardFocusChangeEvent {
+  /**
+   * The window that receives the keys, through its own surface or a popup;
+   * `undefined` while a layer surface, the lock screen or nothing does. A
+   * window stays `isFocused` while a panel borrows the keyboard; this says
+   * who the keys go to.
+   * キーを受け取るウィンドウ（ウィンドウ自身またはそのポップアップ経由）。
+   * レイヤーサーフェス、ロック画面、または何もキーを受け取らない間は `undefined`。
+   * パネルがキーボードを借りている間もウィンドウは `isFocused` のままですが、
+   * こちらは実際のキーの送り先を示します。
+   */
+  readonly windowId?: string;
+}
+
+export type KeyboardFocusChangeListener = (event: KeyboardFocusChangeEvent) => void;
+
 export interface WindowResizeEdges {
   left: boolean;
   right: boolean;
@@ -488,6 +505,16 @@ export interface CompositorEventController {
    */
   onKeyboardLayoutChange(listener: KeyboardLayoutChangeListener): () => void;
   /**
+   * Reports the window that has the keyboard on the first scheduler tick
+   * after enable/reload and whenever the keyboard moves to another window or
+   * off the windows (to a layer surface, the lock screen or nothing). Moves
+   * between two ticks are coalesced into the last one.
+   * 有効化/リロード後の最初のスケジューラーティックと、キーボードが別のウィンドウや
+   * ウィンドウ以外（レイヤーサーフェス、ロック画面、なし）へ移るたびに、キーボードを
+   * 持つウィンドウを通知します。ティック間の移動は最後のものにまとめられます。
+   */
+  onKeyboardFocusChange(listener: KeyboardFocusChangeListener): () => void;
+  /**
    * Fires synchronously when the pointer moves, at most about once per display
    * refresh: faster motion is coalesced into one event with the latest position
    * and the combined `delta`. A listener always sees the latest position before
@@ -616,6 +643,8 @@ export interface CompositorEventController {
   /** @internal */
   emitKeyboardLayoutChange(event: KeyboardLayoutChangeEvent): void;
   /** @internal */
+  emitKeyboardFocusChange(event: KeyboardFocusChangeEvent): void;
+  /** @internal */
   emitPointerMove(event: PointerMoveEvent): boolean;
   /** @internal */
   emitPointerMoveAsync(event: PointerMoveEvent): Promise<boolean>;
@@ -661,6 +690,7 @@ export function createCompositorEventController(): CompositorEventController {
   const outputChangeListeners = new Set<OutputChangeListener>();
   const inputDeviceChangeListeners = new Set<InputDeviceChangeListener>();
   const keyboardLayoutChangeListeners = new Set<KeyboardLayoutChangeListener>();
+  const keyboardFocusChangeListeners = new Set<KeyboardFocusChangeListener>();
   const pointerMoveListeners = new Set<PointerMoveListener>();
   const pointerMoveAsyncListeners = new Set<PointerMoveAsyncListener>();
   const gestureSwipeListeners = new Set<GestureSwipeListener>();
@@ -743,6 +773,10 @@ export function createCompositorEventController(): CompositorEventController {
     onKeyboardLayoutChange(listener) {
       keyboardLayoutChangeListeners.add(listener);
       return () => keyboardLayoutChangeListeners.delete(listener);
+    },
+    onKeyboardFocusChange(listener) {
+      keyboardFocusChangeListeners.add(listener);
+      return () => keyboardFocusChangeListeners.delete(listener);
     },
     onPointerMove(listener) {
       pointerMoveListeners.add(listener);
@@ -890,6 +924,11 @@ export function createCompositorEventController(): CompositorEventController {
     },
     emitKeyboardLayoutChange(event) {
       for (const listener of keyboardLayoutChangeListeners) {
+        listener(event);
+      }
+    },
+    emitKeyboardFocusChange(event) {
+      for (const listener of keyboardFocusChangeListeners) {
         listener(event);
       }
     },
