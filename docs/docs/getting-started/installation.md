@@ -110,6 +110,20 @@ directories. It performs the following:
 
 Run `./dist/install.sh --help` to see this list.
 
+### Screen-sharing picker
+
+By default the portal asks which screen or window to share in its own window.
+To use another program instead, set `SHOJIWM_PORTAL_PICKER` to a command in
+the portal's environment (for example in `~/.config/environment.d/`, since the
+portal runs as a systemd user service). The portal runs it with `sh -c`,
+writes one JSON object to its stdin (`app_id`, `prefer` = `"window"` or
+`"screen"`, and `sources`: outputs with `id`, `kind: "output"`, `name`,
+`description`, `x`, `y`, `width`, `height`, `refresh_mhz`, and windows with
+`id`, `kind: "window"`, `title`, `app_id`), then closes stdin. The program
+prints the `id` of the chosen source on the first line of stdout and exits
+with status 0. Any other result cancels the request. If the requesting app
+closes the session first, the portal kills the program.
+
 ## NixOS / flakes
 
 ShojiWM also provides an experimental Nix flake. The flake is intended to keep
