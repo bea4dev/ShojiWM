@@ -1996,13 +1996,16 @@ export interface KeyBindingOptions {
  *
  * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
  * string uses modifier+key notation such as `"Super+T"`, `"Super+Shift+Left"`,
- * `"Super+WheelScrollUp"` or `"Super+MouseForward"`.
+ * `"Super+WheelScrollUp"` or `"Super+MouseForward"`. `"Super+code:10"` names
+ * the physical key with xkb keycode 10 (the evdev code plus 8), whatever the
+ * layout puts on it.
  * `MouseBack` and `MouseForward` use the standard Linux side-button codes.
  * Side-button shortcuts only accept `on: "press"`; their release is consumed
  * with the press, while unmatched buttons keep reaching applications.
  * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
  * `shortcut` は `"Super+T"`、`"Super+Shift+Left"`、`"Super+WheelScrollUp"`、
- * `"Super+MouseForward"` のような記法を使います。
+ * `"Super+MouseForward"` のような記法を使います。`"Super+code:10"` は、
+ * レイアウトに関係なく xkb キーコード 10（evdev コード + 8）の物理キーを指します。
  * `MouseBack` と `MouseForward` は Linux 標準のサイドボタンのコードを使います。
  * サイドボタンのショートカットは `on: "press"` のみ指定でき、リリースも押下と一緒に
  * 消費されます。一致しなかったボタンはこれまでどおりアプリケーションに届きます。
