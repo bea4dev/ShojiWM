@@ -546,6 +546,8 @@ pub struct ShojiWM {
     pub pending_tap_binding_ids: Vec<String>,
     /// A pointer focus refresh waits in an idle callback.
     pub pointer_focus_refresh_queued: bool,
+    /// The lid switch's last state; `None` until one reports.
+    pub lid_closed: Option<bool>,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -1980,6 +1982,7 @@ impl ShojiWM {
             modifier_tap: Default::default(),
             pending_tap_binding_ids: Vec::new(),
             pointer_focus_refresh_queued: false,
+            lid_closed: None,
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect: None,
@@ -2864,6 +2867,7 @@ impl ShojiWM {
     fn tick_runtime_scheduler_at(&mut self, force: bool, frame: Option<(&str, f64)>) -> u64 {
         let frame_time_ms = frame.map(|(_, time)| time);
         self.sync_keyboard_state();
+        self.sync_lid_switch();
         self.refresh_runtime_processes();
         let managed_window_animation_active = !self.managed_window_animations.is_empty();
         if !force

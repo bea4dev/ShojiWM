@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
+    lid_switch::LidSwitchSnapshot,
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
     ssd::{
@@ -40,6 +41,7 @@ pub struct RuntimeHandle {
     input_state: Option<BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     keyboard_layout: Option<KeyboardLayoutSnapshot>,
     keyboard_locks: Option<KeyboardLocksSnapshot>,
+    lid_switch: Option<LidSwitchSnapshot>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -70,6 +72,7 @@ impl RuntimeHandle {
             input_state: None,
             keyboard_layout: None,
             keyboard_locks: None,
+            lid_switch: None,
         }
     }
 
@@ -149,6 +152,16 @@ impl RuntimeHandle {
         true
     }
 
+    /// Returns whether the lid state differs from the last one sent.
+    pub fn sync_lid_switch(&mut self, lid: LidSwitchSnapshot) -> bool {
+        if self.lid_switch == Some(lid) {
+            return false;
+        }
+        self.lid_switch = Some(lid);
+        self.post(0.0, RuntimeEvent::LidSwitch(lid));
+        true
+    }
+
     /// Forget what was sent, so the next sync re-sends everything. Used after
     /// a reload, whose fresh config has not seen any state yet.
     pub fn reset_synced_state(&mut self) {
@@ -156,6 +169,7 @@ impl RuntimeHandle {
         self.input_state = None;
         self.keyboard_layout = None;
         self.keyboard_locks = None;
+        self.lid_switch = None;
     }
 
     pub fn evaluate_window(

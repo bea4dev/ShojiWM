@@ -41,6 +41,7 @@ pub mod handlers;
 pub mod headless_output;
 pub mod input;
 pub mod keyboard_layout;
+pub mod lid_switch;
 pub mod log_rate_limit;
 pub mod modifier_tap;
 pub mod output_power;
