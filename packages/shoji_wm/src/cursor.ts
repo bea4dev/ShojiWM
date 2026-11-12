@@ -128,8 +128,11 @@ export const CURSOR_CONTROLLER: CursorController = {
     const rotate = transform?.rotate ?? 0;
     const scaleX = transform?.scaleX ?? 1;
     const scaleY = transform?.scaleY ?? 1;
-    if (!Number.isFinite(rotate)) {
-      throw new Error("cursor setTransform: rotate must be a finite number");
+    const scaleAxis = transform?.scaleAxis ?? 0;
+    for (const [name, angle] of [["rotate", rotate], ["scaleAxis", scaleAxis]] as const) {
+      if (!Number.isFinite(angle)) {
+        throw new Error(`cursor setTransform: ${name} must be a finite number`);
+      }
     }
     for (const [name, scale] of [["scaleX", scaleX], ["scaleY", scaleY]] as const) {
       if (!Number.isFinite(scale) || scale === 0 || Math.abs(scale) > 8) {
@@ -138,10 +141,15 @@ export const CURSOR_CONTROLLER: CursorController = {
     }
     const native = (
       globalThis as {
-        __SHOJI_CURSOR_TRANSFORM__?: (rotate: number, scaleX: number, scaleY: number) => void;
+        __SHOJI_CURSOR_TRANSFORM__?: (
+          rotate: number,
+          scaleX: number,
+          scaleY: number,
+          scaleAxis: number,
+        ) => void;
       }
     ).__SHOJI_CURSOR_TRANSFORM__;
-    native?.(rotate, scaleX, scaleY);
+    native?.(rotate, scaleX, scaleY, scaleAxis);
   },
 };
 

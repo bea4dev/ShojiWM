@@ -10,6 +10,7 @@ fn setup() {
             rotate: -12.0,
             scale_x: 1.3,
             scale_y: 0.85,
+            scale_axis: 30.0,
         }))
         .unwrap();
     COMPOSITOR
@@ -49,6 +50,7 @@ fn the_transform_and_its_reset_reach_the_compositor() {
                 rotate: -12.0,
                 scale_x: 1.3,
                 scale_y: 0.85,
+                scale_axis: 30.0,
             }),
             None,
         ]

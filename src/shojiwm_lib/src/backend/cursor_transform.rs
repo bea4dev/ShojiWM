@@ -394,6 +394,44 @@ mod tests {
     }
 
     #[test]
+    fn a_stretch_along_a_turned_axis_leaves_the_image_upright() {
+        let src = Rectangle::new((0, 0).into(), (10, 10).into());
+        let transform = CursorTransform {
+            scale_x: 2.0,
+            scale_axis: 45.0,
+            ..Default::default()
+        };
+        let placement = placement(src, (0.0, 0.0).into(), &transform);
+        // The corner on the diagonal goes twice as far along it; the two
+        // beside it are pushed half their length along it and no further.
+        assert_eq!(
+            placement.dst,
+            Rectangle::new((0, 0).into(), (20, 20).into())
+        );
+        assert!(close(uv(&placement, 20.0, 20.0), (1.0, 1.0)));
+        assert!(close(uv(&placement, 15.0, 5.0), (1.0, 0.0)));
+        assert!(close(uv(&placement, 5.0, 15.0), (0.0, 1.0)));
+        // A quarter turn of the axis is the same stretch on the other one.
+        let turned = CursorTransform {
+            scale_x: 2.0,
+            scale_axis: 90.0,
+            ..Default::default()
+        };
+        let other = CursorTransform {
+            scale_y: 2.0,
+            ..Default::default()
+        };
+        for (a, b) in turned
+            .matrix()
+            .iter()
+            .flatten()
+            .zip(other.matrix().iter().flatten())
+        {
+            assert!((a - b).abs() < 1e-9, "{a} {b}");
+        }
+    }
+
+    #[test]
     fn identity_and_bad_values_are_told_apart() {
         assert_eq!(CursorTransform::default().validated(), Ok(None));
         let full_turn = CursorTransform {
@@ -417,6 +455,10 @@ mod tests {
             },
             CursorTransform {
                 rotate: f64::NAN,
+                ..Default::default()
+            },
+            CursorTransform {
+                scale_axis: f64::INFINITY,
                 ..Default::default()
             },
         ] {

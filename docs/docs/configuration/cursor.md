@@ -132,6 +132,15 @@ COMPOSITOR.cursor.setTransform({ rotate: -12, scaleX: 1.3, scaleY: 0.85 });
 COMPOSITOR.cursor.setTransform(null); // back to normal
 ```
 
+`scaleAxis` turns the two scale axes by that many degrees, clockwise, without
+turning the image, so a cursor can be stretched along the direction it
+travels in and stay upright:
+
+```ts
+// Half as long again along the falling diagonal.
+COMPOSITOR.cursor.setTransform({ scaleX: 1.5, scaleAxis: 45 });
+```
+
 Scales must be non-zero and within ±8; anything else throws. The transform
 applies to theme cursors and client cursor surfaces alike, and stacks with
 `overrideKind`. While a transform is set, the cursor is drawn into the frame

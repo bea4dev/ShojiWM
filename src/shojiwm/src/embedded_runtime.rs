@@ -2587,19 +2587,21 @@ fn op_shoji_cursor_override(
     Ok(())
 }
 
-/// `COMPOSITOR.cursor.setTransform`: rotation in degrees and the two scales;
-/// the identity stops transforming the cursor.
+/// `COMPOSITOR.cursor.setTransform`: rotation in degrees, the two scales and
+/// the angle of their axes; the identity stops transforming the cursor.
 #[op2(fast)]
 fn op_shoji_cursor_transform(
     state: &mut OpState,
     rotate: f64,
     scale_x: f64,
     scale_y: f64,
+    scale_axis: f64,
 ) -> Result<(), std::io::Error> {
     let transform = shojiwm_lib::cursor::CursorTransform {
         rotate,
         scale_x,
         scale_y,
+        scale_axis,
     }
     .validated()
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;

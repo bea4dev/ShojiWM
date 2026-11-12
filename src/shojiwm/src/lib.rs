@@ -638,7 +638,7 @@ COMPOSITOR.key.bind("warp", "Super+W", () => {
   COMPOSITOR.cursor.setPosition({ output: "eDP-1", anchor: "bottom-right", offset: { x: -10 } });
   COMPOSITOR.cursor.setPosition({ x: 5, y: 6 });
   COMPOSITOR.cursor.setAppLockIgnored(true);
-  COMPOSITOR.cursor.setTransform({ rotate: 90, scaleX: 2 });
+  COMPOSITOR.cursor.setTransform({ rotate: 90, scaleX: 2, scaleAxis: 45 });
   COMPOSITOR.cursor.setTransform(null);
 });
 COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
@@ -731,6 +731,7 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
                     rotate: 90.0,
                     scale_x: 2.0,
                     scale_y: 1.0,
+                    scale_axis: 45.0,
                 }),
                 None,
             ]

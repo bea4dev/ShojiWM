@@ -315,7 +315,9 @@ impl CursorController {
     /// Draw the cursor image scaled along its own axes, then rotated, both
     /// around its hotspot, until called again; `None` (or the identity) draws
     /// it as is. `rotate` is in degrees, clockwise; a negative scale mirrors
-    /// the image. Scales must be non-zero and within ±8. While a transform is
+    /// the image. `scale_axis` turns the two scale axes by that many degrees
+    /// without turning the image, for a stretch along a direction of travel.
+    /// Scales must be non-zero and within ±8. While a transform is
     /// set the cursor is drawn into the frame instead of on the cursor plane.
     /// Not shown in a nested (windowed) session, where the host draws the
     /// cursor.
@@ -327,6 +329,7 @@ impl CursorController {
     ///     rotate: -12.0,
     ///     scale_x: 1.3,
     ///     scale_y: 0.85,
+    ///     scale_axis: 0.0,
     /// }));
     /// ```
     pub fn set_transform(&self, transform: Option<CursorTransform>) -> Result<(), String> {

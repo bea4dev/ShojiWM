@@ -130,6 +130,14 @@ COMPOSITOR.cursor.setTransform({ rotate: -12, scaleX: 1.3, scaleY: 0.85 });
 COMPOSITOR.cursor.setTransform(null); // 元に戻す
 ```
 
+`scaleAxis` は、画像を回転させずにスケールの 2 つの軸だけを時計回りにその度数だけ
+回します。カーソルを立てたまま、進行方向に沿って伸ばせます。
+
+```ts
+// 右下がりの対角線に沿って 1.5 倍に伸ばす
+COMPOSITOR.cursor.setTransform({ scaleX: 1.5, scaleAxis: 45 });
+```
+
 スケールは 0 以外かつ ±8 以内で、それ以外は例外になります。テーマのカーソルにも
 クライアントのカーソルサーフェスにも適用され、`overrideKind` と併用できます。変換中の
 カーソルはディスプレイのカーソルプレーンではなくフレームに描かれるため、ソフトウェア

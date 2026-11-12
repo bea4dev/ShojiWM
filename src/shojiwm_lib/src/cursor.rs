@@ -64,7 +64,7 @@ impl CursorOverride {
     }
 }
 
-/// `COMPOSITOR.cursor.setTransform`: the cursor image is scaled along its own
+/// `COMPOSITOR.cursor.setTransform`: the cursor image is scaled along two
 /// axes, then rotated, both around the hotspot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CursorTransform {
@@ -72,6 +72,10 @@ pub struct CursorTransform {
     pub rotate: f64,
     pub scale_x: f64,
     pub scale_y: f64,
+    /// Degrees, clockwise, the scale's axes are turned from the image's own.
+    /// The image itself is not turned by it: a stretch along a direction of
+    /// travel leaves the cursor upright.
+    pub scale_axis: f64,
 }
 
 impl Default for CursorTransform {
@@ -80,6 +84,7 @@ impl Default for CursorTransform {
             rotate: 0.0,
             scale_x: 1.0,
             scale_y: 1.0,
+            scale_axis: 0.0,
         }
     }
 }
@@ -92,11 +97,12 @@ impl CursorTransform {
     /// `None` for the identity, which draws the cursor untouched (and lets it
     /// back onto the cursor plane).
     pub fn validated(self) -> Result<Option<Self>, String> {
-        if !self.rotate.is_finite() {
-            return Err(format!(
-                "cursor transform: rotate must be finite, got {}",
-                self.rotate
-            ));
+        for (name, angle) in [("rotate", self.rotate), ("scaleAxis", self.scale_axis)] {
+            if !angle.is_finite() {
+                return Err(format!(
+                    "cursor transform: {name} must be finite, got {angle}"
+                ));
+            }
         }
         for (name, scale) in [("scaleX", self.scale_x), ("scaleY", self.scale_y)] {
             if !scale.is_finite() || scale == 0.0 || scale.abs() > Self::MAX_SCALE {
@@ -111,13 +117,26 @@ impl CursorTransform {
         Ok((!identity).then_some(self))
     }
 
-    /// The linear part in screen space (y down): `rotate · scale`, as
-    /// `[[a, b], [c, d]]` mapping `(x, y)` to `(a x + b y, c x + d y)`.
+    /// The linear part in screen space (y down): `rotate · axis · scale ·
+    /// axis⁻¹`, as `[[a, b], [c, d]]` mapping `(x, y)` to
+    /// `(a x + b y, c x + d y)`.
     pub fn matrix(&self) -> [[f64; 2]; 2] {
+        let (sin, cos) = self.scale_axis.to_radians().sin_cos();
+        let across = sin * cos * (self.scale_x - self.scale_y);
+        let scale = [
+            [cos * cos * self.scale_x + sin * sin * self.scale_y, across],
+            [across, sin * sin * self.scale_x + cos * cos * self.scale_y],
+        ];
         let (sin, cos) = self.rotate.to_radians().sin_cos();
         [
-            [cos * self.scale_x, -sin * self.scale_y],
-            [sin * self.scale_x, cos * self.scale_y],
+            [
+                cos * scale[0][0] - sin * scale[1][0],
+                cos * scale[0][1] - sin * scale[1][1],
+            ],
+            [
+                sin * scale[0][0] + cos * scale[1][0],
+                sin * scale[0][1] + cos * scale[1][1],
+            ],
         ]
     }
 }
