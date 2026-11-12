@@ -428,6 +428,9 @@ pub struct KeyBindOptions {
     /// Fire again at the keyboard's repeat delay and rate while held. Keys
     /// on press only.
     pub repeat: bool,
+    /// A key or a mouse button: the handler runs and the event still reaches
+    /// the client.
+    pub non_consuming: bool,
 }
 
 impl KeyBindOptions {
@@ -447,6 +450,11 @@ impl KeyBindOptions {
 
     pub fn repeat(mut self) -> Self {
         self.repeat = true;
+        self
+    }
+
+    pub fn non_consuming(mut self) -> Self {
+        self.non_consuming = true;
         self
     }
 }
@@ -479,6 +487,7 @@ impl KeyController {
                 within: None,
                 locked: false,
                 repeat: false,
+                non_consuming: false,
             },
             handler,
         );
@@ -511,6 +520,7 @@ impl KeyController {
                 within: None,
                 locked: options.locked,
                 repeat: options.repeat,
+                non_consuming: options.non_consuming,
             },
             handler,
         );
@@ -528,6 +538,7 @@ impl KeyController {
                 within: Some(within_ms),
                 locked: false,
                 repeat: false,
+                non_consuming: false,
             },
             handler,
         );

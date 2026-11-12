@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | 一意な名前（ヘルプ UI に表示）。同じ id で再登録すると上書き。 |
 | `shortcut` | `string` | モディファイア＋キーの記法（例: `"Super+Shift+Left"`） |
 | `handler` | `() => void` | ショートカット発火時に呼ばれる |
-| `options` | `{on?: "press" \| "release", within?: number}` | 発火タイミング。デフォルトは `"press"`。`within` は下の「タップバインド」を参照 |
+| `options` | `{on?: "press" \| "release", within?: number, nonConsuming?: boolean}` | 発火タイミング。デフォルトは `"press"`。`within` は下の「タップバインド」を参照 |
 
 ### ショートカットの記法
 
@@ -33,9 +33,10 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
   コードは evdev コードに 8 を足した値で、`wev` が表示するものと同じです。数字段が
   Shift なしで記号を出すレイアウト（フランス語 AZERTY など）でも、`Super+code:10`
   から `Super+code:19` は 1 から 0 の刻印があるキーを指します。
-- **マウスのサイドボタン:** `MouseBack`（`BTN_SIDE`、275）と `MouseForward`
-  （`BTN_EXTRA`、276）。名前の大文字と小文字は区別せず、発火タイミングはデフォルトの
-  `on: "press"` です。`on: "release"` のサイドボタンバインドは無効になります。
+- **マウスボタン:** `MouseLeft`（`BTN_LEFT`、272）、`MouseRight`（`BTN_RIGHT`、273）、
+  `MouseMiddle`（`BTN_MIDDLE`、274）と、サイドボタンの `MouseBack`（`BTN_SIDE`、275）、
+  `MouseForward`（`BTN_EXTRA`、276）。名前の大文字と小文字は区別せず、発火タイミングは
+  デフォルトの `on: "press"` です。`on: "release"` のボタンバインドは無効になります。
 - **マウスホイール:** `WheelScrollUp`・`WheelScrollDown`・`WheelScrollLeft`・
   `WheelScrollRight`。ホイールショートカットはマウスホイールの段階的なスクロールで
   発火します。タッチパッドのスクロールは連続的なままで、通常どおりアプリケーションに
@@ -108,6 +109,22 @@ COMPOSITOR.key.bind_with(
     || COMPOSITOR.process.spawn(Command::exec(["wpctl", "set-volume", "@DEFAULT_SINK@", "5%+"])),
 );
 ```
+
+### イベントをクライアントにも渡す（`nonConsuming`）
+
+バインドは通常、そのキーやボタンを奪い、フォーカス中のクライアントには届きません。
+`nonConsuming: true` を付けると、ハンドラーを実行したうえで、キーやボタンを本来の
+クライアントにも届けます。表示しているメニューを `Escape` で閉じつつ後ろのウィンドウにも
+`Escape` を渡す、左クリックをすべて記録する、といった使い方ができます。
+
+```ts
+COMPOSITOR.key.bind('dismiss-menu', 'Escape', () => menu.close(), {nonConsuming: true});
+COMPOSITOR.key.bind('note-click', 'MouseLeft', () => idle.reset(), {nonConsuming: true});
+```
+
+キー（押下・リリースのどちらでも）とマウスボタンに使えます。修飾キー単体のタップと
+ホイール方向にはクライアントへ渡すイベントがないため拒否されます。Rust では
+`KeyBindOptions::new().non_consuming()` です。
 
 ### 終了とリロード
 

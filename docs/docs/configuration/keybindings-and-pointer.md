@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | Unique name (shown in help UIs). Re-binding the same id replaces it. |
 | `shortcut` | `string` | Modifier+key notation, e.g. `"Super+Shift+Left"` |
 | `handler` | `() => void` | Called when the shortcut fires |
-| `options` | `{on?: "press" \| "release", within?: number}` | When to fire — defaults to `"press"`. `within`: see [tap bindings](#tap-bindings-on-release) |
+| `options` | `{on?: "press" \| "release", within?: number, nonConsuming?: boolean}` | When to fire — defaults to `"press"`. `within`: see [tap bindings](#tap-bindings-on-release) |
 
 ### Shortcut syntax
 
@@ -33,9 +33,11 @@ Combine modifiers and a key with `+`:
   layout puts on it; the code is the evdev code plus 8, as `wev` prints it.
   On a layout whose number row gives symbols without Shift (French AZERTY),
   `Super+code:10` to `Super+code:19` still mean the keys marked 1 to 0.
-- **Mouse side buttons:** `MouseBack` (`BTN_SIDE`, 275) and `MouseForward`
-  (`BTN_EXTRA`, 276). Names are case-insensitive and use the default
-  `on: "press"` phase. Release-only side-button bindings are rejected.
+- **Mouse buttons:** `MouseLeft` (`BTN_LEFT`, 272), `MouseRight` (`BTN_RIGHT`,
+  273), `MouseMiddle` (`BTN_MIDDLE`, 274), and the side buttons `MouseBack`
+  (`BTN_SIDE`, 275) and `MouseForward` (`BTN_EXTRA`, 276). Names are
+  case-insensitive and use the default `on: "press"` phase. Release-only
+  button bindings are rejected.
 - **Mouse wheel:** `WheelScrollUp`, `WheelScrollDown`, `WheelScrollLeft`,
   `WheelScrollRight`. Wheel shortcuts fire on discrete mouse-wheel events;
   touchpad scrolling remains continuous and is forwarded normally. Wheel
@@ -108,6 +110,23 @@ COMPOSITOR.key.bind_with(
     || COMPOSITOR.process.spawn(Command::exec(["wpctl", "set-volume", "@DEFAULT_SINK@", "5%+"])),
 );
 ```
+
+### Leaving the event to the client (`nonConsuming`)
+
+A binding takes its key or button: the focused client never sees it.
+`nonConsuming: true` runs the handler and still delivers the key or the button
+to the client it was meant for, so a config can watch a press without
+taking it, for example close a menu it shows on `Escape` while the window
+behind still gets `Escape`, or note every left click:
+
+```ts
+COMPOSITOR.key.bind('dismiss-menu', 'Escape', () => menu.close(), {nonConsuming: true});
+COMPOSITOR.key.bind('note-click', 'MouseLeft', () => idle.reset(), {nonConsuming: true});
+```
+
+It applies to keys, on press or release, and to mouse buttons. A bare modifier
+tap and a wheel direction have no client event to leave and are rejected. In
+Rust it is `KeyBindOptions::new().non_consuming()`.
 
 ### Quit and reload
 
