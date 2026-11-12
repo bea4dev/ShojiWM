@@ -1743,10 +1743,12 @@ impl ShojiWM {
         // (`space.elements().find(...)`) succeeds.
         if !evaluation.actions.is_empty() {
             let actions = std::mem::take(&mut evaluation.actions);
-            for action in actions
-                .iter()
-                .filter(|action| matches!(action.action, WaylandWindowAction::Focus))
-            {
+            for action in actions.iter().filter(|action| {
+                matches!(
+                    action.action,
+                    WaylandWindowAction::Focus | WaylandWindowAction::FocusOnRequest
+                )
+            }) {
                 self.pending_initial_focus_window_ids
                     .insert(action.window_id.clone());
             }

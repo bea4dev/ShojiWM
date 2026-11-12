@@ -2718,6 +2718,14 @@ impl ShojiWM {
                     let serial = SERIAL_COUNTER.next_serial();
                     self.focus_window(&window, serial);
                 }
+                crate::ssd::WaylandWindowAction::FocusOnRequest => {
+                    // The config answers for the pick, as a taskbar's client
+                    // does for its own, so the ordering of windows nobody
+                    // has used yet does not refuse it.
+                    let previous = std::mem::replace(&mut self.user_input_in_flight, true);
+                    self.focus_window(&window, SERIAL_COUNTER.next_serial());
+                    self.user_input_in_flight = previous;
+                }
                 crate::ssd::WaylandWindowAction::FinalizeClose => {}
                 crate::ssd::WaylandWindowAction::ScheduleAnimation
                 | crate::ssd::WaylandWindowAction::CancelAnimation => {}

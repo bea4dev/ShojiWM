@@ -5157,6 +5157,62 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         );
     }
 
+    /// `window.focusOnRequest()` reaches the compositor as its own action,
+    /// not as `focus`.
+    #[test]
+    fn typescript_focus_on_request_is_its_own_action() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root should exist");
+        let test_dir = std::env::temp_dir().join(format!(
+            "shojiwm-focus-on-request-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            r#"
+import { ClientWindow, COMPOSITOR } from "shoji_wm";
+COMPOSITOR.event.onOpen((window) => window.focusOnRequest());
+COMPOSITOR.window.composition = () => <ClientWindow />;
+"#,
+        )
+        .expect("test config should be written");
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator
+            .lifecycle_enable("initial", None)
+            .expect("initial lifecycle should succeed");
+
+        let actions = evaluator
+            .evaluate_window(&make_named_window("0xa", "kitty", false, false), 0)
+            .expect("window should evaluate")
+            .actions;
+        assert!(
+            has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::FocusOnRequest
+            ),
+            "{actions:?}"
+        );
+        assert!(
+            !has_action(
+                &actions,
+                "0xa",
+                shojiwm_lib::ssd::WaylandWindowAction::Focus
+            ),
+            "{actions:?}"
+        );
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
     #[test]
     fn activating_unfocused_floating_window_focuses_it() {
         let actions = activate_toggle_fixture(
