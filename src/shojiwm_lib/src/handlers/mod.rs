@@ -550,6 +550,14 @@ impl crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportHandler f
         crate::backend::image_copy_capture_render::compute_desired_buffer_size(&self.space, &window)
     }
 
+    fn hyprland_toplevel_export_handle_for_window_id(
+        &self,
+        window_id: &str,
+    ) -> Option<crate::wlr_foreign_toplevel::WlrForeignToplevelHandle> {
+        self.wlr_foreign_toplevel_manager_state
+            .handle_for_window_id(window_id)
+    }
+
     fn hyprland_toplevel_export_queued(&mut self) {
         self.schedule_redraw();
     }
