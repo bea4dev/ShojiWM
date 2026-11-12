@@ -2517,6 +2517,26 @@ export interface BorderValue {
 }
 
 /**
+ * One CSS `text-shadow` layer. Lengths are logical pixels.
+ * CSS の `text-shadow` 1 層分。長さは論理ピクセル。
+ */
+export interface TextShadowValue {
+  /** Horizontal offset. / 水平オフセット。 */
+  x?: MaybeSignal<number>;
+  /** Vertical offset. / 垂直オフセット。 */
+  y?: MaybeSignal<number>;
+  /** Blur radius (CSS semantics). / ぼかし半径（CSS と同じ意味）。 */
+  blur?: MaybeSignal<number>;
+  /**
+   * Grows the glyphs before the blur, as `box-shadow`'s spread: a dense glow
+   * rather than a faint halo. / ぼかす前にグリフを太らせます（`box-shadow`
+   * の spread と同じ）。淡い光でなく濃いグローになります。
+   */
+  spread?: MaybeSignal<number>;
+  color: MaybeSignal<string>;
+}
+
+/**
  * One CSS `box-shadow` layer. Lengths are logical pixels.
  * CSS の `box-shadow` 1 層分。長さは論理ピクセル。
  */
@@ -2627,6 +2647,13 @@ export interface SSDStyle {
    * 「…」にします（既定の `"clip"` は切り落とし）。
    */
   textOverflow?: MaybeSignal<"clip" | "ellipsis">;
+  /**
+   * A label's shadow (CSS `text-shadow`, one layer): its text again, offset,
+   * blurred and tinted, under it. With no offset and a blur it is a glow.
+   * ラベルの影（CSS の `text-shadow`、1 層）。オフセット・ぼかし・色付けした
+   * テキストをその下に描きます。オフセットなしでぼかすとグローになります。
+   */
+  textShadow?: MaybeSignal<TextShadowValue>;
   lineHeight?: MaybeSignal<number>;
 }
 

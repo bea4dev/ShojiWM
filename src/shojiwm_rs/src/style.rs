@@ -19,7 +19,7 @@
 
 use shojiwm_lib::ssd::{
     AlignItems, BorderFit, BorderStyle, BoxShadow, Color, DecorationStyle, Edges, JustifyContent,
-    NodeTransform, Overflow, PointerEvents, PositionOffsets, StylePosition,
+    NodeTransform, Overflow, PointerEvents, PositionOffsets, StylePosition, TextShadow,
 };
 
 use crate::reactive::Prop;
@@ -105,6 +105,20 @@ pub const fn shadow(x: f64, y: f64, blur: f64, color: Color) -> BoxShadow {
         spread: 0.0,
         color,
         inset: false,
+    }
+}
+
+/// A CSS `text-shadow` layer under a label's text (`x`, `y`, `blur` in
+/// logical pixels). With no offset and a blur it is a glow; adjust `spread`
+/// with struct update syntax:
+/// `TextShadow { spread: 2.0, ..text_shadow(0.0, 0.0, 8.0, hex("#ffffffe6")) }`.
+pub const fn text_shadow(x: f64, y: f64, blur: f64, color: Color) -> TextShadow {
+    TextShadow {
+        offset_x: x,
+        offset_y: y,
+        blur,
+        spread: 0.0,
+        color,
     }
 }
 
@@ -239,6 +253,8 @@ style_fields! {
     border_radius: f64,
     /// CSS-like shadows; the first entry is painted on top.
     box_shadow: Vec<BoxShadow>,
+    /// A label's text shadow, drawn under its text.
+    text_shadow: TextShadow,
     visible: bool,
     cursor: String,
     font_size: f64,
@@ -371,6 +387,7 @@ impl Style {
             text_overflow: None,
             line_height: read(&self.line_height),
             box_shadow: read(&self.box_shadow).unwrap_or_default(),
+            text_shadow: read(&self.text_shadow),
             paint: None,
             overlay: None,
         }

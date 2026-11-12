@@ -7614,6 +7614,10 @@ fn collect_text_buffers(
         text_align: node.style.text_align.clone(),
         text_overflow: node.style.text_overflow.clone(),
         line_height: node.style.line_height.map(|value| value as f32),
+        text_shadow: node.style.text_shadow.map(|shadow| crate::ssd::TextShadow {
+            color: shadow.color.with_opacity(node.style.opacity),
+            ..shadow
+        }),
         raster_scale,
     };
 

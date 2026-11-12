@@ -9,8 +9,9 @@ use super::{
     LabelNode, LayoutDirection, NodeTransform, NoiseKind, NoiseStage, Overflow, PaintShader,
     PointerEvents, PopupAlign, PopupCollision, PopupDismissHandlers, PopupHandlers, PopupLayer,
     PopupMode, PopupNode, PopupPlacement, PositionOffsets, ShaderEffectNode, ShaderModule,
-    ShaderStage, ShaderUniformValue, StylePosition, WindowAction, WindowBorderInteraction,
-    WindowEffectConfig, WindowEffectSlot, WindowResizeHitArea, WindowSourceInclude,
+    ShaderStage, ShaderUniformValue, StylePosition, TextShadow, WindowAction,
+    WindowBorderInteraction, WindowEffectConfig, WindowEffectSlot, WindowResizeHitArea,
+    WindowSourceInclude,
 };
 
 // boxing left as a follow-up (touches all deserialization/match sites)
@@ -142,6 +143,20 @@ pub struct WireBoxShadow {
     pub color: String,
     #[serde(default)]
     pub inset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireTextShadow {
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub blur: f64,
+    #[serde(default)]
+    pub spread: f64,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -396,6 +411,7 @@ pub struct WireStyle {
     pub text_overflow: Option<String>,
     pub line_height: Option<f64>,
     pub box_shadow: Option<WireBoxShadowValue>,
+    pub text_shadow: Option<WireTextShadow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
@@ -1316,6 +1332,7 @@ impl TryFrom<WireStyle> for DecorationStyle {
             text_align: value.text_align,
             text_overflow: value.text_overflow,
             line_height: value.line_height,
+            text_shadow: value.text_shadow.map(parse_text_shadow).transpose()?,
             box_shadow: match value.box_shadow {
                 None => Vec::new(),
                 Some(WireBoxShadowValue::Single(shadow)) => vec![parse_box_shadow(shadow)?],
@@ -1328,6 +1345,17 @@ impl TryFrom<WireStyle> for DecorationStyle {
             overlay: None,
         })
     }
+}
+
+fn parse_text_shadow(input: WireTextShadow) -> Result<TextShadow, DecorationBridgeError> {
+    let finite = |value: f64| if value.is_finite() { value } else { 0.0 };
+    Ok(TextShadow {
+        offset_x: finite(input.x),
+        offset_y: finite(input.y),
+        blur: finite(input.blur).max(0.0),
+        spread: finite(input.spread).max(0.0),
+        color: parse_color(&input.color)?,
+    })
 }
 
 fn parse_box_shadow(input: WireBoxShadow) -> Result<BoxShadow, DecorationBridgeError> {

@@ -1497,6 +1497,8 @@ pub struct DecorationStyle {
     pub line_height: Option<f64>,
     /// CSS-like shadows; the first entry is painted on top.
     pub box_shadow: Vec<BoxShadow>,
+    /// A label's shadow, drawn under its text (CSS `text-shadow`, one layer).
+    pub text_shadow: Option<TextShadow>,
     /// Replaces the built-in background/border painting of the node.
     pub paint: Option<PaintShader>,
     /// Painted above the node's children.
@@ -1613,6 +1615,20 @@ pub enum BorderFit {
 pub struct BorderStyle {
     /// Logical width; any non-zero width covers at least one physical pixel.
     pub width: f64,
+    pub color: Color,
+}
+
+/// A CSS-like `text-shadow` layer: a copy of a label's text, offset, blurred
+/// and tinted, under it. Lengths are logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextShadow {
+    pub offset_x: f64,
+    pub offset_y: f64,
+    /// Blur radius (CSS semantics: the Gaussian sigma is half of it).
+    pub blur: f64,
+    /// Grows the glyphs by this much before the blur, as `box-shadow`'s
+    /// spread grows its box: a dense glow rather than a faint halo.
+    pub spread: f64,
     pub color: Color,
 }
 
@@ -2830,6 +2846,7 @@ impl DecorationNode {
                     text_align: self.style.text_align.clone(),
                     text_overflow: None,
                     line_height: Some(line_height),
+                    text_shadow: None,
                     raster_scale: 1.0,
                 };
                 let (width, height) = measure_label_intrinsic(&spec);

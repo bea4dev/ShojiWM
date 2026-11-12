@@ -141,7 +141,7 @@ pub mod prelude {
     pub use shojiwm_lib::ssd::{
         AlignItems, BlendMode, BoxShadow, Color, EffectRegion, ImageFit, JustifyContent, Overflow,
         PointerEvents, PopupAlign, PopupCollision, PopupDismissReason, PopupLayer, PopupMode,
-        PopupPlacement, StylePosition, WindowAction,
+        PopupPlacement, StylePosition, TextShadow, WindowAction,
     };
 }
 
