@@ -217,6 +217,11 @@ pub struct Client {
     globals: Vec<(String, u32)>,
     /// Layer surfaces the compositor sent `closed`.
     pub closed_layers: usize,
+    /// Width and height of every layer surface configure, in order.
+    pub layer_configures: Vec<(u32, u32)>,
+    /// Current modes announced on bound wl_outputs: the output's protocol
+    /// id, width and height.
+    pub output_modes: Vec<(u32, i32, i32)>,
 }
 
 impl Client {
@@ -316,9 +321,40 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Client {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => layer.ack_configure(serial),
+            zwlr_layer_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => {
+                client.layer_configures.push((width, height));
+                layer.ack_configure(serial);
+            }
             zwlr_layer_surface_v1::Event::Closed => client.closed_layers += 1,
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for Client {
+    fn event(
+        client: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Mode {
+            flags: wayland_client::WEnum::Value(flags),
+            width,
+            height,
+            ..
+        } = event
+            && flags.contains(wl_output::Mode::Current)
+        {
+            client
+                .output_modes
+                .push((output.id().protocol_id(), width, height));
         }
     }
 }
@@ -339,6 +375,5 @@ ignore_events!(
     wl_buffer::WlBuffer,
     xdg_toplevel::XdgToplevel,
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
-    wl_seat::WlSeat,
-    wl_output::WlOutput
+    wl_seat::WlSeat
 );

@@ -1,6 +1,7 @@
 import type {
   DisplayConfigDraft,
   HeadlessOutputOptions,
+  HeadlessOutputSize,
   OutputConfigEntry,
   OutputConfigureContext,
   OutputConfigureFactory,
@@ -325,7 +326,7 @@ export function setOutputPower(
 }
 
 type NativeHeadlessOutput = (
-  action: "create" | "remove",
+  action: "create" | "resize" | "remove",
   name: string,
   width: number,
   height: number,
@@ -340,8 +341,7 @@ function nativeHeadlessOutput(): NativeHeadlessOutput | undefined {
 /** Names given to headless outputs that the output state may not show yet. */
 const createdHeadlessOutputs = new Set<string>();
 
-export function createHeadlessOutput(options: HeadlessOutputOptions): string {
-  const { width, height, scale } = options;
+function checkHeadlessOutputSize(width: number, height: number): void {
   for (const [field, value] of [
     ["width", width],
     ["height", height],
@@ -352,6 +352,11 @@ export function createHeadlessOutput(options: HeadlessOutputOptions): string {
       );
     }
   }
+}
+
+export function createHeadlessOutput(options: HeadlessOutputOptions): string {
+  const { width, height, scale } = options;
+  checkHeadlessOutputSize(width, height);
   if (scale !== undefined && !(Number.isFinite(scale) && scale > 0)) {
     throw new TypeError(
       `headless output scale must be a positive number, got ${String(scale)}`,
@@ -371,6 +376,14 @@ export function createHeadlessOutput(options: HeadlessOutputOptions): string {
   createdHeadlessOutputs.add(name);
   nativeHeadlessOutput()?.("create", name, width, height, scale ?? 0);
   return name;
+}
+
+export function resizeHeadlessOutput(
+  outputName: string,
+  size: HeadlessOutputSize,
+): void {
+  checkHeadlessOutputSize(size.width, size.height);
+  nativeHeadlessOutput()?.("resize", outputName, size.width, size.height, 0);
 }
 
 export function removeHeadlessOutput(outputName: string): void {
@@ -414,6 +427,9 @@ export const OUTPUT_CONTROLLER: OutputController = {
   },
   create(options) {
     return createHeadlessOutput(options);
+  },
+  resize(outputName, size) {
+    resizeHeadlessOutput(outputName, size);
   },
   remove(outputName) {
     removeHeadlessOutput(outputName);

@@ -1314,6 +1314,14 @@ export interface OutputPowerOptions {
   wakeOnInput?: boolean;
 }
 
+/** Size of `COMPOSITOR.output.resize`. / `COMPOSITOR.output.resize` のサイズ。 */
+export interface HeadlessOutputSize {
+  /** Width in pixels. / 幅（ピクセル）。 */
+  width: number;
+  /** Height in pixels. / 高さ（ピクセル）。 */
+  height: number;
+}
+
 /** Options of `COMPOSITOR.output.create`. / `COMPOSITOR.output.create` のオプション。 */
 export interface HeadlessOutputOptions {
   /**
@@ -1650,6 +1658,13 @@ export interface OutputController {
    * ポインターが移動でき、画面キャプチャの対象になります。TTY バックエンドのみ対応です。
    */
   create(options: HeadlessOutputOptions): string;
+  /**
+   * Gives an output `create` made another size in pixels. It keeps its
+   * wl_output, so clients and the layer surfaces and windows on it stay.
+   * `create` で作った出力のサイズ（ピクセル）を変更します。wl_output はそのまま
+   * なので、クライアントや出力上のレイヤーサーフェス、ウィンドウはそのまま残ります。
+   */
+  resize(outputName: string, size: HeadlessOutputSize): void;
   /**
    * Removes an output `create` made. / `create` で作った出力を削除します。
    */

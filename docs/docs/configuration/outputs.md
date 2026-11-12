@@ -329,8 +329,14 @@ returns its name; `COMPOSITOR.output.remove` takes it away again.
 ```ts
 const name = COMPOSITOR.output.create({width: 1280, height: 720}); // 'HEADLESS-1'
 COMPOSITOR.output.create({name: 'stream', width: 1920, height: 1080, scale: 1.5});
+COMPOSITOR.output.resize(name, {width: 1920, height: 1080});
 COMPOSITOR.output.remove(name);
 ```
+
+`COMPOSITOR.output.resize` gives it another size in place (`resize(name, 1920,
+1080)` in Rust): clients keep its `wl_output` and get the new mode, layer
+surfaces on it are configured to the new size, and windows stay. Resizing to
+the size it has does nothing.
 
 Without a `name` it is `HEADLESS-<n>`, the lowest `n` not in use. `scale` is the
 scale it starts with; `configure` can set a different one like for any output.
