@@ -181,6 +181,7 @@ pub struct Element {
     on_click: Option<ClickAction>,
     on_hover_change: Option<Rc<dyn Fn(bool)>>,
     on_active_change: Option<Rc<dyn Fn(bool)>>,
+    on_middle_click: Option<Rc<dyn Fn()>>,
     paint: Option<Box<PaintShader>>,
     overlay: Option<Box<PaintShader>>,
     children: Vec<Child>,
@@ -195,6 +196,7 @@ impl Element {
             on_click: None,
             on_hover_change: None,
             on_active_change: None,
+            on_middle_click: None,
             paint: None,
             overlay: None,
             children: Vec::new(),
@@ -442,6 +444,12 @@ impl Element {
 
     pub fn on_active_change(mut self, f: impl Fn(bool) + 'static) -> Self {
         self.on_active_change = Some(Rc::new(f));
+        self
+    }
+
+    /// Runs `f` on a press of the middle button over the node (a tab closes, as in a browser).
+    pub fn on_middle_click(mut self, f: impl Fn() + 'static) -> Self {
+        self.on_middle_click = Some(Rc::new(f));
         self
     }
 }
@@ -1010,6 +1018,9 @@ impl MountedNode {
         if let Some(ClickAction::Handler(handler)) = &element.on_click {
             context.register_handler(format!("{id}#click"), handler.clone());
         }
+        if let Some(handler) = &element.on_middle_click {
+            context.register_handler(format!("{id}#middle_click"), handler.clone());
+        }
         if let ElementKind::Popup {
             popup, callbacks, ..
         } = &element.kind
@@ -1205,6 +1216,10 @@ impl MountedNode {
                 } => popup_handlers(&id, popup, callbacks),
                 _ => None,
             },
+            middle_click: element
+                .on_middle_click
+                .as_ref()
+                .map(|_| format!("{id}#middle_click")),
         };
         let window_border_interaction = match &element.kind {
             ElementKind::WindowBorder { interaction } => *interaction,
