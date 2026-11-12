@@ -5130,6 +5130,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "input",
  "lcms2",
+ "libc",
  "mimalloc",
  "png 0.17.16",
  "resvg",

@@ -17,6 +17,11 @@ the selected directory. The default-path change does not migrate or delete
 files under `~/shoji_wm/logs/`. Set `SHOJI_LOG_DIR` to that path to keep using
 it; normal rotation and retention then apply there.
 
+When the compositor stops answering, start it with `SHOJI_BACKTRACE_SIGNAL=1`
+and send `kill -USR2 <pid>`: the main thread, which runs the event loop, prints
+its backtrace to stderr. This works where a debugger cannot attach. It is off
+by default because the handler allocates inside a signal.
+
 ## Spawning processes
 
 `COMPOSITOR.process` launches external programs. There are three methods,
