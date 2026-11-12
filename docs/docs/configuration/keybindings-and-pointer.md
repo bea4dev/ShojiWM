@@ -170,6 +170,10 @@ ShojiWM offers `zwlr_virtual_pointer_manager_v1` (version 2), so
 servers drive the pointer through the same path as a mouse: hot corners,
 pointer regions, input grabs and `bindWindowMoveModifier` all see it. A
 virtual pointer created for one output maps absolute motion onto that output.
+A scroll that names no `axis_source` and no `axis_discrete` reaches clients
+as a mouse wheel, one notch per 15 of scroll value. A scroll that names its
+source keeps it: `wlrctl pointer scroll` sends `finger`, so clients scroll it
+smoothly, as from a touchpad.
 
 ## Pointer
 

@@ -190,7 +190,7 @@ impl PointerAxisEvent<VirtualInput> for VirtualAxis {
     }
 
     fn amount_v120(&self, axis: Axis) -> Option<f64> {
-        self.frame.axis(axis).v120
+        self.frame.v120(axis)
     }
 
     fn source(&self) -> AxisSource {
@@ -258,6 +258,18 @@ impl AxisFrame {
         match axis {
             Axis::Horizontal => &mut self.horizontal,
             Axis::Vertical => &mut self.vertical,
+        }
+    }
+
+    /// Wheel steps in 120ths. A frame with no `axis_source` and no
+    /// `axis_discrete` is taken as a wheel at 15 per notch, so clients see the
+    /// notches (`axis_value120`) a wheel would send rather than a smooth scroll.
+    pub fn v120(&self, axis: Axis) -> Option<f64> {
+        let amount = self.axis(axis);
+        match (amount.v120, self.source) {
+            (Some(v120), _) => Some(v120),
+            (None, None) => amount.value.map(|value| value * 120.0 / 15.0),
+            (None, Some(_)) => None,
         }
     }
 
@@ -582,6 +594,21 @@ mod tests {
             }
         );
         assert!(!frame.is_empty());
+    }
+
+    #[test]
+    fn a_sourceless_axis_counts_wheel_notches() {
+        let mut frame = AxisFrame::default();
+        frame.add(Axis::Vertical, 15.0);
+        assert_eq!(frame.v120(Axis::Vertical), Some(120.0));
+        assert_eq!(frame.v120(Axis::Horizontal), None);
+
+        frame.source = Some(AxisSource::Finger);
+        assert_eq!(frame.v120(Axis::Vertical), None);
+
+        let mut discrete = AxisFrame::default();
+        discrete.add_discrete(Axis::Vertical, 10.0, 2);
+        assert_eq!(discrete.v120(Axis::Vertical), Some(240.0));
     }
 
     #[test]
