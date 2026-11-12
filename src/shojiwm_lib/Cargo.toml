@@ -63,7 +63,8 @@ lcms2 = "6"
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["macros", "rt"] }
 wayland-client = "0.31.14"
-wayland-protocols = { version = "0.32.12", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
 [features]
 # Hardened allocator for chasing heap corruption:
