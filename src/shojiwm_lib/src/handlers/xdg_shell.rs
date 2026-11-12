@@ -194,85 +194,14 @@ impl XdgShellHandler for ShojiWM {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let wl_surface = surface.wl_surface();
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
-            })
-            .cloned()
-        else {
-            self.remove_window_decoration_negotiation(wl_surface);
-            self.request_tty_maintenance("xdg-toplevel-destroyed");
-            self.schedule_redraw();
-            return;
-        };
-
-        let decoration = self.window_decorations.get(&window).cloned();
-        // The runtime knows a window by its stable id from its FIRST evaluation, which happens
-        // on the buffer-less initial commit, before any decoration entry exists. So the id
-        // comes from the window itself: a client that exits between that commit and its first
-        // buffer has no decoration entry and still has to be reported.
-        let window_id = self.snapshot_window(&window).id;
-        // Whether the close became a closing animation. If it did, the runtime's own
-        // finalize handshake reports the close; if it did not, nobody else will.
-        let mut promoted = false;
-        if let Some(decoration) = decoration.as_ref() {
-            if let Err(error) = crate::backend::capture_live_snapshot_for_close(self, &window) {
-                warn!(
-                    window_id,
-                    title = decoration.snapshot.title,
-                    app_id = decoration.snapshot.app_id,
-                    ?error,
-                    "failed to capture destroyed xdg toplevel before closing animation"
-                );
-            }
-            let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
-            match self.promote_window_to_closing_snapshot(&window_id, decoration, now_ms) {
-                Ok(did) => promoted = did,
-                Err(error) => warn!(
-                    window_id,
-                    title = decoration.snapshot.title,
-                    app_id = decoration.snapshot.app_id,
-                    ?error,
-                    "failed to promote destroyed xdg toplevel to closing snapshot"
-                ),
-            }
-            self.prune_unpromoted_window_snapshot(&window_id);
-        }
-
-        self.remove_foreign_toplevel(&window);
-        self.prune_window_state(&window);
-        self.space.unmap_elem(&window);
-        // Pruned above, so the decoration sweep will never see this window go; a window that
-        // got no closing animation (destroyed before its first paint, or nothing to capture)
-        // has to be reported to the config from here or it lives on there as a focused ghost.
-        // Harmless for a window the runtime never saw: it ignores an id it has no entry for.
-        if !promoted
-            && let Err(error) = self.close_window_in_runtime(
-                &window_id,
-                decoration
-                    .as_ref()
-                    .map(|decoration| decoration.layout.root.rect),
-            )
-        {
-            warn!(
-                window_id,
-                ?error,
-                "failed to report destroyed xdg toplevel to the runtime"
-            );
-        }
-        // Elect a successor now that the window is out of the space. Nothing
-        // else on the close path touches keyboard focus, so the dead target
-        // used to survive until some unrelated event ran
-        // `update_keyboard_focus` — and no replacement was ever chosen.
-        self.update_keyboard_focus_after_destroy(wl_surface);
-        self.remove_window_decoration_negotiation(wl_surface);
-        self.request_tty_maintenance("xdg-toplevel-destroyed");
-        self.schedule_redraw();
+        // The close can run the config, which can give the keyboard to another window. A
+        // client that disconnects has its objects destroyed one by one, and its wl_keyboard can
+        // be gone already: a keyboard `leave` sent to it now panics in wayland-backend, and the
+        // panic cannot unwind through libwayland. Keyboard focus changes wait until the
+        // destruction is over (`update_keyboard_focus`).
+        let was = std::mem::replace(&mut self.destroying_toplevel, true);
+        self.forget_destroyed_toplevel(surface);
+        self.destroying_toplevel = was;
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
@@ -885,5 +814,90 @@ impl ShojiWM {
             }
             state.geometry = unconstrained;
         });
+    }
+}
+
+impl ShojiWM {
+    /// [`XdgShellHandler::toplevel_destroyed`]'s work, with keyboard focus changes held back.
+    fn forget_destroyed_toplevel(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
+            })
+            .cloned()
+        else {
+            self.remove_window_decoration_negotiation(wl_surface);
+            self.request_tty_maintenance("xdg-toplevel-destroyed");
+            self.schedule_redraw();
+            return;
+        };
+
+        let decoration = self.window_decorations.get(&window).cloned();
+        // The runtime knows a window by its stable id from its FIRST evaluation, which happens
+        // on the buffer-less initial commit, before any decoration entry exists. So the id
+        // comes from the window itself: a client that exits between that commit and its first
+        // buffer has no decoration entry and still has to be reported.
+        let window_id = self.snapshot_window(&window).id;
+        // Whether the close became a closing animation. If it did, the runtime's own
+        // finalize handshake reports the close; if it did not, nobody else will.
+        let mut promoted = false;
+        if let Some(decoration) = decoration.as_ref() {
+            if let Err(error) = crate::backend::capture_live_snapshot_for_close(self, &window) {
+                warn!(
+                    window_id,
+                    title = decoration.snapshot.title,
+                    app_id = decoration.snapshot.app_id,
+                    ?error,
+                    "failed to capture destroyed xdg toplevel before closing animation"
+                );
+            }
+            let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+            match self.promote_window_to_closing_snapshot(&window_id, decoration, now_ms) {
+                Ok(did) => promoted = did,
+                Err(error) => warn!(
+                    window_id,
+                    title = decoration.snapshot.title,
+                    app_id = decoration.snapshot.app_id,
+                    ?error,
+                    "failed to promote destroyed xdg toplevel to closing snapshot"
+                ),
+            }
+            self.prune_unpromoted_window_snapshot(&window_id);
+        }
+
+        self.remove_foreign_toplevel(&window);
+        self.prune_window_state(&window);
+        self.space.unmap_elem(&window);
+        // Pruned above, so the decoration sweep will never see this window go; a window that
+        // got no closing animation (destroyed before its first paint, or nothing to capture)
+        // has to be reported to the config from here or it lives on there as a focused ghost.
+        // Harmless for a window the runtime never saw: it ignores an id it has no entry for.
+        if !promoted
+            && let Err(error) = self.close_window_in_runtime(
+                &window_id,
+                decoration
+                    .as_ref()
+                    .map(|decoration| decoration.layout.root.rect),
+            )
+        {
+            warn!(
+                window_id,
+                ?error,
+                "failed to report destroyed xdg toplevel to the runtime"
+            );
+        }
+        // Elect a successor now that the window is out of the space. Nothing
+        // else on the close path touches keyboard focus, so the dead target
+        // used to survive until some unrelated event ran
+        // `update_keyboard_focus` — and no replacement was ever chosen.
+        self.update_keyboard_focus_after_destroy(wl_surface);
+        self.remove_window_decoration_negotiation(wl_surface);
+        self.request_tty_maintenance("xdg-toplevel-destroyed");
+        self.schedule_redraw();
     }
 }

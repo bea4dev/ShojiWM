@@ -621,6 +621,9 @@ pub struct ShojiWM {
     /// most recent windows swapped places (issue #92).
     pub session_lock_focus_owner: Option<WlSurface>,
     pub window_keyboard_focus: Option<WlSurface>,
+    /// A toplevel's destruction is being handled: keyboard focus changes wait for the next turn of
+    /// the event loop (see `XdgShellHandler::toplevel_destroyed`).
+    pub(crate) destroying_toplevel: bool,
     /// Root surfaces of the windows the user has actually *used*, most recent
     /// first.
     ///
@@ -1516,6 +1519,12 @@ impl ShojiWM {
     }
 
     pub fn update_keyboard_focus(&mut self, serial: smithay::utils::Serial) {
+        if self.destroying_toplevel {
+            self.loop_handle.insert_idle(|state| {
+                state.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+            });
+            return;
+        }
         if self.session_lock_active {
             self.focus_session_lock_surface(serial);
             return;
@@ -1861,6 +1870,7 @@ impl ShojiWM {
             // Started locked (a login screen made of the lock screen): only
             // lock surfaces are drawn until a locker locks and unlocks.
             session_lock_active: runtime.start_locked(),
+            destroying_toplevel: false,
             session_locker: None,
             initial_config_enabled: false,
             session_lock_surfaces: HashMap::new(),
