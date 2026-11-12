@@ -678,6 +678,8 @@ export interface ComponentProps {
   onHoverChange?: InteractionChangeHandler;
   /** Called with `true` when pressed, `false` when released. / 押下で `true`、離したとき `false` で呼ばれます。 */
   onActiveChange?: InteractionChangeHandler;
+  /** Called when the middle button is pressed on the node (a tab closes, as in a browser). / 中ボタンが押されたとき呼ばれます。 */
+  onMiddleClick?: () => void;
 }
 
 export type Component<TProps extends ComponentProps = ComponentProps> = (

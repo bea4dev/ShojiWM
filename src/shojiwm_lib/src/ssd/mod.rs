@@ -734,13 +734,15 @@ pub enum DecorationHitTestResult {
 pub struct DecorationInteractionHandlers {
     pub hover_change: Option<DecorationStateChangeHandler>,
     pub active_change: Option<DecorationStateChangeHandler>,
+    /// The runtime handler of `onMiddleClick`: a press of the middle button on the node.
+    pub middle_click: Option<String>,
     /// `<Popup>` nodes only.
     pub popup: Option<Box<popup::PopupHandlers>>,
 }
 
 impl DecorationInteractionHandlers {
     fn has_any(&self) -> bool {
-        self.hover_change.is_some() || self.active_change.is_some()
+        self.hover_change.is_some() || self.active_change.is_some() || self.middle_click.is_some()
     }
 }
 

@@ -53,6 +53,7 @@ pub struct WireProps {
     pub on_click: Option<WireOnClick>,
     pub on_hover_change: Option<WireStateChangeHandler>,
     pub on_active_change: Option<WireStateChangeHandler>,
+    pub on_middle_click: Option<WireRuntimeHandler>,
     pub interaction: Option<WireWindowBorderInteraction>,
     // <Popup>
     pub open: Option<bool>,
@@ -596,6 +597,14 @@ impl TryFrom<WireDecorationNode> for DecorationNode {
                     .props
                     .on_active_change
                     .map(TryInto::try_into)
+                    .transpose()?,
+                middle_click: value
+                    .props
+                    .on_middle_click
+                    .map(|handler| match handler.kind.as_str() {
+                        "runtime-handler" => Ok(handler.id),
+                        _ => Err(DecorationBridgeError::UnsupportedNodeKind(handler.kind)),
+                    })
                     .transpose()?,
                 popup: popup_handlers,
             },
