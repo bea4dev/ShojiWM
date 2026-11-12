@@ -1631,10 +1631,48 @@ pub(crate) fn render_error_is_config_caused(error: &(dyn std::error::Error + 'st
     false
 }
 
-fn report_tty_config_error(state: &mut ShojiWM, error: impl ToString) {
-    if state.config_error_report.is_none() {
-        state.config_error_report = Some(crate::config_error::ConfigErrorReport::runtime(error));
-        state.schedule_redraw();
+/// Record the outcome of one per-frame config evaluation (`stage`) for `output`.
+///
+/// A failure keeps the previous frame's result and goes on the config-error overlay, unless
+/// another report is already there. The `Frame` report comes down again once every failed
+/// evaluation has succeeded: a window that closes in the middle of an evaluation fails a few
+/// frames and nothing else would clear the overlay before a config reload.
+fn note_frame_evaluation(
+    state: &mut ShojiWM,
+    output: &str,
+    stage: &'static str,
+    result: Result<(), crate::ssd::DecorationEvaluationError>,
+) {
+    match result {
+        Ok(()) => {
+            if !state.failed_frame_evaluations.succeeded(output, stage) {
+                return;
+            }
+            let showing_frame_error = state.config_error_report.as_ref().is_some_and(|report| {
+                matches!(report.kind, crate::config_error::ConfigErrorKind::Frame)
+            });
+            if showing_frame_error {
+                state.config_error_report = None;
+                // The overlay was just cleared: effect failures that are still there must show
+                // up again.
+                crate::backend::shader_effect::reset_effect_error_reports();
+                state.schedule_redraw();
+            }
+        }
+        Err(error) => {
+            warn!(
+                output = %output,
+                stage = %stage,
+                error = ?error,
+                "failed to evaluate the config for a tty frame; keeping the previous result"
+            );
+            state.failed_frame_evaluations.failed(output, stage);
+            if state.config_error_report.is_none() {
+                state.config_error_report =
+                    Some(crate::config_error::ConfigErrorReport::frame(error));
+                state.schedule_redraw();
+            }
+        }
     }
 }
 
@@ -4303,15 +4341,8 @@ fn render_surface(
         // backend already does — keep the previous decorations for this frame —
         // and surface the failure through the config-error overlay so it is
         // legible and recoverable in place.
-        if let Err(err) = state.refresh_window_decorations_for_output(Some(output.name().as_str()))
-        {
-            warn!(
-                output = %output.name(),
-                error = ?err,
-                "failed to refresh window decorations for tty; keeping previous decorations"
-            );
-            report_tty_config_error(state, err);
-        }
+        let result = state.refresh_window_decorations_for_output(Some(output.name().as_str()));
+        note_frame_evaluation(state, &output.name(), "window decorations", result);
     }
     state.refresh_drag_views();
     state.animation_frame_time_ms = None;
@@ -4332,22 +4363,10 @@ fn render_surface(
         // Same reasoning as the decoration refresh above: layer and popup
         // effects come from the same runtime evaluation, so a broken config
         // fails here too and must not be fatal either.
-        if let Err(err) = state.refresh_layer_effects_for_output(output.name().as_str()) {
-            warn!(
-                output = %output.name(),
-                error = ?err,
-                "failed to refresh layer effects for tty; keeping previous effects"
-            );
-            report_tty_config_error(state, err);
-        }
-        if let Err(err) = state.refresh_popup_effects_for_output(output.name().as_str()) {
-            warn!(
-                output = %output.name(),
-                error = ?err,
-                "failed to refresh popup effects for tty; keeping previous effects"
-            );
-            report_tty_config_error(state, err);
-        }
+        let result = state.refresh_layer_effects_for_output(output.name().as_str());
+        note_frame_evaluation(state, &output.name(), "layer effects", result);
+        let result = state.refresh_popup_effects_for_output(output.name().as_str());
+        note_frame_evaluation(state, &output.name(), "popup effects", result);
     }
     let layer_effects_elapsed_ms = layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
     if ShojiWM::motion_trace_enabled() {
