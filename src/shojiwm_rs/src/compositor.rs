@@ -1011,6 +1011,19 @@ impl OutputController {
         name
     }
 
+    /// `resize(name, width, height)`: give an output [`create`](Self::create)
+    /// made another size in pixels. It keeps its wl_output, so clients and
+    /// the layer surfaces and windows on it stay.
+    pub fn resize(&self, name: &str, width: i32, height: i32) {
+        runtime::send(HostMessage::HeadlessOutput(
+            RuntimeHeadlessOutputRequest::Resize {
+                name: name.to_string(),
+                width,
+                height,
+            },
+        ));
+    }
+
     /// `remove(name)`: remove an output [`create`](Self::create) made.
     pub fn remove(&self, name: &str) {
         CREATED_HEADLESS.with_borrow_mut(|created| created.remove(name));

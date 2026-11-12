@@ -322,8 +322,14 @@ COMPOSITOR.output.setPower('on');
 ```ts
 const name = COMPOSITOR.output.create({width: 1280, height: 720}); // 'HEADLESS-1'
 COMPOSITOR.output.create({name: 'stream', width: 1920, height: 1080, scale: 1.5});
+COMPOSITOR.output.resize(name, {width: 1920, height: 1080});
 COMPOSITOR.output.remove(name);
 ```
+
+`COMPOSITOR.output.resize`（Rust では `resize(name, 1920, 1080)`）は出力を残したまま
+サイズを変えます。クライアントは同じ `wl_output` で新しいモードを受け取り、その上の
+レイヤーサーフェスは新しいサイズで configure され、ウィンドウもそのまま残ります。
+今と同じサイズへの変更では何も起きません。
 
 `name` を省くと、使われていない最小の `n` で `HEADLESS-<n>` になります。`scale` は
 初期スケールで、ほかの出力と同じく `configure` で変えられます。Rust の設定では
