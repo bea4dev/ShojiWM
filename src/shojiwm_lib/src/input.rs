@@ -3751,11 +3751,33 @@ impl ShojiWM {
         );
     }
 
+    /// Recompute what is under the pointer once the current dispatch is
+    /// done. Window layout runs from inside pointer grab handlers too, and the
+    /// pointer cannot be driven from within its own grab.
+    pub(crate) fn queue_pointer_focus_refresh(&mut self) {
+        if self.pointer_focus_refresh_queued {
+            return;
+        }
+        self.pointer_focus_refresh_queued = true;
+        self.loop_handle.insert_idle(|state| {
+            state.pointer_focus_refresh_queued = false;
+            let now_msec = std::time::Duration::from(state.clock.now()).as_millis() as u32;
+            state.refresh_pointer_focus(now_msec);
+        });
+    }
+
     pub(crate) fn refresh_pointer_focus(&mut self, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        if pointer.is_grabbed() || self.runtime_input_grab.is_some() {
+        // A data drag's grab takes the motion below and moves the drop target
+        // with it. Other grabs keep their focus.
+        let dragging = self
+            .dnd
+            .active
+            .as_ref()
+            .is_some_and(|drag| drag.device == crate::dnd::DragDevice::Pointer);
+        if (pointer.is_grabbed() && !dragging) || self.runtime_input_grab.is_some() {
             return;
         }
         if self.active_pointer_lock_focus(&pointer).is_some() {
@@ -3781,7 +3803,8 @@ impl ShojiWM {
             .surface
             .as_ref()
             .map(|(surface, _)| surface);
-        let stale = pointer.current_focus().as_ref() != desired_focus;
+        // A drag's grab keeps the pointer itself unfocused.
+        let stale = !dragging && pointer.current_focus().as_ref() != desired_focus;
         if changed || stale {
             let under = self.pointer_contents.surface.clone();
             pointer.motion(

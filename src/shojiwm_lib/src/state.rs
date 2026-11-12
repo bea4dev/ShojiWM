@@ -544,6 +544,8 @@ pub struct ShojiWM {
     pub consumed_pointer_buttons: HashSet<(String, u32)>,
     pub modifier_tap: crate::modifier_tap::ModifierTapTracker,
     pub pending_tap_binding_ids: Vec<String>,
+    /// A pointer focus refresh waits in an idle callback.
+    pub pointer_focus_refresh_queued: bool,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -1977,6 +1979,7 @@ impl ShojiWM {
             consumed_pointer_buttons: HashSet::new(),
             modifier_tap: Default::default(),
             pending_tap_binding_ids: Vec::new(),
+            pointer_focus_refresh_queued: false,
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect: None,

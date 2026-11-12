@@ -4,7 +4,12 @@
 
 #![allow(dead_code)]
 
-use std::{os::unix::net::UnixStream, path::PathBuf, time::Duration};
+use std::{
+    fs::File,
+    os::{fd::AsFd, unix::net::UnixStream},
+    path::PathBuf,
+    time::Duration,
+};
 
 use shojiwm_lib::state::ShojiWM;
 use shojiwm_rs::{ConfigBuilder, RuntimeBoot, cli::CommonArgs};
@@ -14,7 +19,9 @@ use smithay::{
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
-    protocol::{wl_compositor, wl_output, wl_registry, wl_seat, wl_surface},
+    protocol::{
+        wl_buffer, wl_compositor, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    },
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -26,6 +33,8 @@ pub struct Session {
     pub queue: EventQueue<Client>,
     pub client: Client,
     pub registry: wl_registry::WlRegistry,
+    /// Backing files of shm buffers; their fds must outlive the requests.
+    files: Vec<File>,
     _runtime_dir: PathBuf,
 }
 
@@ -75,6 +84,7 @@ impl Session {
             queue,
             client: Client::default(),
             registry,
+            files: Vec::new(),
             _runtime_dir: runtime_dir,
         };
         session.roundtrip();
@@ -131,6 +141,39 @@ impl Session {
     {
         self.registry
             .bind::<I, _, _>(name, version, &self.queue.handle(), ())
+    }
+
+    /// Maps an xdg toplevel with `app_id` and a `width`x`height` buffer, so
+    /// the pointer can land on it.
+    pub fn map_toplevel_with_buffer(
+        &mut self,
+        app_id: &str,
+        width: i32,
+        height: i32,
+    ) -> wl_surface::WlSurface {
+        let qh = self.queue.handle();
+        let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 1);
+        let shell: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 1);
+        let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = shell.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_app_id(app_id.into());
+        surface.commit();
+        self.roundtrip();
+
+        let stride = width * 4;
+        let file = tempfile("shm");
+        file.set_len((stride * height) as u64).unwrap();
+        let pool = shm.create_pool(file.as_fd(), stride * height, &qh, ());
+        let buffer =
+            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        self.files.push(file);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width, height);
+        surface.commit();
+        self.roundtrip();
+        surface
     }
 
     /// Maps a layer surface across the top of the first output.
@@ -216,6 +259,38 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
     }
 }
 
+/// An unlinked file for shared memory or a keymap.
+pub fn tempfile(purpose: &str) -> File {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("shoji-test-{purpose}-{}-{n}", std::process::id()));
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    file
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
+    fn event(
+        _: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+        }
+    }
+}
+
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
     fn event(
         _: &mut Self,
@@ -259,7 +334,9 @@ macro_rules! ignore_events {
 ignore_events!(
     wl_compositor::WlCompositor,
     wl_surface::WlSurface,
-    xdg_surface::XdgSurface,
+    wl_shm::WlShm,
+    wl_shm_pool::WlShmPool,
+    wl_buffer::WlBuffer,
     xdg_toplevel::XdgToplevel,
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
     wl_seat::WlSeat,
