@@ -131,6 +131,54 @@ ShojiWM は起動するすべてのプロセスにこの変数を渡します。
 `SHOJI_PUBLISH_ACTIVATION_ENV=1` でnestedでの公開を有効にした場合は、systemd/D-Busの
 アクティベーション環境にも渡します。未設定の場合は `WAYLAND_DISPLAY` からソケットを求めます。
 
+### 外部からキーを押す
+
+`shoji_wm --key <chord>` は、実行中のコンポジターでキーの組み合わせを押して離します。
+キーボードからの入力と同じ経路を通るので、キーバインディング、組み込みの
+`Super+Shift+Q`/`Super+Shift+R`、そしてフォーカス中のウィンドウに届きます。
+組み合わせはバインディングと同じ書式（`Super+Shift+Return`、`Ctrl+c`）です。キーは
+現在のレイアウト上の keysym として探され、`code:<xkb キーコード>` でコードを直接指定
+できます。そのレイアウトで Shift が必要な keysym には Shift が加わります。
+`--hold <ms>` を付けると、その時間だけ押し続けてから離します。キーリピートの
+確認に使えます。
+
+```sh
+shoji_wm --key Super+T
+shoji_wm --key XF86AudioRaiseVolume --hold 800
+printf 'key Super+T\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+printf 'key XF86AudioRaiseVolume 800\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+```
+
+### 仮想キーボード
+
+`wtype` などのツールは `zwp_virtual_keyboard_v1` を使い、独自のキーマップを
+アップロードします。そのキーは通常のキーボードと同じ経路を通ります。
+`wtype -M logo -k space -m logo` は `Super+space` のバインディングを、
+`wtype -k F13` は `F13` のバインディングを発火させ、打ち込んだ文字は送られた
+キーマップでフォーカス中のウィンドウに届くため、レイアウトにない文字も入力できます。
+バインディングは、ツールが選んだキーコードに関係なく、そのキーマップの keysym で
+照合されます。`code:<xkb keycode>` のバインディングは、同じ keysym を持つ
+現在のレイアウトのキーと照合されます。仮想キーボードが入力している間、フォーカス中の
+ウィンドウはそのキーマップを使い、別のキーボードからの次のキー入力かツールの終了で
+元のレイアウトに戻ります。config に通知されるレイアウトは変わりません。
+
+fcitx5 などのインプットメソッドはキーボードをグラブし、処理しなかったキーを自身の
+仮想キーボードから送り返します。これらのキーはキーバインディングを通らず、現在の
+レイアウトのままフォーカス中のウィンドウに直接届きます。元のキーはインプットメソッドに
+届く前にすでにキーバインディングを通っているためです。
+
+### 仮想ポインター
+
+ShojiWM は `zwlr_virtual_pointer_manager_v1`（バージョン 2）を提供します。
+`wlrctl pointer move 100 0`、`wlrctl pointer click left` やリモートデスクトップの
+サーバーは、マウスと同じ経路でポインターを動かします。ホットコーナー、ポインター
+領域、入力グラブ、`bindWindowMoveModifier` もこれを受け取ります。特定の出力向けに
+作られた仮想ポインターは、絶対座標の移動をその出力に対応させます。
+`axis_source` も `axis_discrete` も指定しないスクロールは、スクロール量 15 を
+1 ノッチとするマウスホイールとしてクライアントに届きます。ソースを指定した
+スクロールはそのソースのままです。`wlrctl pointer scroll` は `finger` を送るので、
+クライアントはタッチパッドと同じく滑らかにスクロールします。
+
 ## ポインター
 
 `COMPOSITOR.pointer` は、コンポジター自身が扱うマウス操作を設定します。（加速度・

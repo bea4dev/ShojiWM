@@ -10,9 +10,15 @@
 //! `SHOJIWM_SOCKET`. The wire format is one command per connection:
 //!
 //! ```text
-//! client -> server   "quit\n" | "reload\n"
+//! client -> server   "quit\n" | "reload\n" | "key <chord> [<hold-ms>]\n"
 //! server -> client   "ok\n" | "error: <message>\n"
 //! ```
+//!
+//! `key Super+Return` presses and releases the chord on a virtual keyboard
+//! that goes through the compositor's input path, so it reaches the config's
+//! key binds (see [`crate::virtual_input`]). `key XF86AudioRaiseVolume 800`
+//! holds it for 800 ms before the release, long enough for key repeat. The
+//! answer comes once the event loop has pressed the chord.
 
 use std::{
     ffi::OsStr,
@@ -26,6 +32,7 @@ use smithay::reexports::calloop::{
     LoopHandle,
     channel::{Event as ChannelEvent, Sender, channel},
 };
+use std::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::state::ShojiWM;
@@ -36,28 +43,53 @@ pub const SOCKET_ENV: &str = "SHOJIWM_SOCKET";
 /// that connects and then says nothing ever waits this long.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Quit,
     Reload,
+    /// Press a chord such as `Super+Shift+Return`, and release it
+    /// `hold_ms` later.
+    Key {
+        chord: String,
+        hold_ms: u32,
+    },
 }
 
 impl Command {
-    fn as_str(self) -> &'static str {
+    fn to_line(&self) -> String {
         match self {
-            Self::Quit => "quit",
-            Self::Reload => "reload",
+            Self::Quit => "quit".into(),
+            Self::Reload => "reload".into(),
+            Self::Key { chord, hold_ms: 0 } => format!("key {chord}"),
+            Self::Key { chord, hold_ms } => format!("key {chord} {hold_ms}"),
         }
     }
 
     fn parse(line: &str) -> Option<Self> {
-        match line.trim() {
+        let line = line.trim();
+        match line {
             "quit" => Some(Self::Quit),
             "reload" => Some(Self::Reload),
-            _ => None,
+            _ => {
+                let mut words = line.strip_prefix("key ")?.split_whitespace();
+                let chord = words.next()?.to_string();
+                let hold_ms = match words.next() {
+                    Some(hold) => hold.parse().ok()?,
+                    None => 0,
+                };
+                words
+                    .next()
+                    .is_none()
+                    .then_some(Self::Key { chord, hold_ms })
+            }
         }
     }
 }
+
+/// How long a client waits for the event loop to run its command.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+type Request = (Command, mpsc::Sender<Result<(), String>>);
 
 /// Where the compositor on `wayland_display` listens.
 pub fn socket_path(wayland_display: &OsStr) -> Option<PathBuf> {
@@ -100,14 +132,22 @@ pub fn start(
         }
     };
 
-    let (sender, receiver) = channel::<Command>();
+    let (sender, receiver) = channel::<Request>();
     if let Err(error) = loop_handle.insert_source(receiver, |event, _, state| {
-        if let ChannelEvent::Msg(command) = event {
-            info!(command = command.as_str(), "control socket command");
-            match command {
-                Command::Quit => state.shutdown(),
-                Command::Reload => state.reload_decoration_runtime(),
-            }
+        if let ChannelEvent::Msg((command, reply)) = event {
+            info!(command = command.to_line(), "control socket command");
+            let result = match command {
+                Command::Quit => {
+                    state.shutdown();
+                    Ok(())
+                }
+                Command::Reload => {
+                    state.reload_decoration_runtime();
+                    Ok(())
+                }
+                Command::Key { chord, hold_ms } => state.inject_key_chord(&chord, hold_ms),
+            };
+            let _ = reply.send(result);
         }
     }) {
         warn!(%error, "failed to register the control socket channel");
@@ -129,17 +169,24 @@ pub fn start(
     Some(ControlSocket { path })
 }
 
-fn serve(listener: UnixListener, sender: Sender<Command>) {
+fn serve(listener: UnixListener, sender: Sender<Request>) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             continue;
         };
         let reply = match read_command(&stream) {
-            Ok(command) => match sender.send(command) {
-                Ok(()) => "ok".to_string(),
-                // The event loop is gone: the compositor is shutting down.
-                Err(_) => return,
-            },
+            Ok(command) => {
+                let (reply_sender, reply_receiver) = mpsc::channel();
+                if sender.send((command, reply_sender)).is_err() {
+                    // The event loop is gone: the compositor is shutting down.
+                    return;
+                }
+                match reply_receiver.recv_timeout(REPLY_TIMEOUT) {
+                    Ok(Ok(())) => "ok".to_string(),
+                    Ok(Err(error)) => format!("error: {error}"),
+                    Err(_) => "error: the compositor did not run the command".to_string(),
+                }
+            }
             Err(error) => format!("error: {error}"),
         };
         let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
@@ -176,7 +223,7 @@ pub fn send(command: Command) -> Result<(), String> {
     let mut stream = UnixStream::connect(&path)
         .map_err(|error| format!("cannot connect to {}: {error}", path.display()))?;
     stream
-        .write_all(format!("{}\n", command.as_str()).as_bytes())
+        .write_all(format!("{}\n", command.to_line()).as_bytes())
         .map_err(|error| error.to_string())?;
     let mut reply = String::new();
     BufReader::new(&stream)
@@ -186,5 +233,58 @@ pub fn send(command: Command) -> Result<(), String> {
         "ok" => Ok(()),
         "" => Err("the compositor closed the connection without answering".to_string()),
         other => Err(other.strip_prefix("error: ").unwrap_or(other).to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Command;
+
+    #[test]
+    fn commands_round_trip_through_their_line() {
+        for command in [
+            Command::Quit,
+            Command::Reload,
+            Command::Key {
+                chord: "Super+Shift+Return".into(),
+                hold_ms: 0,
+            },
+            Command::Key {
+                chord: "XF86AudioRaiseVolume".into(),
+                hold_ms: 800,
+            },
+        ] {
+            assert_eq!(
+                Command::parse(&format!("{}\n", command.to_line())),
+                Some(command)
+            );
+        }
+    }
+
+    #[test]
+    fn key_needs_a_chord() {
+        assert_eq!(Command::parse("key"), None);
+        assert_eq!(Command::parse("key   "), None);
+        assert_eq!(
+            Command::parse(" key  ctrl+c \n"),
+            Some(Command::Key {
+                chord: "ctrl+c".into(),
+                hold_ms: 0
+            })
+        );
+        assert_eq!(Command::parse("press a"), None);
+    }
+
+    #[test]
+    fn key_hold_is_a_number_of_milliseconds() {
+        assert_eq!(
+            Command::parse("key a 250"),
+            Some(Command::Key {
+                chord: "a".into(),
+                hold_ms: 250
+            })
+        );
+        assert_eq!(Command::parse("key a long"), None);
+        assert_eq!(Command::parse("key a 250 b"), None);
     }
 }

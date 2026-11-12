@@ -66,6 +66,8 @@ pub mod runtime_process;
 pub mod runtime_workspace;
 pub mod ssd;
 pub mod state;
+pub mod virtual_input;
+pub mod virtual_keyboard;
 pub mod window_decoration;
 pub mod wlr_foreign_toplevel;
 pub mod workspace_manager;
@@ -113,7 +115,7 @@ pub fn run(launcher: impl RuntimeLauncher + 'static) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    if let Some(command) = args.control_command {
+    if let Some(command) = args.control_command.clone() {
         return match control_socket::send(command) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

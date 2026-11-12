@@ -1123,6 +1123,28 @@ crate::delegate_screencopy!(ShojiWM);
 crate::delegate_hyprland_toplevel_export!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
 crate::delegate_output_power!(ShojiWM);
+crate::delegate_virtual_pointer!(ShojiWM);
+crate::delegate_virtual_keyboard!(ShojiWM);
+
+impl crate::protocols::virtual_pointer::VirtualPointerHandler for ShojiWM {
+    fn virtual_pointer_input(
+        &mut self,
+        event: smithay::backend::input::InputEvent<crate::virtual_input::VirtualInput>,
+    ) {
+        self.process_input_event(event);
+    }
+
+    fn virtual_pointer_layout(&self) -> Option<Rectangle<i32, Logical>> {
+        self.output_layout_bounds()
+    }
+
+    fn virtual_pointer_output_geometry(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<Rectangle<i32, Logical>> {
+        self.space.output_geometry(output)
+    }
+}
 crate::delegate_color_management!(ShojiWM);
 crate::delegate_wlr_foreign_toplevel!(ShojiWM);
 crate::workspace_manager::delegate_ext_workspace_manager!(ShojiWM);

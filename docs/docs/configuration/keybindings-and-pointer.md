@@ -133,6 +133,54 @@ the socket to the systemd/D-Bus activation environment in TTY sessions, or when
 nested publication is enabled with `SHOJI_PUBLISH_ACTIVATION_ENV=1`. Without it,
 the socket is derived from `WAYLAND_DISPLAY`.
 
+### Pressing keys from outside
+
+`shoji_wm --key <chord>` presses and releases a chord in the running
+compositor, as if it came from a keyboard: it reaches your key bindings, the
+built-in `Super+Shift+Q`/`Super+Shift+R`, and then the focused window. Chords
+use the binding syntax (`Super+Shift+Return`, `Ctrl+c`); the key is a keysym
+looked up on the active layout, and `code:<xkb keycode>` names a key by its
+code. A keysym that needs Shift on the layout gets Shift added. `--hold <ms>`
+keeps the chord down that long before releasing it, which is enough for key
+repeat.
+
+```sh
+shoji_wm --key Super+T
+shoji_wm --key XF86AudioRaiseVolume --hold 800
+printf 'key Super+T\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+printf 'key XF86AudioRaiseVolume 800\n' | socat - UNIX-CONNECT:"$SHOJIWM_SOCKET"
+```
+
+### Virtual keyboards
+
+Tools like `wtype` use `zwp_virtual_keyboard_v1` and upload a keymap of their
+own. Their keys take the same path as a keyboard's: `wtype -M logo -k space -m
+logo` fires a `Super+space` binding, `wtype -k F13` a binding on `F13`, and
+text they type reaches the focused window with the keymap they sent, so
+characters missing from your layout still arrive. Bindings match the keysyms
+of that keymap, whatever keycodes the tool chose; a `code:<xkb keycode>`
+binding matches the key of your layout that carries the same keysym. While a
+virtual keyboard types, the focused window runs its keymap; your layout comes
+back with the next key from another keyboard or when the tool exits, and the
+layout reported to the config does not change.
+
+An input method such as fcitx5 grabs the keyboard and sends the keys it does
+not handle back through a virtual keyboard of its own. Those keys go straight
+to the focused window in your layout, without key bindings, since the key
+already passed them on its way to the input method.
+
+### Virtual pointers
+
+ShojiWM offers `zwlr_virtual_pointer_manager_v1` (version 2), so
+`wlrctl pointer move 100 0`, `wlrctl pointer click left` and remote desktop
+servers drive the pointer through the same path as a mouse: hot corners,
+pointer regions, input grabs and `bindWindowMoveModifier` all see it. A
+virtual pointer created for one output maps absolute motion onto that output.
+A scroll that names no `axis_source` and no `axis_discrete` reaches clients
+as a mouse wheel, one notch per 15 of scroll value. A scroll that names its
+source keeps it: `wlrctl pointer scroll` sends `finger`, so clients scroll it
+smoothly, as from a touchpad.
+
 ## Pointer
 
 `COMPOSITOR.pointer` configures mouse interactions handled by the compositor
