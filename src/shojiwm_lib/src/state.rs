@@ -338,6 +338,9 @@ pub struct ShojiWM {
     /// `stopped` to clients. Keyed by source id.
     pub image_copy_capture_sessions:
         std::collections::HashMap<usize, Vec<smithay::wayland::image_copy_capture::Session>>,
+    /// Live cursor capture sessions, kept for the same reason: dropping one
+    /// stops it. Each is told where the pointer is on its source.
+    pub image_copy_cursor_sessions: Vec<smithay::wayland::image_copy_capture::CursorSession>,
     /// Capture frames the client has requested, waiting to be rendered into
     /// during the next backend frame. Drained per-output / per-toplevel by
     /// the render path.
@@ -850,6 +853,7 @@ impl ShojiWM {
             },
         );
         pointer.frame(self);
+        self.update_cursor_capture_sessions();
     }
 
     pub fn warp_cursor_to_initial_output_center(&mut self) {
@@ -1914,6 +1918,7 @@ impl ShojiWM {
             initial_config_enabled: false,
             session_lock_surfaces: HashMap::new(),
             image_copy_capture_sessions: std::collections::HashMap::new(),
+            image_copy_cursor_sessions: Vec::new(),
             image_copy_capture_pending: Vec::new(),
             hyprland_toplevel_export_state,
             single_pixel_buffer_state,
@@ -4044,6 +4049,8 @@ impl ShojiWM {
             }
         }
         self.configure_session_lock_surfaces();
+        // An output that moved or changed scale moves the pointer on it.
+        self.update_cursor_capture_sessions();
         // Outputs this configuration disabled go dark (and enabled ones come back).
         crate::backend::tty::sync_output_power(self);
         self.schedule_redraw();

@@ -57,8 +57,8 @@ use smithay::wayland::image_capture_source::{
     OutputCaptureSourceState, ToplevelCaptureSourceHandler, ToplevelCaptureSourceState,
 };
 use smithay::wayland::image_copy_capture::{
-    BufferConstraints, CaptureFailureReason, Frame, FrameRef, ImageCopyCaptureHandler,
-    ImageCopyCaptureState, Session, SessionRef,
+    BufferConstraints, CaptureFailureReason, CursorSession, CursorSessionRef, Frame, FrameRef,
+    ImageCopyCaptureHandler, ImageCopyCaptureState, Session, SessionRef,
 };
 use smithay::output::WeakOutput;
 use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
@@ -486,6 +486,122 @@ impl ImageCopyCaptureHandler for ShojiWM {
             }
         }
     }
+
+    fn cursor_capture_constraints(
+        &mut self,
+        source: &ImageCaptureSource,
+        _pointer: &smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer,
+    ) -> Option<BufferConstraints> {
+        // Smithay keeps a cursor session only when it has constraints, and
+        // clients want its enter / position events even when they never ask
+        // for the cursor's image. The image is not rendered yet: its frames
+        // fail (the trait's default `cursor_frame`).
+        resolve_source_size(self, source)?;
+        let scale = source_scale(self, source);
+        let side = (f64::from(self.cursor_theme.size()) * scale)
+            .ceil()
+            .max(1.0) as i32;
+        Some(BufferConstraints {
+            size: (side, side).into(),
+            shm: vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Argb8888],
+            dma: None,
+        })
+    }
+
+    fn new_cursor_session(&mut self, session: CursorSession) {
+        self.image_copy_cursor_sessions.push(session);
+        // A client asks where the pointer is now, not at its next motion.
+        self.update_cursor_capture_sessions();
+    }
+
+    fn cursor_session_destroyed(&mut self, session: CursorSessionRef) {
+        self.image_copy_cursor_sessions
+            .retain(|s| s.as_ref() != session);
+    }
+}
+
+impl ShojiWM {
+    /// Tell every cursor capture session where the pointer is on its source,
+    /// or that it left it. Call it after the pointer moves and after outputs
+    /// or windows move; smithay sends events only for changes.
+    pub fn update_cursor_capture_sessions(&mut self) {
+        if self.image_copy_cursor_sessions.is_empty() {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let location = pointer.current_location();
+        for session in &self.image_copy_cursor_sessions {
+            let position = cursor_position_on_source(self, &session.source(), location);
+            session.set_cursor_pos(position);
+        }
+    }
+}
+
+/// The window of a toplevel capture source, if it is still mapped.
+fn source_window(state: &ShojiWM, source: &ImageCaptureSource) -> Option<smithay::desktop::Window> {
+    let weak = source
+        .user_data()
+        .get::<smithay::wayland::foreign_toplevel_list::ForeignToplevelWeakHandle>()?;
+    let handle = weak.upgrade()?;
+    state
+        .space
+        .elements()
+        .find(|w| {
+            w.user_data()
+                .get::<ForeignToplevelHandle>()
+                .is_some_and(|h| h.matches(&handle))
+        })
+        .cloned()
+}
+
+/// The scale a source's captures are rendered at: its output's, or for a
+/// window the scale of the first output it is on (as `resolve_source_size`).
+fn source_scale(state: &ShojiWM, source: &ImageCaptureSource) -> f64 {
+    if let Some(output) = source
+        .user_data()
+        .get::<WeakOutput>()
+        .and_then(|weak| weak.upgrade())
+    {
+        return output.current_scale().fractional_scale();
+    }
+    source_window(state, source)
+        .and_then(|window| state.space.outputs_for_element(&window).into_iter().next())
+        .map(|output| output.current_scale().fractional_scale())
+        .unwrap_or(1.0)
+}
+
+/// The pointer's place in the buffer a capture of `source` produces, or
+/// `None` when the pointer is not on it. Captures are rendered upright (see
+/// `image_copy_capture_render`), so the place is the logical offset scaled to
+/// the buffer's size, with no transform.
+fn cursor_position_on_source(
+    state: &ShojiWM,
+    source: &ImageCaptureSource,
+    location: smithay::utils::Point<f64, smithay::utils::Logical>,
+) -> Option<smithay::utils::Point<i32, smithay::utils::Buffer>> {
+    let size = resolve_source_size(state, source)?;
+    let area = if let Some(output) = source
+        .user_data()
+        .get::<WeakOutput>()
+        .and_then(|weak| weak.upgrade())
+    {
+        state.space.output_geometry(&output)?
+    } else {
+        let window = source_window(state, source)?;
+        state.space.element_geometry(&window)?
+    };
+    if area.size.w <= 0 || area.size.h <= 0 {
+        return None;
+    }
+    let x = (location.x - f64::from(area.loc.x)) * f64::from(size.w) / f64::from(area.size.w);
+    let y = (location.y - f64::from(area.loc.y)) * f64::from(size.h) / f64::from(area.size.h);
+    let (x, y) = (x.floor() as i32, y.floor() as i32);
+    if x < 0 || y < 0 || x >= size.w || y >= size.h {
+        return None;
+    }
+    Some((x, y).into())
 }
 
 /// Resolve an `ImageCaptureSource` to its natural buffer size. Returns `None`
