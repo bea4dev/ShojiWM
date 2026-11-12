@@ -453,6 +453,13 @@ refreshRate}`), `position` (`{x, y}`), `scale`, `transform`, `subpixel`,
 `detectedSubpixel`, `availableModes`, and identification fields (`make`,
 `model`, `serial`, `connector`).
 
+On the tty backend, `make`, `model` and `serial` come from the monitor's EDID.
+`make` is the three-letter PNP manufacturer ID (such as `PXO`), and `model` is
+the monitor name, or the product code (such as `0x60ad`) when the EDID has no
+name, as on many laptop panels. Many monitors put a placeholder in `serial`, so
+it does not tell two monitors of the same model apart. A field the EDID does
+not carry is `"Unknown"`.
+
 `subpixel` is the layout currently advertised, and `detectedSubpixel` the one
 the kernel reported, so a settings UI can show what a connector claims before
 anything overrides it.
