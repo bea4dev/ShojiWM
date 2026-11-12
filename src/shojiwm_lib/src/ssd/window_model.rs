@@ -52,6 +52,11 @@ pub struct WaylandWindowSnapshot {
     /// set one. A config's minimize animation can fly the window there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized_geometry: Option<WindowPositionSnapshot>,
+    /// The window's `identifier` on `ext-foreign-toplevel-list-v1`, which
+    /// taskbars and capture clients (`ext-image-capture-source-v1`) key it
+    /// by; `None` until the window is mapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreign_toplevel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -960,6 +965,7 @@ impl ShojiWM {
             interaction: DecorationInteractionSnapshot::default(),
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
             minimized_geometry: self.plasma_minimized_geometry(window),
+            foreign_toplevel_id: foreign_toplevel_id(window),
         }
     }
 
@@ -986,6 +992,7 @@ impl ShojiWM {
                 interaction: DecorationInteractionSnapshot::default(),
                 plasma: None,
                 minimized_geometry: None,
+                foreign_toplevel_id: None,
             };
         };
 
@@ -1063,6 +1070,7 @@ impl ShojiWM {
             interaction: DecorationInteractionSnapshot::default(),
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
+            foreign_toplevel_id: foreign_toplevel_id(window),
         }
     }
 
@@ -1276,6 +1284,13 @@ fn window_constraints_are_resizable(
     !(width_fixed || height_fixed)
 }
 
+fn foreign_toplevel_id(window: &Window) -> Option<String> {
+    window
+        .user_data()
+        .get::<smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>()
+        .map(|handle| handle.identifier())
+}
+
 /// Stable runtime id for a toplevel window (Wayland or X11). Backed by
 /// `smithay::desktop::Window::id()`, a process-lifetime-unique counter, so
 /// unlike the wl_surface protocol id / X11 XID it can't be recycled onto an
@@ -1323,7 +1338,40 @@ fn anchor_to_edge_snapshot(anchor: WlrAnchor) -> Option<LayerEdgeSnapshot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PointerHitTargetSnapshot, WaylandWindowAction};
+    use super::{PointerHitTargetSnapshot, WaylandWindowAction, WaylandWindowSnapshot};
+
+    #[test]
+    fn foreign_toplevel_id_is_sent_once_known() {
+        let mut snapshot = WaylandWindowSnapshot {
+            id: "0x1".into(),
+            title: String::new(),
+            app_id: None,
+            position: Default::default(),
+            rect: Default::default(),
+            is_focused: false,
+            is_floating: true,
+            is_maximized: false,
+            is_fullscreen: false,
+            is_xwayland: false,
+            decoration: Default::default(),
+            size_constraints: Default::default(),
+            is_resizable: true,
+            is_transient: false,
+            parent_id: None,
+            icon: None,
+            interaction: Default::default(),
+            output_name: None,
+            plasma: None,
+            minimized_geometry: None,
+            foreign_toplevel_id: None,
+        };
+        let unmapped = serde_json::to_value(&snapshot).expect("serialize unmapped");
+        assert!(unmapped.get("foreignToplevelId").is_none());
+
+        snapshot.foreign_toplevel_id = Some("Zq3f8Kx0".into());
+        let mapped = serde_json::to_value(&snapshot).expect("serialize mapped");
+        assert_eq!(mapped["foreignToplevelId"], "Zq3f8Kx0");
+    }
 
     #[test]
     fn pointer_hit_targets_serialize_for_runtime_events() {
