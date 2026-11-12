@@ -248,7 +248,10 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
             if self.runtime_managed {
-                self.invoke_runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
+                let window_id = data.snapshot_window(&self.window).id;
+                let event =
+                    self.runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
+                data.queue_grab_end_dispatch(PendingGrabMotion::WindowMove { window_id, event });
             }
             data.update_decoration_cursor_icon(self.last_pointer);
         }

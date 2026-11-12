@@ -305,7 +305,10 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
             handle.unset_grab(self, data, event.serial, event.time, true);
 
             if self.runtime_managed {
-                self.invoke_runtime_event(data, WindowResizePhaseSnapshot::End, self.last_pointer);
+                let window_id = data.snapshot_window(&self.window).id;
+                let event =
+                    self.runtime_event(data, WindowResizePhaseSnapshot::End, self.last_pointer);
+                data.queue_grab_end_dispatch(PendingGrabMotion::WindowResize { window_id, event });
                 if let Some(xdg) = self.window.toplevel() {
                     xdg.with_pending_state(|state| {
                         state.states.unset(xdg_toplevel::State::Resizing);

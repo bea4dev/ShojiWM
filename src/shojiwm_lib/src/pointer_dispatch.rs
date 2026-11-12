@@ -126,6 +126,24 @@ impl ShojiWM {
         }
     }
 
+    /// Hand a grab's `end` to the config once the grab has returned. Smithay
+    /// holds the pointer's lock while it runs a grab, and what the config asks
+    /// for in reply (`input.grab()`, a cursor warp, a focus change) takes that
+    /// lock again.
+    pub(crate) fn queue_grab_end_dispatch(&mut self, end: PendingGrabMotion) {
+        self.loop_handle.insert_idle(move |state| {
+            let now_ms = Duration::from(state.clock.now()).as_millis() as u64;
+            match end {
+                PendingGrabMotion::WindowMove { window_id, event } => {
+                    state.invoke_window_move_event(&window_id, &event, now_ms);
+                }
+                PendingGrabMotion::WindowResize { window_id, event } => {
+                    state.invoke_window_resize_event(&window_id, &event, now_ms);
+                }
+            }
+        });
+    }
+
     /// Send what is queued if it is due, and make sure it goes out later otherwise.
     pub(crate) fn pump_pointer_dispatch(&mut self) {
         if self.pointer_dispatch.is_empty() {
