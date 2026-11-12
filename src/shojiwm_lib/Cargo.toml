@@ -58,6 +58,8 @@ tokio = { version = "1.47.1", features = ["macros", "rt"] }
 wayland-client = "0.31.14"
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+# DummyRenderer, for building surface render elements without a GPU.
+smithay = { workspace = true, features = ["renderer_test"] }
 
 [features]
 # Hardened allocator for chasing heap corruption:

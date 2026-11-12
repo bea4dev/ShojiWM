@@ -226,6 +226,12 @@ Place one per window.
 All props accept signals for reactive layout. `rect`, `zIndex`, etc. are usually
 driven by your window-manager logic.
 
+`opacity` multiplies with the alpha a client sets on its own surfaces through
+`wp_alpha_modifier_v1`: a window at `opacity` 0.5 whose client fades a surface
+to 0.5 shows that surface at 0.25. The same holds for layer-shell surfaces,
+popups and subsurfaces, and for every snapshot, effect and blur backdrop
+taken from them.
+
 ## ClientWindow
 
 `<ClientWindow/>` renders the client's actual surface buffer. A leaf node — no

@@ -1280,6 +1280,38 @@ pub fn clipped_popup_elements(
 }
 
 #[cfg(test)]
+mod alpha_modifier_tests {
+    use smithay::backend::renderer::{element::Element, test::DummyRenderer};
+
+    use super::surface_elements;
+
+    /// A client's `wp_alpha_modifier_v1` multiplier scales the alpha the
+    /// compositor draws a window with, rather than replacing it.
+    #[test]
+    fn client_alpha_multiplier_composes_with_window_opacity() {
+        let mut client = crate::presentation_test_client::TestClient::new();
+        let alpha = |client: &crate::presentation_test_client::TestClient| {
+            surface_elements(
+                &client.window(),
+                &mut DummyRenderer,
+                (0, 0).into(),
+                1.0.into(),
+                0.5,
+            )
+            .iter()
+            .map(Element::alpha)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(alpha(&client), [0.5]);
+
+        client.set_alpha_multiplier(0.5);
+        let faded = alpha(&client);
+        assert_eq!(faded.len(), 1);
+        assert!((faded[0] - 0.25).abs() < 1e-6, "{faded:?}");
+    }
+}
+
+#[cfg(test)]
 mod region_bounds_tests {
     use super::*;
 
