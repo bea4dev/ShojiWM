@@ -172,6 +172,8 @@ impl Session {
 #[derive(Default)]
 pub struct Client {
     globals: Vec<(String, u32)>,
+    /// Layer surfaces the compositor sent `closed`.
+    pub closed_layers: usize,
 }
 
 impl Client {
@@ -229,6 +231,23 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
     }
 }
 
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Client {
+    fn event(
+        client: &mut Self,
+        layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } => layer.ack_configure(serial),
+            zwlr_layer_surface_v1::Event::Closed => client.closed_layers += 1,
+            _ => {}
+        }
+    }
+}
+
 macro_rules! ignore_events {
     ($($proxy:ty),*) => {$(
         impl Dispatch<$proxy, ()> for Client {
@@ -243,7 +262,6 @@ ignore_events!(
     xdg_surface::XdgSurface,
     xdg_toplevel::XdgToplevel,
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
-    zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     wl_seat::WlSeat,
     wl_output::WlOutput
 );
