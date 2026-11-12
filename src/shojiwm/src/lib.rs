@@ -601,12 +601,15 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
-    /// `COMPOSITOR.cursor`: setPosition reaches the host at once, getPosition
-    /// reads what the compositor published, the app lock settings ride the
-    /// pointer config, and a tap's `within` reaches the key binding entry.
+    /// `COMPOSITOR.cursor`: setPosition and setTransform reach the host at
+    /// once, getPosition reads what the compositor published, the app lock
+    /// settings ride the pointer config, and a tap's `within` reaches the key
+    /// binding entry.
     #[test]
     fn typescript_runtime_controls_the_cursor() {
-        use shojiwm_lib::cursor::{CursorPositionSnapshot, RuntimeCursorPositionTarget};
+        use shojiwm_lib::cursor::{
+            CursorPositionSnapshot, CursorTransform, RuntimeCursorPositionTarget,
+        };
         use shojiwm_lib::runtime_pointer_region::PointerRegionAnchor;
 
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -635,6 +638,8 @@ COMPOSITOR.key.bind("warp", "Super+W", () => {
   COMPOSITOR.cursor.setPosition({ output: "eDP-1", anchor: "bottom-right", offset: { x: -10 } });
   COMPOSITOR.cursor.setPosition({ x: 5, y: 6 });
   COMPOSITOR.cursor.setAppLockIgnored(true);
+  COMPOSITOR.cursor.setTransform({ rotate: 90, scaleX: 2, scaleAxis: 45 });
+  COMPOSITOR.cursor.setTransform(null);
 });
 COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
 "#,
@@ -691,9 +696,11 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
         let mut targets = Vec::new();
         let mut ids = Vec::new();
         let mut ignored = None;
+        let mut transforms = Vec::new();
         while let Some(message) = host.pop() {
             match message {
                 HostMessage::CursorPosition(target) => targets.push(target),
+                HostMessage::CursorTransform(transform) => transforms.push(transform),
                 HostMessage::KeyBindings(update) => {
                     ids = update.entries.into_iter().map(|entry| entry.id).collect();
                 }
@@ -717,6 +724,18 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             ]
         );
         assert_eq!(ignored, Some(true));
+        assert_eq!(
+            transforms,
+            vec![
+                Some(CursorTransform {
+                    rotate: 90.0,
+                    scale_x: 2.0,
+                    scale_y: 1.0,
+                    scale_axis: 45.0,
+                }),
+                None,
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }

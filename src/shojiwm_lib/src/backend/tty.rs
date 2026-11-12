@@ -3694,6 +3694,7 @@ render_elements! {
     Cursor=PointerRenderElement<GlesRenderer>,
     HdrEncode=crate::backend::hdr_pipeline::HdrEncodeElement,
     HdrCursor=crate::backend::hdr_cursor::PqCursorElement,
+    TransformedCursor=crate::backend::cursor_transform::TransformedCursorElement,
 }
 
 fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
@@ -3720,6 +3721,7 @@ fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
         TtyRenderElements::Cursor(_) => "Cursor",
         TtyRenderElements::HdrEncode(_) => "HdrEncode",
         TtyRenderElements::HdrCursor(_) => "HdrCursor",
+        TtyRenderElements::TransformedCursor(_) => "TransformedCursor",
         _ => "Generic",
     }
 }
@@ -3853,9 +3855,9 @@ impl<'a> ProfiledTtyRenderElement<'a> {
             TtyRenderElements::Backdrop(_)
             | TtyRenderElements::RelocatedBackdrop(_)
             | TtyRenderElements::TransformedBackdrop(_) => "tty-element-backdrop-draw",
-            TtyRenderElements::Cursor(_) | TtyRenderElements::HdrCursor(_) => {
-                "tty-element-cursor-draw"
-            }
+            TtyRenderElements::Cursor(_)
+            | TtyRenderElements::HdrCursor(_)
+            | TtyRenderElements::TransformedCursor(_) => "tty-element-cursor-draw",
             _ => "tty-element-generic-draw",
         };
         Self { inner, draw_label }
@@ -4752,6 +4754,7 @@ fn render_surface(
         // `TtyRenderElements::Cursor` list used by the DRM render and the
         // other capture queues.
         let mut cursor_pointer_elements: Vec<PointerRenderElement<GlesRenderer>> = Vec::new();
+        let mut cursor_hotspot: Option<Point<f64, Physical>> = None;
         let cursor_started_at = Instant::now();
 
         let pointer_pos = seat.get_pointer().unwrap().current_location();
@@ -4835,6 +4838,8 @@ fn render_surface(
                     .to_physical(scale)
                     .to_i32_round();
 
+                cursor_hotspot =
+                    Some(cursor_location.to_f64() + hotspot.to_f64().to_physical(scale));
                 cursor_pointer_elements.extend(
                     pointer_element.render_elements::<PointerRenderElement<GlesRenderer>>(
                         &mut *renderer,
@@ -5166,10 +5171,31 @@ fn render_surface(
 
         // Now wrap cursor elements into the unified TtyRenderElements list
         // used by the output capture paths and the DRM render.
-        let cursor_elements: Vec<TtyRenderElements> = cursor_pointer_elements
-            .into_iter()
-            .map(TtyRenderElements::Cursor)
-            .collect();
+        let transformed_cursor = match (state.config_cursor_transform, cursor_hotspot) {
+            (Some(transform), Some(hotspot)) => state
+                .cursor_transform_caches
+                .entry(output.name())
+                .or_default()
+                .render(
+                    &mut *renderer,
+                    &cursor_pointer_elements,
+                    scale,
+                    hotspot,
+                    &transform,
+                )
+                .unwrap_or_else(|err| {
+                    warn!(output = %output.name(), ?err, "cursor transform: drawing it untransformed");
+                    None
+                }),
+            _ => None,
+        };
+        let cursor_elements: Vec<TtyRenderElements> = match transformed_cursor {
+            Some(element) => vec![TtyRenderElements::TransformedCursor(element)],
+            None => cursor_pointer_elements
+                .into_iter()
+                .map(TtyRenderElements::Cursor)
+                .collect(),
+        };
         let cursor_visible = !cursor_elements.is_empty();
 
         let use_capture_mirror = screencopy_state.has_screencopy_for_output(&output)

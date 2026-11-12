@@ -4,6 +4,7 @@ pub mod clipped_surface;
 pub mod composition;
 pub mod composition_caches;
 pub mod composition_presentation_tests;
+pub mod cursor_transform;
 pub mod damage;
 pub mod damage_blink;
 pub mod decoration;

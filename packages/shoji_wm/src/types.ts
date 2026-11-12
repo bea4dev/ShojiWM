@@ -2510,6 +2510,47 @@ export interface CursorController {
    * ```
    */
   overrideKind(kind: CursorKind | "none" | null): void;
+
+  /**
+   * Draw the cursor image scaled along its own axes, then rotated, both around
+   * its hotspot, until called again; `null` (or the identity) draws it as is.
+   * `rotate` is in degrees, clockwise; a negative scale mirrors the image.
+   * `scaleAxis` turns the two scale axes without turning the image.
+   * Scales must be non-zero and within ±8. While a transform is set the cursor
+   * is drawn into the frame instead of on the cursor plane. Not shown in a
+   * nested (windowed) session, where the host draws the cursor.
+   * カーソル画像をホットスポットを中心に、自身の軸方向へ拡大縮小してから回転して
+   * 描きます（再度呼ぶまで）。`null`（または無変換）でそのまま描きます。`rotate` は
+   * 時計回りの度数で、負のスケールは画像を反転します。スケールは 0 以外かつ ±8 以内
+   * です。変換中のカーソルはカーソルプレーンではなくフレームに描かれます。ネスト
+   * （ウィンドウ内）実行ではホストがカーソルを描くため反映されません。
+   *
+   * @example
+   * ```ts
+   * // Stretch along the direction of travel and lean into it.
+   * COMPOSITOR.cursor.setTransform({ rotate: -12, scaleX: 1.3, scaleY: 0.85 });
+   * COMPOSITOR.cursor.setTransform(null);
+   * ```
+   */
+  setTransform(transform: CursorTransform | null): void;
+}
+
+/**
+ * `COMPOSITOR.cursor.setTransform`. Omitted fields keep the identity
+ * (`rotate: 0`, scales `1`, `scaleAxis: 0`). / 省略したフィールドは無変換のままです。
+ */
+export interface CursorTransform {
+  /** Degrees, clockwise. / 時計回りの度数。 */
+  rotate?: number;
+  scaleX?: number;
+  scaleY?: number;
+  /**
+   * Degrees, clockwise, the scale's axes are turned from the image's own. The
+   * image is not turned by it: `{ scaleX: 1.5, scaleAxis: 45 }` stretches an
+   * upright cursor along the diagonal.
+   * スケールの軸を画像の軸から時計回りに回す度数。画像自体は回転しません。
+   */
+  scaleAxis?: number;
 }
 
 /**
