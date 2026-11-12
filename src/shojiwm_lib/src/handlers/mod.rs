@@ -1090,6 +1090,14 @@ impl DataControlHandler for ShojiWM {
     }
 }
 
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for ShojiWM {
+    fn data_control_state(
+        &mut self,
+    ) -> &mut smithay::wayland::selection::ext_data_control::DataControlState {
+        &mut self.ext_data_control_state
+    }
+}
+
 //
 // Wl Output & Xdg Output
 //
