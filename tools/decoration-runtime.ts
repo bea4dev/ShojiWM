@@ -1,5 +1,6 @@
 interface EmbeddedRuntimeBridge {
   configureLockBackground(background: import("../packages/shoji_wm/src/session-lock").LockBackgroundSelection): boolean;
+  isKeyRepeat(): boolean;
   createOverlay(output: string, placement: string, maxDuration: number, effect: unknown, persistent: boolean): number;
   waitOverlay(id: number): Promise<void>;
   waitOverlayClosed(id: number): Promise<void>;
@@ -320,6 +321,7 @@ import {
   installAssetResolverBridge,
   installOverlayBridge,
   installSessionLockBridge,
+  installKeyBridge,
   installProcessResolverBridge,
   installRuntimeHooks,
   enterWindowEffectDependencyScope,
@@ -1611,6 +1613,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
       events = resolveEvents(loadedConfig);
       effectConfig = resolveEffectConfig(loadedConfig);
       installSessionLockBridge(embeddedBridge);
+      installKeyBridge(embeddedBridge);
       installOverlayBridge(embeddedBridge, () => activeRequest);
     }
     return {

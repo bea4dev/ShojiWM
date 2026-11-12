@@ -456,6 +456,7 @@ export {
   KEY_BINDING_CONTROLLER,
   beginKeyBindingRegistration,
   commitKeyBindingRegistration,
+  installKeyBridge,
   invokeKeyBinding,
   takePendingKeyBindingConfig,
 } from "./key";

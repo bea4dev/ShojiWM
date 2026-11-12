@@ -355,7 +355,7 @@ impl ShojiWM {
         match action {
             Some(KeyboardAction::ChangeVt(vt)) => self.change_vt(vt),
             Some(KeyboardAction::RuntimeKeyBinding(binding_id)) => {
-                self.run_runtime_key_binding(&binding_id);
+                self.run_runtime_key_binding(&binding_id, false);
                 if pressed {
                     self.start_key_binding_repeat(event.key_code(), &binding_id);
                 }
@@ -419,7 +419,7 @@ impl ShojiWM {
                 state.key_binding_repeat = None;
                 return smithay::reexports::calloop::timer::TimeoutAction::Drop;
             }
-            state.run_runtime_key_binding(&id);
+            state.run_runtime_key_binding(&id, true);
             smithay::reexports::calloop::timer::TimeoutAction::ToDuration(interval)
         });
         match inserted {
@@ -494,11 +494,15 @@ impl ShojiWM {
 
     /// Invoke a runtime key binding handler by id and apply the resulting
     /// runtime config/state changes. Shared by the normal (intercepted) key
-    /// path and the modifier-tap (forwarded) path.
-    fn run_runtime_key_binding(&mut self, binding_id: &str) {
+    /// path and the modifier-tap (forwarded) path. `repeat` when it runs
+    /// again because the binding's key is held.
+    fn run_runtime_key_binding(&mut self, binding_id: &str, repeat: bool) {
         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
         self.sync_runtime_display_state();
-        match self.config_runtime.invoke_key_binding(binding_id, now_ms) {
+        crate::runtime_key_binding::set_repeat(repeat);
+        let invocation = self.config_runtime.invoke_key_binding(binding_id, now_ms);
+        crate::runtime_key_binding::set_repeat(false);
+        match invocation {
             Ok(invocation) => {
                 self.drain_runtime_host_messages();
                 if invocation.dirty {
@@ -1365,7 +1369,7 @@ impl ShojiWM {
                     KeyboardAction::DismissPopup => self.dismiss_popup_on_escape(),
                     KeyboardAction::ReloadConfig => self.reload_decoration_runtime(),
                     KeyboardAction::RuntimeKeyBinding(binding_id) => {
-                        self.run_runtime_key_binding(&binding_id);
+                        self.run_runtime_key_binding(&binding_id, false);
                         if event.state() == KeyState::Pressed {
                             self.start_key_binding_repeat(event.key_code(), &binding_id);
                         }
@@ -1385,7 +1389,7 @@ impl ShojiWM {
                 if !self.pending_tap_binding_ids.is_empty() {
                     let ids = std::mem::take(&mut self.pending_tap_binding_ids);
                     for id in ids {
-                        self.run_runtime_key_binding(&id);
+                        self.run_runtime_key_binding(&id, false);
                     }
                 }
             }
@@ -1693,7 +1697,7 @@ impl ShojiWM {
                         .map(|binding| binding.id.clone());
                     if let Some(binding_id) = binding_id {
                         self.consumed_pointer_buttons.insert(button_key);
-                        self.run_runtime_key_binding(&binding_id);
+                        self.run_runtime_key_binding(&binding_id, false);
                         return;
                     }
                 }
@@ -2404,7 +2408,7 @@ impl ShojiWM {
                                 .map(|binding| binding.id.clone())
                         });
                     if let Some(binding_id) = binding_id {
-                        self.run_runtime_key_binding(&binding_id);
+                        self.run_runtime_key_binding(&binding_id, false);
                         return;
                     }
                 }

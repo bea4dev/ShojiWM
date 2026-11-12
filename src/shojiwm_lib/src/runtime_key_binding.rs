@@ -1,7 +1,20 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use smithay::input::keyboard::{KeysymHandle, ModifiersState};
 use xkbcommon::xkb;
+
+static REPEAT: AtomicBool = AtomicBool::new(false);
+
+/// Whether a key binding's handler runs now because its held key repeats.
+/// False for the press and outside a handler.
+pub fn is_repeat() -> bool {
+    REPEAT.load(Ordering::Acquire)
+}
+
+pub(crate) fn set_repeat(repeat: bool) {
+    REPEAT.store(repeat, Ordering::Release);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct RuntimeKeyBindingConfigUpdate {
