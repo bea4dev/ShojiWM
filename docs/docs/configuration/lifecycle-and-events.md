@@ -99,6 +99,7 @@ window manager decides how to honor them.
 | `onPointerRegion(event)` | The pointer enters, leaves or pushes against a [pointer region](./keybindings-and-pointer.md#pointer-regions) |
 | `onOutputChange(event)` | An output is added/removed/reconfigured |
 | `onInputDeviceChange(...)` | The set of input devices changes (hotplug) |
+| `onKeyboardFocusChange(event)` | The keyboard moves to another window, or off the windows ([details](./input.md#which-window-has-the-keyboard)) |
 | `onCreateLayer(...)` / `onUpdateLayer(...)` / `onDestroyLayer(...)` | A layer-shell surface (bar/dock/wallpaper) is mapped/updated/unmapped |
 
 ### Synchronous and async input listeners

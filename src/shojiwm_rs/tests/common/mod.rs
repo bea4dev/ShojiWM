@@ -210,6 +210,58 @@ impl Session {
         self.roundtrip();
         surface
     }
+
+    /// Attaches and commits a `width`x`height` shm buffer to `surface`.
+    pub fn attach_buffer(&mut self, surface: &wl_surface::WlSurface, width: i32, height: i32) {
+        let qh = self.queue.handle();
+        let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
+        let stride = width * 4;
+        let file = tempfile("shm");
+        file.set_len((stride * height) as u64).unwrap();
+        let pool = shm.create_pool(file.as_fd(), stride * height, &qh, ());
+        let buffer =
+            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        self.files.push(file);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width, height);
+        surface.commit();
+        self.roundtrip();
+    }
+
+    /// Maps a layer surface with `keyboard_interactivity` and a buffer
+    /// across the top of the first output.
+    pub fn map_keyboard_layer(
+        &mut self,
+        namespace: &str,
+        keyboard_interactivity: zwlr_layer_surface_v1::KeyboardInteractivity,
+    ) -> (
+        wl_surface::WlSurface,
+        zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    ) {
+        let qh = self.queue.handle();
+        let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 1);
+        let shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = self.bind("zwlr_layer_shell_v1", 4);
+        let surface = compositor.create_surface(&qh, ());
+        let layer = shell.get_layer_surface(
+            &surface,
+            None,
+            zwlr_layer_shell_v1::Layer::Top,
+            namespace.into(),
+            &qh,
+            (),
+        );
+        layer.set_anchor(
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+        );
+        layer.set_size(0, 40);
+        layer.set_keyboard_interactivity(keyboard_interactivity);
+        surface.commit();
+        self.roundtrip();
+        self.attach_buffer(&surface, 1024, 40);
+        (surface, layer)
+    }
 }
 
 #[derive(Default)]

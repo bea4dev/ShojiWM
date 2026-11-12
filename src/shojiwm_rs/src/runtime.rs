@@ -17,6 +17,7 @@ use shojiwm_lib::{
     config::RuntimeOutputConfig,
     cursor::RuntimeCursorConfigUpdate,
     frame_pacing::FramePacing,
+    keyboard_focus::KeyboardFocusSnapshot,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_api::{HostMessage, RuntimeHost},
     runtime_debug::RuntimeDebugConfigUpdate,
@@ -75,6 +76,7 @@ pub(crate) struct Listeners {
     pub input_change: Vec<RefListener<InputChangeEvent>>,
     pub keyboard_layout: Vec<RefListener<KeyboardLayoutSnapshot>>,
     pub keyboard_locks: Vec<RefListener<KeyboardLocksSnapshot>>,
+    pub keyboard_focus: Vec<RefListener<KeyboardFocusSnapshot>>,
     pub pointer_move: Vec<RefListener<PointerMoveEventSnapshot>>,
     pub pointer_move_async: Vec<RefListener<PointerMoveEventSnapshot>>,
     pub gesture_swipe: Vec<RefListener<GestureSwipeEventSnapshot>>,
@@ -187,6 +189,7 @@ pub(crate) struct GlobalSignals {
     pub layers: Signal<BTreeMap<String, WaylandLayerSnapshot>>,
     pub keyboard_layout: Signal<Option<KeyboardLayoutSnapshot>>,
     pub keyboard_locks: Signal<Option<KeyboardLocksSnapshot>>,
+    pub keyboard_focus: Signal<Option<KeyboardFocusSnapshot>>,
 }
 
 pub(crate) fn global() -> GlobalSignals {
@@ -200,6 +203,7 @@ pub(crate) fn global() -> GlobalSignals {
                 layers: scope.signal(BTreeMap::new()),
                 keyboard_layout: scope.signal(None),
                 keyboard_locks: scope.signal(None),
+                keyboard_focus: scope.signal(None),
             }
         })
     })

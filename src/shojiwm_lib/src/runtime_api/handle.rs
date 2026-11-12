@@ -11,6 +11,7 @@ use super::{
     WindowRequest, WorkspaceRequest,
 };
 use crate::{
+    keyboard_focus::KeyboardFocusSnapshot,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     runtime_input::RuntimeInputDeviceSnapshot,
     runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
@@ -40,6 +41,7 @@ pub struct RuntimeHandle {
     input_state: Option<BTreeMap<String, RuntimeInputDeviceSnapshot>>,
     keyboard_layout: Option<KeyboardLayoutSnapshot>,
     keyboard_locks: Option<KeyboardLocksSnapshot>,
+    keyboard_focus: Option<KeyboardFocusSnapshot>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -70,6 +72,7 @@ impl RuntimeHandle {
             input_state: None,
             keyboard_layout: None,
             keyboard_locks: None,
+            keyboard_focus: None,
         }
     }
 
@@ -149,6 +152,17 @@ impl RuntimeHandle {
         true
     }
 
+    /// Returns whether the window that has the keyboard differs from the
+    /// last one sent.
+    pub fn sync_keyboard_focus(&mut self, focus: &KeyboardFocusSnapshot) -> bool {
+        if self.keyboard_focus.as_ref() == Some(focus) {
+            return false;
+        }
+        self.keyboard_focus = Some(focus.clone());
+        self.post(0.0, RuntimeEvent::KeyboardFocus(focus.clone()));
+        true
+    }
+
     /// Forget what was sent, so the next sync re-sends everything. Used after
     /// a reload, whose fresh config has not seen any state yet.
     pub fn reset_synced_state(&mut self) {
@@ -156,6 +170,7 @@ impl RuntimeHandle {
         self.input_state = None;
         self.keyboard_layout = None;
         self.keyboard_locks = None;
+        self.keyboard_focus = None;
     }
 
     pub fn evaluate_window(
