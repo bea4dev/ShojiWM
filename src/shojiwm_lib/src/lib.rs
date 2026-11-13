@@ -45,6 +45,7 @@ pub mod keyboard_layout;
 pub mod lid_switch;
 pub mod log_rate_limit;
 pub mod modifier_tap;
+pub mod num_lock;
 pub mod output_power;
 pub mod plasma_virtual_desktop;
 pub mod plasma_window_management;

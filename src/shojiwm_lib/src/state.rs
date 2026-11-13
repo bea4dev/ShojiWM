@@ -553,6 +553,8 @@ pub struct ShojiWM {
     /// A key the grab took inside the keyboard filter, dispatched right after.
     pub pending_input_grab_key_event: Option<crate::runtime_input_grab::InputGrabEventSnapshot>,
     pub current_keyboard_modifiers: ModifiersState,
+    /// `keyboard.numLock`: the startup state and its state file.
+    pub num_lock: crate::num_lock::NumLockState,
     pub consumed_pointer_buttons: HashSet<(String, u32)>,
     pub modifier_tap: crate::modifier_tap::ModifierTapTracker,
     pub pending_tap_binding_ids: Vec<String>,
@@ -2004,6 +2006,7 @@ impl ShojiWM {
             runtime_input_grab: None,
             pending_input_grab_key_event: None,
             current_keyboard_modifiers: ModifiersState::default(),
+            num_lock: Default::default(),
             consumed_pointer_buttons: HashSet::new(),
             modifier_tap: Default::default(),
             pending_tap_binding_ids: Vec::new(),

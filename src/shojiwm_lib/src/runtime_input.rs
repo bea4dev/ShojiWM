@@ -48,6 +48,19 @@ pub struct RuntimeKeyboardInputConfig {
     pub layout: Option<String>,
     pub variant: Option<String>,
     pub options: Option<String>,
+    /// The Num Lock state a session starts with. Read from the global
+    /// keyboard config only: all keyboards share one seat keyboard state.
+    pub num_lock: Option<RuntimeNumLock>,
+}
+
+/// The Num Lock state a session starts with (see `crate::num_lock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeNumLock {
+    On,
+    Off,
+    /// The state the previous session ended with, kept in a state file.
+    Restore,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -193,6 +206,7 @@ impl RuntimeKeyboardInputConfig {
         self.layout = other.layout.clone().or_else(|| self.layout.clone());
         self.variant = other.variant.clone().or_else(|| self.variant.clone());
         self.options = other.options.clone().or_else(|| self.options.clone());
+        self.num_lock = other.num_lock.or(self.num_lock);
     }
 
     fn has_xkb_config(&self) -> bool {
@@ -458,6 +472,8 @@ pub fn apply_keyboard_config(state: &mut ShojiWM) {
     let keyboard = active_keyboard.or(global_keyboard);
 
     apply_keyboard_xkb_config(state, keyboard, "runtime keyboard xkb config");
+    // After the keymap: a new keymap starts with no lock set.
+    state.apply_num_lock_startup();
 }
 
 pub fn apply_keyboard_config_for_backend_device<D: SmithayInputDevice>(
@@ -502,6 +518,9 @@ fn apply_keyboard_xkb_config(
         state.restore_session_keymap();
         return;
     }
+    // Read before the virtual keymap is dropped: while it runs, the session
+    // state is the one seen before it.
+    let num_lock = state.session_num_lock();
     state.active_virtual_keymap = None;
     let Some(handle) = state.seat.get_keyboard() else {
         return;
@@ -520,6 +539,7 @@ fn apply_keyboard_xkb_config(
         Ok(()) => {
             state.runtime_applied_xkb_config = keyboard;
             state.refresh_keyboard_focus_for_keymap_change();
+            state.keep_num_lock_after_keymap_change(num_lock);
         }
         Err(error) => {
             warn!(?error, "{log_label}: failed to apply");
@@ -657,6 +677,46 @@ impl ShojiWM {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod num_lock_tests {
+    use super::*;
+
+    #[test]
+    fn num_lock_parses_from_the_config() {
+        let config: RuntimeInputConfig =
+            serde_json::from_str(r#"{"global":{"keyboard":{"numLock":"restore"}},"device":{}}"#)
+                .unwrap();
+        let keyboard = config.global.unwrap().keyboard.unwrap();
+        assert_eq!(keyboard.num_lock, Some(RuntimeNumLock::Restore));
+
+        for (text, value) in [("on", RuntimeNumLock::On), ("off", RuntimeNumLock::Off)] {
+            let keyboard: RuntimeKeyboardInputConfig =
+                serde_json::from_str(&format!(r#"{{"numLock":"{text}"}}"#)).unwrap();
+            assert_eq!(keyboard.num_lock, Some(value));
+        }
+        assert!(
+            serde_json::from_str::<RuntimeKeyboardInputConfig>(r#"{"numLock":"leave"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn num_lock_merges_like_the_other_keyboard_options() {
+        let mut keyboard = RuntimeKeyboardInputConfig {
+            num_lock: Some(RuntimeNumLock::On),
+            ..Default::default()
+        };
+        keyboard.merge_from(&RuntimeKeyboardInputConfig::default());
+        assert_eq!(keyboard.num_lock, Some(RuntimeNumLock::On));
+        keyboard.merge_from(&RuntimeKeyboardInputConfig {
+            num_lock: Some(RuntimeNumLock::Off),
+            ..Default::default()
+        });
+        assert_eq!(keyboard.num_lock, Some(RuntimeNumLock::Off));
+        // Num Lock alone is no keymap to compile.
+        assert!(!keyboard.has_xkb_config());
     }
 }
 
