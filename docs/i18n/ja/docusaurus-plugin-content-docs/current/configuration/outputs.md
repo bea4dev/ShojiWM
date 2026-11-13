@@ -515,6 +515,12 @@ COMPOSITOR.rendering.framePacing = () =>
 `availableModes`、および識別情報（`make`・`model`・`serial`・`connector`）が
 含まれます。
 
+tty バックエンドでは、`make`・`model`・`serial` はモニターの EDID から読みます。
+`make` は 3 文字の PNP メーカー ID（`PXO` など）、`model` はモニター名です。
+ノートパソコンの内蔵パネルなど、EDID に名前がない場合は製品コード（`0x60ad` など）になります。
+`serial` には仮の値を入れているモニターが多く、同じ型番のモニター 2 台は見分けられません。
+EDID に含まれない項目は `"Unknown"` になります。
+
 `subpixel` は現在通知している配列、`detectedSubpixel` はカーネルが報告した配列です。
 設定 UI は、上書きされる前にコネクターが何を報告しているかを表示できます。
 

@@ -13813,14 +13813,32 @@ fn connector_connected(
         })
         .collect::<Vec<_>>();
 
+    // Configs tell monitors apart by these, so take them from the EDID and
+    // keep "Unknown" only for what it does not carry.
+    let identity = {
+        let backend = state.tty_backends.get(&node).unwrap();
+        crate::color::drm_metadata::read_edid_identity(
+            backend.drm_output_manager.device(),
+            &connector,
+        )
+    };
+    let (make, model, serial_number) = match identity {
+        Some(identity) => (
+            identity.make,
+            identity.model,
+            identity.serial.unwrap_or_else(|| "Unknown".into()),
+        ),
+        None => ("Unknown".into(), "Unknown".into(), "Unknown".into()),
+    };
+
     let output = Output::new(
         output_name,
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: connector.subpixel().into(),
-            make: "Unknown".into(),
-            model: "Unknown".into(),
-            serial_number: "Unknown".into(),
+            make,
+            model,
+            serial_number,
         },
     );
     let wl_mode = WlMode::from(mode);
