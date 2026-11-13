@@ -12,8 +12,9 @@ path = "src/main.rs"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }
-tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "io-util"] }
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 futures-util = "0.3"
 iced = { version = "0.14", features = ["tokio", "image"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

@@ -410,6 +410,7 @@ impl ScreenCast {
                 .picker
                 .pick(
                     session_key.clone(),
+                    &app_id,
                     sources,
                     picker_cancelled,
                     prefer_windows,

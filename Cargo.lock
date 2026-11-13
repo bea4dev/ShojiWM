@@ -8333,6 +8333,7 @@ dependencies = [
  "png 0.18.1",
  "rustix 1.1.4",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
