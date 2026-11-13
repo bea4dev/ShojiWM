@@ -93,7 +93,6 @@ use crate::{
 };
 use smithay::wayland::presentation::Refresh;
 
-const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 // Keep hardware cursor updates on the cursor plane, but force window/layer content through
 // the compositor for now.
 //
@@ -4599,6 +4598,7 @@ fn render_output_capture_mirror(
     mirror: &mut Option<OutputCaptureMirror>,
     output: &Output,
     elements: &[TtyRenderElements],
+    clear_color: [f32; 4],
 ) -> OutputCaptureMirrorRenderResult {
     let Some(mode) = output.current_mode() else {
         return Ok(None);
@@ -4650,10 +4650,10 @@ fn render_output_capture_mirror(
                 0,
                 elements,
                 Color32F::new(
-                    CLEAR_COLOR[0],
-                    CLEAR_COLOR[1],
-                    CLEAR_COLOR[2],
-                    CLEAR_COLOR[3],
+                    clear_color[0],
+                    clear_color[1],
+                    clear_color[2],
+                    clear_color[3],
                 ),
             )?
             .states
@@ -6045,6 +6045,7 @@ fn render_surface(
                 &mut mirror,
                 &output,
                 &content_for_capture,
+                state.clear_color,
             ) {
                 Ok(Some((capture_element, display_element, render_states))) => {
                     mirrored_capture_content = Some(vec![capture_element]);
@@ -6225,7 +6226,7 @@ fn render_surface(
                 &mut pipeline,
                 &output,
                 &elements,
-                CLEAR_COLOR,
+                state.clear_color,
                 encoding,
                 intermediate_format,
             ) {
@@ -6279,7 +6280,7 @@ fn render_surface(
         let frame_clear_color: [f32; 4] = if fullscreen_window.is_some() {
             [0.0, 0.0, 0.0, 1.0]
         } else {
-            CLEAR_COLOR
+            state.clear_color
         };
         // An async page flip may only touch the primary plane; changing the cursor plane in the
         // same commit is rejected by the kernel. Match Hyprland's policy and block tearing while

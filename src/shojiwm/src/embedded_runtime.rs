@@ -758,6 +758,16 @@ fn op_shoji_headless_output(
     Ok(())
 }
 
+/// `COMPOSITOR.output.setClearColor`, premultiplied RGBA in 0..1.
+#[op2(fast)]
+fn op_shoji_clear_color(state: &mut OpState, r: f64, g: f64, b: f64, a: f64) {
+    if let Some(host) = isolate_host(state) {
+        host.send(shojiwm_lib::runtime_api::HostMessage::ClearColor([
+            r as f32, g as f32, b as f32, a as f32,
+        ]));
+    }
+}
+
 /// `COMPOSITOR.input.grab`: start (`active`) or end the config's input grab. Sent like
 /// any other host side effect, so a key binding that opens a grab has it in place before
 /// the next input event.
@@ -2693,6 +2703,7 @@ extension!(
         op_shoji_output_power,
         op_shoji_power,
         op_shoji_headless_output,
+        op_shoji_clear_color,
         op_shoji_input_grab,
         op_shoji_cursor_set_position,
         op_shoji_cursor_position,
