@@ -11,7 +11,8 @@
     "test:output-power": "node --import tsx --test tests/output-power.test.ts",
     "test:headless-output": "node --import tsx --test tests/headless-output.test.ts",
     "test:lid-policy": "node --import tsx --test tests/lid-policy.test.ts",
-    "test:output-vrr": "node --import tsx --test tests/output-vrr.test.ts"
+    "test:output-vrr": "node --import tsx --test tests/output-vrr.test.ts",
+    "test:layer-stacked": "node --import tsx --test tests/layer-stacked.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

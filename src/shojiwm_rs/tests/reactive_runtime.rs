@@ -883,6 +883,7 @@ fn layers_are_listed_from_the_bottom_of_the_stack_to_its_top() {
     };
 
     let layer = |id: &str, kind: LayerKindSnapshot| WaylandLayerSnapshot {
+        pid: None,
         id: id.into(),
         namespace: Some(id.into()),
         layer: kind,
@@ -944,4 +945,17 @@ fn layers_are_listed_from_the_bottom_of_the_stack_to_its_top() {
     ];
     runtime.evaluate_layer_effects("DP-1", &second, 0).unwrap();
     assert_eq!(ids(), ["x-wallpaper", "a-dock", "z-bar"]);
+
+    // A restack that changes no snapshot still reaches a memo reading it.
+    let scope = Scope::root();
+    let stacked = scope.memo(ids);
+    assert_eq!(stacked.get(), ["x-wallpaper", "a-dock", "z-bar"]);
+    let third = [
+        layer("z-bar", LayerKindSnapshot::Top),
+        layer("a-dock", LayerKindSnapshot::Top),
+        layer("x-wallpaper", LayerKindSnapshot::Background),
+    ];
+    runtime.evaluate_layer_effects("DP-1", &third, 0).unwrap();
+    assert_eq!(stacked.get(), ["x-wallpaper", "z-bar", "a-dock"]);
+    scope.dispose();
 }

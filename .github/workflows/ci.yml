@@ -70,6 +70,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:overlays
       - run: npm run test:output-power
+      - run: npm run test:layer-stacked
 
   documentation:
     name: Documentation

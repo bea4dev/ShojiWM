@@ -1184,7 +1184,8 @@ impl LayerController {
 
     /// All layers from the bottom of the stack to its top: background,
     /// bottom, top, overlay, and within one of those in the order the core
-    /// stacks them.
+    /// stacks them (tracked, so a view drawn from it follows a restack that
+    /// leaves every layer's snapshot as it was).
     pub fn stacked(&self) -> Vec<WaylandLayerSnapshot> {
         let rank = |layer: &WaylandLayerSnapshot| match layer.layer {
             LayerKindSnapshot::Background => 0,
@@ -1192,19 +1193,17 @@ impl LayerController {
             LayerKindSnapshot::Top => 2,
             LayerKindSnapshot::Overlay => 3,
         };
-        untrack(|| {
-            let global = runtime::global();
-            let mut stacked: Vec<WaylandLayerSnapshot> = global.layers.with(|layers| {
-                global.layer_order.with(|order| {
-                    order
-                        .iter()
-                        .filter_map(|id| layers.get(id).cloned())
-                        .collect()
-                })
-            });
-            stacked.sort_by_key(rank);
-            stacked
-        })
+        let global = runtime::global();
+        let mut stacked: Vec<WaylandLayerSnapshot> = global.layers.with(|layers| {
+            global.layer_order.with(|order| {
+                order
+                    .iter()
+                    .filter_map(|id| layers.get(id).cloned())
+                    .collect()
+            })
+        });
+        stacked.sort_by_key(rank);
+        stacked
     }
 
     /// The part of `output` not reserved by exclusive zones (tracked).

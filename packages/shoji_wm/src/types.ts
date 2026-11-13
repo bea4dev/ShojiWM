@@ -1873,6 +1873,14 @@ export interface LayerController {
   readonly list: string[];
   /** All current layer snapshots, keyed by id. */
   readonly current: Record<string, WaylandLayerSnapshot>;
+  /**
+   * Every layer surface from the bottom of the stack to its top: background,
+   * bottom, top, overlay, and within one of those in the order the compositor
+   * stacks them.
+   * スタックの下から上へ並べた全レイヤーサーフェス。background、bottom、top、
+   * overlay の順で、同じ層の中はコンポジターの重ね順です。
+   */
+  readonly stacked: WaylandLayerSnapshot[];
   /** Snapshots filtered to a single output (matched by `Output.name()`). */
   forOutput(outputName: string): WaylandLayerSnapshot[];
   /**

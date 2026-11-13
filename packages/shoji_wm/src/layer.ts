@@ -5,11 +5,21 @@ import type {
   UsableAreaOptions,
   WaylandLayerAnchor,
   WaylandLayerEdge,
+  WaylandLayerKind,
   WaylandLayerSnapshot,
   WindowPosition,
 } from "./types";
 
 let currentLayerSnapshots: Record<string, WaylandLayerSnapshot> = {};
+/** Ids in the order the compositor listed them: output by output, each in stacking order. */
+let currentLayerOrder: string[] = [];
+
+const LAYER_RANK: Record<WaylandLayerKind, number> = {
+  background: 0,
+  bottom: 1,
+  top: 2,
+  overlay: 3,
+};
 
 function cloneSnapshot(snapshot: WaylandLayerSnapshot): WaylandLayerSnapshot {
   return {
@@ -49,6 +59,7 @@ export function updateLayerSnapshots(snapshots: WaylandLayerSnapshot[]): void {
     next[snapshot.id] = cloneSnapshot(snapshot);
   }
   currentLayerSnapshots = next;
+  currentLayerOrder = snapshots.map((snapshot) => snapshot.id);
 }
 
 /**
@@ -129,6 +140,13 @@ export const LAYER_CONTROLLER: LayerController = {
   },
   get current() {
     return cloneAll(currentLayerSnapshots);
+  },
+  get stacked() {
+    return currentLayerOrder
+      .map((id) => currentLayerSnapshots[id])
+      .filter((snapshot) => snapshot !== undefined)
+      .map(cloneSnapshot)
+      .sort((a, b) => LAYER_RANK[a.layer] - LAYER_RANK[b.layer]);
   },
   forOutput(outputName) {
     const result: WaylandLayerSnapshot[] = [];
