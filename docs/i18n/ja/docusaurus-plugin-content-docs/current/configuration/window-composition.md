@@ -247,6 +247,7 @@ CSD を何度も要求し直し（このループはかつて Firefox の CPU �
 | `opacity`        | `number`                 | `0.0`〜`1.0`                                                               |
 | `transform`      | `ManagedWindowTransform` | 追加の GPU トランスフォーム                                                |
 | `allowTearing`   | `boolean`                | フルスクリーン＋ダイレクトスキャンアウト時のテアリングを許可（ゲーム向け） |
+| `confinePointer` | `boolean`                | フォーカス中はポインターをウィンドウ内に留める |
 
 すべての prop はリアクティブなレイアウトのためにシグナルを受け付けます。`rect`・
 `zIndex` などは通常、あなたのウィンドウマネージャのロジックが駆動します。
@@ -256,6 +257,18 @@ CSD を何度も要求し直し（このループはかつて Firefox の CPU �
 0.5 までフェードすると、そのサーフェスは 0.25 で表示されます。レイヤーシェルの
 サーフェス、ポップアップ、サブサーフェス、そしてそれらから作られるスナップショット、
 エフェクト、ブラーの背景でも同じです。
+
+`confinePointer` は、ウィンドウにキーボードフォーカスがある間、ポインターをその
+クライアント領域の中に留めます。ウィンドウの上で始まった移動は端で止まり、クライアントには
+相対移動が届き続けます。クライアントからの要求は不要で、Minecraft などの X11 のゲームに
+必要なのはこれです。こうしたゲームはポインターをグラブして中央へワープさせるため、閉じ込めが
+ないとワープの合間にカーソルがウィンドウの外へ出てしまいます。アプリのポインターロックを
+解除すると（`COMPOSITOR.cursor.setAppLockIgnored`、`bindAppLockIgnoreModifier`）、
+これも解除されます。タブレットなどの絶対座標デバイスは制限されません。
+
+```tsx
+<ManagedWindow confinePointer={window.appId.value?.startsWith("Minecraft") === true}>
+```
 
 ## ClientWindow
 

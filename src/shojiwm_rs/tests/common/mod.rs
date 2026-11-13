@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod mouse;
+
 use std::{
     fs::File,
     os::{fd::AsFd, unix::net::UnixStream},

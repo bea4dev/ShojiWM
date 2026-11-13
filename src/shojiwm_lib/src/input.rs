@@ -27,7 +27,7 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::{
-    backend::visual::{inverse_transform_point, transformed_root_rect},
+    backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect},
     grabs::{
         move_grab::MoveSurfaceGrab,
         resize_grab::{ResizeEdge, ResizeSurfaceGrab},
@@ -108,6 +108,25 @@ fn pointer_button_debug_enabled() -> bool {
 }
 
 const POINTER_TRAILING_EDGE_INSET: f64 = 0.5;
+
+/// Keep a motion that starts inside `area` from leaving it. A motion that
+/// starts outside (the window just appeared under the pointer) is left alone.
+fn confine_motion_to_area(
+    previous: Point<f64, Logical>,
+    pos: Point<f64, Logical>,
+    area: crate::ssd::LogicalRect,
+) -> Point<f64, Logical> {
+    let (left, top) = (f64::from(area.x), f64::from(area.y));
+    let right = left + f64::from(area.width) - POINTER_TRAILING_EDGE_INSET;
+    let bottom = top + f64::from(area.height) - POINTER_TRAILING_EDGE_INSET;
+    let inside = |point: Point<f64, Logical>| {
+        (left..=right).contains(&point.x) && (top..=bottom).contains(&point.y)
+    };
+    if right < left || bottom < top || !inside(previous) {
+        return pos;
+    }
+    Point::from((pos.x.clamp(left, right), pos.y.clamp(top, bottom)))
+}
 
 /// Projects a logical pointer position onto the union of all output rectangles.
 ///
@@ -726,6 +745,30 @@ impl ShojiWM {
             self.activate_pointer_constraint_at(pointer.current_location());
         }
         self.update_decoration_cursor_icon(pointer.current_location());
+    }
+
+    /// The on-screen client area of the window under the pointer, when its
+    /// config sets `confinePointer` and it has keyboard focus. Ignoring app
+    /// locks releases it like a client's own confinement.
+    fn confine_pointer_window_area(&self) -> Option<crate::ssd::LogicalRect> {
+        if self.app_lock_ignored {
+            return None;
+        }
+        let (surface, _) = self.pointer_contents.surface.as_ref()?;
+        let window = self.window_for_pointer_surface(surface)?;
+        let decoration = self.window_decorations.get(&window)?;
+        if !decoration.managed_window.confine_pointer {
+            return None;
+        }
+        let focus = self.seat.get_keyboard()?.current_focus()?;
+        if !ShojiWM::window_matches_root_surface(&window, &focus) {
+            return None;
+        }
+        Some(transformed_rect(
+            decoration.client_rect,
+            decoration.layout.root.rect,
+            decoration.visual_transform,
+        ))
     }
 
     /// Whether the pointer is over a surface whose lock or confinement is
@@ -1515,6 +1558,11 @@ impl ShojiWM {
                     self.input_grab_pointer_motion(previous_pos, pos, event.time_msec());
                     return;
                 }
+
+                let pos = match self.confine_pointer_window_area() {
+                    Some(area) => confine_motion_to_area(previous_pos, pos, area),
+                    None => pos,
+                };
 
                 let next_contents = self.pointer_contents_at(pos);
                 if pointer_confined {
@@ -3945,6 +3993,20 @@ impl ShojiWM {
         &mut self,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
+        let keyboard_focus = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        self.activate_pointer_constraint_with_keyboard_focus(location, keyboard_focus.as_ref());
+    }
+
+    /// `keyboard_focus` is passed in because the keyboard is locked while
+    /// smithay reports a focus change.
+    fn activate_pointer_constraint_with_keyboard_focus(
+        &mut self,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
+        keyboard_focus: Option<&WlSurface>,
+    ) {
         if self.app_lock_ignored {
             return;
         }
@@ -3954,7 +4016,9 @@ impl ShojiWM {
         let Some((surface, surface_origin)) = self.surface_under(location) else {
             return;
         };
-        if pointer.current_focus().as_ref() != Some(&surface) {
+        if pointer.current_focus().as_ref() != Some(&surface)
+            || !surface_has_keyboard_focus(&surface, keyboard_focus)
+        {
             return;
         }
 
@@ -3971,6 +4035,46 @@ impl ShojiWM {
             }
         });
     }
+
+    /// A client's lock or confinement holds only while its surface has the
+    /// keyboard, as in sway and Hyprland: the keyboard moving to `focused`
+    /// releases the one under the pointer, or takes a persistent one back.
+    pub(crate) fn sync_pointer_constraint_with_keyboard_focus(
+        &mut self,
+        focused: Option<&WlSurface>,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some((surface, _)) = self.pointer_contents.surface.clone() else {
+            return;
+        };
+        if surface_has_keyboard_focus(&surface, focused) {
+            self.activate_pointer_constraint_with_keyboard_focus(
+                pointer.current_location(),
+                focused,
+            );
+            return;
+        }
+        with_pointer_constraint(&surface, &pointer, |constraint| {
+            if let Some(constraint) = constraint.filter(|constraint| constraint.is_active()) {
+                constraint.deactivate();
+            }
+        });
+    }
+}
+
+/// Whether the keyboard focus is `surface` or the surface it is a
+/// subsurface of.
+pub(crate) fn surface_has_keyboard_focus(
+    surface: &WlSurface,
+    keyboard_focus: Option<&WlSurface>,
+) -> bool {
+    let mut root = surface.clone();
+    while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+        root = parent;
+    }
+    keyboard_focus == Some(&root)
 }
 
 fn resize_edges_to_cursor_icon(edges: ResizeEdges) -> CursorIcon {
@@ -4004,6 +4108,39 @@ fn resize_edges_to_grab(edges: ResizeEdges) -> ResizeEdge {
         converted |= ResizeEdge::RIGHT;
     }
     converted
+}
+
+#[cfg(test)]
+mod confine_pointer_tests {
+    use super::confine_motion_to_area;
+    use crate::ssd::LogicalRect;
+    use smithay::utils::{Logical, Point};
+
+    fn point(x: f64, y: f64) -> Point<f64, Logical> {
+        Point::from((x, y))
+    }
+
+    #[test]
+    fn a_motion_from_inside_stops_at_the_window_edge() {
+        let area = LogicalRect::new(100, 50, 200, 100);
+        assert_eq!(
+            confine_motion_to_area(point(150.0, 100.0), point(500.0, -20.0), area),
+            point(299.5, 50.0)
+        );
+        assert_eq!(
+            confine_motion_to_area(point(150.0, 100.0), point(160.0, 110.0), area),
+            point(160.0, 110.0)
+        );
+    }
+
+    #[test]
+    fn a_motion_from_outside_is_left_alone() {
+        let area = LogicalRect::new(100, 50, 200, 100);
+        assert_eq!(
+            confine_motion_to_area(point(20.0, 20.0), point(150.0, 100.0), area),
+            point(150.0, 100.0)
+        );
+    }
 }
 
 #[cfg(test)]

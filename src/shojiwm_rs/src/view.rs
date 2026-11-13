@@ -671,6 +671,7 @@ pub struct ManagedWindow {
     force_rect_size: Option<Prop<bool>>,
     tiled: Option<Prop<bool>>,
     allow_tearing: Option<Prop<bool>>,
+    confine_pointer: Option<Prop<bool>>,
     z_index: Option<Prop<i32>>,
     opacity: Option<Prop<f64>>,
     transform: Option<Prop<ManagedTransform>>,
@@ -706,6 +707,9 @@ managed_props! {
     tiled: bool,
     /// Allow tearing page flips while the window is scanned out directly.
     allow_tearing: bool,
+    /// Keep the pointer inside the window while it has keyboard focus, as if
+    /// the client had confined it (an X11 game that grabs and warps).
+    confine_pointer: bool,
     z_index: i32,
     opacity: f64,
     transform: ManagedTransform,
@@ -761,6 +765,7 @@ impl ManagedWindow {
             force_rect_size: read(&self.force_rect_size).unwrap_or(false),
             tiled: read(&self.tiled).unwrap_or(false),
             allow_tearing: read(&self.allow_tearing),
+            confine_pointer: read(&self.confine_pointer).unwrap_or(false),
             z_index: read(&self.z_index),
             transform: WindowTransform {
                 origin: TransformOrigin {
