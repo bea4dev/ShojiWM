@@ -1097,6 +1097,36 @@ impl ShojiWM {
                         );
                     }
                 });
+            } else if !self
+                .space
+                .outputs()
+                .any(|other| self.window_frame_processing_applies_to_output(window, other))
+            {
+                // Drawn on no output (minimized, a hidden tab, hidden by the config): its
+                // FIFO barriers are cleared at this output's refresh all the same. Left set, a
+                // client that draws while hidden (a FIFO present mode) waits for them for
+                // good and freezes.
+                window.with_surfaces(|surface, states| {
+                    let fifo_barrier = states
+                        .cached_state
+                        .get::<FifoBarrierCachedState>()
+                        .current()
+                        .barrier
+                        .take();
+                    if let Some(fifo_barrier) = fifo_barrier {
+                        if debug_fifo {
+                            info!(
+                                surface = ?surface.id(),
+                                output = %output.name(),
+                                "fifo barrier signaled for a window drawn on no output"
+                            );
+                        }
+                        fifo_barrier.signal();
+                        if let Some(client) = surface.client() {
+                            clients.insert(client.id(), client);
+                        }
+                    }
+                });
             }
         });
 
