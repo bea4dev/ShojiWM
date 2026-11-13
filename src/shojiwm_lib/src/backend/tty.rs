@@ -4214,10 +4214,9 @@ fn fast_cursor_move_inner(
     // no point arming a cursor timer of our own: patching the staged frame
     // immediately (below) is free, and the hold timer re-patches with the
     // final position right before it submits.
-    // Not under VRR: the smithay fork refuses a cursor-only commit there (it would refresh
-    // the panel by itself), so motion goes straight to a render, whose frame is held until
-    // the deadline and patched with the freshest position before it is committed.
-    if allow_defer && surface.deferred_submit.is_none() && !surface.vrr {
+    // Under VRR the deadline is a period after the last flip (`commit_deadline`); past it
+    // the panel shows a commit at once, so the position goes out right away.
+    if allow_defer && surface.deferred_submit.is_none() {
         let now = Duration::from(clock.now());
         if let Some(deadline) = commit_deadline(surface, now) {
             if now < deadline {

@@ -117,8 +117,8 @@ rustPlatform.buildRustPackage {
     lockFile = ../Cargo.lock;
 
     outputHashes = {
-      "smithay-0.7.0" = "sha256-A4aBlF2TH0iotrwA00vnCrHHVgHvbYoNoF91gqYku2g=";
-      "smithay-drm-extras-0.1.0" = "sha256-A4aBlF2TH0iotrwA00vnCrHHVgHvbYoNoF91gqYku2g=";
+      "smithay-0.7.0" = "sha256-g+xL2QaNsvfTbGY0YAAkqpGe+CCBS8z509KY7dnYoXM=";
+      "smithay-drm-extras-0.1.0" = "sha256-g+xL2QaNsvfTbGY0YAAkqpGe+CCBS8z509KY7dnYoXM=";
       "rustyscript-0.12.3" = "sha256-04yZws8aY6NpyQc0F6fg7CAwYYXer7r+eFABwafP+kU=";
       # The embedded xwayland-satellite and its workspace crates (one checkout).
       "xwayland-satellite-0.8.2" = "sha256-844gZMJs14lbedTdXlaZR2E0uk5AoJHPA6Pzp3GSg6U=";
