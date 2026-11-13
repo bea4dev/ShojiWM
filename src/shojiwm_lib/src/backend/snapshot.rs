@@ -66,6 +66,17 @@ pub struct ClosingWindowSnapshot {
     /// the closing window back to full opacity for the frame(s) between
     /// animation completion and `FinalizeClose`.
     pub native_animation_completed: bool,
+    /// Framebuffer backdrop states of the window's `behind` effects, by slot
+    /// and output. Shared by the per-frame clones, so the element keeps its
+    /// id and pipeline textures through the close.
+    pub backdrop_effect_states: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                crate::backend::shader_effect::ShaderEffectElementState,
+            >,
+        >,
+    >,
 }
 
 pub fn retarget_snapshot_rect(snapshot: &mut LiveWindowSnapshot, rect: LogicalRect) -> bool {

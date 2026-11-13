@@ -3121,10 +3121,10 @@ mod window_backdrop_effect_tests {
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::egl::{EGLContext, EGLDisplay};
     use smithay::backend::renderer::damage::OutputDamageTracker;
-    use smithay::backend::renderer::element::Id;
-    use smithay::backend::renderer::element::Kind;
     use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+    use smithay::backend::renderer::element::{Element, Id, Kind};
     use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+    use smithay::backend::renderer::utils::CommitCounter;
     use smithay::backend::renderer::{Bind, Color32F, ExportMem, Offscreen};
     use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 
@@ -3150,6 +3150,77 @@ mod window_backdrop_effect_tests {
         ))
     }
 
+    fn pass_through_slot(
+        shader_path: &std::path::Path,
+        invalidate: EffectInvalidationPolicy,
+    ) -> WindowEffectSlot {
+        WindowEffectSlot {
+            effect: CompiledEffect {
+                input: EffectInput::Backdrop,
+                capture_padding: 0,
+                invalidate,
+                pipeline: vec![EffectStage::Shader(ShaderStage {
+                    shader: ShaderModule {
+                        path: shader_path.to_string_lossy().into_owned(),
+                    },
+                    uniforms: Default::default(),
+                    textures: Default::default(),
+                })],
+                alpha: EffectAlphaMode::Preserve,
+            },
+            outsets: Default::default(),
+            region: Default::default(),
+        }
+    }
+
+    /// The commit of the element built for `slot` on a second frame, after
+    /// one built from the same state.
+    fn commits_over_two_frames(
+        renderer: &mut GlesRenderer,
+        slot: &WindowEffectSlot,
+    ) -> (CommitCounter, CommitCounter) {
+        let mut state = Default::default();
+        let mut commit = || {
+            let elements = window_backdrop_effect_elements(
+                renderer,
+                &mut state,
+                Rectangle::from_size((48, 48).into()),
+                Scale::from(1.0),
+                LogicalRect::new(8, 8, 32, 32),
+                slot,
+                Default::default(),
+                1.0,
+            )
+            .unwrap();
+            elements[0].current_commit()
+        };
+        (commit(), commit())
+    }
+
+    /// `invalidate: always` re-runs the pipeline every frame; the default only
+    /// when something under the window changes.
+    #[test]
+    fn an_always_invalidated_behind_backdrop_commits_every_frame() {
+        let Some(mut renderer) = try_renderer() else {
+            eprintln!("no render node; skipping");
+            return;
+        };
+        let shader_path = std::path::Path::new("unused.frag");
+        let (first, second) = commits_over_two_frames(
+            &mut renderer,
+            &pass_through_slot(shader_path, EffectInvalidationPolicy::Always),
+        );
+        assert_ne!(first, second);
+        let (first, second) = commits_over_two_frames(
+            &mut renderer,
+            &pass_through_slot(
+                shader_path,
+                EffectInvalidationPolicy::OnSourceDamageBox { damage_padding: 0 },
+            ),
+        );
+        assert_eq!(first, second);
+    }
+
     /// A window at half opacity over white, with a pass-through
     /// `backdropSource()` effect behind it, blends with the white once: the
     /// effect shows what is under the window, not the window again.
@@ -3170,23 +3241,7 @@ mod window_backdrop_effect_tests {
              }\n",
         )
         .unwrap();
-        let slot = WindowEffectSlot {
-            effect: CompiledEffect {
-                input: EffectInput::Backdrop,
-                capture_padding: 0,
-                invalidate: EffectInvalidationPolicy::Always,
-                pipeline: vec![EffectStage::Shader(ShaderStage {
-                    shader: ShaderModule {
-                        path: shader_path.to_string_lossy().into_owned(),
-                    },
-                    uniforms: Default::default(),
-                    textures: Default::default(),
-                })],
-                alpha: EffectAlphaMode::Preserve,
-            },
-            outsets: Default::default(),
-            region: Default::default(),
-        };
+        let slot = pass_through_slot(&shader_path, EffectInvalidationPolicy::Always);
         let size = Size::<i32, Physical>::from((48, 48));
         let opacity = 0.5;
         let mut state = Default::default();
@@ -8862,6 +8917,13 @@ fn window_backdrop_effect_elements(
     if rect.width <= 0 || rect.height <= 0 {
         return Ok(Vec::new());
     }
+    // Re-run every frame, as for layers; otherwise only a change under the window does.
+    if matches!(
+        effect.effect.invalidate_policy(),
+        crate::ssd::EffectInvalidationPolicy::Always
+    ) {
+        state.invalidate();
+    }
     let frame = frame_shape.effect_frame(
         Some(effect_frame_rect_in_texture(rect, window_rect, scale)),
         scale.x,
@@ -13067,9 +13129,15 @@ fn closing_snapshot_elements(
                 .and_then(|effects| effects.behind_root_surface.as_ref())
                 .and_then(|effect| {
                     if effect.effect.supports_framebuffer_backdrop() {
+                        let mut states = snapshot
+                            .backdrop_effect_states
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         return window_backdrop_effect_elements(
                             renderer,
-                            &mut Default::default(),
+                            states
+                                .entry(format!("behind-root-surface@{}", output.name()))
+                                .or_default(),
                             output_geo,
                             scale,
                             transformed_root_rect(
@@ -13144,9 +13212,15 @@ fn closing_snapshot_elements(
                 .and_then(|effects| effects.behind.as_ref())
                 .and_then(|effect| {
                     if effect.effect.supports_framebuffer_backdrop() {
+                        let mut states = snapshot
+                            .backdrop_effect_states
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         return window_backdrop_effect_elements(
                             renderer,
-                            &mut Default::default(),
+                            states
+                                .entry(format!("behind@{}", output.name()))
+                                .or_default(),
                             output_geo,
                             scale,
                             transformed_root_rect(

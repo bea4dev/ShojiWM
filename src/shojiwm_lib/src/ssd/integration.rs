@@ -1623,6 +1623,7 @@ impl ShojiWM {
                 promoted_at_ms: now_ms,
                 finalize_deadline_ms,
                 native_animation_completed: false,
+                backdrop_effect_states: Default::default(),
             },
         );
         self.mark_runtime_dirty_windows(
