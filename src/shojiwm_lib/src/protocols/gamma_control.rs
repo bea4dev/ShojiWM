@@ -190,6 +190,9 @@ where
                 if !state.set_gamma(output, Some(ramps)) {
                     state.gamma_control_manager_state().remove(control);
                     control.failed();
+                    // Ramps this control set earlier may still be in the LUT;
+                    // a failed control must not leave them behind.
+                    state.set_gamma(output, None);
                 }
             }
             zwlr_gamma_control_v1::Request::Destroy => {}
