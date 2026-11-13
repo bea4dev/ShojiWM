@@ -146,12 +146,16 @@ impl Compositor {
     /// A compiled config cannot be swapped for a fresh one, so this is where
     /// it reads again whatever it keeps as data, a settings file say, and
     /// registers what changed (binds, input, outputs). An `Err` is shown as
-    /// the reload's error and nothing else happens; the listener should
-    /// leave the running state alone in that case. Without a listener a
-    /// reload stays unsupported.
+    /// the reload's error and stops the reload there: the listeners after it
+    /// do not run, but what the ones before it (and the failing one itself)
+    /// changed stays in force, so a listener should check everything before
+    /// it changes anything. Without a listener a reload stays unsupported.
     ///
-    /// The compositor ends the config's input grab and closes its overlays
-    /// on a reload, as it does for a config it swaps.
+    /// The compositor ends the config's input grab, closes its overlays,
+    /// forgets its drag views and gives the cursor back to the windows
+    /// ([`override_kind`](CursorController::override_kind)) on
+    /// a reload, as it does for a config it swaps; what it took over with
+    /// [`take_over`](crate::power::PowerController::take_over) stays taken.
     pub fn on_reload(&self, listener: impl Fn() -> Result<(), String> + 'static) {
         with_registry(|registry| registry.listeners.reload.push(Rc::new(listener)));
     }

@@ -1032,8 +1032,8 @@ impl ConfigRuntime for ReactiveRuntime {
     }
 
     /// The compositor has dropped what it held for the config (event hooks,
-    /// the input grab, overlays), expecting a fresh one to report its own:
-    /// send everything again.
+    /// the input grab, overlays, the lid taken from logind), expecting a
+    /// fresh one to report its own: send everything again.
     fn reload(&mut self) -> Result<(), RuntimeError> {
         if with_registry(|registry| registry.listeners.reload.is_empty()) {
             return Err(RuntimeError::Unsupported(
@@ -1041,6 +1041,10 @@ impl ConfigRuntime for ReactiveRuntime {
             ));
         }
         crate::input_grab::reset();
+        // The lid goes back to logind unless it is taken again here.
+        if let Some(options) = with_registry(|registry| registry.power_take_over) {
+            crate::power::send_take_over(options);
+        }
         with_registry(|registry| {
             let pending = &mut registry.pending;
             pending.key_bindings = true;

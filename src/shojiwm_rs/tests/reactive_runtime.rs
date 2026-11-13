@@ -1029,3 +1029,38 @@ fn a_reload_asks_the_config_to_read_its_data_again() {
     assert_eq!(bindings(&host), None);
     assert!(runtime.invoke_key_binding("second", 0).unwrap().invoked);
 }
+
+#[test]
+fn a_reload_keeps_the_lid_taken_from_logind() {
+    use shojiwm_lib::power::RuntimePowerRequest;
+
+    let host = RuntimeHost::detached();
+    let args = CommonArgs::parse(&[], &[]);
+    let mut runtime = RuntimeBoot::new(
+        Box::new(ConfigBuilder::new(|| {
+            COMPOSITOR
+                .power
+                .take_over(PowerTakeOverOptions { lid: true });
+            COMPOSITOR.on_reload(|| Ok(()));
+        })),
+        &args,
+    )
+    .launch(host.clone());
+    runtime.preload().unwrap();
+    runtime.enable().unwrap();
+    let lid_taken = |host: &RuntimeHost| {
+        std::iter::from_fn(|| host.pop()).any(|message| {
+            matches!(
+                message,
+                HostMessage::Power(RuntimePowerRequest::TakeOver { lid: true })
+            )
+        })
+    };
+    assert!(lid_taken(&host));
+
+    // The compositor gives the lid back to logind on a reload unless the
+    // config takes it again, which its listener has no reason to do.
+    runtime.prepare_reload().unwrap();
+    runtime.reload().unwrap();
+    assert!(lid_taken(&host));
+}

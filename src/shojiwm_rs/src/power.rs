@@ -16,6 +16,12 @@ pub use shojiwm_lib::power::{LogindLidActions, PowerAction, PowerStateSnapshot, 
 /// `COMPOSITOR.power`.
 pub struct PowerController;
 
+pub(crate) fn send_take_over(options: PowerTakeOverOptions) {
+    runtime::send(HostMessage::Power(RuntimePowerRequest::TakeOver {
+        lid: options.lid,
+    }));
+}
+
 /// Options of [`PowerController::take_over`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PowerTakeOverOptions {
@@ -28,9 +34,8 @@ pub struct PowerTakeOverOptions {
 impl PowerController {
     /// What the config handles instead of logind.
     pub fn take_over(&self, options: PowerTakeOverOptions) {
-        runtime::send(HostMessage::Power(RuntimePowerRequest::TakeOver {
-            lid: options.lid,
-        }));
+        with_registry(|registry| registry.power_take_over = Some(options));
+        send_take_over(options);
     }
 
     /// Ask logind to suspend.

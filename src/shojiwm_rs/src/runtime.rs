@@ -173,6 +173,8 @@ pub(crate) struct Registry {
     pub window_effect: Option<Rc<dyn Fn(Window) -> SurfaceEffects>>,
     pub surface_policy: Option<SurfacePolicyFn>,
     pub channels: Vec<Rc<dyn Fn() -> bool>>,
+    /// The last `COMPOSITOR.power.take_over`, sent again on a reload.
+    pub power_take_over: Option<crate::power::PowerTakeOverOptions>,
     pub pending: Pending,
 }
 
