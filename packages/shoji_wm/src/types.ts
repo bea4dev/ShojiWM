@@ -2263,6 +2263,7 @@ export type InputMotionSpace = "logical" | "physical";
 export type InputClickMethod = "buttonAreas" | "clickfinger";
 export type InputScrollMethod = "none" | "twoFinger" | "edge" | "onButtonDown";
 export type InputTapButtonMap = "leftRightMiddle" | "leftMiddleRight";
+export type KeyboardNumLock = "on" | "off" | "restore";
 
 export interface KeyboardInputConfig {
   repeatRate?: number;
@@ -2272,6 +2273,21 @@ export interface KeyboardInputConfig {
   layout?: string;
   variant?: string;
   options?: string;
+  /**
+   * Num Lock state at session start. Set once per session, when a config
+   * with it is first applied: later reloads and new keyboards do not undo a
+   * toggle made with the key. `"restore"` starts with the state the previous
+   * session ended with, saved in `$XDG_STATE_HOME/shoji_wm/num-lock`.
+   * Read from `input.global` only: all keyboards share one Num Lock state.
+   * Unset: the compositor does not touch Num Lock.
+   * セッション開始時の Num Lock の状態です。この設定を含む config を最初に適用したときに
+   * セッションごとに1回だけ設定し、その後の再読み込みやキーボードの追加ではキーで切り替えた
+   * 状態を戻しません。`"restore"` は前回のセッション終了時の状態
+   * （`$XDG_STATE_HOME/shoji_wm/num-lock` に保存）で開始します。
+   * すべてのキーボードが1つの Num Lock の状態を共有するため、`input.global` の値だけを
+   * 読み取ります。未指定の場合、コンポジターは Num Lock に触れません。
+   */
+  numLock?: KeyboardNumLock;
 }
 
 export interface PointerInputConfig {

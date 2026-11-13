@@ -55,10 +55,34 @@ COMPOSITOR.input.configure((input, context) => {
 | `model` | `string` | キーボードモデル |
 | `repeatRate` | `number` | 1秒あたりのキーリピート回数 |
 | `repeatDelay` | `number` | キーリピート開始までの遅延（ミリ秒） |
+| `numLock` | `"on" \| "off" \| "restore"` | セッション開始時の Num Lock の状態（下記参照） |
 
 ```ts
 input.global = {
   keyboard: {layout: 'us', options: 'caps:ctrl_modifier', repeatRate: 60, repeatDelay: 250},
+};
+```
+
+### セッション開始時の Num Lock
+
+`numLock` は、コンポジターがこの設定を含む config を最初に適用したときに、セッションごとに
+1回だけ Num Lock の状態を設定します。その後の config の再読み込みやキーボードの追加では
+変更しないため、キーで切り替えた状態はそのまま残ります。キーマップの変更（再読み込みや
+別の `layout`）でも現在の状態は保たれます。
+
+- `"on"`／`"off"`: Num Lock をオン／オフで開始します。
+- `"restore"`: 前回のセッション終了時の状態で開始します。コンポジターは変更のたびに
+  `$XDG_STATE_HOME/shoji_wm/num-lock`（`XDG_STATE_HOME` が未設定なら
+  `~/.local/state/shoji_wm/num-lock`）に保存します。ファイルがまだ無い場合、Num Lock は
+  そのままです。
+
+`numLock` を指定しない場合、コンポジターは Num Lock に触れません。読み取るのは
+`input.global.keyboard.numLock` だけです。すべてのキーボードが1つの Num Lock の状態を
+共有するため、デバイスごとの値は効果がありません。
+
+```ts
+input.global = {
+  keyboard: {numLock: 'restore'},
 };
 ```
 
