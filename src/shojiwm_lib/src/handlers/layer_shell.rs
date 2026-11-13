@@ -321,6 +321,11 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface, damage: LayerComm
         let keyboard_interactivity = layer.cached_state().keyboard_interactivity;
         let is_mapped = layer_geo.is_some();
         let was_mapped = state.mapped_on_demand_layer_surfaces.contains(&surface_id);
+        let holds_keyboard = state
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .is_some_and(|focus| &focus == layer.wl_surface());
 
         if matches!(
             keyboard_interactivity,
@@ -343,6 +348,13 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface, damage: LayerComm
                 {
                     state.layer_shell_on_demand_focus = Some(layer.clone());
                 }
+            } else if is_mapped
+                && holds_keyboard
+                && matches!(keyboard_interactivity, KeyboardInteractivity::OnDemand)
+            {
+                // A layer that held the keyboard as exclusive and now commits
+                // on-demand keeps it, as a shell panel expects after mapping.
+                state.layer_shell_on_demand_focus = Some(layer.clone());
             } else if !is_mapped {
                 state.mapped_on_demand_layer_surfaces.remove(&surface_id);
                 if state.layer_shell_on_demand_focus.as_ref() == Some(layer) {
