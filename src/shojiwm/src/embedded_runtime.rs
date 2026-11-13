@@ -1303,6 +1303,11 @@ impl ShojiRuntimeBridge {
         Ok(shojiwm_lib::backend::lock_scene::is_locked())
     }
 
+    #[fast]
+    fn is_session_locked(&self) -> bool {
+        shojiwm_lib::backend::lock_scene::is_locked()
+    }
+
     fn create_overlay(
         &self,
         #[string] output: String,

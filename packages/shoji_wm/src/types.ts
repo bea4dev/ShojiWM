@@ -388,6 +388,14 @@ export interface WaylandWindow {
    * `COMPOSITOR.event.onFocus` リスナーに通知します。
    */
   focus(): void;
+  /**
+   * Take keyboard focus from this window if it has it; no window has it
+   * then, until one is focused. A layer surface holding the keyboard keeps it.
+   * このウィンドウがキーボードフォーカスを持っていれば外します。その後は別の
+   * ウィンドウにフォーカスするまで、どのウィンドウも持ちません。キーボードを
+   * 持っているレイヤーサーフェスはそのまま持ち続けます。
+   */
+  unfocus(): void;
   /** Schedule a managed-window animation (position, size, etc.) via the SSD pipeline. / SSD パイプライン経由でマネージドウィンドウのアニメーション（位置・サイズ等）をスケジュールします。 */
   scheduleAnimation(options: ManagedWindowScheduleAnimationOptions): void;
   /** Cancel a running animation on this window. Pass a channel name to cancel only that channel. / 実行中のアニメーションをキャンセルします。チャンネル名を渡すとそのチャンネルのみキャンセルします。 */
@@ -3913,6 +3921,13 @@ export interface SessionController {
   /** Select exact runtime roots behind a transparent lock; returns protocol lock state. */
   configureLockBackground: typeof import("./session-lock").configureLockBackground;
   /**
+   * Whether the session is locked now. A key binding registered `locked`
+   * reads it to tell which of the two states fired it.
+   * 現在セッションがロックされているかどうか。`locked` で登録したキーバインドは、
+   * これを読んでどちらの状態で発火したかを区別できます。
+   */
+  isLocked(): boolean;
+  /**
    * Start with the session locked: only ext-session-lock surfaces (and any
    * explicitly configured lock background roots) are drawn. Input reaches only
    * the locker, until a locker (Quickshell's
@@ -4091,6 +4106,7 @@ export interface WaylandWindowActions {
   fullscreen(): void;
   unfullscreen(): void;
   focus(): void;
+  unfocus(): void;
   scheduleAnimation(options: ManagedWindowScheduleAnimationOptions): void;
   cancelAnimation(channel?: string): void;
   setCloseAnimationDuration(durationMs: number): void;

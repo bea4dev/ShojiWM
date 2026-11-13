@@ -870,6 +870,9 @@ pub enum WaylandWindowAction {
     Fullscreen,
     Unfullscreen,
     Focus,
+    /// Take the keyboard from the window if it has it. No window has it
+    /// then, until one is focused.
+    Unfocus,
     ScheduleAnimation,
     CancelAnimation,
 }
@@ -1480,6 +1483,8 @@ mod tests {
         let minimize =
             serde_json::to_string(&WaylandWindowAction::Minimize).expect("serialize minimize");
         let focus = serde_json::to_string(&WaylandWindowAction::Focus).expect("serialize focus");
+        let unfocus =
+            serde_json::to_string(&WaylandWindowAction::Unfocus).expect("serialize unfocus");
         let schedule_animation = serde_json::to_string(&WaylandWindowAction::ScheduleAnimation)
             .expect("serialize schedule animation");
         let cancel_animation = serde_json::to_string(&WaylandWindowAction::CancelAnimation)
@@ -1491,6 +1496,7 @@ mod tests {
         assert_eq!(unmaximize, "\"unmaximize\"");
         assert_eq!(minimize, "\"minimize\"");
         assert_eq!(focus, "\"focus\"");
+        assert_eq!(unfocus, "\"unfocus\"");
         assert_eq!(schedule_animation, "\"scheduleAnimation\"");
         assert_eq!(cancel_animation, "\"cancelAnimation\"");
     }

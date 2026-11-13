@@ -7,6 +7,7 @@ export interface LockBackgroundSelection {
 
 interface SessionLockBridge {
   configureLockBackground(background: LockBackgroundSelection): boolean;
+  isSessionLocked(): boolean;
 }
 
 let bridge: SessionLockBridge | undefined;
@@ -21,4 +22,10 @@ export function installSessionLockBridge(value: SessionLockBridge): void { bridg
 export function configureLockBackground(background: LockBackgroundSelection): boolean {
   if (!bridge) throw new Error("Configure lock backgrounds after embedded runtime initialization");
   return bridge.configureLockBackground(background);
+}
+
+/** Whether the session is locked now. */
+export function isSessionLocked(): boolean {
+  if (!bridge) throw new Error("Read the lock state after embedded runtime initialization");
+  return bridge.isSessionLocked();
 }

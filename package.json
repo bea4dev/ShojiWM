@@ -14,7 +14,8 @@
     "test:output-vrr": "node --import tsx --test tests/output-vrr.test.ts",
     "test:layer-stacked": "node --import tsx --test tests/layer-stacked.test.ts",
     "test:clear-color": "node --import tsx --test tests/clear-color.test.ts",
-    "test:output-direct-scanout": "node --import tsx --test tests/output-direct-scanout.test.ts"
+    "test:output-direct-scanout": "node --import tsx --test tests/output-direct-scanout.test.ts",
+    "test:session-is-locked": "node --import tsx --test tests/session-is-locked.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

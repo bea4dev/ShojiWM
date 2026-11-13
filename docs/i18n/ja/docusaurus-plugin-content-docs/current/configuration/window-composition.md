@@ -222,6 +222,7 @@ CSD を何度も要求し直し（このループはかつて Firefox の CPU �
 | `minimize()`                      | 最小化                                             |
 | `fullscreen()` / `unfullscreen()` | フルスクリーンの切り替え                           |
 | `focus()`                         | キーボードフォーカスを与え前面に出す               |
+| `unfocus()`                       | キーボードフォーカスを外し、どのウィンドウにも渡さない |
 | `scheduleAnimation(options)`      | マネージドウィンドウのジオメトリをアニメーション   |
 | `cancelAnimation(channel?)`       | 実行中のアニメーションをキャンセル                 |
 | `setCloseAnimationDuration(ms)`   | 閉じるアニメーションに合わせてサーフェス破棄を遅延 |

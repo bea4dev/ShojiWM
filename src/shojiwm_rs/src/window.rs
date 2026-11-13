@@ -311,6 +311,12 @@ impl Window {
         self.act(WaylandWindowAction::Focus);
     }
 
+    /// Take the keyboard from the window if it has it; no window has it
+    /// then. A layer surface holding the keyboard keeps it.
+    pub fn unfocus(&self) {
+        self.act(WaylandWindowAction::Unfocus);
+    }
+
     /// Let the compositor animate the managed rect / offset / opacity.
     pub fn schedule_animation(&self, animation: ManagedAnimation) {
         if let Some(entry) = self.entry() {

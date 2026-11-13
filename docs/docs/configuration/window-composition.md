@@ -229,6 +229,7 @@ configure response required by that protocol.
 | `minimize()`                      | Minimize                                           |
 | `fullscreen()` / `unfullscreen()` | Toggle fullscreen                                  |
 | `focus()`                         | Give keyboard focus and raise                      |
+| `unfocus()`                       | Take keyboard focus away, giving it to no window   |
 | `scheduleAnimation(options)`      | Animate managed-window geometry                    |
 | `cancelAnimation(channel?)`       | Cancel a running animation                         |
 | `setCloseAnimationDuration(ms)`   | Delay surface destruction to fit a close animation |

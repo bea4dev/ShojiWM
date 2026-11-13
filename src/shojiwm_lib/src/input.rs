@@ -2766,6 +2766,16 @@ impl ShojiWM {
                     let serial = SERIAL_COUNTER.next_serial();
                     self.focus_window(&window, serial);
                 }
+                crate::ssd::WaylandWindowAction::Unfocus => {
+                    let owns = self
+                        .window_keyboard_focus_owner
+                        .as_ref()
+                        .is_some_and(|root| Self::window_matches_root_surface(&window, root));
+                    if owns {
+                        self.set_window_keyboard_focus_target(None);
+                        self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+                    }
+                }
                 crate::ssd::WaylandWindowAction::FinalizeClose => {}
                 crate::ssd::WaylandWindowAction::ScheduleAnimation
                 | crate::ssd::WaylandWindowAction::CancelAnimation => {}
