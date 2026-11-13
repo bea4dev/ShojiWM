@@ -109,7 +109,8 @@ impl ShojiWM {
         seat_keyboard.with_xkb_state(self, |mut context| {
             context.set_layout(smithay::input::keyboard::Layout(layout));
         });
-        self.current_keyboard_modifiers = seat_keyboard.modifier_state();
+        self.set_keyboard_modifiers(seat_keyboard.modifier_state());
+        self.run_pending_modifier_bindings();
     }
 
     /// Whether the seat runs a virtual keyboard's keymap, whose layout is not
@@ -292,7 +293,8 @@ impl VirtualKeyboardHandler for ShojiWM {
         if seat_keyboard.set_modifier_state(modifiers) != 0 {
             seat_keyboard.advertise_modifier_state(self);
         }
-        self.current_keyboard_modifiers = seat_keyboard.modifier_state();
+        self.set_keyboard_modifiers(seat_keyboard.modifier_state());
+        self.run_pending_modifier_bindings();
     }
 
     fn virtual_keyboard_destroyed(&mut self, keyboard: &ObjectId) {

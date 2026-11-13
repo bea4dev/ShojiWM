@@ -452,6 +452,9 @@ pub struct KeyBindOptions {
     /// Fire again at the keyboard's repeat delay and rate while held. Keys
     /// on press only.
     pub repeat: bool,
+    /// A bare modifier on release: fire whenever it goes up, also after a
+    /// chord such as Alt+Tab, not only after a tap.
+    pub transparent: bool,
 }
 
 impl KeyBindOptions {
@@ -471,6 +474,11 @@ impl KeyBindOptions {
 
     pub fn repeat(mut self) -> Self {
         self.repeat = true;
+        self
+    }
+
+    pub fn transparent(mut self) -> Self {
+        self.transparent = true;
         self
     }
 }
@@ -503,6 +511,7 @@ impl KeyController {
                 within: None,
                 locked: false,
                 repeat: false,
+                transparent: false,
             },
             handler,
         );
@@ -535,6 +544,7 @@ impl KeyController {
                 within: None,
                 locked: options.locked,
                 repeat: options.repeat,
+                transparent: options.transparent,
             },
             handler,
         );
@@ -552,6 +562,7 @@ impl KeyController {
                 within: Some(within_ms),
                 locked: false,
                 repeat: false,
+                transparent: false,
             },
             handler,
         );

@@ -530,8 +530,8 @@ COMPOSITOR.window.composition = (window) => (
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
-    /// `locked` and `repeat` reach the compositor with the binding, and are
-    /// left off when not asked for.
+    /// `locked`, `repeat` and `transparent` reach the compositor with the
+    /// binding, and are left off when not asked for.
     #[test]
     fn typescript_runtime_sends_key_binding_options() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -548,6 +548,7 @@ COMPOSITOR.window.composition = (window) => (
 import { COMPOSITOR, Label } from "shoji_wm";
 COMPOSITOR.key.bind("louder", "XF86AudioRaiseVolume", () => {}, { locked: true, repeat: true });
 COMPOSITOR.key.bind("plain", "Super+T", () => {});
+COMPOSITOR.key.bind("commit", "Alt", () => {}, { on: "release", transparent: true });
 COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
 "#,
         )
@@ -578,9 +579,23 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
             .expect("key bindings should be sent");
         let flags = entries
             .iter()
-            .map(|entry| (entry.id.as_str(), entry.locked, entry.repeat))
+            .map(|entry| {
+                (
+                    entry.id.as_str(),
+                    entry.locked,
+                    entry.repeat,
+                    entry.transparent,
+                )
+            })
             .collect::<Vec<_>>();
-        assert_eq!(flags, [("louder", true, true), ("plain", false, false)]);
+        assert_eq!(
+            flags,
+            [
+                ("commit", false, false, true),
+                ("louder", true, true, false),
+                ("plain", false, false, false),
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }

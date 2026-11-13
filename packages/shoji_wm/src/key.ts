@@ -11,6 +11,7 @@ interface RuntimeKeyBindingConfigEntry {
   within?: number;
   locked?: boolean;
   repeat?: boolean;
+  transparent?: boolean;
 }
 
 type KeyBindingHandler = () => void;
@@ -72,6 +73,7 @@ export const KEY_BINDING_CONTROLLER: KeyBindingController = {
       ...(options?.within === undefined ? {} : { within: normalizeWithin(options.within) }),
       ...(options?.locked ? { locked: true } : {}),
       ...(options?.repeat ? { repeat: true } : {}),
+      ...(options?.transparent ? { transparent: true } : {}),
     };
 
     registrationEntriesTarget().set(id, entry);

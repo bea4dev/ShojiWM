@@ -25,6 +25,11 @@ pub struct RuntimeKeyBindingEntry {
     /// held.
     #[serde(default)]
     pub repeat: bool,
+    /// Modifier-only release bindings: fire whenever the modifier goes up in
+    /// the keyboard's modifier state, also after it was held for a chord
+    /// such as Alt+Tab, not only after a bare tap.
+    #[serde(default)]
+    pub transparent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Default)]
@@ -69,6 +74,16 @@ impl RuntimeKeyBindingEntry {
                 self.shortcut.clone(),
             ));
         }
+        if self.transparent && !shortcut.is_modifier_only() {
+            return Err(RuntimeKeyBindingParseError::TransparentRequiresModifier(
+                self.shortcut.clone(),
+            ));
+        }
+        if self.transparent && self.within.is_some() {
+            return Err(RuntimeKeyBindingParseError::TransparentWithin(
+                self.shortcut.clone(),
+            ));
+        }
         // While locked the pointer belongs to the lock screen, and a tap of a
         // bare modifier is how a locker is usually typed into.
         if self.locked && !is_key {
@@ -83,6 +98,7 @@ impl RuntimeKeyBindingEntry {
             within_ms: self.within,
             locked: self.locked,
             repeat: self.repeat,
+            transparent: self.transparent,
         })
     }
 }
@@ -113,6 +129,8 @@ pub struct CompiledRuntimeKeyBinding {
     pub within_ms: Option<u32>,
     pub locked: bool,
     pub repeat: bool,
+    /// Fires on every release of its modifier, not only a bare tap.
+    pub transparent: bool,
 }
 
 impl CompiledRuntimeKeyBinding {
@@ -237,6 +255,10 @@ pub enum RuntimeKeyBindingParseError {
     RepeatRequiresKeyPress(String),
     #[error("`locked` on `{0}` only applies to a key, not a tap, wheel or mouse button")]
     LockedRequiresKey(String),
+    #[error("`transparent` on `{0}` only applies to a bare modifier with `on: \"release\"`")]
+    TransparentRequiresModifier(String),
+    #[error("`transparent` on `{0}` fires on every release, so `within` does not apply")]
+    TransparentWithin(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
     UnknownModifier { shortcut: String, modifier: String },
     #[error("shortcut `{shortcut}` contains duplicate modifier `{modifier}`")]
@@ -466,7 +488,35 @@ mod tests {
             within: None,
             locked: false,
             repeat: false,
+            transparent: false,
         }
+    }
+
+    #[test]
+    fn transparent_needs_a_bare_modifier_without_within() {
+        let transparent = |shortcut: &str| RuntimeKeyBindingEntry {
+            transparent: true,
+            ..entry(shortcut, RuntimeKeyBindingPhase::Release)
+        };
+        assert!(transparent("Alt").compile().unwrap().transparent);
+        assert!(matches!(
+            transparent("Alt+Tab").compile(),
+            Err(RuntimeKeyBindingParseError::TransparentRequiresModifier(_)),
+        ));
+        assert!(matches!(
+            RuntimeKeyBindingEntry {
+                within: Some(300),
+                ..transparent("Alt")
+            }
+            .compile(),
+            Err(RuntimeKeyBindingParseError::TransparentWithin(_)),
+        ));
+        assert!(
+            !entry("Alt", RuntimeKeyBindingPhase::Release)
+                .compile()
+                .unwrap()
+                .transparent
+        );
     }
 
     #[test]

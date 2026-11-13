@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | Unique name (shown in help UIs). Re-binding the same id replaces it. |
 | `shortcut` | `string` | Modifier+key notation, e.g. `"Super+Shift+Left"` |
 | `handler` | `() => void` | Called when the shortcut fires |
-| `options` | `{on?: "press" \| "release", within?: number}` | When to fire — defaults to `"press"`. `within`: see [tap bindings](#tap-bindings-on-release) |
+| `options` | `{on?: "press" \| "release", within?: number, transparent?: boolean}` | When to fire — defaults to `"press"`. `within`: see [tap bindings](#tap-bindings-on-release) |
 
 ### Shortcut syntax
 
@@ -83,6 +83,28 @@ then no longer opens the launcher on release. The default config uses 300 ms.
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
+
+### Releasing a modifier after a chord (`transparent`)
+
+A tap binding stays quiet when the modifier was held for something else. Add
+`transparent: true` to fire whenever the modifier goes up, after a chord too.
+A window switcher opened on `Alt+Tab` commits its choice this way when `Alt`
+is let go:
+
+```ts
+COMPOSITOR.key.bind('switcher-next', 'Alt+Tab', () => switcher.next());
+COMPOSITOR.key.bind('switcher-commit', 'Alt', () => switcher.commit(), {
+  on: 'release',
+  transparent: true,
+});
+```
+
+It fires once the keyboard's modifier state no longer has the modifier,
+whatever took it away: the key's release (with both `Alt` keys down, the
+second one), or a virtual keyboard clearing it without a key event, as
+`wtype -M alt -k Tab -m alt` does. A bare tap fires it too. `within` does not
+apply. Like other bindings it does not fire while the session is locked or an
+input grab takes the keyboard. In Rust it is `KeyBindOptions::new().on_release().transparent()`.
 
 ### Repeating and locked bindings
 

@@ -20,7 +20,7 @@ COMPOSITOR.key.bind('terminal', 'Super+T', () => {
 | `id` | `string` | 一意な名前（ヘルプ UI に表示）。同じ id で再登録すると上書き。 |
 | `shortcut` | `string` | モディファイア＋キーの記法（例: `"Super+Shift+Left"`） |
 | `handler` | `() => void` | ショートカット発火時に呼ばれる |
-| `options` | `{on?: "press" \| "release", within?: number}` | 発火タイミング。デフォルトは `"press"`。`within` は下の「タップバインド」を参照 |
+| `options` | `{on?: "press" \| "release", within?: number, transparent?: boolean}` | 発火タイミング。デフォルトは `"press"`。`within` は下の「タップバインド」を参照 |
 
 ### ショートカットの記法
 
@@ -84,6 +84,28 @@ COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release'});
 ```ts
 COMPOSITOR.key.bind('launcher-tap', 'Super', openLauncher, {on: 'release', within: 300});
 ```
+
+### 組み合わせの後に修飾キーを離す（`transparent`）
+
+タップバインドは、修飾キーをほかの操作のために押していた場合は発火しません。
+`transparent: true` を付けると、組み合わせの後も含め、修飾キーが離されるたびに
+発火します。`Alt+Tab` で開いたウィンドウスイッチャーは、`Alt` を離したときに
+こうして選択を確定できます:
+
+```ts
+COMPOSITOR.key.bind('switcher-next', 'Alt+Tab', () => switcher.next());
+COMPOSITOR.key.bind('switcher-commit', 'Alt', () => switcher.commit(), {
+  on: 'release',
+  transparent: true,
+});
+```
+
+キーボードの修飾キー状態からその修飾キーが外れた時点で発火します。外れた理由は
+問いません。キーを離した場合（両方の `Alt` を押していれば 2 つ目を離したとき）も、
+仮想キーボードがキーイベントなしで外した場合（`wtype -M alt -k Tab -m alt`）も
+同じです。単体のタップでも発火します。`within` は使えません。ほかのバインドと
+同じく、セッションのロック中や入力グラブがキーボードを取っている間は発火しません。
+Rust では `KeyBindOptions::new().on_release().transparent()` です。
 
 ### リピートとロック中のバインド
 

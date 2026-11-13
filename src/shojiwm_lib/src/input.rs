@@ -167,6 +167,46 @@ fn modifier_class_of_keysym(keysym: u32) -> Option<crate::runtime_key_binding::M
     }
 }
 
+impl ShojiWM {
+    /// Record the keyboard's modifier state and queue the `transparent`
+    /// release bindings of every modifier it lets go of, whatever changed it:
+    /// a key release, a virtual keyboard's `modifiers` request, or a keymap
+    /// switch. Not while the session is locked or an input grab takes the
+    /// keyboard, like every other binding.
+    pub(crate) fn set_keyboard_modifiers(
+        &mut self,
+        modifiers: smithay::input::keyboard::ModifiersState,
+    ) {
+        use crate::runtime_key_binding::ModifierClass;
+        let previous = std::mem::replace(&mut self.current_keyboard_modifiers, modifiers);
+        if self.session_lock_active || self.runtime_input_grab.is_some() {
+            return;
+        }
+        for (class, was_down, is_down) in [
+            (ModifierClass::Ctrl, previous.ctrl, modifiers.ctrl),
+            (ModifierClass::Alt, previous.alt, modifiers.alt),
+            (ModifierClass::Shift, previous.shift, modifiers.shift),
+            (ModifierClass::Logo, previous.logo, modifiers.logo),
+        ] {
+            if !was_down || is_down {
+                continue;
+            }
+            for binding in &self.runtime_key_bindings {
+                if binding.transparent && binding.shortcut.modifier_class() == Some(class) {
+                    self.pending_tap_binding_ids.push(binding.id.clone());
+                }
+            }
+        }
+    }
+
+    /// Run the modifier bindings queued by key input or a modifier change.
+    pub(crate) fn run_pending_modifier_bindings(&mut self) {
+        for id in std::mem::take(&mut self.pending_tap_binding_ids) {
+            self.run_runtime_key_binding(&id);
+        }
+    }
+}
+
 fn unfocused_popup_focus_debug_enabled() -> bool {
     std::env::var_os("SHOJI_UNFOCUSED_POPUP_FOCUS_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -1185,7 +1225,7 @@ impl ShojiWM {
                         serial,
                         time,
                         |data, modifiers, handle| {
-                            data.current_keyboard_modifiers = *modifiers;
+                            data.set_keyboard_modifiers(*modifiers);
 
                             // --- modifier-only tap detection ---
                             // If no other key/button is pressed between press and
@@ -1207,6 +1247,7 @@ impl ShojiWM {
                                         for binding in runtime_key_bindings.iter() {
                                             if binding.phase
                                                 == crate::runtime_key_binding::RuntimeKeyBindingPhase::Release
+                                                && !binding.transparent
                                                 && binding.shortcut.modifier_class()
                                                     == Some(tap.class)
                                                 && binding
@@ -1383,13 +1424,8 @@ impl ShojiWM {
                     self.dispatch_input_grab_event(event);
                 }
 
-                // Fire any modifier-only tap bindings queued above (the release was already forwarded).
-                if !self.pending_tap_binding_ids.is_empty() {
-                    let ids = std::mem::take(&mut self.pending_tap_binding_ids);
-                    for id in ids {
-                        self.run_runtime_key_binding(&id);
-                    }
-                }
+                // Modifier bindings queued above; the release was already forwarded.
+                self.run_pending_modifier_bindings();
             }
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
