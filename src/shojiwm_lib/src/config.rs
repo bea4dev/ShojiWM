@@ -43,6 +43,10 @@ pub struct RuntimeOutputConfig {
     /// Variable refresh rate (adaptive sync). Unset or `false` keeps it off.
     #[serde(default)]
     pub vrr: Option<bool>,
+    /// `false` composites every frame: no client buffer goes onto the primary
+    /// or an overlay plane. Unset or `true` allows it.
+    #[serde(default)]
+    pub direct_scanout: Option<bool>,
 }
 
 /// `hdr`: a plain switch, or the settings of an HDR output.
@@ -435,6 +439,18 @@ mod tests {
         assert_eq!(vrr("DP-1"), Some(true));
         assert_eq!(vrr("DP-2"), Some(false));
         assert_eq!(vrr("eDP-1"), None);
+    }
+
+    #[test]
+    fn runtime_output_config_parses_direct_scanout() {
+        let update: RuntimeDisplayConfigUpdate = serde_json::from_str(
+            r#"{"outputs":{"DP-1":{"directScanout":false},"DP-2":{"directScanout":true},"eDP-1":{}}}"#,
+        )
+        .expect("display config update should parse");
+        let scanout = |name: &str| update.outputs[name].as_ref().unwrap().direct_scanout;
+        assert_eq!(scanout("DP-1"), Some(false));
+        assert_eq!(scanout("DP-2"), Some(true));
+        assert_eq!(scanout("eDP-1"), None);
     }
 
     /// `hdr.sdrLuminance` takes cd/m² or the keyword that follows the backlight.

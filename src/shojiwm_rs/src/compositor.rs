@@ -945,6 +945,7 @@ impl OutputConfig {
             hdr: None,
             icc: None,
             vrr: None,
+            direct_scanout: None,
         }
     }
 
@@ -961,6 +962,7 @@ impl OutputConfig {
             hdr: None,
             icc: None,
             vrr: None,
+            direct_scanout: None,
         }
     }
 }

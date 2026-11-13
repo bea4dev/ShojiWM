@@ -120,6 +120,7 @@ function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
     hdr: typeof config.hdr === "object" && config.hdr !== null ? { ...config.hdr } : config.hdr,
     icc: config.icc,
     vrr: config.vrr,
+    directScanout: config.directScanout,
   };
 }
 

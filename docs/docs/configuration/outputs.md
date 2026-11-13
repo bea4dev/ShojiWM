@@ -283,6 +283,23 @@ display['DP-1'] = {vrr: true};
 follow what is on screen, for example on only while a fullscreen window has
 focus. In a Rust config it is the `vrr` field of `RuntimeOutputConfig`.
 
+### Direct scanout (`directScanout`)
+
+A fullscreen window whose buffer fits the display goes onto the primary plane
+as it is, with no copy (direct scanout); other client buffers can go onto
+overlay planes. With `directScanout: false` every frame of that output is
+composited instead. That costs a copy per frame and avoids the flicker some
+drivers show with scanout, for example NVIDIA with some games. Default `true`.
+
+```ts
+display['DP-1'] = {directScanout: false};
+```
+
+Tearing (`allowTearing`) does not depend on it: with direct scanout off, the
+composited frame of a tearing window is flipped asynchronously instead of the
+client's buffer. In a Rust config it is the `direct_scanout` field of
+`RuntimeOutputConfig`.
+
 ## Switching panels off (DPMS)
 
 `mode: 'disabled'` takes an output out of the desktop, so its windows move

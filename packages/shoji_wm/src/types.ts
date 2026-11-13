@@ -1491,6 +1491,21 @@ export interface OutputExtendConfigEntry {
    * `reconfigure()` でいつでも切り替えられます。
    */
   vrr?: boolean;
+  /**
+   * Whether a client buffer may go straight onto the display's planes (direct
+   * scanout) instead of being composited. `false` composites every frame,
+   * fullscreen windows included, which costs a copy per frame and avoids
+   * flicker some drivers show with scanout (NVIDIA with some games). Tearing
+   * still works without it: the composited frame is flipped asynchronously.
+   * Default `true`.
+   * クライアントのバッファを合成せずにディスプレイのプレーンへ直接載せる
+   * （ダイレクトスキャンアウト）かどうか。`false` にすると全画面ウィンドウも含めて
+   * 毎フレーム合成します。フレームごとにコピーが増える代わりに、一部のドライバーで
+   * スキャンアウト時に出るちらつき（NVIDIA と一部のゲーム）を避けられます。
+   * テアリングはこれがなくても動作し、合成したフレームを非同期にフリップします。
+   * 既定は `true`。
+   */
+  directScanout?: boolean;
 }
 
 /**

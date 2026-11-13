@@ -120,6 +120,22 @@ fn output_render_debug_enabled() -> bool {
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+/// An output with `directScanout: false` composites every frame: no client buffer goes onto
+/// the primary or an overlay plane. The cursor plane stays. A tearing window still gets an
+/// async flip, of the composited buffer.
+fn with_direct_scanout_setting(
+    flags: FrameFlags,
+    config: Option<&crate::config::RuntimeOutputConfig>,
+) -> FrameFlags {
+    if config.and_then(|config| config.direct_scanout) == Some(false) {
+        flags
+            .difference(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY)
+            .difference(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT)
+    } else {
+        flags
+    }
+}
+
 fn overlay_planes_disabled() -> bool {
     std::env::var_os("SHOJI_DISABLE_OVERLAY_PLANES")
         .is_some_and(|value| value != "0" && !value.is_empty())
@@ -3310,6 +3326,36 @@ mod window_backdrop_effect_tests {
             "inside the window: {inside:?}"
         );
         assert_eq!(pixel(2, 2), [255, 255, 255], "outside the window");
+    }
+}
+
+#[cfg(test)]
+mod direct_scanout_setting_tests {
+    use super::{TTY_FRAME_FLAGS, with_direct_scanout_setting};
+    use crate::config::RuntimeOutputConfig;
+    use smithay::backend::drm::compositor::FrameFlags;
+
+    fn config(direct_scanout: Option<bool>) -> RuntimeOutputConfig {
+        serde_json::from_value(serde_json::json!({ "directScanout": direct_scanout })).unwrap()
+    }
+
+    #[test]
+    fn only_an_explicit_false_turns_plane_scanout_off() {
+        assert_eq!(
+            with_direct_scanout_setting(TTY_FRAME_FLAGS, None),
+            TTY_FRAME_FLAGS
+        );
+        for unset_or_on in [None, Some(true)] {
+            assert_eq!(
+                with_direct_scanout_setting(TTY_FRAME_FLAGS, Some(&config(unset_or_on))),
+                TTY_FRAME_FLAGS
+            );
+        }
+        assert_eq!(
+            with_direct_scanout_setting(TTY_FRAME_FLAGS, Some(&config(Some(false)))),
+            FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT,
+            "the cursor plane stays"
+        );
     }
 }
 
@@ -6533,6 +6579,10 @@ fn render_surface(
         if overlay_planes_disabled() {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
         }
+        frame_flags = with_direct_scanout_setting(
+            frame_flags,
+            state.runtime_output_configs.get(output.name().as_str()),
+        );
         if fullscreen_overlay_visible {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
         }
