@@ -640,6 +640,10 @@ pub struct ShojiWM {
     /// one, and the config raised it on focus — after every unlock the two
     /// most recent windows swapped places (issue #92).
     pub session_lock_focus_owner: Option<WlSurface>,
+    /// The config took the keyboard from the window that had it
+    /// (`window.unfocus()`), and no window has been focused since. `unlock`
+    /// then leaves the keyboard with no window instead of electing one.
+    pub window_keyboard_focus_released: bool,
     pub window_keyboard_focus: Option<WlSurface>,
     /// Root surfaces of the windows the user has actually *used*, most recent
     /// first.
@@ -1058,7 +1062,7 @@ impl ShojiWM {
         }
     }
 
-    fn window_root_surface(window: &Window) -> Option<WlSurface> {
+    pub(crate) fn window_root_surface(window: &Window) -> Option<WlSurface> {
         if let Some(toplevel) = window.toplevel() {
             return Some(toplevel.wl_surface().clone());
         }
@@ -1112,6 +1116,7 @@ impl ShojiWM {
         _surface: Option<&WlSurface>,
     ) {
         let root = Self::window_root_surface(window);
+        self.window_keyboard_focus_released = false;
 
         if self.window_keyboard_focus_owner != root
             && let Some(previous) = self.window_keyboard_focus_owner.take()
@@ -1138,6 +1143,7 @@ impl ShojiWM {
             .find(|window| self.surface_belongs_to_window(window, surface))
             .and_then(Self::window_root_surface);
         if let Some(owner_root) = owner_root {
+            self.window_keyboard_focus_released = false;
             if self.window_keyboard_focus_owner.as_ref() != Some(&owner_root)
                 && let Some(previous) = self.window_keyboard_focus_owner.take()
             {
@@ -2058,6 +2064,7 @@ impl ShojiWM {
             window_keyboard_focus_owner: None,
             previous_window_keyboard_focus_owner: None,
             session_lock_focus_owner: None,
+            window_keyboard_focus_released: false,
             window_keyboard_focus: None,
             focus_chain: Vec::new(),
             user_input_in_flight: false,

@@ -14,6 +14,6 @@ tracing = "0.1.41"
 [dev-dependencies]
 smithay = { workspace = true }
 wayland-client = "0.31.14"
-wayland-protocols = { version = "0.32.12", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }

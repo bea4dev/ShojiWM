@@ -8,7 +8,7 @@ use smithay::{
         },
         session::Session,
     },
-    desktop::{Window, WindowSurfaceType},
+    desktop::{PopupManager, Window, WindowSurfaceType, find_popup_root_surface},
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{
@@ -2766,16 +2766,7 @@ impl ShojiWM {
                     let serial = SERIAL_COUNTER.next_serial();
                     self.focus_window(&window, serial);
                 }
-                crate::ssd::WaylandWindowAction::Unfocus => {
-                    let owns = self
-                        .window_keyboard_focus_owner
-                        .as_ref()
-                        .is_some_and(|root| Self::window_matches_root_surface(&window, root));
-                    if owns {
-                        self.set_window_keyboard_focus_target(None);
-                        self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
-                    }
-                }
+                crate::ssd::WaylandWindowAction::Unfocus => self.unfocus_window(&window),
                 crate::ssd::WaylandWindowAction::FinalizeClose => {}
                 crate::ssd::WaylandWindowAction::ScheduleAnimation
                 | crate::ssd::WaylandWindowAction::CancelAnimation => {}
@@ -3717,6 +3708,49 @@ impl ShojiWM {
         self.grant_window_keyboard_focus(window, None, serial);
     }
 
+    /// Take the keyboard from `window` if it has it, and give it to no other
+    /// window until one is focused.
+    pub(crate) fn unfocus_window(&mut self, window: &smithay::desktop::Window) {
+        let holds = |owner: &Option<WlSurface>| {
+            owner
+                .as_ref()
+                .is_some_and(|root| Self::window_matches_root_surface(window, root))
+        };
+        // Behind the lock screen the owner is parked for `unlock` to hand back.
+        if self.session_lock_active {
+            if holds(&self.session_lock_focus_owner) {
+                self.session_lock_focus_owner = None;
+                self.window_keyboard_focus_released = true;
+            }
+            return;
+        }
+        if !holds(&self.window_keyboard_focus_owner) {
+            return;
+        }
+        if let Some(root) = Self::window_root_surface(window) {
+            // A menu of the window keeps the keyboard while its grab lasts, and
+            // the grab hands the keyboard back to the window when it ends.
+            // Drop the grab and close the menus.
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let menu_holds_keyboard = keyboard.current_focus().is_some_and(|focus| {
+                    self.popups
+                        .find_popup(&focus)
+                        .and_then(|popup| find_popup_root_surface(&popup).ok())
+                        .is_some_and(|popup_root| popup_root == root)
+                });
+                if menu_holds_keyboard && keyboard.is_grabbed() {
+                    keyboard.unset_grab(self);
+                }
+            }
+            for (popup, _) in PopupManager::popups_for_surface(&root) {
+                let _ = PopupManager::dismiss_popup(&root, &popup);
+            }
+        }
+        self.set_window_keyboard_focus_target(None);
+        self.window_keyboard_focus_released = true;
+        self.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+    }
+
     /// Deliver the keyboard focus that was parked while a window had not
     /// painted yet.
     ///
@@ -3764,6 +3798,9 @@ impl ShojiWM {
         surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
         serial: Serial,
     ) {
+        // Asking for a window ends a release even behind the lock screen, so
+        // `unlock` elects one again.
+        self.window_keyboard_focus_released = false;
         // A window mapping or activating behind the lock screen must not
         // restack the session or pre-select who gets the keyboard at unlock.
         // `update_keyboard_focus` refuses to *deliver* focus while locked, but

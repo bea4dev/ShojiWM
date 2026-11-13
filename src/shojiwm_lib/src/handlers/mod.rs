@@ -308,7 +308,7 @@ impl SessionLockHandler for ShojiWM {
         // and would otherwise pick the window used before the locked one
         // (issue #92).
         let parked_owner = self.session_lock_focus_owner.take();
-        if self.window_keyboard_focus.is_none() {
+        if self.window_keyboard_focus.is_none() && !self.window_keyboard_focus_released {
             let restored = parked_owner
                 .filter(|root| smithay::utils::IsAlive::alive(root))
                 .and_then(|root| self.window_for_root_surface(&root).cloned())

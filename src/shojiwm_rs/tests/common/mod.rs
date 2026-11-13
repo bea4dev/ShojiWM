@@ -23,6 +23,9 @@ use wayland_client::{
         wl_buffer, wl_compositor, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
 };
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1, ext_session_lock_v1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -156,29 +159,28 @@ impl Session {
         width: i32,
         height: i32,
     ) -> wl_surface::WlSurface {
+        self.map_toplevel_with_xdg_surface(app_id, width, height).0
+    }
+
+    /// `map_toplevel_with_buffer`, also returning the xdg surface that
+    /// popups of the window take as their parent.
+    pub fn map_toplevel_with_xdg_surface(
+        &mut self,
+        app_id: &str,
+        width: i32,
+        height: i32,
+    ) -> (wl_surface::WlSurface, xdg_surface::XdgSurface) {
         let qh = self.queue.handle();
         let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 1);
         let shell: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 1);
-        let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
         let surface = compositor.create_surface(&qh, ());
         let xdg = shell.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
         toplevel.set_app_id(app_id.into());
         surface.commit();
         self.roundtrip();
-
-        let stride = width * 4;
-        let file = tempfile("shm");
-        file.set_len((stride * height) as u64).unwrap();
-        let pool = shm.create_pool(file.as_fd(), stride * height, &qh, ());
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
-        self.files.push(file);
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage(0, 0, width, height);
-        surface.commit();
-        self.roundtrip();
-        surface
+        self.attach_buffer(&surface, width, height);
+        (surface, xdg)
     }
 
     /// Maps a layer surface across the top of the first output.
@@ -273,6 +275,23 @@ impl Session {
         &mut self,
         layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     ) -> (wl_surface::WlSurface, xdg_popup::XdgPopup) {
+        self.open_grabbing_popup(None, |popup| layer.get_popup(popup))
+    }
+
+    /// Opens an xdg popup with a grab on the window of `parent` and maps it
+    /// with a buffer, as a menu of the window.
+    pub fn open_grabbing_window_popup(
+        &mut self,
+        parent: &xdg_surface::XdgSurface,
+    ) -> (wl_surface::WlSurface, xdg_popup::XdgPopup) {
+        self.open_grabbing_popup(Some(parent), |_| {})
+    }
+
+    fn open_grabbing_popup(
+        &mut self,
+        parent: Option<&xdg_surface::XdgSurface>,
+        assign_parent: impl FnOnce(&xdg_popup::XdgPopup),
+    ) -> (wl_surface::WlSurface, xdg_popup::XdgPopup) {
         let qh = self.queue.handle();
         let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 1);
         let wm_base: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 1);
@@ -282,13 +301,23 @@ impl Session {
         let positioner = wm_base.create_positioner(&qh, ());
         positioner.set_size(200, 100);
         positioner.set_anchor_rect(0, 0, 40, 40);
-        let popup = xdg_surface.get_popup(None, &positioner, &qh, ());
-        layer.get_popup(&popup);
+        let popup = xdg_surface.get_popup(parent, &positioner, &qh, ());
+        assign_parent(&popup);
         popup.grab(&seat, 0);
         surface.commit();
         self.roundtrip();
         self.attach_buffer(&surface, 200, 100);
         (surface, popup)
+    }
+
+    /// Locks the session with ext-session-lock. It stays locked until the
+    /// returned lock is unlocked.
+    pub fn lock_session(&mut self) -> ext_session_lock_v1::ExtSessionLockV1 {
+        let manager: ext_session_lock_manager_v1::ExtSessionLockManagerV1 =
+            self.bind("ext_session_lock_manager_v1", 1);
+        let lock = manager.lock(&self.queue.handle(), ());
+        self.roundtrip();
+        lock
     }
 }
 
@@ -420,6 +449,8 @@ ignore_events!(
     xdg_toplevel::XdgToplevel,
     xdg_positioner::XdgPositioner,
     xdg_popup::XdgPopup,
+    ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+    ext_session_lock_v1::ExtSessionLockV1,
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
     wl_seat::WlSeat,
     wl_output::WlOutput,

@@ -389,11 +389,13 @@ export interface WaylandWindow {
    */
   focus(): void;
   /**
-   * Take keyboard focus from this window if it has it; no window has it
-   * then, until one is focused. A layer surface holding the keyboard keeps it.
-   * このウィンドウがキーボードフォーカスを持っていれば外します。その後は別の
-   * ウィンドウにフォーカスするまで、どのウィンドウも持ちません。キーボードを
-   * 持っているレイヤーサーフェスはそのまま持ち続けます。
+   * Take keyboard focus from this window if it has it, and close its open
+   * menus; no window has it then, until one is focused, also across a session
+   * lock. A layer surface holding the keyboard keeps it.
+   * このウィンドウがキーボードフォーカスを持っていれば外し、開いているメニューを
+   * 閉じます。その後は別のウィンドウにフォーカスするまで、セッションのロックを
+   * 挟んでも、どのウィンドウも持ちません。キーボードを持っているレイヤー
+   * サーフェスはそのまま持ち続けます。
    */
   unfocus(): void;
   /** Schedule a managed-window animation (position, size, etc.) via the SSD pipeline. / SSD パイプライン経由でマネージドウィンドウのアニメーション（位置・サイズ等）をスケジュールします。 */

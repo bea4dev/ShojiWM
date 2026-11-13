@@ -311,8 +311,9 @@ impl Window {
         self.act(WaylandWindowAction::Focus);
     }
 
-    /// Take the keyboard from the window if it has it; no window has it
-    /// then. A layer surface holding the keyboard keeps it.
+    /// Take the keyboard from the window if it has it, and close its open
+    /// menus; no window has it then, until one is focused, also across a
+    /// session lock. A layer surface holding the keyboard keeps it.
     pub fn unfocus(&self) {
         self.act(WaylandWindowAction::Unfocus);
     }
