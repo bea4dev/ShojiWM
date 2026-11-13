@@ -10,7 +10,8 @@
     "test:overlays": "node --import tsx --test tests/output-overlay.test.ts && tsc -p tests/tsconfig.overlays.json",
     "test:output-power": "node --import tsx --test tests/output-power.test.ts",
     "test:headless-output": "node --import tsx --test tests/headless-output.test.ts",
-    "test:lid-policy": "node --import tsx --test tests/lid-policy.test.ts"
+    "test:lid-policy": "node --import tsx --test tests/lid-policy.test.ts",
+    "test:output-vrr": "node --import tsx --test tests/output-vrr.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

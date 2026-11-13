@@ -17,6 +17,7 @@ use smithay::{
         allocator::{Fourcc, format::FormatSet, gbm::GbmAllocator},
         drm::{
             DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+            VrrSupport,
             compositor::{CursorMoveOutcome, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::{GbmFramebufferExporter, NodeFilter},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
@@ -17634,6 +17635,54 @@ pub fn set_output_gamma(state: &ShojiWM, output: &Output, ramps: Option<&[u16]>)
         Err(error) => {
             warn!(output = %output.name(), ?error, "could not set gamma");
             false
+        }
+    }
+}
+
+/// Bring each DRM output's variable refresh rate in line with its `vrr`
+/// setting. A connector that does not report `vrr_capable` keeps it off.
+pub fn sync_output_vrr(state: &mut ShojiWM) {
+    for backend in state.tty_backends.values() {
+        let connectors: HashMap<crtc::Handle, connector::Handle> = backend
+            .drm_scanner
+            .crtcs()
+            .map(|(info, crtc)| (crtc, info.handle()))
+            .collect();
+        for (crtc, surface) in backend.surfaces.iter() {
+            let SurfaceTarget::Drm(drm_output) = &surface.target else {
+                continue;
+            };
+            let Some(&connector) = connectors.get(crtc) else {
+                continue;
+            };
+            let name = surface.output.name();
+            let wanted = state
+                .runtime_output_configs
+                .get(&name)
+                .and_then(|config| config.vrr)
+                .unwrap_or(false);
+            drm_output.with_compositor(|compositor| {
+                if compositor.vrr_enabled() == wanted {
+                    return;
+                }
+                if wanted {
+                    match compositor.vrr_supported(connector) {
+                        Ok(VrrSupport::Supported | VrrSupport::RequiresModeset) => {}
+                        Ok(VrrSupport::NotSupported) => {
+                            warn!(output = %name, "vrr requested, but the connector is not vrr_capable");
+                            return;
+                        }
+                        Err(error) => {
+                            warn!(output = %name, ?error, "could not read the connector's vrr support");
+                            return;
+                        }
+                    }
+                }
+                match compositor.use_vrr(wanted) {
+                    Ok(()) => info!(output = %name, vrr = wanted, "variable refresh rate set"),
+                    Err(error) => warn!(output = %name, vrr = wanted, ?error, "could not set vrr"),
+                }
+            });
         }
     }
 }
