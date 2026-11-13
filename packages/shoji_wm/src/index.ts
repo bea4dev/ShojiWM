@@ -794,6 +794,7 @@ export type {
   WaylandWindow,
   PlasmaSurfaceRole,
   PlasmaSurfaceState,
+  WindowContentType,
   LayerPosition,
   ReactiveWaylandLayer,
   ReactiveWaylandLayerHandle,

@@ -17,6 +17,7 @@ import type {
   WaylandWindowSnapshot,
   ManagedWindowState,
   PlasmaSurfaceState,
+  WindowContentType,
   WindowIcon,
   WindowDecorationState,
   WindowPosition,
@@ -44,6 +45,7 @@ interface MutableWindowSignals {
   minimizedGeometry: Signal<WindowPosition | undefined>;
   foreignToplevelId: Signal<string | undefined>;
   tag: Signal<string | undefined>;
+  contentType: Signal<WindowContentType | undefined>;
   icon: Signal<WindowIcon | undefined>;
   interaction: Signal<WindowCompositionInteractionSnapshot>;
   decoration: Signal<WindowDecorationState>;
@@ -85,6 +87,7 @@ export function createReactiveWindow(
     minimizedGeometry: signal(snapshot.minimizedGeometry),
     foreignToplevelId: signal(snapshot.foreignToplevelId),
     tag: signal(snapshot.tag),
+    contentType: signal(snapshot.contentType),
     icon: signal(snapshot.icon),
     interaction: signal(snapshot.interaction),
     decoration: signal(snapshot.decoration),
@@ -190,6 +193,7 @@ export function createReactiveWindow(
     foreignToplevelId: signals.foreignToplevelId,
     tag: signals.tag,
     pid: snapshot.pid,
+    contentType: signals.contentType,
     icon: signals.icon,
     interaction: signals.interaction,
     decoration: signals.decoration,
@@ -245,6 +249,7 @@ export function createReactiveWindow(
         signals.parentId.value = nextSnapshot.parentId;
         signals.foreignToplevelId.value = nextSnapshot.foreignToplevelId;
         signals.tag.value = nextSnapshot.tag;
+        signals.contentType.value = nextSnapshot.contentType;
         signals.output.value = nextSnapshot.outputName;
         // Object fields: every snapshot from Rust deserializes to a *new*
         // object reference with identical content. A naive write would

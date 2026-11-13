@@ -66,6 +66,7 @@ COMPOSITOR.window.composition = (window) => (
 | `parentId`        | `string \| undefined`     | トランジェントの場合の親ウィンドウ id             |
 | `foreignToplevelId` | `string \| undefined` | マップ後の `ext-foreign-toplevel-list-v1` 識別子 |
 | `tag` | `string \| undefined` | クライアントが `xdg-toplevel-tag-v1` で付けたタグ（`"settings"` など） |
+| `contentType` | `"photo" \| "video" \| "game" \| undefined` | クライアントが `wp-content-type-v1` で示した表示内容 |
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
@@ -100,6 +101,12 @@ COMPOSITOR.window.composition = (window) => (
   限りません。`exec` しないシェル、ランチャー、子プロセスからウィンドウを開く
   プログラムでは別の pid になるので、起動したものとウィンドウを対応付けるには
   親プロセスをたどる必要があることがあります。
+
+クライアントは `wp-content-type-v1` でサーフェスの表示内容（`"photo"`、`"video"`、
+`"game"`）を示せます。`contentType` はウィンドウのメインサーフェスのその値で、
+クライアントが何も示していなければ `undefined` です。クライアントの次のコミットで
+変わるので、ゲームにフォーカスがある間だけ出力の設定を変えるといった config が
+書けます。Rust の config では `window.content_type()`（`WindowContentType`）です。
 
 ### クライアント側／サーバー側装飾
 

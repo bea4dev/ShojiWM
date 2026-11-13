@@ -28,7 +28,12 @@ export interface WaylandWindowSnapshot {
   readonly tag?: string;
   /** The process behind the window's client, from its socket credentials; absent when unknown. / クライアントのソケット資格情報から得たプロセス ID。不明なら省略。 */
   readonly pid?: number;
+  /** What the client says it shows (`wp-content-type-v1`). / クライアントが示す内容の種類（`wp-content-type-v1`）。 */
+  readonly contentType?: WindowContentType;
 }
+
+/** `wp-content-type-v1` content kinds. / `wp-content-type-v1` の内容の種類。 */
+export type WindowContentType = "photo" | "video" | "game";
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
 export type PlasmaSurfaceRole =
@@ -326,6 +331,15 @@ export interface WaylandWindow {
    * であり、config が起動したプロセスと一致するとは限りません。
    */
   readonly pid: number | undefined;
+  /**
+   * What the client says the window shows, from `wp-content-type-v1`:
+   * `"photo"`, `"video"` or `"game"`, `undefined` when it said nothing. A
+   * config can turn VRR on for games or video, for example.
+   * クライアントが `wp-content-type-v1` で示すウィンドウの内容。`"photo"`、
+   * `"video"`、`"game"` のいずれかで、何も示していなければ `undefined`。
+   * ゲームや動画のときだけ VRR を有効にする、といった使い方ができます。
+   */
+  readonly contentType: import("./signals").ReadonlySignal<WindowContentType | undefined>;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
@@ -4004,6 +4018,7 @@ export interface ReactiveWaylandWindowSignals {
   minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;
   foreignToplevelId: import("./signals").ReadonlySignal<string | undefined>;
   tag: import("./signals").ReadonlySignal<string | undefined>;
+  contentType: import("./signals").ReadonlySignal<WindowContentType | undefined>;
   icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
   interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   output: import("./signals").ReadonlySignal<string | undefined>;

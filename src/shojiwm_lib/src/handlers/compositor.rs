@@ -487,6 +487,26 @@ impl CompositorHandler for ShojiWM {
                         || w.x11_surface().and_then(|x11| x11.wl_surface()).as_ref() == Some(&root)
                 })
                 .cloned();
+            if let Some(toplevel) = mapped_window
+                .as_ref()
+                .and_then(|window| window.toplevel())
+                .filter(|toplevel| toplevel.wl_surface() == surface)
+            {
+                // wp-content-type is double-buffered, so it changes on a commit.
+                let content_type = crate::ssd::window_model::window_content_type(surface);
+                let known = mapped_window
+                    .as_ref()
+                    .and_then(|window| self.window_decorations.get(window))
+                    .map(|cached| cached.snapshot.content_type);
+                if known.is_some_and(|known| known != content_type) {
+                    let toplevel = toplevel.clone();
+                    crate::handlers::xdg_shell::mark_toplevel_metadata_dirty(
+                        self,
+                        &toplevel,
+                        "content-type-changed",
+                    );
+                }
+            }
             if let Some(window) = mapped_window.as_ref() {
                 pending_source_damage = Some((
                     window.clone(),

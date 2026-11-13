@@ -1411,6 +1411,7 @@ mod tests {
             minimized_geometry: None,
             foreign_toplevel_id: None,
             tag: None,
+            content_type: None,
             id: id.into(),
             title: format!("window {id}"),
             app_id: Some("org.example.App".into()),

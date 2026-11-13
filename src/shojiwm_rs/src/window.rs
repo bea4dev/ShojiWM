@@ -8,8 +8,8 @@ use shojiwm_lib::ssd::{
     DecorationInteractionSnapshot, ManagedWindowAnimationMode, ManagedWindowAnimationSnapshot,
     ManagedWindowPointAnimationSnapshot, ManagedWindowPointSnapshot,
     ManagedWindowRectAnimationSnapshot, ManagedWindowScalarAnimationSnapshot, RuntimeWindowAction,
-    WaylandWindowAction, WaylandWindowSnapshot, WindowDecorationStateSnapshot, WindowIconSnapshot,
-    window_model::WindowSizeConstraintsSnapshot,
+    WaylandWindowAction, WaylandWindowSnapshot, WindowContentType, WindowDecorationStateSnapshot,
+    WindowIconSnapshot, window_model::WindowSizeConstraintsSnapshot,
 };
 
 use crate::{
@@ -39,6 +39,7 @@ pub(crate) struct WindowSignals {
     pub minimized_geometry: Signal<Option<Rect>>,
     pub foreign_toplevel_id: Signal<Option<String>>,
     pub tag: Signal<Option<String>>,
+    pub content_type: Signal<Option<WindowContentType>>,
     pub icon: Signal<Option<WindowIconSnapshot>>,
     pub interaction: Signal<DecorationInteractionSnapshot>,
     pub decoration: Signal<WindowDecorationStateSnapshot>,
@@ -65,6 +66,7 @@ impl WindowSignals {
             minimized_geometry: scope.signal(snapshot.minimized_geometry.map(Into::into)),
             foreign_toplevel_id: scope.signal(snapshot.foreign_toplevel_id.clone()),
             tag: scope.signal(snapshot.tag.clone()),
+            content_type: scope.signal(snapshot.content_type),
             icon: scope.signal(snapshot.icon.clone()),
             interaction: scope.signal(snapshot.interaction.clone()),
             decoration: scope.signal(snapshot.decoration),
@@ -93,6 +95,7 @@ impl WindowSignals {
         self.foreign_toplevel_id
             .set(snapshot.foreign_toplevel_id.clone());
         self.tag.set(snapshot.tag.clone());
+        self.content_type.set(snapshot.content_type);
         self.icon.set(snapshot.icon.clone());
         self.interaction.set(snapshot.interaction.clone());
         self.decoration.set(snapshot.decoration);
@@ -157,6 +160,9 @@ window_signals! {
     /// The tag the client gave the window with `xdg-toplevel-tag-v1`, such as
     /// "main window" or "settings": untranslated and stable across restarts.
     tag: Option<String>,
+    /// What the client says it shows (`wp-content-type-v1`): photo, video or
+    /// game; `None` when it said nothing.
+    content_type: Option<WindowContentType>,
     icon: Option<WindowIconSnapshot>,
     interaction: DecorationInteractionSnapshot,
     decoration: WindowDecorationStateSnapshot,
@@ -357,6 +363,7 @@ fn empty_snapshot() -> WaylandWindowSnapshot {
         minimized_geometry: None,
         foreign_toplevel_id: None,
         tag: None,
+        content_type: None,
         id: String::new(),
         title: String::new(),
         app_id: None,
