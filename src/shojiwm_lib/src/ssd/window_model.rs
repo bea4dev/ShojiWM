@@ -61,8 +61,9 @@ pub struct WaylandWindowSnapshot {
     /// "main window" or "settings": untranslated and stable across restarts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
-    /// The process behind the window's client, from its socket credentials
-    /// (`_NET_WM_PID` for an X11 window on Xwayland); `None` when unknown.
+    /// The process behind the window's client, from its socket credentials;
+    /// `None` when unknown. X11 windows through xwayland-satellite have none; on
+    /// the built-in Xwayland fallback it is the client-written `_NET_WM_PID`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
 }

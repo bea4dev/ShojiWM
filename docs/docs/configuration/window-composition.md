@@ -87,12 +87,19 @@ until the client sets one and follows later changes. In a Rust config it is
 `window.tag()`.
 
 `pid` is the process behind the window's client, read from the credentials of
-its Wayland socket (`_NET_WM_PID` for an X11 window on Xwayland), and
-`undefined` when unknown. Windows that come through an Xwayland bridge such as
-xwayland-satellite have none, since the bridge's process is not the window's.
-Layer surfaces carry the same `pid` (`layer.pid` in a layer snapshot or
-`onCreateLayer`). In a Rust config it is `window.pid()` and the layer
-snapshot's `pid` field.
+its Wayland socket, and `undefined` when unknown. Layer surfaces carry the same
+`pid` (`layer.pid` in a layer snapshot or `onCreateLayer`). In a Rust config it
+is `window.pid()` and the layer snapshot's `pid` field.
+
+- X11 windows normally have none. They come through xwayland-satellite, and the
+  bridge's process is not the window's. Only when ShojiWM falls back to running
+  Xwayland itself does an X11 window get a `pid`, from its `_NET_WM_PID`. The X11
+  client writes that value itself, so it can be wrong or name a process on
+  another host.
+- The `pid` is the process that connected, which is not always the one a config
+  spawned. A shell that does not `exec`, a launcher, or a program that opens its
+  windows from a child process each show up under a different pid, so a config
+  matching windows to what it launched may need to walk up the parent processes.
 
 ### Client-side and server-side decorations
 

@@ -316,10 +316,14 @@ export interface WaylandWindow {
    */
   readonly tag: import("./signals").ReadonlySignal<string | undefined>;
   /**
-   * The process behind the window's client, from its socket credentials
-   * (`_NET_WM_PID` for an X11 window on Xwayland). `undefined` when unknown.
-   * クライアントのソケット資格情報から得たプロセス ID（Xwayland 上の X11
-   * ウィンドウでは `_NET_WM_PID`）。不明なら `undefined`。
+   * The process behind the window's client, from its socket credentials;
+   * `undefined` when unknown. X11 windows through xwayland-satellite have none;
+   * on the built-in Xwayland fallback it is the client-written `_NET_WM_PID`.
+   * It is the process that connected, not necessarily the one a config spawned.
+   * クライアントのソケット資格情報から得たプロセス ID。不明なら `undefined`。
+   * xwayland-satellite 経由の X11 ウィンドウには無く、内蔵 Xwayland への
+   * フォールバック時はクライアントが書き込む `_NET_WM_PID`。接続したプロセス
+   * であり、config が起動したプロセスと一致するとは限りません。
    */
   readonly pid: number | undefined;
   /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */

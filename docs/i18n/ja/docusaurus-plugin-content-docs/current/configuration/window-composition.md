@@ -87,12 +87,19 @@ COMPOSITOR.window.composition = (window) => (
 `undefined` で、後の変更にも追従します。Rust の config では `window.tag()` です。
 
 `pid` はウィンドウのクライアントのプロセス ID で、Wayland ソケットの資格情報から
-読み取ります（Xwayland 上の X11 ウィンドウでは `_NET_WM_PID`）。不明なら
-`undefined` です。xwayland-satellite のような Xwayland ブリッジ経由のウィンドウには
-ありません。ブリッジのプロセスはウィンドウのプロセスではないためです。レイヤー
-サーフェスも同じ `pid` を持ちます（レイヤーのスナップショットや `onCreateLayer` の
-`layer.pid`）。Rust の config では `window.pid()` と、レイヤーのスナップショットの
-`pid` フィールドです。
+読み取ります。不明なら `undefined` です。レイヤーサーフェスも同じ `pid` を持ちます
+（レイヤーのスナップショットや `onCreateLayer` の `layer.pid`）。Rust の config では
+`window.pid()` と、レイヤーのスナップショットの `pid` フィールドです。
+
+- X11 ウィンドウには通常ありません。xwayland-satellite 経由で届き、ブリッジの
+  プロセスはウィンドウのプロセスではないためです。ShojiWM が Xwayland を自分で
+  起動するフォールバック時だけ、X11 ウィンドウにも `_NET_WM_PID` から `pid` が
+  付きます。この値は X11 クライアントが自分で書き込むので、誤っていたり別ホストの
+  プロセスを指していたりすることがあります。
+- `pid` は接続してきたプロセスで、config が起動したプロセスと一致するとは
+  限りません。`exec` しないシェル、ランチャー、子プロセスからウィンドウを開く
+  プログラムでは別の pid になるので、起動したものとウィンドウを対応付けるには
+  親プロセスをたどる必要があることがあります。
 
 ### クライアント側／サーバー側装飾
 

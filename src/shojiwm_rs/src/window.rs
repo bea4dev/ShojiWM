@@ -220,9 +220,11 @@ impl Window {
             .unwrap_or_default()
     }
 
-    /// The process behind the window's client, from its socket credentials
-    /// (`_NET_WM_PID` for an X11 window on Xwayland); `None` when unknown or
-    /// once the window is gone.
+    /// The process behind the window's client, from its socket credentials;
+    /// `None` when unknown or once the window is gone. X11 windows through
+    /// xwayland-satellite have none; on the built-in Xwayland fallback it is the
+    /// client-written `_NET_WM_PID`. It is the process that connected, not
+    /// necessarily the one the config spawned.
     pub fn pid(&self) -> Option<i32> {
         self.entry().and_then(|entry| entry.snapshot.borrow().pid)
     }
