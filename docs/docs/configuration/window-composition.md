@@ -65,6 +65,7 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 | `isTransient`     | `boolean`                 | A child (dialog) of another window           |
 | `parentId`        | `string \| undefined`     | Parent window id, if transient               |
 | `foreignToplevelId` | `string \| undefined`   | The window's `ext-foreign-toplevel-list-v1` identifier, once mapped |
+| `tag`             | `string \| undefined`     | The client's `xdg-toplevel-tag-v1` tag, such as `"settings"` |
 | `sizeConstraints` | `WindowSizeConstraints`   | Min/max size from the client                 |
 | `interaction`     | snapshot                  | Current pointer/drag interaction state       |
 
@@ -77,6 +78,13 @@ clients see. Those key a window by its `ext-foreign-toplevel-list-v1`
 `identifier` (which `ext-image-capture-source-v1` also captures by), and
 `foreignToplevelId` is that value, so a config can hand a client the window it
 means. In a Rust config it is `window.foreign_toplevel_id()`.
+
+A program with several kinds of window can tag each with `xdg-toplevel-tag-v1`
+(`"main window"`, `"settings"`, an overlay). The tag is not translated and stays
+the same across restarts, so it suits window rules that `appId` alone cannot
+express, such as floating one program's settings window only. It is `undefined`
+until the client sets one and follows later changes. In a Rust config it is
+`window.tag()`.
 
 ### Client-side and server-side decorations
 

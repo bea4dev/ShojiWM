@@ -1,7 +1,7 @@
 mod compositor;
 mod fractional_scale;
 mod layer_shell;
-mod xdg_shell;
+pub(crate) mod xdg_shell;
 mod xwayland;
 
 //
