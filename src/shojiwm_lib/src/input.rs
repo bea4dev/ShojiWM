@@ -12,8 +12,8 @@ use smithay::{
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{
-            AxisFrame, ButtonEvent, CursorIcon, GrabStartData as PointerGrabStartData, MotionEvent,
-            RelativeMotionEvent,
+            AxisFrame, ButtonEvent, ClickGrab, CursorIcon, GrabStartData as PointerGrabStartData,
+            MotionEvent, RelativeMotionEvent,
         },
     },
     reexports::{
@@ -750,8 +750,19 @@ impl ShojiWM {
     /// The on-screen client area of the window under the pointer, when its
     /// config sets `confinePointer` and it has keyboard focus. Ignoring app
     /// locks releases it like a client's own confinement.
+    ///
+    /// A pointer grab other than a held button releases it too: a modifier
+    /// resize could not drag the edge past where it is now, and a menu of the
+    /// window could not be reached where it hangs outside the window.
     fn confine_pointer_window_area(&self) -> Option<crate::ssd::LogicalRect> {
         if self.app_lock_ignored {
+            return None;
+        }
+        let grabbed = self
+            .seat
+            .get_pointer()
+            .and_then(|pointer| pointer.with_grab(|_, grab| !grab.is::<ClickGrab<ShojiWM>>()));
+        if grabbed == Some(true) {
             return None;
         }
         let (surface, _) = self.pointer_contents.surface.as_ref()?;

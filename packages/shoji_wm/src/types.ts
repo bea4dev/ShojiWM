@@ -3230,12 +3230,14 @@ export interface ManagedWindowProps extends ComponentProps {
    * client area stops at its edge, and the client keeps getting relative motion. Unlike a
    * pointer confinement the client asks for, this needs nothing from the client, which suits X11
    * games that grab the pointer and warp it back to the centre (Minecraft under Xwayland).
-   * Ignoring app pointer locks (`COMPOSITOR.cursor.setAppLockIgnored`, `bindAppLockIgnoreModifier`) releases it too. Default `false`.
+   * Ignoring app pointer locks (`COMPOSITOR.cursor.setAppLockIgnored`, `bindAppLockIgnoreModifier`) releases it too, as do
+   * an open menu and a window move or resize. Default `false`.
    * キーボードフォーカスがある間、ポインターをウィンドウ内に留めます。クライアント領域の上で
    * 始まった移動はその端で止まり、クライアントには相対移動が届き続けます。クライアントが求める
    * ポインターの閉じ込めと違ってクライアント側の対応が不要なので、ポインターをグラブして中央へ
    * ワープさせる X11 のゲーム（Xwayland 上の Minecraft）に向いています。アプリのポインターロックを
-   * 無視している間（`COMPOSITOR.cursor.setAppLockIgnored`、`bindAppLockIgnoreModifier`）は解除されます。既定は `false`。
+   * 無視している間（`COMPOSITOR.cursor.setAppLockIgnored`、`bindAppLockIgnoreModifier`）と、メニューを開いている間、
+   * ウィンドウの移動・リサイズ中も解除されます。既定は `false`。
    */
   confinePointer?: MaybeSignal<boolean>;
   /** Z-order within the scene graph. Higher values render on top. / シーングラフ内の z オーダー。値が大きいほど上に描画されます。 */
