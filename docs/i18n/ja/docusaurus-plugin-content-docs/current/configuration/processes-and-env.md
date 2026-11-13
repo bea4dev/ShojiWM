@@ -120,6 +120,31 @@ COMPOSITOR.process.once('locker', { command: ['hyprlock'] });
   解除もできません。ロッカーが落ちた場合は、新しいロッカーが引き継ぐまでロックが続きます。
 - Rust 設定では `ConfigBuilder::start_locked(true)` で同じことができます。
 
+## IPC で要求したクライアントを知る
+
+`ipc.handle`（`shoji_wm/ipc` の `createIpcServer()`）で登録したハンドラーは、
+呼び出したクライアントを第 2 引数で受け取ります。`client.id` はサーバーの稼働中その
+接続を指し、後の接続が同じ ID を使うことはありません。そのため設定はクライアントが
+求めたものを保持でき、`ipc.onDisconnect` がそのクライアントの終了（プロセスが閉じた、
+または切断された）を、最後のリクエストのハンドラーが終わった後に知らせます。
+
+```ts
+import { createIpcServer } from 'shoji_wm/ipc';
+
+const ipc = createIpcServer();
+const holders = new Set<number>();
+ipc.handle('grab-chords', (_params, client) => {
+  holders.add(client.id);
+});
+ipc.onDisconnect((client) => {
+  holders.delete(client.id);
+});
+```
+
+`onDisconnect` はリスナーを外す関数を返し、`ipc.close()` が終了させた接続では
+呼ばれません。Rust の設定では `IpcServer::handle_from(method, |client, params| ...)`
+（`ClientId` を受け取る）と `IpcServer::on_disconnect(|client| ...)` が同じ役割です。
+
 ## 環境変数
 
 `COMPOSITOR.env` は、コンポジターが起動するプロセスが継承する環境を管理します。変更は
