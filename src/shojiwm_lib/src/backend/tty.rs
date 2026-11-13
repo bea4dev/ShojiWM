@@ -1198,8 +1198,8 @@ struct SurfaceData {
     cursor_margin_window_commits: u16,
     cursor_margin_window_misses: u8,
     /// Variable refresh rate is on (`sync_output_vrr`). The panel then shows a frame as
-    /// soon as it is committed instead of at a fixed vblank, so nothing waits for a commit
-    /// deadline (see [`HeldSubmit`]).
+    /// soon as it is committed, but no sooner than a refresh period after the previous one
+    /// (see [`commit_deadline`]).
     vrr: bool,
     /// A rendered frame held back until the commit deadline (see
     /// [`DeferredSubmit`]). While this is `Some`, `frame_pending` and
@@ -2997,18 +2997,20 @@ mod vblank_grid_tests {
     use std::collections::VecDeque;
     use std::time::Duration;
 
-    /// Fixed refresh holds a frame until its deadline, or not at all once it passed; VRR has
-    /// no vblank to aim for and only waits for the input that is already in.
+    /// A frame is held until its deadline. Past it, a fixed rate submits it at once, and VRR
+    /// (the panel is waiting for it) after the input that is already in.
     #[test]
-    fn held_frames_wait_for_the_deadline_only_at_a_fixed_refresh() {
+    fn held_frames_wait_for_the_deadline_then_for_pending_input_under_vrr() {
         let ms = Duration::from_millis;
-        assert_eq!(
-            held_submit(false, Some(ms(105)), ms(100)),
-            Some(HeldSubmit::Deadline(ms(5)))
-        );
+        for vrr in [false, true] {
+            assert_eq!(
+                held_submit(vrr, Some(ms(105)), ms(100)),
+                Some(HeldSubmit::Deadline(ms(5)))
+            );
+        }
         assert_eq!(held_submit(false, Some(ms(100)), ms(100)), None);
         assert_eq!(held_submit(false, None, ms(100)), None);
-        for deadline in [Some(ms(105)), Some(ms(95)), None] {
+        for deadline in [Some(ms(100)), Some(ms(95)), None] {
             assert_eq!(
                 held_submit(true, deadline, ms(100)),
                 Some(HeldSubmit::AfterPendingInput)
@@ -4035,14 +4037,24 @@ fn finish_cross_gpu_frame(
 /// Deadline for a commit that wants to land on the next vblank while carrying
 /// the freshest possible cursor position: `predicted next vblank − (margin +
 /// timestamp skew)`. `None` when there is no vblank basis to predict from.
+///
+/// Under VRR the next vblank is the earliest one, a period after the last flip: the panel
+/// cannot go faster than its maximum rate, so while the pointer keeps moving it runs at
+/// that rate and a frame committed right after a flip waits a whole period, just as at a
+/// fixed rate (measured: commit to photon 8.1ms at 120Hz). Past that point the panel waits
+/// for the next frame instead, so there is no later vblank to aim for and the deadline
+/// stays in the past.
 fn commit_deadline(surface: &SurfaceData, now: Duration) -> Option<Duration> {
     let last_presented_at = surface.last_presented_at?;
     let period = surface.frame_duration;
     if period.is_zero() {
         return None;
     }
-    let elapsed_periods =
-        (now.saturating_sub(last_presented_at).as_nanos() / period.as_nanos()) as u32;
+    let elapsed_periods = if surface.vrr {
+        0
+    } else {
+        (now.saturating_sub(last_presented_at).as_nanos() / period.as_nanos()) as u32
+    };
     let next_vblank = last_presented_at + period * (elapsed_periods + 1);
     let margin = cursor_commit_margin_override().unwrap_or(surface.cursor_commit_margin);
     Some(next_vblank.saturating_sub(margin + surface.vblank_timestamp_lead))
@@ -4054,21 +4066,20 @@ fn commit_deadline(surface: &SurfaceData, now: Duration) -> Option<Duration> {
 enum HeldSubmit {
     /// After this long: just before the next vblank (`commit_deadline`).
     Deadline(Duration),
-    /// Under VRR the panel shows a frame as soon as it is committed, so there is no vblank
-    /// to aim for and holding the frame only adds latency. It goes out as soon as the event
-    /// loop has handled the input that arrived while it rendered.
+    /// Under VRR, past the deadline: the panel is waiting for this frame and shows it as
+    /// soon as it is committed, so it goes out as soon as the event loop has handled the
+    /// input that arrived while it rendered.
     AfterPendingInput,
 }
 
-/// How to hold a frame rendered while the pointer moves; `None` submits it now (its
-/// deadline already passed, or there is no vblank to predict from).
+/// How to hold a frame rendered while the pointer moves; `None` submits it now (at a fixed
+/// rate, its deadline already passed or there is no vblank to predict from).
 fn held_submit(vrr: bool, deadline: Option<Duration>, now: Duration) -> Option<HeldSubmit> {
-    if vrr {
-        return Some(HeldSubmit::AfterPendingInput);
+    match deadline {
+        Some(deadline) if deadline > now => Some(HeldSubmit::Deadline(deadline - now)),
+        _ if vrr => Some(HeldSubmit::AfterPendingInput),
+        _ => None,
     }
-    deadline
-        .filter(|deadline| *deadline > now)
-        .map(|deadline| HeldSubmit::Deadline(deadline - now))
 }
 
 /// Arm the submission of the frame held as the surface's `deferred_submit` (`generation`).
@@ -4203,9 +4214,9 @@ fn fast_cursor_move_inner(
     // no point arming a cursor timer of our own: patching the staged frame
     // immediately (below) is free, and the hold timer re-patches with the
     // final position right before it submits.
-    // Under VRR there is no vblank to wait for: the smithay fork refuses a cursor-only
-    // commit there (it would refresh the panel by itself), so motion goes straight to a
-    // render, whose frame is patched with the freshest position before it is committed.
+    // Not under VRR: the smithay fork refuses a cursor-only commit there (it would refresh
+    // the panel by itself), so motion goes straight to a render, whose frame is held until
+    // the deadline and patched with the freshest position before it is committed.
     if allow_defer && surface.deferred_submit.is_none() && !surface.vrr {
         let now = Duration::from(clock.now());
         if let Some(deadline) = commit_deadline(surface, now) {
@@ -6861,8 +6872,8 @@ fn render_surface(
             // — it stays staged inside the DrmCompositor as `next_frame` —
             // until the commit deadline, so the cursor plane carries the
             // freshest pointer position when it finally flies (under VRR,
-            // only until the input that came in meanwhile is handled; see
-            // `HeldSubmit`). The hold only
+            // past the deadline, until the input that came in meanwhile is
+            // handled; see `HeldSubmit`). The hold only
             // buys cursor freshness, so it is gated on the pointer actually
             // moving; a render that finishes past the deadline (or when the
             // gate is off) submits immediately below, exactly as before.

@@ -535,6 +535,7 @@ COMPOSITOR.output.configure((context) => {
     scale: 1.8,
     transform: "normal",
     hdr: false,
+    vrr: true,
   };
   display["eDP-2"] = {
     mode: "extend",
