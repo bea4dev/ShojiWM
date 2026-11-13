@@ -1045,6 +1045,10 @@ impl ConfigRuntime for ReactiveRuntime {
         if let Some(options) = with_registry(|registry| registry.power_take_over) {
             crate::power::send_take_over(options);
         }
+        // So does the clear colour, which goes back to the default.
+        if let Some(color) = with_registry(|registry| registry.clear_color) {
+            runtime::send(HostMessage::ClearColor(color));
+        }
         with_registry(|registry| {
             let pending = &mut registry.pending;
             pending.key_bindings = true;

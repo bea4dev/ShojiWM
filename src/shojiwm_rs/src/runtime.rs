@@ -175,6 +175,9 @@ pub(crate) struct Registry {
     pub channels: Vec<Rc<dyn Fn() -> bool>>,
     /// The last `COMPOSITOR.power.take_over`, sent again on a reload.
     pub power_take_over: Option<crate::power::PowerTakeOverOptions>,
+    /// The last `COMPOSITOR.output.set_clear_color`, premultiplied, sent
+    /// again on a reload.
+    pub clear_color: Option<[f32; 4]>,
     pub pending: Pending,
 }
 

@@ -1066,9 +1066,11 @@ impl OutputController {
     /// `setClearColor(color)`: the colour every output shows where nothing is
     /// drawn. Set while the config loads, it is in force from the first frame,
     /// before the config has drawn anything and while a session that starts
-    /// locked waits for its lock surface. A reload resets it.
+    /// locked waits for its lock surface. It stays across a reload.
     pub fn set_clear_color(&self, color: impl Into<CompositionColor>) {
-        runtime::send(HostMessage::ClearColor(color.into().premultiplied()));
+        let color = color.into().premultiplied();
+        with_registry(|registry| registry.clear_color = Some(color));
+        runtime::send(HostMessage::ClearColor(color));
     }
 }
 
