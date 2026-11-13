@@ -69,7 +69,7 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 | `sizeConstraints` | `WindowSizeConstraints`   | Min/max size from the client                 |
 | `interaction`     | snapshot                  | Current pointer/drag interaction state       |
 
-Non-reactive helpers: `id` (stable string), `position` / `rect` (current logical
+Non-reactive helpers: `id` (stable string), `pid` (see below), `position` / `rect` (current logical
 geometry), `state` (per-window store — see [State & Signals](./state-and-signals.md)),
 `transform` (GPU transform), `animation` (see [Animations](./animations.md)).
 
@@ -85,6 +85,14 @@ the same across restarts, so it suits window rules that `appId` alone cannot
 express, such as floating one program's settings window only. It is `undefined`
 until the client sets one and follows later changes. In a Rust config it is
 `window.tag()`.
+
+`pid` is the process behind the window's client, read from the credentials of
+its Wayland socket (`_NET_WM_PID` for an X11 window on Xwayland), and
+`undefined` when unknown. Windows that come through an Xwayland bridge such as
+xwayland-satellite have none, since the bridge's process is not the window's.
+Layer surfaces carry the same `pid` (`layer.pid` in a layer snapshot or
+`onCreateLayer`). In a Rust config it is `window.pid()` and the layer
+snapshot's `pid` field.
 
 ### Client-side and server-side decorations
 

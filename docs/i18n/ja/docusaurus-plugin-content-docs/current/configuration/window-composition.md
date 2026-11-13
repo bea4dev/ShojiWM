@@ -69,7 +69,7 @@ COMPOSITOR.window.composition = (window) => (
 | `sizeConstraints` | `WindowSizeConstraints`   | クライアントの最小／最大サイズ                    |
 | `interaction`     | スナップショット          | 現在のポインター／ドラッグの状態                  |
 
-非リアクティブなヘルパー: `id`（安定した文字列）、`position` / `rect`（現在の論理
+非リアクティブなヘルパー: `id`（安定した文字列）、`pid`（後述）、`position` / `rect`（現在の論理
 ジオメトリ）、`state`（ウィンドウごとのストア。[状態とシグナル](./state-and-signals.md)
 を参照）、`transform`（GPU トランスフォーム）、`animation`
 （[アニメーション](./animations.md) を参照）。
@@ -85,6 +85,14 @@ COMPOSITOR.window.composition = (window) => (
 再起動後も変わらないので、あるプログラムの設定ウィンドウだけをフロートにするなど、
 `appId` だけでは書けないウィンドウルールに使えます。クライアントが設定するまでは
 `undefined` で、後の変更にも追従します。Rust の config では `window.tag()` です。
+
+`pid` はウィンドウのクライアントのプロセス ID で、Wayland ソケットの資格情報から
+読み取ります（Xwayland 上の X11 ウィンドウでは `_NET_WM_PID`）。不明なら
+`undefined` です。xwayland-satellite のような Xwayland ブリッジ経由のウィンドウには
+ありません。ブリッジのプロセスはウィンドウのプロセスではないためです。レイヤー
+サーフェスも同じ `pid` を持ちます（レイヤーのスナップショットや `onCreateLayer` の
+`layer.pid`）。Rust の config では `window.pid()` と、レイヤーのスナップショットの
+`pid` フィールドです。
 
 ### クライアント側／サーバー側装飾
 

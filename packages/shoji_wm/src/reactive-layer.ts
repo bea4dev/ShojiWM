@@ -90,6 +90,7 @@ export function createReactiveLayer(
     margin: signals.margin,
     keyboardInteractivity: signals.keyboardInteractivity,
     desiredSize: signals.desiredSize,
+    pid: snapshot.pid,
     animation,
     signals,
   };

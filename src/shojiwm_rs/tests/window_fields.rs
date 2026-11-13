@@ -11,6 +11,7 @@ use shojiwm_rs::{
 fn snapshot(foreign_toplevel_id: Option<&str>) -> WaylandWindowSnapshot {
     WaylandWindowSnapshot {
         tag: None,
+        pid: None,
         output_name: None,
         plasma: None,
         minimized_geometry: None,
