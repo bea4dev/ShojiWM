@@ -98,7 +98,21 @@ directories. It performs the following:
   left untouched).
 - Registers a **Wayland session entry**, so **ShojiWM appears in your login
   manager** — just pick it on the login screen.
-- Installs the ShojiWM **xdg-desktop-portal** backend (screen casting, etc.).
+- Installs the ShojiWM **xdg-desktop-portal** backend (screen casting and
+  screenshots) and routes those two portals to it; everything else goes to
+  xdg-desktop-portal-gtk.
+
+### Screenshots through the portal
+
+Apps that ask the portal for a screenshot (browsers, Flatpak apps) get one
+output as a PNG in the temp directory. Without `interactive` it is the output
+of the focused window, or the first output by position when no window has
+focus. With `interactive` the screen-cast picker opens and the user chooses
+the output; every output is captured when the request arrives, so the picker
+is never in the picture. Colour picking (`PickColor`) is not implemented.
+
+xdg-desktop-portal (checked with 1.22) only offers screenshots when an Access
+portal is available too; the gtk default above provides it.
 
 ### Install options
 

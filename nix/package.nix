@@ -213,7 +213,7 @@ EOF
     install -Dm644 /dev/stdin "$out/share/xdg-desktop-portal/portals/shojiwm.portal" <<EOF
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.shojiwm
-Interfaces=org.freedesktop.impl.portal.ScreenCast
+Interfaces=org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.Screenshot;
 UseIn=ShojiWM
 EOF
 

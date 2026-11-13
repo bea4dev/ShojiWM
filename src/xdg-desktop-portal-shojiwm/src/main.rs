@@ -2,6 +2,7 @@ mod i18n;
 mod picker;
 mod pipewire_stream;
 mod screencast;
+mod screenshot;
 mod sources;
 mod toplevel_stream;
 
@@ -74,13 +75,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             .name(BUS_NAME)?
             .serve_at(
                 "/org/freedesktop/portal/desktop",
-                screencast::ScreenCast::new(picker_handle.clone(), thumbnail_tx),
+                screencast::ScreenCast::new(picker_handle.clone(), thumbnail_tx.clone()),
+            )?
+            .serve_at(
+                "/org/freedesktop/portal/desktop",
+                screenshot::Screenshot::new(picker_handle.clone(), thumbnail_tx),
             )?
             .build()
             .await
     })?;
 
-    tracing::info!(bus = BUS_NAME, "claimed D-Bus name; serving ScreenCast");
+    tracing::info!(
+        bus = BUS_NAME,
+        "claimed D-Bus name; serving ScreenCast and Screenshot"
+    );
 
     // Spawn a ctrl-c watcher on the runtime that will tear us down.
     let rt_for_signal = runtime.clone();
