@@ -6579,10 +6579,14 @@ fn render_surface(
         if overlay_planes_disabled() {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
         }
-        frame_flags = with_direct_scanout_setting(
-            frame_flags,
-            state.runtime_output_configs.get(output.name().as_str()),
-        );
+        // A cross-GPU frame is composited on the render GPU already: the one buffer the
+        // output's GPU scans out is ours, never a client's, so the setting would only add a copy.
+        if cross_gpu_scanout_renderer.is_none() || surface.cross_gpu.is_none() {
+            frame_flags = with_direct_scanout_setting(
+                frame_flags,
+                state.runtime_output_configs.get(output.name().as_str()),
+            );
+        }
         if fullscreen_overlay_visible {
             frame_flags = frame_flags.difference(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
         }

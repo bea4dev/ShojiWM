@@ -293,7 +293,9 @@ display['DP-1'] = {directScanout: false};
 
 テアリング（`allowTearing`）はこれに依存しません。ダイレクトスキャンアウトを切った
 場合は、クライアントのバッファの代わりに合成したフレームを非同期にフリップします。
-Rust の config では `RuntimeOutputConfig` の `direct_scanout` フィールドです。
+描画する GPU とは別の GPU につながった出力はもともと合成されるので、この設定は
+影響しません。Rust の config では `RuntimeOutputConfig` の `direct_scanout`
+フィールドです。
 
 ## パネルの電源を切る（DPMS）
 

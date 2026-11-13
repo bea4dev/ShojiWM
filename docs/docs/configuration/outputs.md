@@ -297,8 +297,9 @@ display['DP-1'] = {directScanout: false};
 
 Tearing (`allowTearing`) does not depend on it: with direct scanout off, the
 composited frame of a tearing window is flipped asynchronously instead of the
-client's buffer. In a Rust config it is the `direct_scanout` field of
-`RuntimeOutputConfig`.
+client's buffer. An output connected to a GPU other than the one that renders
+is composited anyway, so the setting changes nothing there. In a Rust config it
+is the `direct_scanout` field of `RuntimeOutputConfig`.
 
 ## Switching panels off (DPMS)
 
