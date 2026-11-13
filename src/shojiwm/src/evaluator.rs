@@ -8512,9 +8512,36 @@ COMPOSITOR.window.composition = () => <Box />;
     // runtime directly and watch the process fd table.
     #[test]
     fn embedded_runtime_ipc_does_not_leak_fds_across_reloads() {
-        fn open_fds() -> usize {
+        // Only sockets bound under `dir`: tests in the same process open and
+        // close their own descriptors in parallel, so the whole fd table moves
+        // under this test.
+        fn own_socket_fds(dir: &std::path::Path) -> usize {
+            let dir = dir.to_string_lossy();
+            let inodes: std::collections::HashSet<String> =
+                std::fs::read_to_string("/proc/net/unix")
+                    .unwrap_or_default()
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| {
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        (fields.len() >= 8 && fields[7].starts_with(dir.as_ref()))
+                            .then(|| fields[6].to_owned())
+                    })
+                    .collect();
             std::fs::read_dir("/proc/self/fd")
-                .map(|entries| entries.count())
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+                        .filter(|target| {
+                            target
+                                .to_str()
+                                .and_then(|target| target.strip_prefix("socket:["))
+                                .and_then(|target| target.strip_suffix(']'))
+                                .is_some_and(|inode| inodes.contains(inode))
+                        })
+                        .count()
+                })
                 .unwrap_or(0)
         }
 
@@ -8566,6 +8593,10 @@ COMPOSITOR.window.composition = () => <Box />;
             socket
                 .write_all(b"{\"id\":1,\"method\":\"ping\"}\n")
                 .expect("IPC request should be written");
+            assert!(
+                own_socket_fds(&test_dir) > 0,
+                "the IPC server's socket should be counted while it serves"
+            );
             let mut response = String::new();
             BufReader::new(socket)
                 .read_line(&mut response)
@@ -8584,11 +8615,11 @@ COMPOSITOR.window.composition = () => <Box />;
             // Let the first couple of cycles settle before sampling, so
             // one-off allocations are not counted as growth.
             if cycle == 1 {
-                baseline = open_fds();
+                baseline = own_socket_fds(&test_dir);
             }
         }
 
-        let after = open_fds();
+        let after = own_socket_fds(&test_dir);
         assert!(
             after <= baseline + 2,
             "IPC sockets leaked across reloads: {baseline} fds after cycle 1, {after} after cycle 5"
