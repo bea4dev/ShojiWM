@@ -1,7 +1,7 @@
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     backend::renderer::buffer_dimensions,
-    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
+    desktop::{LayerSurface, WindowSurfaceType, find_popup_root_surface, layer_map_for_output},
     output::Output,
     reexports::wayland_server::{
         Resource,
@@ -325,7 +325,15 @@ pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface, damage: LayerComm
             .seat
             .get_keyboard()
             .and_then(|keyboard| keyboard.current_focus())
-            .is_some_and(|focus| &focus == layer.wl_surface());
+            .is_some_and(|focus| {
+                // A popup grab of the layer moves the keyboard onto the popup.
+                let root = state
+                    .popups
+                    .find_popup(&focus)
+                    .and_then(|popup| find_popup_root_surface(&popup).ok())
+                    .unwrap_or(focus);
+                &root == layer.wl_surface()
+            });
 
         if matches!(
             keyboard_interactivity,

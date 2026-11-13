@@ -23,7 +23,9 @@ use wayland_client::{
         wl_buffer, wl_compositor, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1,
 };
@@ -265,6 +267,29 @@ impl Session {
         self.attach_buffer(&surface, 1024, 40);
         (surface, layer)
     }
+
+    /// Opens an xdg popup with a grab on `layer` and maps it with a buffer.
+    pub fn open_grabbing_layer_popup(
+        &mut self,
+        layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    ) -> (wl_surface::WlSurface, xdg_popup::XdgPopup) {
+        let qh = self.queue.handle();
+        let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 1);
+        let wm_base: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 1);
+        let seat: wl_seat::WlSeat = self.bind("wl_seat", 1);
+        let surface = compositor.create_surface(&qh, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+        let positioner = wm_base.create_positioner(&qh, ());
+        positioner.set_size(200, 100);
+        positioner.set_anchor_rect(0, 0, 40, 40);
+        let popup = xdg_surface.get_popup(None, &positioner, &qh, ());
+        layer.get_popup(&popup);
+        popup.grab(&seat, 0);
+        surface.commit();
+        self.roundtrip();
+        self.attach_buffer(&surface, 200, 100);
+        (surface, popup)
+    }
 }
 
 #[derive(Default)]
@@ -393,6 +418,8 @@ ignore_events!(
     wl_shm_pool::WlShmPool,
     wl_buffer::WlBuffer,
     xdg_toplevel::XdgToplevel,
+    xdg_positioner::XdgPositioner,
+    xdg_popup::XdgPopup,
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
     wl_seat::WlSeat,
     wl_output::WlOutput,
