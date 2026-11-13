@@ -1197,6 +1197,10 @@ struct SurfaceData {
     /// Miss-window state (see [`CURSOR_MARGIN_WINDOW_COMMITS`]).
     cursor_margin_window_commits: u16,
     cursor_margin_window_misses: u8,
+    /// Variable refresh rate is on (`sync_output_vrr`). The panel then shows a frame as
+    /// soon as it is committed instead of at a fixed vblank, so nothing waits for a commit
+    /// deadline (see [`HeldSubmit`]).
+    vrr: bool,
     /// A rendered frame held back until the commit deadline (see
     /// [`DeferredSubmit`]). While this is `Some`, `frame_pending` and
     /// `WaitingForVBlank` are already set as if the frame had been committed,
@@ -2108,6 +2112,7 @@ impl SurfaceData {
             cursor_margin_period_basis: frame_duration,
             cursor_margin_window_commits: 0,
             cursor_margin_window_misses: 0,
+            vrr: false,
             deferred_submit: None,
             deferred_submit_generation: 0,
             ahead_submit: None,
@@ -2986,10 +2991,30 @@ fn drivers_take_part_in_implicit_sync(drivers: &[Option<String>]) -> bool {
 #[cfg(test)]
 mod vblank_grid_tests {
     use super::{
-        VBLANK_GRID_HISTORY, ratchet_frame_target, sanitize_next_frame_target, vblank_grid,
+        HeldSubmit, VBLANK_GRID_HISTORY, held_submit, ratchet_frame_target,
+        sanitize_next_frame_target, vblank_grid,
     };
     use std::collections::VecDeque;
     use std::time::Duration;
+
+    /// Fixed refresh holds a frame until its deadline, or not at all once it passed; VRR has
+    /// no vblank to aim for and only waits for the input that is already in.
+    #[test]
+    fn held_frames_wait_for_the_deadline_only_at_a_fixed_refresh() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            held_submit(false, Some(ms(105)), ms(100)),
+            Some(HeldSubmit::Deadline(ms(5)))
+        );
+        assert_eq!(held_submit(false, Some(ms(100)), ms(100)), None);
+        assert_eq!(held_submit(false, None, ms(100)), None);
+        for deadline in [Some(ms(105)), Some(ms(95)), None] {
+            assert_eq!(
+                held_submit(true, deadline, ms(100)),
+                Some(HeldSubmit::AfterPendingInput)
+            );
+        }
+    }
 
     const PERIOD_US: f64 = 1_000_000.0 / 120.0;
 
@@ -3420,12 +3445,12 @@ fn frame_finish(
             wp_presentation_feedback::Kind::Vsync
         };
 
-        feedback.presented::<Duration, Monotonic>(
-            clock,
-            Refresh::fixed(surface.frame_duration),
-            sequence as u64,
-            flags,
-        );
+        let refresh = if surface.vrr {
+            Refresh::variable(surface.frame_duration)
+        } else {
+            Refresh::fixed(surface.frame_duration)
+        };
+        feedback.presented::<Duration, Monotonic>(clock, refresh, sequence as u64, flags);
     }
 
     surface.last_presented_at = Some(presentation_clock);
@@ -3838,19 +3863,10 @@ fn submit_ahead_frame(
     if cursor_fast_path_enabled()
         && surface.cursor_on_plane
         && pointer_moving
-        && let Some(deadline) = commit_deadline(surface, now)
-        && deadline > now
+        && let Some(hold) = held_submit(surface.vrr, commit_deadline(surface, now), now)
+        && arm_held_submit(loop_handle, node, crtc, generation, hold)
     {
-        let callback_loop_handle = loop_handle.clone();
-        if loop_handle
-            .insert_source(Timer::from_duration(deadline - now), move |_, _, state| {
-                submit_deferred_frame(state, &callback_loop_handle, node, crtc, generation, true);
-                TimeoutAction::Drop
-            })
-            .is_ok()
-        {
-            return;
-        }
+        return;
     }
     submit_deferred_frame(state, loop_handle, node, crtc, generation, false);
 }
@@ -4032,6 +4048,68 @@ fn commit_deadline(surface: &SurfaceData, now: Duration) -> Option<Duration> {
     Some(next_vblank.saturating_sub(margin + surface.vblank_timestamp_lead))
 }
 
+/// When a frame rendered while the pointer moves is submitted, so that its cursor plane
+/// carries the freshest pointer position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeldSubmit {
+    /// After this long: just before the next vblank (`commit_deadline`).
+    Deadline(Duration),
+    /// Under VRR the panel shows a frame as soon as it is committed, so there is no vblank
+    /// to aim for and holding the frame only adds latency. It goes out as soon as the event
+    /// loop has handled the input that arrived while it rendered.
+    AfterPendingInput,
+}
+
+/// How to hold a frame rendered while the pointer moves; `None` submits it now (its
+/// deadline already passed, or there is no vblank to predict from).
+fn held_submit(vrr: bool, deadline: Option<Duration>, now: Duration) -> Option<HeldSubmit> {
+    if vrr {
+        return Some(HeldSubmit::AfterPendingInput);
+    }
+    deadline
+        .filter(|deadline| *deadline > now)
+        .map(|deadline| HeldSubmit::Deadline(deadline - now))
+}
+
+/// Arm the submission of the frame held as the surface's `deferred_submit` (`generation`).
+/// `false` when nothing could be armed; the caller submits the frame itself.
+fn arm_held_submit(
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    generation: u64,
+    hold: HeldSubmit,
+) -> bool {
+    let callback_loop_handle = loop_handle.clone();
+    match hold {
+        HeldSubmit::Deadline(delay) => loop_handle
+            .insert_source(Timer::from_duration(delay), move |_, _, state| {
+                submit_deferred_frame(state, &callback_loop_handle, node, crtc, generation, true);
+                TimeoutAction::Drop
+            })
+            .is_ok(),
+        // The render ran on this thread, so input that arrived meanwhile is still unread.
+        // An expired timer makes the next poll return at once with whatever is ready, and
+        // an idle callback runs after every source that poll woke has been dispatched.
+        HeldSubmit::AfterPendingInput => loop_handle
+            .insert_source(Timer::immediate(), move |_, _, _| {
+                let submit_loop_handle = callback_loop_handle.clone();
+                callback_loop_handle.insert_idle(move |state| {
+                    submit_deferred_frame(
+                        state,
+                        &submit_loop_handle,
+                        node,
+                        crtc,
+                        generation,
+                        false,
+                    );
+                });
+                TimeoutAction::Drop
+            })
+            .is_ok(),
+    }
+}
+
 /// Record which vblank a deadline-scheduled commit targets so `frame_finish`
 /// can adapt the margin from where it actually lands. Only commits for which
 /// the margin was the binding constraint may participate: callers must not
@@ -4125,7 +4203,10 @@ fn fast_cursor_move_inner(
     // no point arming a cursor timer of our own: patching the staged frame
     // immediately (below) is free, and the hold timer re-patches with the
     // final position right before it submits.
-    if allow_defer && surface.deferred_submit.is_none() {
+    // Under VRR there is no vblank to wait for: the smithay fork refuses a cursor-only
+    // commit there (it would refresh the panel by itself), so motion goes straight to a
+    // render, whose frame is patched with the freshest position before it is committed.
+    if allow_defer && surface.deferred_submit.is_none() && !surface.vrr {
         let now = Duration::from(clock.now());
         if let Some(deadline) = commit_deadline(surface, now) {
             if now < deadline {
@@ -6779,7 +6860,9 @@ fn render_surface(
             // Deferred submission (cursor freshness): hold the rendered frame
             // — it stays staged inside the DrmCompositor as `next_frame` —
             // until the commit deadline, so the cursor plane carries the
-            // freshest pointer position when it finally flies. The hold only
+            // freshest pointer position when it finally flies (under VRR,
+            // only until the input that came in meanwhile is handled; see
+            // `HeldSubmit`). The hold only
             // buys cursor freshness, so it is gated on the pointer actually
             // moving; a render that finishes past the deadline (or when the
             // gate is off) submits immediately below, exactly as before.
@@ -6800,28 +6883,10 @@ fn render_surface(
                     .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
             {
                 let now = Duration::from(state.clock.now());
-                if let Some(deadline) = commit_deadline(surface, now)
-                    && deadline > now
-                {
+                if let Some(hold) = held_submit(surface.vrr, commit_deadline(surface, now), now) {
                     let generation = surface.deferred_submit_generation.wrapping_add(1);
                     surface.deferred_submit_generation = generation;
-                    let callback_loop_handle = loop_handle.clone();
-                    if loop_handle
-                        .insert_source(Timer::from_duration(deadline - now), move |_, _, state| {
-                            submit_deferred_frame(
-                                state,
-                                &callback_loop_handle,
-                                node,
-                                crtc,
-                                generation,
-                                true,
-                            );
-                            TimeoutAction::Drop
-                        })
-                        .is_ok()
-                    {
-                        deferred = true;
-                    }
+                    deferred = arm_held_submit(loop_handle, node, crtc, generation, hold);
                 }
             }
             if rendering_ahead {
@@ -6846,22 +6911,6 @@ fn render_surface(
                     frame_target: frame_time,
                 });
             } else {
-                // Even without the hold (late render or gate off), re-patch
-                // the staged cursor position right before submission: the
-                // render sampled the pointer at its start, and a heavy render
-                // leaves that several milliseconds stale by now.
-                if cursor_fast_path_enabled()
-                    && result.cursor_plane_assigned
-                    && !should_tear
-                    && output_geo.to_f64().contains(pointer_pos)
-                {
-                    let cursor_location = (pointer_pos
-                        - output_geo.loc.to_f64()
-                        - surface.last_cursor_hotspot.to_f64())
-                    .to_physical(scale)
-                    .to_i32_round();
-                    let _ = surface.target.update_cursor_position(cursor_location);
-                }
                 // `should_tear` selects an immediate (async) page flip when the fullscreen
                 // direct-scanout tearing fast path is active, and a normal vblank-synced flip
                 // otherwise. See `should_tear` / the tearing fast-path block above.
@@ -17642,13 +17691,14 @@ pub fn set_output_gamma(state: &ShojiWM, output: &Output, ramps: Option<&[u16]>)
 /// Bring each DRM output's variable refresh rate in line with its `vrr`
 /// setting. A connector that does not report `vrr_capable` keeps it off.
 pub fn sync_output_vrr(state: &mut ShojiWM) {
-    for backend in state.tty_backends.values() {
+    let mut changed = false;
+    for backend in state.tty_backends.values_mut() {
         let connectors: HashMap<crtc::Handle, connector::Handle> = backend
             .drm_scanner
             .crtcs()
             .map(|(info, crtc)| (crtc, info.handle()))
             .collect();
-        for (crtc, surface) in backend.surfaces.iter() {
+        for (crtc, surface) in backend.surfaces.iter_mut() {
             let SurfaceTarget::Drm(drm_output) = &surface.target else {
                 continue;
             };
@@ -17661,20 +17711,20 @@ pub fn sync_output_vrr(state: &mut ShojiWM) {
                 .get(&name)
                 .and_then(|config| config.vrr)
                 .unwrap_or(false);
-            drm_output.with_compositor(|compositor| {
+            let enabled = drm_output.with_compositor(|compositor| {
                 if compositor.vrr_enabled() == wanted {
-                    return;
+                    return wanted;
                 }
                 if wanted {
                     match compositor.vrr_supported(connector) {
                         Ok(VrrSupport::Supported | VrrSupport::RequiresModeset) => {}
                         Ok(VrrSupport::NotSupported) => {
                             warn!(output = %name, "vrr requested, but the connector is not vrr_capable");
-                            return;
+                            return false;
                         }
                         Err(error) => {
                             warn!(output = %name, ?error, "could not read the connector's vrr support");
-                            return;
+                            return false;
                         }
                     }
                 }
@@ -17682,7 +17732,17 @@ pub fn sync_output_vrr(state: &mut ShojiWM) {
                     Ok(()) => info!(output = %name, vrr = wanted, "variable refresh rate set"),
                     Err(error) => warn!(output = %name, vrr = wanted, ?error, "could not set vrr"),
                 }
+                compositor.vrr_enabled()
             });
+            if surface.vrr != enabled {
+                surface.vrr = enabled;
+                changed = true;
+            }
         }
+    }
+    // The switch rides on the next commit (a modeset where the driver needs one); an idle
+    // output would not make one by itself.
+    if changed {
+        state.schedule_redraw();
     }
 }
