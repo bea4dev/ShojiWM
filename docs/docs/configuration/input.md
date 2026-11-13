@@ -56,10 +56,34 @@ override). Each value is an `InputDeviceConfig` with optional `keyboard`,
 | `model` | `string` | Keyboard model |
 | `repeatRate` | `number` | Key repeats per second |
 | `repeatDelay` | `number` | Delay (ms) before key repeat starts |
+| `numLock` | `"on" \| "off" \| "restore"` | Num Lock state at session start (see below) |
 
 ```ts
 input.global = {
   keyboard: {layout: 'us', options: 'caps:ctrl_modifier', repeatRate: 60, repeatDelay: 250},
+};
+```
+
+### Num Lock at session start
+
+`numLock` sets the Num Lock state once per session, when the compositor first
+applies a config with it. Later config reloads and new keyboards do not change
+it, so a toggle you make with the key stays. A keymap change (a reload, or
+another `layout`) keeps the current state.
+
+- `"on"` / `"off"`: start with Num Lock on or off.
+- `"restore"`: start with the state the previous session ended with. The
+  compositor saves each change to `$XDG_STATE_HOME/shoji_wm/num-lock`
+  (`~/.local/state/shoji_wm/num-lock` when `XDG_STATE_HOME` is unset). If the
+  file does not exist yet, Num Lock stays as it is.
+
+Without `numLock`, the compositor does not touch Num Lock. Only
+`input.global.keyboard.numLock` is read: all keyboards share one Num Lock
+state, so a per-device value has no effect.
+
+```ts
+input.global = {
+  keyboard: {numLock: 'restore'},
 };
 ```
 
