@@ -430,8 +430,23 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
     for display_number in start..start + 50 {
         let lock_path = PathBuf::from(format!("/tmp/.X{display_number}-lock"));
         let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
-        let Ok(lock_fd) = open(&lock_path, flags, 0o444.into()) else {
-            continue;
+        let lock_fd = match open(&lock_path, flags, 0o444.into()) {
+            Ok(fd) => fd,
+            // A lock left by a server that is gone (killed, crashed) holds the display for no
+            // one: take it back with its socket, as Xorg and Xwayland do, and try again.
+            Err(_) if lock_is_stale(&lock_path) => {
+                info!(
+                    display = %format_args!(":{display_number}"),
+                    "removing a stale X11 display lock"
+                );
+                let _ = fs::remove_file(&lock_path);
+                let _ = fs::remove_file(format!("/tmp/.X11-unix/X{display_number}"));
+                let Ok(fd) = open(&lock_path, flags, 0o444.into()) else {
+                    continue;
+                };
+                fd
+            }
+            Err(_) => continue,
         };
         let lock_guard = UnlinkGuard(lock_path);
 
@@ -461,6 +476,18 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
     }
 
     Err(io::Error::other("no free X11 display found").into())
+}
+
+/// Whether the X11 lock file at `path` names a process that no longer runs. A lock that cannot
+/// be read, or holds no number, is not called stale: it may be one being written.
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return false;
+    };
+    pid != 0 && !Path::new(&format!("/proc/{pid}")).exists()
 }
 
 fn x11_socket_is_in_use(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -653,7 +680,7 @@ mod mode_tests {
 mod tests {
     use super::{
         X11_TMP_UNIX_DIR, bind_to_abstract_socket, bind_to_unix_socket, ensure_x11_unix_dir,
-        reserve_x11_display,
+        lock_is_stale, reserve_x11_display,
     };
     use std::{
         fs,
@@ -695,6 +722,23 @@ mod tests {
         fn drop(&mut self) {
             self.remove();
         }
+    }
+
+    #[test]
+    fn a_lock_of_a_process_that_is_gone_is_stale() {
+        let dir = std::env::temp_dir().join(format!("shojiwm-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(".X7-lock");
+        // The test's own process runs: its lock is not stale.
+        std::fs::write(&lock, format!("{:>10}\n", std::process::id())).unwrap();
+        assert!(!lock_is_stale(&lock));
+        // No process has this number (above pid_max).
+        std::fs::write(&lock, format!("{:>10}\n", 4_194_305)).unwrap();
+        assert!(lock_is_stale(&lock));
+        // Being written: no number yet.
+        std::fs::write(&lock, "").unwrap();
+        assert!(!lock_is_stale(&lock));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
