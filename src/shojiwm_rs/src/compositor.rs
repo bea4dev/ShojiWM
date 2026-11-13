@@ -141,6 +141,21 @@ impl Compositor {
         with_registry(|registry| registry.listeners.disable.push(Rc::new(listener)));
     }
 
+    /// Runs when the user asks for a reload (`--reload`, `Super+Shift+R`).
+    ///
+    /// A compiled config cannot be swapped for a fresh one, so this is where
+    /// it reads again whatever it keeps as data, a settings file say, and
+    /// registers what changed (binds, input, outputs). An `Err` is shown as
+    /// the reload's error and nothing else happens; the listener should
+    /// leave the running state alone in that case. Without a listener a
+    /// reload stays unsupported.
+    ///
+    /// The compositor ends the config's input grab and closes its overlays
+    /// on a reload, as it does for a config it swaps.
+    pub fn on_reload(&self, listener: impl Fn() -> Result<(), String> + 'static) {
+        with_registry(|registry| registry.listeners.reload.push(Rc::new(listener)));
+    }
+
     /// A [`Sender`] usable from any thread; every value is handed to
     /// `handler` on the compositor thread, which is woken for it. Use it to
     /// feed IPC servers or worker threads into the config.
