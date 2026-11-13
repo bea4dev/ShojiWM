@@ -1026,7 +1026,7 @@ impl smithay::wayland::selection::ext_data_control::DataControlHandler for Shoji
 //
 
 impl OutputHandler for ShojiWM {
-    fn output_bound(&mut self, _output: Output, _wl_output: WlOutput) {
+    fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
         // ext-workspace may be bound before wl_output. Refresh group/output
         // associations whenever a client creates a wl_output resource so that
         // the matching group receives output_enter regardless of bind order.
@@ -1034,6 +1034,8 @@ impl OutputHandler for ShojiWM {
         let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
         self.ext_workspace_manager_state
             .refresh_outputs(&dh, &outputs);
+        // The same holds for wlr-foreign-toplevel's output_enter.
+        self.wlr_foreign_toplevel_output_bound(&output, &wl_output);
     }
 }
 

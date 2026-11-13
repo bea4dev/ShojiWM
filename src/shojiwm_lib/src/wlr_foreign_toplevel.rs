@@ -255,6 +255,36 @@ impl WlrForeignToplevelHandle {
         }
     }
 
+    /// Remember a `wl_output` its client bound after this toplevel was
+    /// announced to it, so output_enter can name that output.
+    fn add_output_resource(&self, name: &str, wl_output: &WlOutput) {
+        let Some(client_id) = wl_output.client().map(|client| client.id()) else {
+            return;
+        };
+        let mut inner = self.inner.lock().unwrap();
+        retain_live_instances(&mut inner);
+        for instance in &mut inner.instances {
+            let same_client = instance
+                .resource
+                .upgrade()
+                .ok()
+                .and_then(|resource| resource.client())
+                .is_some_and(|client| client.id() == client_id);
+            if !same_client || cached_output_resource(&instance.output_resources, name).is_some() {
+                continue;
+            }
+            instance
+                .output_resources
+                .retain(|output| output.name != name);
+            instance
+                .output_resources
+                .push(WlrForeignToplevelOutputResource {
+                    name: name.to_owned(),
+                    resource: wl_output.downgrade(),
+                });
+        }
+    }
+
     fn send_closed(&self) {
         let resources = {
             let mut inner = self.inner.lock().unwrap();
@@ -392,21 +422,28 @@ fn update_outputs_for_instance(
     output_resources: &[WlrForeignToplevelOutputResource],
     entered_outputs: &mut Vec<String>,
 ) -> bool {
-    if entered_outputs == desired_names {
+    // Only outputs the client has bound can be entered. The others are entered
+    // once it binds them (see `wlr_foreign_toplevel_output_bound`).
+    let reachable: Vec<String> = desired_names
+        .iter()
+        .filter(|name| cached_output_resource(output_resources, name).is_some())
+        .cloned()
+        .collect();
+    if *entered_outputs == reachable {
         return false;
     }
 
-    for entered_name in entered_outputs.clone() {
-        if desired_names.iter().any(|name| name == &entered_name) {
+    for entered_name in entered_outputs.iter() {
+        if reachable.iter().any(|name| name == entered_name) {
             continue;
         }
-        let Some(wl_output) = cached_output_resource(output_resources, &entered_name) else {
+        let Some(wl_output) = cached_output_resource(output_resources, entered_name) else {
             continue;
         };
         resource.output_leave(&wl_output);
     }
 
-    for name in desired_names {
+    for name in &reachable {
         if entered_outputs.iter().any(|entered| entered == name) {
             continue;
         }
@@ -416,12 +453,9 @@ fn update_outputs_for_instance(
         resource.output_enter(&wl_output);
     }
 
-    let changed = entered_outputs != desired_names;
-    if changed {
-        *entered_outputs = desired_names.to_vec();
-        resource.done();
-    }
-    changed
+    *entered_outputs = reachable;
+    resource.done();
+    true
 }
 
 fn cached_output_resource(
@@ -790,6 +824,27 @@ impl ShojiWM {
             };
             let snapshot = self.snapshot_window(&window);
             self.sync_wlr_handle_from_snapshot(&window, &handle, &snapshot);
+        }
+    }
+
+    /// A client may bind the manager before `wl_output` (the registry lists
+    /// it first), and then its toplevels were announced with no output to
+    /// enter. Enter the ones on `output` now that the client can be told.
+    pub fn wlr_foreign_toplevel_output_bound(&mut self, output: &Output, wl_output: &WlOutput) {
+        let name = output.name();
+        for handle in &self.wlr_foreign_toplevel_manager_state.handles {
+            handle.add_output_resource(&name, wl_output);
+        }
+        let windows: Vec<_> = self.space.elements().cloned().collect();
+        for window in windows {
+            let Some(handle) = window
+                .user_data()
+                .get::<WlrForeignToplevelHandle>()
+                .cloned()
+            else {
+                continue;
+            };
+            handle.send_outputs(&self.wlr_outputs_for_window(&window));
         }
     }
 

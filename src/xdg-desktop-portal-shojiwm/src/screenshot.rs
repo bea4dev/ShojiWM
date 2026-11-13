@@ -10,6 +10,7 @@
 //! closing animation are never in the picture.
 
 use std::collections::HashMap;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -149,8 +150,15 @@ fn screenshot_path() -> PathBuf {
     std::env::temp_dir().join(format!("shojiwm-screenshot-{millis}.png"))
 }
 
+/// Write `capture` to a new file at `path` that only this user can read: the
+/// temp directory is shared with other users.
 fn write_png(path: &Path, capture: &Capture) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let mut encoder =
         png::Encoder::new(std::io::BufWriter::new(file), capture.width, capture.height);
     encoder.set_color(png::ColorType::Rgba);
@@ -187,7 +195,12 @@ mod tests {
         };
         let path =
             std::env::temp_dir().join(format!("shojiwm-png-test-{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         write_png(&path, &capture).unwrap();
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
 
         let decoder =
             png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
