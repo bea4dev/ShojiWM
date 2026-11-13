@@ -299,6 +299,12 @@ to that entire image; subsurfaces are not drawn a second time above it.
 Popups remain independently composed. A root-surface source continues to
 exclude subsurfaces.
 
+In a window's `behind` and `behindRootSurface` slots, an effect whose only
+input is `backdropSource()` reads what lies under the window (plus its
+`outsets`), as it is drawn. A translucent window over it then shows the blurred
+or tinted scene, not a second copy of itself. In `inFront` and `replace`,
+`backdropSource()` still reads the window itself, like `windowSource()`.
+
 ### Subsurfaces
 
 Subsurfaces (embedded video, previews, some browser content) may reach outside

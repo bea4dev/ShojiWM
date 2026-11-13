@@ -3112,6 +3112,153 @@ mod vblank_grid_tests {
 }
 
 #[cfg(test)]
+mod window_backdrop_effect_tests {
+    use super::{TtyRenderElements, window_backdrop_effect_elements};
+    use crate::ssd::{
+        CompiledEffect, EffectAlphaMode, EffectInput, EffectInvalidationPolicy, EffectStage,
+        LogicalRect, ShaderModule, ShaderStage, WindowEffectSlot,
+    };
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+    use smithay::backend::renderer::damage::OutputDamageTracker;
+    use smithay::backend::renderer::element::Id;
+    use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+    use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+    use smithay::backend::renderer::{Bind, Color32F, ExportMem, Offscreen};
+    use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
+
+    fn try_renderer() -> Option<GlesRenderer> {
+        let gbm = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/dri/renderD128")
+            .ok()
+            .and_then(|fd| smithay::backend::allocator::gbm::GbmDevice::new(fd).ok())?;
+        let egl = unsafe { EGLDisplay::new(gbm).ok()? };
+        let ctx = EGLContext::new(&egl).ok()?;
+        unsafe { GlesRenderer::new(ctx).ok() }
+    }
+
+    fn solid(rect: Rectangle<i32, Physical>, color: Color32F) -> TtyRenderElements {
+        TtyRenderElements::Blink(SolidColorRenderElement::new(
+            Id::new(),
+            rect,
+            0,
+            color,
+            Kind::Unspecified,
+        ))
+    }
+
+    /// A window at half opacity over white, with a pass-through
+    /// `backdropSource()` effect behind it, blends with the white once: the
+    /// effect shows what is under the window, not the window again.
+    #[test]
+    fn a_behind_backdrop_shows_what_is_under_a_translucent_window() {
+        let Some(mut renderer) = try_renderer() else {
+            eprintln!("no render node; skipping");
+            return;
+        };
+        let shader_path = std::env::temp_dir().join(format!(
+            "shojiwm-window-backdrop-test-{}.frag",
+            std::process::id()
+        ));
+        std::fs::write(
+            &shader_path,
+            "vec4 shader_main(EffectContext effect) {\n\
+             \x20   return texture2D(tex, effect.texture_uv);\n\
+             }\n",
+        )
+        .unwrap();
+        let slot = WindowEffectSlot {
+            effect: CompiledEffect {
+                input: EffectInput::Backdrop,
+                capture_padding: 0,
+                invalidate: EffectInvalidationPolicy::Always,
+                pipeline: vec![EffectStage::Shader(ShaderStage {
+                    shader: ShaderModule {
+                        path: shader_path.to_string_lossy().into_owned(),
+                    },
+                    uniforms: Default::default(),
+                    textures: Default::default(),
+                })],
+                alpha: EffectAlphaMode::Preserve,
+            },
+            outsets: Default::default(),
+            region: Default::default(),
+        };
+        let size = Size::<i32, Physical>::from((48, 48));
+        let opacity = 0.5;
+        let mut state = Default::default();
+        let behind = window_backdrop_effect_elements(
+            &mut renderer,
+            &mut state,
+            Rectangle::from_size((48, 48).into()),
+            Scale::from(1.0),
+            LogicalRect::new(8, 8, 32, 32),
+            &slot,
+            Default::default(),
+            opacity,
+        )
+        .unwrap();
+        assert_eq!(behind.len(), 1);
+
+        // Front to back: the window (41 73 105, premultiplied at its opacity),
+        // the effect, the white below.
+        let [r, g, b] = [41.0f32, 73.0, 105.0].map(|channel| channel / 255.0 * opacity);
+        let mut elements = vec![solid(
+            Rectangle::new((8, 8).into(), (32, 32).into()),
+            Color32F::new(r, g, b, opacity),
+        )];
+        elements.extend(behind);
+        elements.push(solid(
+            Rectangle::from_size(size),
+            Color32F::new(1.0, 1.0, 1.0, 1.0),
+        ));
+        let mut target: GlesTexture = Offscreen::<GlesTexture>::create_buffer(
+            &mut renderer,
+            Fourcc::Abgr8888,
+            (size.w, size.h).into(),
+        )
+        .unwrap();
+        {
+            let mut fb = renderer.bind(&mut target).unwrap();
+            let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+            tracker
+                .render_output(&mut renderer, &mut fb, 0, &elements, [0.0, 0.0, 0.0, 0.0])
+                .unwrap();
+        }
+        let _ = std::fs::remove_file(&shader_path);
+        let pixels = {
+            let fb = renderer.bind(&mut target).unwrap();
+            let mapping = renderer
+                .copy_framebuffer(&fb, Rectangle::from_size((48, 48).into()), Fourcc::Abgr8888)
+                .unwrap();
+            drop(fb);
+            renderer.map_texture(&mapping).unwrap().to_vec()
+        };
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 48 + x) * 4;
+            [pixels[offset], pixels[offset + 1], pixels[offset + 2]]
+        };
+        let near = |actual: [u8; 3], expected: [u8; 3]| {
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 1)
+        };
+        // Half of 41 73 105 over white. Drawing the window into the backdrop
+        // too gave 95 119 143.
+        let inside = pixel(24, 24);
+        assert!(
+            near(inside, [148, 164, 180]),
+            "inside the window: {inside:?}"
+        );
+        assert_eq!(pixel(2, 2), [255, 255, 255], "outside the window");
+    }
+}
+
+#[cfg(test)]
 mod implicit_sync_tests {
     use super::drivers_take_part_in_implicit_sync as trusted;
 
@@ -8696,6 +8843,49 @@ fn window_effect_elements(
     )
 }
 
+/// A `behind` / `behindRootSurface` effect that reads only `backdropSource()`, resolved from
+/// the framebuffer under the window when it is drawn. The capture path would hand it the
+/// window's own pixels as the backdrop, drawing a translucent window a second time behind
+/// itself.
+#[allow(clippy::too_many_arguments)]
+fn window_backdrop_effect_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut crate::backend::shader_effect::ShaderEffectElementState,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    window_rect: crate::ssd::LogicalRect,
+    effect: &crate::ssd::WindowEffectSlot,
+    frame_shape: crate::backend::shader_effect::NodeEffectShape,
+    alpha: f32,
+) -> Result<Vec<TtyRenderElements>, crate::backend::shader_effect::ShaderEffectError> {
+    let rect = expand_logical_rect(window_rect, effect.outsets);
+    if rect.width <= 0 || rect.height <= 0 {
+        return Ok(Vec::new());
+    }
+    let frame = frame_shape.effect_frame(
+        Some(effect_frame_rect_in_texture(rect, window_rect, scale)),
+        scale.x,
+    );
+    Ok(
+        crate::backend::shader_effect::framebuffer_backdrop_element_for_window_effect(
+            renderer,
+            state,
+            rect,
+            frame,
+            effect.effect.clone(),
+            output_geo,
+            scale,
+            alpha,
+        )?
+        .map(|element| {
+            vec![TtyRenderElements::Decoration(
+                decoration::DecorationSceneElements::Backdrop(element),
+            )]
+        })
+        .unwrap_or_default(),
+    )
+}
+
 /// Like [`window_effect_elements`], for an effect covering `window_rect` that belongs to a
 /// larger or offset `frame_rect` (the window, for subsurface effects). The frame is exposed to
 /// shaders as `effect.frame_rect_phy_px`.
@@ -12876,6 +13066,29 @@ fn closing_snapshot_elements(
                 .as_ref()
                 .and_then(|effects| effects.behind_root_surface.as_ref())
                 .and_then(|effect| {
+                    if effect.effect.supports_framebuffer_backdrop() {
+                        return window_backdrop_effect_elements(
+                            renderer,
+                            &mut Default::default(),
+                            output_geo,
+                            scale,
+                            transformed_root_rect(
+                                snapshot.decoration.layout.root.rect,
+                                snapshot.transform,
+                            ),
+                            effect,
+                            window_effect_frame_shape(Some(&snapshot.decoration), effect),
+                            visual.opacity,
+                        )
+                        .inspect_err(|error| {
+                            warn!(
+                                window_id = %snapshot.window_id,
+                                ?error,
+                                "failed to build closing backdrop window behind effect"
+                            );
+                        })
+                        .ok();
+                    }
                     let (rect, source_elements): (_, &[TtyRenderElements]) =
                         match &effect.effect.input {
                             EffectInput::WindowSource(WindowSourceInclude::Full) => (
@@ -12930,6 +13143,29 @@ fn closing_snapshot_elements(
                 .as_ref()
                 .and_then(|effects| effects.behind.as_ref())
                 .and_then(|effect| {
+                    if effect.effect.supports_framebuffer_backdrop() {
+                        return window_backdrop_effect_elements(
+                            renderer,
+                            &mut Default::default(),
+                            output_geo,
+                            scale,
+                            transformed_root_rect(
+                                snapshot.decoration.layout.root.rect,
+                                snapshot.transform,
+                            ),
+                            effect,
+                            window_effect_frame_shape(Some(&snapshot.decoration), effect),
+                            visual.opacity,
+                        )
+                        .inspect_err(|error| {
+                            warn!(
+                                window_id = %snapshot.window_id,
+                                ?error,
+                                "failed to build closing backdrop window behind effect"
+                            );
+                        })
+                        .ok();
+                    }
                     let (rect, source_elements): (_, &[TtyRenderElements]) =
                         match &effect.effect.input {
                             EffectInput::WindowSource(WindowSourceInclude::Full) => (
@@ -17167,6 +17403,39 @@ fn tty_window_stack_elements(
             let behind_root_surface_effects =
                 behind_root_surface_effect_slot.as_ref().and_then(|effect| {
                     let decoration = window_decorations.get(window)?;
+                    if effect.effect.supports_framebuffer_backdrop() {
+                        let rect = transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        );
+                        let frame_shape = window_effect_frame_shape(Some(decoration), effect);
+                        let decoration = window_decorations.get_mut(window)?;
+                        let state = decoration
+                            .shader_cache
+                            .entry(format!(
+                                "window-effect:behind-root-surface@{}",
+                                output.name()
+                            ))
+                            .or_default();
+                        return window_backdrop_effect_elements(
+                            &mut *renderer,
+                            state,
+                            output_geo,
+                            scale,
+                            rect,
+                            effect,
+                            frame_shape,
+                            visual_state.opacity,
+                        )
+                        .inspect_err(|error| {
+                            warn!(
+                                window_id = %window_id,
+                                ?error,
+                                "failed to build backdrop window behind-root-surface effect"
+                            );
+                        })
+                        .ok();
+                    }
                     let (rect, source_elements): (_, &[TtyRenderElements]) =
                         match &effect.effect.input {
                             EffectInput::WindowSource(WindowSourceInclude::Full) => (
@@ -17237,6 +17506,36 @@ fn tty_window_stack_elements(
                 .cloned();
             let behind_effects = behind_effect_slot.as_ref().and_then(|effect| {
                 let decoration = window_decorations.get(window)?;
+                if effect.effect.supports_framebuffer_backdrop() {
+                    let rect = transformed_root_rect(
+                        decoration.layout.root.rect,
+                        decoration.visual_transform,
+                    );
+                    let frame_shape = window_effect_frame_shape(Some(decoration), effect);
+                    let decoration = window_decorations.get_mut(window)?;
+                    let state = decoration
+                        .shader_cache
+                        .entry(format!("window-effect:behind@{}", output.name()))
+                        .or_default();
+                    return window_backdrop_effect_elements(
+                        &mut *renderer,
+                        state,
+                        output_geo,
+                        scale,
+                        rect,
+                        effect,
+                        frame_shape,
+                        visual_state.opacity,
+                    )
+                    .inspect_err(|error| {
+                        warn!(
+                            window_id = %window_id,
+                            ?error,
+                            "failed to build backdrop window behind effect"
+                        );
+                    })
+                    .ok();
+                }
                 let (rect, source_elements): (_, &[TtyRenderElements]) = match &effect.effect.input
                 {
                     EffectInput::WindowSource(WindowSourceInclude::Full) => (
