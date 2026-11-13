@@ -1,4 +1,5 @@
 pub mod color_management;
+pub mod gamma_control;
 pub mod hyprland_toplevel_export;
 pub mod input_method;
 pub mod output_power;

@@ -290,6 +290,9 @@ pub struct ShojiWM {
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
     pub tearing_control_state: crate::protocols::tearing_control::TearingControlManagerState,
     pub output_power_manager_state: crate::protocols::output_power::OutputPowerManagerState,
+    pub gamma_control_manager_state: crate::protocols::gamma_control::GammaControlManagerState,
+    /// Gamma ramps a wlr-gamma-control client set, by output name.
+    pub gamma_ramps: HashMap<String, Vec<u16>>,
     /// Outputs whose panel is switched off (DPMS), by name; see [`crate::output_power`].
     pub powered_off_outputs: HashMap<String, crate::output_power::PoweredOffOutput>,
     /// Outputs with no connector, in the order made (see [`crate::headless_output`]).
@@ -1680,6 +1683,8 @@ impl ShojiWM {
         let output_power_manager_state =
             crate::protocols::output_power::OutputPowerManagerState::new::<Self>(&dh);
         crate::protocols::virtual_pointer::VirtualPointerManagerState::new::<Self>(&dh);
+        let gamma_control_manager_state =
+            crate::protocols::gamma_control::GammaControlManagerState::new::<Self>(&dh);
         let color_management_state =
             crate::protocols::color_management::ColorManagementState::new::<Self>(&dh);
         let foreign_toplevel_list_state =
@@ -1853,6 +1858,8 @@ impl ShojiWM {
             screencopy_state,
             tearing_control_state,
             output_power_manager_state,
+            gamma_control_manager_state,
+            gamma_ramps: HashMap::new(),
             powered_off_outputs: HashMap::new(),
             headless_outputs: Vec::new(),
             color_management_state,

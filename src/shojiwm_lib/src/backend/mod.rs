@@ -173,6 +173,7 @@ pub fn run_tty_udev(
                     warn!(?err, "failed to resume libinput context");
                 }
                 resume_tty_session(state);
+                state.reapply_gamma();
             }
         },
     )?;

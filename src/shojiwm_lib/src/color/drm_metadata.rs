@@ -82,7 +82,7 @@ fn find_connector_property(
     find_object_property(device, conn.handle(), name)
 }
 
-fn find_object_property(
+pub(crate) fn find_object_property(
     device: &impl ControlDevice,
     handle: impl ResourceHandle,
     name: &str,
