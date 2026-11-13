@@ -106,6 +106,11 @@ second one), or a virtual keyboard clearing it without a key event, as
 apply. Like other bindings it does not fire while the session is locked or an
 input grab takes the keyboard. In Rust it is `KeyBindOptions::new().on_release().transparent()`.
 
+It fires after every use of the modifier, not only the chord you have in mind:
+a `Shift` binding fires after each capital letter, an `Alt` one after an
+Alt+drag of a window. Have the handler do nothing when there is nothing to
+finish, such as a switcher that is not open.
+
 ### Repeating and locked bindings
 
 `repeat: true` fires the handler again while the key is held, after the

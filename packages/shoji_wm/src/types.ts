@@ -2075,11 +2075,14 @@ export interface KeyBindingOptions {
    * up, also after it was held for a chord such as Alt+Tab, instead of only
    * after a bare tap. It follows the keyboard's modifier state, so a virtual
    * keyboard letting go of the modifier without a key event (`wtype -m alt`)
-   * fires it too. Cannot be combined with `within`.
+   * fires it too, and so does any other use of it: `Shift` after every capital
+   * letter, `Alt` after an Alt+drag. Cannot be combined with `within`.
    * 修飾キー単体＋`on: "release"` 専用: 修飾キー単体のタップだけでなく、Alt+Tab
    * のような組み合わせで押していた後も、修飾キーが離されるたびに発火します。
    * キーボードの修飾キー状態に従うので、仮想キーボードがキーイベントなしで
-   * 修飾キーを離した場合（`wtype -m alt`）も発火します。`within` とは併用できません。
+   * 修飾キーを離した場合（`wtype -m alt`）も発火します。ほかの用途で押した後も
+   * 同じで、`Shift` なら大文字を打つたび、`Alt` なら Alt+ドラッグの後に発火します。
+   * `within` とは併用できません。
    */
   transparent?: boolean;
 }

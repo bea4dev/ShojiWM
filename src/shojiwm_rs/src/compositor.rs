@@ -453,7 +453,7 @@ pub struct KeyBindOptions {
     /// on press only.
     pub repeat: bool,
     /// A bare modifier on release: fire whenever it goes up, also after a
-    /// chord such as Alt+Tab, not only after a tap.
+    /// chord such as Alt+Tab or an Alt+drag, not only after a tap.
     pub transparent: bool,
 }
 
