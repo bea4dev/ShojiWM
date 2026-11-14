@@ -8,7 +8,7 @@
 //! an output that already has one, or whose gamma cannot be set, gets
 //! `failed`. Destroying the control puts the output's default ramps back.
 
-use std::{fs::File, os::unix::fs::FileExt};
+use std::{fs::File, io::Read};
 
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols_wlr::gamma_control::v1::server::{
@@ -215,11 +215,12 @@ where
 }
 
 /// Reads the red, green and blue ramps, `size` native-endian `u16` each.
-/// The client may hand any file; it is read from its start, like wlroots does.
-fn read_ramps(file: File, size: u32) -> Option<Vec<u16>> {
+/// The client may hand any file; it is read in order, like wlroots does.
+/// Pipes have no position, and clients — `wlsunset`, the shell — send those.
+fn read_ramps(mut file: File, size: u32) -> Option<Vec<u16>> {
     let entries = size as usize * 3;
     let mut bytes = vec![0u8; entries * 2];
-    if let Err(error) = file.read_exact_at(&mut bytes, 0) {
+    if let Err(error) = file.read_exact(&mut bytes) {
         warn!(?error, "could not read a gamma table");
         return None;
     }
