@@ -979,7 +979,26 @@ pub fn init_winit(
     event_loop: &mut EventLoop<ShojiWM>,
     state: &mut ShojiWM,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    let (mut backend, winit) = match std::env::var("SHOJI_WINIT_SIZE")
+        .ok()
+        .and_then(|value| crate::runtime_api::cli::parse_size(&value))
+    {
+        // In pixels, so that the output is this big whatever the host's scale (as near as the
+        // scale allows); and not resizable, so that a tiling host floats it instead of fitting
+        // it to a tile. The half pixel keeps 1080 / 1.8 from coming out as 599.99… and losing
+        // a logical pixel to the cut.
+        Some((width, height)) => winit::init_from_attributes::<GlesRenderer>(
+            smithay::reexports::winit::window::WindowAttributes::default()
+                .with_surface_size(smithay::reexports::winit::dpi::PhysicalSize::new(
+                    width as f64 + 0.5,
+                    height as f64 + 0.5,
+                ))
+                .with_resizable(false)
+                .with_title("Smithay")
+                .with_visible(true),
+        )?,
+        None => winit::init::<GlesRenderer>()?,
+    };
     state
         .shm_state
         .update_formats(backend.renderer().shm_formats());

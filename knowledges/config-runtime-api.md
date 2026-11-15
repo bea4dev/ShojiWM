@@ -148,6 +148,7 @@ an environment variable for session wrappers, and the command line wins.
 |---|---|---|
 | `--tty` | | DRM/KMS session instead of nested |
 | `--tty-output <NAME,...>` | `SHOJI_TTY_OUTPUT` | Only drive these connectors |
+| `--winit-size <WxH>` | `SHOJI_WINIT_SIZE` | Nested window's fixed size, in pixels |
 | `--config <PATH>` | `SHOJI_CONFIG` | Config entry point (else the launcher's default) |
 | `--runtime-dir <DIR>` | `SHOJI_RUNTIME_DIR` | The runtime's own files |
 | `--dev` | | Run from a source checkout |

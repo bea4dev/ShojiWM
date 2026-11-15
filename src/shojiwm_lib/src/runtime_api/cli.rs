@@ -26,6 +26,8 @@ pub struct CommonArgs {
     pub log_off: bool,
     pub no_log_rotate: bool,
     pub tty_outputs: Vec<String>,
+    /// `--winit-size <WxH>`: the nested window's size, in pixels, fixed.
+    pub winit_size: Option<(u32, u32)>,
     pub xwayland_satellite_path: Option<String>,
     pub xwayland_satellite_glamor: Option<String>,
     pub dev: bool,
@@ -51,6 +53,7 @@ impl CommonArgs {
             |name: &str| std::env::var_os(name).is_some_and(|value| value == "off" || value == "0");
         let mut value_options = vec![
             "--tty-output".to_string(),
+            "--winit-size".to_string(),
             "--key".to_string(),
             "--hold".to_string(),
             "--config".to_string(),
@@ -80,6 +83,9 @@ impl CommonArgs {
             log_off: flag("--log-off") || env_flag_off("SHOJI_LOG"),
             no_log_rotate: flag("--no-log-rotate") || env_flag_off("SHOJI_LOG_ROTATE"),
             tty_outputs: parse_tty_outputs(args, &consumed_values),
+            winit_size: parse_option_value(args, "--winit-size", &consumed_values)
+                .or_else(|| env("SHOJI_WINIT_SIZE"))
+                .and_then(|value| parse_size(&value)),
             xwayland_satellite_path: parse_option_value(
                 args,
                 "--xwayland-satellite-path",
@@ -129,6 +135,10 @@ const COMMON_HELP: &[(&str, &str)] = &[
     (
         "--tty-output <NAME,...>",
         "Only drive these connectors [SHOJI_TTY_OUTPUT]",
+    ),
+    (
+        "--winit-size <WxH>",
+        "Nested window's fixed size in pixels, e.g. 1920x1080 [SHOJI_WINIT_SIZE]",
     ),
     ("--config <PATH>", "Config entry point [SHOJI_CONFIG]"),
     (
@@ -221,6 +231,14 @@ fn parse_tty_outputs(args: &[String], consumed_values: &BTreeSet<usize>) -> Vec<
     outputs
 }
 
+/// `1920x1080` as `(1920, 1080)`; nothing for anything else, or a side of 0.
+pub fn parse_size(value: &str) -> Option<(u32, u32)> {
+    let (width, height) = value.trim().split_once(['x', 'X'])?;
+    let width = width.trim().parse().ok().filter(|w| *w > 0)?;
+    let height = height.trim().parse().ok().filter(|h| *h > 0)?;
+    Some((width, height))
+}
+
 fn split_tty_outputs(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -302,6 +320,18 @@ mod tests {
             parsed.extra.get("decoration-runtime").map(String::as_str),
             Some("/tmp/runtime.ts")
         );
+    }
+
+    #[test]
+    fn parses_the_winit_size() {
+        let parsed = CommonArgs::parse(&args(&["--winit-size", "1920x1080"]), &[]);
+        assert_eq!(parsed.winit_size, Some((1920, 1080)));
+        let parsed = CommonArgs::parse(&args(&["--winit-size=1280X720", "--dev"]), &[]);
+        assert_eq!(parsed.winit_size, Some((1280, 720)));
+        assert!(parsed.dev);
+        assert_eq!(parse_size("0x720"), None);
+        assert_eq!(parse_size("1920"), None);
+        assert_eq!(parse_size("wide x tall"), None);
     }
 
     #[test]

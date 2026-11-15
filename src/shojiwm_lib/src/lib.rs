@@ -215,6 +215,9 @@ fn apply_runtime_overrides(args: &CommonArgs) {
     if !args.tty_outputs.is_empty() {
         process_env::set_var("SHOJI_TTY_OUTPUT", args.tty_outputs.join(","));
     }
+    if let Some((width, height)) = args.winit_size {
+        process_env::set_var("SHOJI_WINIT_SIZE", format!("{width}x{height}"));
+    }
     if let Some(path) = args.xwayland_satellite_path.as_deref() {
         process_env::set_var("SHOJI_XWAYLAND_SATELLITE_PATH", path);
     }
