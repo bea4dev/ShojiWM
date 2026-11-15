@@ -1561,13 +1561,29 @@ impl ShojiWM {
         let desired_focus = exclusive_layer_focus
             .or(on_demand_layer_focus)
             .or_else(|| self.window_keyboard_focus.clone());
-
-        self.sync_window_activated_states();
-
         let current_focus = self
             .seat
             .get_keyboard()
             .and_then(|keyboard| keyboard.current_focus());
+
+        // While libwayland tears a client down its objects die one by one, but the client has
+        // already lost its client data: wayland-backend then panics inside the destructor on any
+        // event naming one of its still-alive objects, such as the `wl_keyboard.leave` for the
+        // client's other window. Destroy handlers (a closing animation activating the next
+        // window, say) reach here mid-teardown, so the focus moves once the client is gone.
+        if [current_focus.as_ref(), desired_focus.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|surface| surface.alive() && surface.client().is_none())
+        {
+            self.loop_handle.insert_idle(|state| {
+                state.update_keyboard_focus(SERIAL_COUNTER.next_serial());
+            });
+            return;
+        }
+
+        self.sync_window_activated_states();
+
         let focus_changed = current_focus.as_ref().map(|surface| surface.id())
             != desired_focus.as_ref().map(|surface| surface.id());
 
