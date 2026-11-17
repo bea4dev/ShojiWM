@@ -12,7 +12,7 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             Bind, Color32F, Frame, Offscreen, Renderer, Texture,
-            element::{Element, Id, Kind, RenderElement, UnderlyingStorage},
+            element::{Element, Id, Kind, RenderElement, RenderElementStates, UnderlyingStorage},
             gles::{
                 GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
                 UniformName, UniformType, UniformValue,
@@ -170,6 +170,24 @@ impl Default for CursorTransformCache {
 }
 
 impl CursorTransformCache {
+    /// The states of the elements the texture was drawn from, each taking the
+    /// transformed element's state in `states`: they are never handed to the
+    /// frame themselves. `None` when the transformed cursor was not in it.
+    pub fn presented_source_states(
+        &self,
+        states: &RenderElementStates,
+    ) -> Option<RenderElementStates> {
+        let state = *states.states.get(&self.id)?;
+        let drawn = self.drawn.as_ref()?;
+        Some(RenderElementStates {
+            states: drawn
+                .sources
+                .iter()
+                .map(|(id, _, _)| (id.clone(), state))
+                .collect(),
+        })
+    }
+
     /// `elements` as `render_elements` returned them, topmost first; `pivot`
     /// is the hotspot in output pixels. `None` when there is nothing to draw.
     pub fn render(
@@ -428,6 +446,46 @@ mod tests {
             .zip(other.matrix().iter().flatten())
         {
             assert!((a - b).abs() < 1e-9, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_surfaces_are_presented_with_the_transformed_cursor() {
+        use smithay::backend::renderer::element::{
+            RenderElementPresentationState, RenderElementState,
+        };
+
+        let surface = Id::new();
+        let subsurface = Id::new();
+        let src = Rectangle::new((0, 0).into(), (16, 16).into());
+        let mut cache = CursorTransformCache::default();
+        cache.drawn = Some(Drawn {
+            sources: vec![
+                (surface.clone(), CommitCounter::default(), src),
+                (subsurface.clone(), CommitCounter::default(), src),
+            ],
+            placement: placement(src, (0.0, 0.0).into(), &CursorTransform::default()),
+        });
+        let presented = RenderElementState {
+            visible_area: 256,
+            presentation_state: RenderElementPresentationState::Rendering { reason: None },
+            needs_capture: false,
+        };
+
+        assert!(
+            cache
+                .presented_source_states(&RenderElementStates::default())
+                .is_none(),
+            "a frame without the transformed cursor presents none of its sources"
+        );
+        let mut states = RenderElementStates::default();
+        states.states.insert(cache.id.clone(), presented);
+        let sources = cache
+            .presented_source_states(&states)
+            .expect("the transformed cursor was in the frame");
+        assert_eq!(sources.states.len(), 2);
+        for id in [surface, subsurface] {
+            assert_eq!(sources.states[&id].visible_area, 256);
         }
     }
 

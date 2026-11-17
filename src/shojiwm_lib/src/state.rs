@@ -3223,10 +3223,7 @@ impl ShojiWM {
                     }
                 }
                 HostMessage::CursorTransform(transform) => {
-                    if self.config_cursor_transform != transform {
-                        self.config_cursor_transform = transform;
-                        self.schedule_redraw();
-                    }
+                    self.set_config_cursor_transform(transform)
                 }
                 HostMessage::DragView(command) => self.apply_drag_view_command(command),
                 HostMessage::StartLocked => self.start_session_locked(),
@@ -3456,10 +3453,11 @@ impl ShojiWM {
         self.finalize_all_closing_snapshots("config-hot-reload");
 
         // The reloaded config knows nothing about a grab the old one held,
-        // nor about its drag views and cursor override.
+        // nor about its drag views and cursor override or transform.
         self.end_runtime_input_grab(None);
         self.dnd.reset_views(Instant::now());
         self.config_cursor_override = None;
+        self.set_config_cursor_transform(None);
         self.set_clear_color(DEFAULT_CLEAR_COLOR);
         // The new config reports the hooks it listens to only when it has
         // any: start from none, so the old config's do not stay on.
@@ -3515,6 +3513,19 @@ impl ShojiWM {
         self.request_tty_maintenance("config-hot-reload");
         self.schedule_redraw();
         info!(runtime = self.config_runtime.name(), "hot reloaded config");
+    }
+
+    fn set_config_cursor_transform(&mut self, transform: Option<crate::cursor::CursorTransform>) {
+        if self.config_cursor_transform == transform {
+            return;
+        }
+        self.config_cursor_transform = transform;
+        if transform.is_none() {
+            // Nothing draws from the untransformed cursor textures until a
+            // transform is set again, which redraws them anyway.
+            self.cursor_transform_caches.clear();
+        }
+        self.schedule_redraw();
     }
 
     fn set_clear_color(&mut self, color: [f32; 4]) {

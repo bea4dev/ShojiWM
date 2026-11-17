@@ -7040,6 +7040,27 @@ fn render_surface(
                 &source_states,
             );
         }
+        // A transformed cursor reaches the frame as one element of its own, so
+        // the client cursor surface it was drawn from counts as presented with
+        // it; otherwise the surface loses this output as its primary one and
+        // its frame callbacks fall to the 1s throttle.
+        if let Some(cursor_states) =
+            state
+                .cursor_transform_caches
+                .get(&output.name())
+                .and_then(|cache| {
+                    cache.presented_source_states(
+                        effective_render_states_storage
+                            .as_ref()
+                            .unwrap_or(&result.states),
+                    )
+                })
+        {
+            crate::backend::composition::merge_presented_states(
+                effective_render_states_storage.get_or_insert_with(|| result.states.clone()),
+                &cursor_states,
+            );
+        }
         if let Some(targets) = state.composition_targets.get_mut(&output.name()) {
             targets.update_presentation(
                 composition_states,
@@ -13998,6 +14019,7 @@ pub(crate) fn forget_output(state: &mut ShojiWM, output: &Output) {
     // deleting the Rust-side entry here would otherwise leave the new Output at scale 1.
     state.hdr_pipelines.remove(&output_name);
     state.hdr_cursor_caches.remove(&output_name);
+    state.cursor_transform_caches.remove(&output_name);
     state.runtime_animation_outputs.remove(&output_name);
     state.damage_blink_visible.remove(&output_name);
     state.damage_blink_pending.remove(&output_name);
