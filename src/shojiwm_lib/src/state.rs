@@ -720,6 +720,10 @@ pub struct ShojiWM {
     /// `COMPOSITOR.cursor.overrideKind`: wins over the compositor's own
     /// overrides and the clients' cursors.
     pub config_cursor_override: Option<crate::cursor::CursorOverride>,
+    /// `COMPOSITOR.cursor.setTransform`; `None` is the identity.
+    pub config_cursor_transform: Option<crate::cursor::CursorTransform>,
+    pub cursor_transform_caches:
+        HashMap<String, crate::backend::cursor_transform::CursorTransformCache>,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
     pub current_pointer_image: Option<Image>,
@@ -2114,6 +2118,8 @@ impl ShojiWM {
             cursor_status: CursorImageStatus::default_named(),
             cursor_override: None,
             config_cursor_override: None,
+            config_cursor_transform: None,
+            cursor_transform_caches: Default::default(),
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
             current_pointer_image: None,
@@ -3216,6 +3222,12 @@ impl ShojiWM {
                         self.schedule_redraw();
                     }
                 }
+                HostMessage::CursorTransform(transform) => {
+                    if self.config_cursor_transform != transform {
+                        self.config_cursor_transform = transform;
+                        self.schedule_redraw();
+                    }
+                }
                 HostMessage::DragView(command) => self.apply_drag_view_command(command),
                 HostMessage::StartLocked => self.start_session_locked(),
                 HostMessage::ClearColor(color) => self.set_clear_color(color),
@@ -3942,6 +3954,7 @@ impl ShojiWM {
             self.output_capture_mirrors.remove(&name);
             self.hdr_pipelines.remove(&name);
             self.hdr_cursor_caches.remove(&name);
+            self.cursor_transform_caches.remove(&name);
             self.runtime_animation_outputs.remove(&name);
             self.layer_effect_evaluation_cache.remove(&name);
             self.popup_effect_evaluation_cache.remove(&name);

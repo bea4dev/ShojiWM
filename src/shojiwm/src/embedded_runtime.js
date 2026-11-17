@@ -15,6 +15,7 @@ import {
   op_shoji_cursor_set_position,
   op_shoji_cursor_position,
   op_shoji_cursor_override,
+  op_shoji_cursor_transform,
   op_shoji_dnd_view,
 } from "ext:core/ops";
 
@@ -32,6 +33,7 @@ globalThis.__SHOJI_INPUT_GRAB__ = op_shoji_input_grab;
 globalThis.__SHOJI_CURSOR_SET_POSITION__ = op_shoji_cursor_set_position;
 globalThis.__SHOJI_CURSOR_POSITION__ = op_shoji_cursor_position;
 globalThis.__SHOJI_CURSOR_OVERRIDE__ = op_shoji_cursor_override;
+globalThis.__SHOJI_CURSOR_TRANSFORM__ = op_shoji_cursor_transform;
 globalThis.__SHOJI_DND_VIEW__ = op_shoji_dnd_view;
 
 const environment = new Map(Object.entries(op_shoji_environment()));
