@@ -194,6 +194,16 @@ function serializeProps(
       continue;
     }
 
+    if (key === "onMiddleClick") {
+      serialized[key] = serializeRuntimeHandler(
+        value,
+        context,
+        typeof props.id === "string" ? `${path}#${props.id}.${key}` : `${path}.${key}`,
+        key,
+      );
+      continue;
+    }
+
     if (
       key === "onHoverChange" ||
       key === "onActiveChange" ||

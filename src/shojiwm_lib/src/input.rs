@@ -1944,6 +1944,9 @@ impl ShojiWM {
                     if button == 272 {
                         self.press_decoration_active_target(pointer.current_location());
                     }
+                    if button == 274 {
+                        self.middle_click_decoration_target(pointer.current_location());
+                    }
 
                     if button == 272
                         && layer_under_pointer.is_none()
@@ -3664,6 +3667,19 @@ impl ShojiWM {
                 );
             }
             self.decoration_active_target = Some(next_target);
+        }
+    }
+
+    /// A press of the middle button on a decoration node with `onMiddleClick`.
+    fn middle_click_decoration_target(
+        &mut self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        let Some(target) = self.tracked_decoration_interaction_target_under(pos) else {
+            return;
+        };
+        if let Some(handler) = target.target.handlers.middle_click.clone() {
+            self.invoke_decoration_runtime_handler(&target.window, &target.window_id, &handler);
         }
     }
 
