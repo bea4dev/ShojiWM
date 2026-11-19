@@ -125,6 +125,33 @@ COMPOSITOR.process.once('locker', { command: ['hyprlock'] });
   locked until a new locker takes over.
 - A Rust config does the same with `ConfigBuilder::start_locked(true)`.
 
+## Knowing which client asked over IPC
+
+A handler registered with `ipc.handle` (from `createIpcServer()` in
+`shoji_wm/ipc`) gets the calling client as its second argument. `client.id`
+names the connection for as long as the server runs: no later connection
+reuses it, so the config can hold what one client asked for, and
+`ipc.onDisconnect` says when that client is gone, closed by its process or
+lost, after the handlers of its last requests have run:
+
+```ts
+import { createIpcServer } from 'shoji_wm/ipc';
+
+const ipc = createIpcServer();
+const holders = new Set<number>();
+ipc.handle('grab-chords', (_params, client) => {
+  holders.add(client.id);
+});
+ipc.onDisconnect((client) => {
+  holders.delete(client.id);
+});
+```
+
+`onDisconnect` returns a function that removes the listener, and is not called
+for the connections `ipc.close()` ends. In a Rust config the same is
+`IpcServer::handle_from(method, |client, params| ...)` with a `ClientId`, and
+`IpcServer::on_disconnect(|client| ...)`.
+
 ## Environment variables
 
 `COMPOSITOR.env` manages the environment inherited by processes the compositor
