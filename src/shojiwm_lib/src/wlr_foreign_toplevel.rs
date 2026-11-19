@@ -758,7 +758,14 @@ fn states_for_snapshot(
     if minimized {
         states.push(WlrToplevelState::Minimized);
     }
-    if snapshot.is_focused {
+    if snapshot.is_focused && !minimized {
+        // `is_focused` is "which window counts as active", which stays on a
+        // window whose minimize left nothing else to take the keyboard (all
+        // windows minimized). A minimized window cannot hold the keyboard, and
+        // the stale `Activated` left taskbars that toggle on it — `if
+        // activated minimize() else activate()` — minimizing the already
+        // minimized window forever. Mirrors the xdg-side deactivation of idle
+        // windows in `ShojiWM::sync_window_activated_states`.
         states.push(WlrToplevelState::Activated);
     }
     if snapshot.is_fullscreen {
@@ -1197,4 +1204,60 @@ macro_rules! delegate_wlr_foreign_toplevel {
             );
         };
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssd::{
+        DecorationInteractionSnapshot, WindowPositionSnapshot, WaylandWindowSnapshot,
+    };
+
+    fn snapshot(is_focused: bool) -> WaylandWindowSnapshot {
+        WaylandWindowSnapshot {
+            output_name: None,
+            plasma: None,
+            minimized_geometry: None,
+            id: "w".into(),
+            title: "w".into(),
+            app_id: Some("app".into()),
+            position: WindowPositionSnapshot::default(),
+            rect: WindowPositionSnapshot::default(),
+            is_focused,
+            is_floating: true,
+            is_maximized: false,
+            is_fullscreen: false,
+            is_xwayland: false,
+            decoration: Default::default(),
+            size_constraints: Default::default(),
+            is_resizable: true,
+            is_transient: false,
+            parent_id: None,
+            icon: None,
+            interaction: DecorationInteractionSnapshot::default(),
+        }
+    }
+
+    // A minimized window that kept the activation (nothing else took the
+    // keyboard) must not be advertised `Activated`, or taskbars toggling on
+    // it keep minimizing the already minimized window.
+    #[test]
+    fn minimized_window_is_not_activated() {
+        let states = states_for_snapshot(&snapshot(true), true);
+        assert!(states.contains(&WlrToplevelState::Minimized));
+        assert!(!states.contains(&WlrToplevelState::Activated));
+    }
+
+    #[test]
+    fn focused_window_is_activated() {
+        let states = states_for_snapshot(&snapshot(true), false);
+        assert!(states.contains(&WlrToplevelState::Activated));
+        assert!(!states.contains(&WlrToplevelState::Minimized));
+    }
+
+    #[test]
+    fn unfocused_window_is_not_activated() {
+        let states = states_for_snapshot(&snapshot(false), false);
+        assert!(!states.contains(&WlrToplevelState::Activated));
+    }
 }
