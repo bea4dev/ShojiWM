@@ -453,6 +453,88 @@ pub fn read_edid_hdmi_link(
     parse_edid_hdmi_link(&edid)
 }
 
+/// Make, model and serial of the display, from the EDID base block. Configs
+/// tell monitors apart by these, and `wl_output` reports them to clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdidIdentity {
+    /// Three-letter PNP manufacturer ID, e.g. `PXO`.
+    pub make: String,
+    /// The monitor name descriptor, or the product code (e.g. `0x60ad`) when
+    /// there is none, as on many laptop panels.
+    pub model: String,
+    /// The serial string descriptor, or the serial number field when it is
+    /// not 0. Many displays put a placeholder here, so it is not unique.
+    pub serial: Option<String>,
+}
+
+const EDID_HEADER: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
+const EDID_DESCRIPTOR_SERIAL: u8 = 0xff;
+const EDID_DESCRIPTOR_NAME: u8 = 0xfc;
+
+/// Parse the display's make, model and serial from the EDID base block.
+pub fn parse_edid_identity(edid: &[u8]) -> Option<EdidIdentity> {
+    if edid.len() < 128 || edid[..8] != EDID_HEADER {
+        return None;
+    }
+    // Bytes 8-9: three 5-bit letters, big endian, 1 = 'A'.
+    let pnp_id = u16::from_be_bytes([edid[8], edid[9]]);
+    let make = [10, 5, 0]
+        .into_iter()
+        .map(|shift| match ((pnp_id >> shift) & 0x1f) as u8 {
+            letter @ 1..=26 => Some(char::from(b'A' + letter - 1)),
+            _ => None,
+        })
+        .collect::<Option<String>>()?;
+    let product_code = u16::from_le_bytes([edid[10], edid[11]]);
+    let serial_number = u32::from_le_bytes([edid[12], edid[13], edid[14], edid[15]]);
+
+    // Bytes 54-125: four 18-byte descriptors. A pixel clock of 0 marks a
+    // display descriptor, whose tag is byte 3.
+    let mut name = None;
+    let mut serial_string = None;
+    for descriptor in edid[54..126].chunks_exact(18) {
+        if descriptor[..2] != [0, 0] {
+            continue;
+        }
+        match descriptor[3] {
+            EDID_DESCRIPTOR_NAME => name = edid_descriptor_text(descriptor),
+            EDID_DESCRIPTOR_SERIAL => serial_string = edid_descriptor_text(descriptor),
+            _ => {}
+        }
+    }
+
+    Some(EdidIdentity {
+        make,
+        model: name.unwrap_or_else(|| format!("0x{product_code:04x}")),
+        serial: serial_string.or_else(|| (serial_number != 0).then(|| serial_number.to_string())),
+    })
+}
+
+/// Text of a display descriptor: bytes 5-17, ended by a line feed and padded
+/// with spaces.
+fn edid_descriptor_text(descriptor: &[u8]) -> Option<String> {
+    let text = &descriptor[5..18];
+    let end = text
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .unwrap_or(text.len());
+    let text = std::str::from_utf8(&text[..end]).ok()?.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Read the connector's EDID and extract the display's make, model and serial.
+pub fn read_edid_identity(
+    device: &impl ControlDevice,
+    conn: &connector::Info,
+) -> Option<EdidIdentity> {
+    let (_, blob_id) = find_connector_property(device, conn, PROP_EDID)?;
+    if blob_id == 0 {
+        return None;
+    }
+    let edid = device.get_property_blob(blob_id).ok()?;
+    parse_edid_identity(&edid)
+}
+
 /// CTA-861-G luminance code decoding: 50 * 2^(code/32) cd/m².
 fn cta_luminance(code: u8) -> f32 {
     50.0 * 2f32.powf(code as f32 / 32.0)
@@ -904,5 +986,75 @@ mod tests {
             std::mem::offset_of!(HdrOutputMetadata, hdmi_metadata_type1,),
             4,
         );
+    }
+
+    /// Base block of a Pixio PX278 Wave's EDID (HDMI): a monitor name
+    /// descriptor and a placeholder serial number of 1.
+    const PX278_WAVE_EDID: [u8; 128] = [
+        0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x43, 0x0f, 0x00, 0x27, 0x01, 0x00, 0x00,
+        0x00, 0x04, 0x22, 0x01, 0x03, 0x80, 0x3c, 0x21, 0x78, 0x2a, 0x4a, 0xf5, 0xac, 0x51, 0x47,
+        0xa5, 0x25, 0x10, 0x50, 0x54, 0xa5, 0x6b, 0x80, 0x71, 0x40, 0x81, 0xc0, 0x81, 0x00, 0x81,
+        0x80, 0x95, 0x00, 0xa9, 0xc0, 0xb3, 0x00, 0x01, 0x01, 0x56, 0x5e, 0x00, 0xa0, 0xa0, 0xa0,
+        0x29, 0x50, 0x30, 0x20, 0x35, 0x00, 0x55, 0x50, 0x21, 0x00, 0x00, 0x1a, 0x02, 0x3a, 0x80,
+        0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c, 0x45, 0x00, 0x55, 0x50, 0x21, 0x00, 0x00, 0x1e,
+        0x00, 0x00, 0x00, 0xfd, 0x00, 0x30, 0x90, 0x1e, 0xfa, 0x3c, 0x00, 0x0a, 0x20, 0x20, 0x20,
+        0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x50, 0x58, 0x32, 0x37, 0x38, 0x20, 0x57,
+        0x61, 0x76, 0x65, 0x0a, 0x20, 0x20, 0x01, 0x04,
+    ];
+
+    /// Base block of an AUO laptop panel's EDID (eDP): no name or serial
+    /// descriptor, and a serial number of 0.
+    const AUO_PANEL_EDID: [u8; 128] = [
+        0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x06, 0xaf, 0xad, 0x60, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x21, 0x01, 0x04, 0xa5, 0x1e, 0x13, 0x78, 0x03, 0xc1, 0x45, 0xa8, 0x55, 0x48,
+        0x9d, 0x24, 0x0f, 0x50, 0x54, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x18, 0x86, 0x40, 0xa0, 0xb0, 0x08,
+        0x52, 0x70, 0x30, 0x20, 0x35, 0x00, 0x2d, 0xbc, 0x10, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
+        0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20,
+        0x00, 0x00, 0x00, 0xfd, 0x00, 0x30, 0x78, 0xe6, 0xe6, 0x46, 0x01, 0x0a, 0x20, 0x20, 0x20,
+        0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x42, 0x31, 0x34, 0x30, 0x51, 0x41, 0x4e,
+        0x30, 0x38, 0x2e, 0x4b, 0x20, 0x0a, 0x01, 0xfe,
+    ];
+
+    #[test]
+    fn parses_identity_with_a_monitor_name() {
+        assert_eq!(
+            parse_edid_identity(&PX278_WAVE_EDID),
+            Some(EdidIdentity {
+                make: "PXO".into(),
+                model: "PX278 Wave".into(),
+                serial: Some("1".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn identity_without_a_name_uses_the_product_code() {
+        assert_eq!(
+            parse_edid_identity(&AUO_PANEL_EDID),
+            Some(EdidIdentity {
+                make: "AUO".into(),
+                model: "0x60ad".into(),
+                serial: None,
+            })
+        );
+    }
+
+    #[test]
+    fn identity_prefers_the_serial_string_descriptor() {
+        let mut edid = PX278_WAVE_EDID;
+        // Turn the range limits descriptor at byte 90 into a serial string.
+        edid[90 + 3] = 0xff;
+        edid[90 + 5..90 + 18].copy_from_slice(b"ABC123\n      ");
+        let identity = parse_edid_identity(&edid).expect("identity should parse");
+        assert_eq!(identity.serial.as_deref(), Some("ABC123"));
+    }
+
+    #[test]
+    fn identity_needs_an_edid_header() {
+        let mut edid = PX278_WAVE_EDID;
+        edid[0] = 0x12;
+        assert_eq!(parse_edid_identity(&edid), None);
+        assert_eq!(parse_edid_identity(&PX278_WAVE_EDID[..64]), None);
     }
 }
