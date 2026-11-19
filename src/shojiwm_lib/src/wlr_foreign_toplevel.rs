@@ -1210,7 +1210,7 @@ macro_rules! delegate_wlr_foreign_toplevel {
 mod tests {
     use super::*;
     use crate::ssd::{
-        DecorationInteractionSnapshot, WindowPositionSnapshot, WaylandWindowSnapshot,
+        DecorationInteractionSnapshot, WaylandWindowSnapshot, WindowPositionSnapshot,
     };
 
     fn snapshot(is_focused: bool) -> WaylandWindowSnapshot {
@@ -1218,6 +1218,10 @@ mod tests {
             output_name: None,
             plasma: None,
             minimized_geometry: None,
+            foreign_toplevel_id: None,
+            tag: None,
+            pid: None,
+            content_type: None,
             id: "w".into(),
             title: "w".into(),
             app_id: Some("app".into()),
