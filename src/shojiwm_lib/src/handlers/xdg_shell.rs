@@ -39,6 +39,16 @@ fn xdg_popup_debug_enabled() -> bool {
     std::env::var_os("SHOJI_XDG_POPUP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
+/// Take the window of the xdg toplevel on `wl_surface` out of the registry of toplevel windows.
+fn take_xdg_toplevel_window(windows: &mut Vec<Window>, wl_surface: &WlSurface) -> Option<Window> {
+    let index = windows.iter().position(|window| {
+        window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
+    })?;
+    Some(windows.swap_remove(index))
+}
+
 pub(crate) fn mark_toplevel_metadata_dirty(
     state: &mut ShojiWM,
     surface: &ToplevelSurface,
@@ -145,6 +155,7 @@ impl XdgShellHandler for ShojiWM {
 
         self.space
             .map_element(window.clone(), initial_location, false);
+        self.xdg_toplevel_windows.push(window.clone());
         self.ensure_wayland_window_decoration_policy(&wl_surface);
         // Announce the new toplevel on ext-foreign-toplevel-list-v1 so shells
         // and the portal picker can see it. Has to happen after map so the
@@ -195,15 +206,10 @@ impl XdgShellHandler for ShojiWM {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface();
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == wl_surface)
-            })
-            .cloned()
+        // From the toplevel registry, not the space: a client that disconnects can have its
+        // dead window dropped by `space.refresh()` before this destructor runs, and that
+        // window's taskbar handles must be closed all the same.
+        let Some(window) = take_xdg_toplevel_window(&mut self.xdg_toplevel_windows, wl_surface)
         else {
             self.remove_window_decoration_negotiation(wl_surface);
             self.request_tty_maintenance("xdg-toplevel-destroyed");
