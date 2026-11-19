@@ -92,6 +92,9 @@ impl ShojiWM {
     /// Put the session's keymap and layout back after a virtual keyboard.
     /// The focused client is sent the keymap; focus stays where it is.
     pub fn restore_session_keymap(&mut self) {
+        // Read while the virtual keymap is still marked active: it is the
+        // session's state from before the virtual keyboard.
+        let num_lock = self.session_num_lock();
         let Some(active) = self.active_virtual_keymap.take() else {
             return;
         };
@@ -111,6 +114,8 @@ impl ShojiWM {
         });
         self.set_keyboard_modifiers(seat_keyboard.modifier_state());
         self.run_pending_modifier_bindings();
+        // The session keymap came back with a new xkb state and no lock set.
+        self.keep_num_lock_after_keymap_change(num_lock);
     }
 
     /// Whether the seat runs a virtual keyboard's keymap, whose layout is not
