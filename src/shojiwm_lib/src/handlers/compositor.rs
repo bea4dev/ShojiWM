@@ -690,6 +690,18 @@ impl CompositorHandler for ShojiWM {
             window.on_commit();
             // Before the snapshot below, which derives the window position from the location.
             self.keep_client_origin_across_geometry_change(&window);
+            // A toplevel is announced on the foreign-toplevel protocols once it has a buffer,
+            // not when its role is made: one that never shows anything (started hidden) is no
+            // window for a taskbar. Idempotent, so every commit of a shown window can ask.
+            if let Some(toplevel) = window.toplevel()
+                && smithay::backend::renderer::utils::with_renderer_surface_state(
+                    toplevel.wl_surface(),
+                    |state| state.buffer().is_some(),
+                )
+                .unwrap_or(false)
+            {
+                self.install_foreign_toplevel(&window);
+            }
             // Title / app_id may have changed via xdg_toplevel set_title /
             // set_app_id between commits. sync_foreign_toplevel short-circuits
             // when nothing changed so this is cheap.
