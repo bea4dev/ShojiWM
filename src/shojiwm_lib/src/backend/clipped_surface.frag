@@ -40,6 +40,12 @@ uniform vec2 adjusted_sample_uv_br;
 uniform vec2 sample_buffer_size;
 uniform vec2 sample_uv_snap_axes;
 uniform float sample_uv_compensation_enabled;
+// Where the surface's own geometry lies in a larger drawn quad (a forced slot
+// that grew before the client's next buffer): buffer = quad * scale - offset,
+// in 0..1 coordinates. The buffer keeps its size; its edges fill the rest.
+uniform vec2 sample_fit_scale;
+uniform vec2 sample_fit_offset;
+uniform float sample_fit_enabled;
 
 // Per-surface color management. Compositing happens on sRGB-encoded BT.709
 // values, so content tagged with any other transfer/primaries via
@@ -210,9 +216,17 @@ float rounded_alpha(vec2 coords, vec2 size) {
 
 void main() {
     vec2 sample_coords = v_coords;
+    vec2 original_range = max(sample_uv_br - sample_uv_tl, vec2(0.000001));
+    if (sample_fit_enabled > 0.5) {
+        vec2 quad_coords = (v_coords - sample_uv_tl) / original_range;
+        sample_coords = mix(
+            sample_uv_tl,
+            sample_uv_br,
+            quad_coords * sample_fit_scale - sample_fit_offset
+        );
+    }
     if (sample_uv_compensation_enabled > 0.5) {
-        vec2 original_range = max(sample_uv_br - sample_uv_tl, vec2(0.000001));
-        vec2 range_coords = (v_coords - sample_uv_tl) / original_range;
+        vec2 range_coords = (sample_coords - sample_uv_tl) / original_range;
         sample_coords = mix(sample_uv_tl, adjusted_sample_uv_br, range_coords);
 
         // Emulate nearest-neighbor with GL_CLAMP_TO_EDGE on the compensated
@@ -239,6 +253,15 @@ void main() {
             snap_axes
         );
         sample_coords = clamp(sample_coords, min_coords, max_coords);
+    }
+    if (sample_fit_enabled > 0.5) {
+        // Past the buffer: its edge texels, not the opposite side or a blend.
+        vec2 half_texel = vec2(0.5) / max(sample_buffer_size, vec2(1.0));
+        sample_coords = clamp(
+            sample_coords,
+            sample_uv_tl + half_texel,
+            sample_uv_br - half_texel
+        );
     }
 
     vec4 color = texture2D(tex, sample_coords);

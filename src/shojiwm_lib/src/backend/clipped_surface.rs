@@ -94,6 +94,47 @@ fn compute_sample_uv_compensation(
     }
 }
 
+/// Where the surface's own geometry lies in the quad that is drawn, in the
+/// quad's 0..1 coordinates: `buffer = quad * scale - offset`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SampleFit {
+    scale: [f32; 2],
+    offset: [f32; 2],
+    enabled: bool,
+}
+
+/// A forced slot larger than the client's buffer (a window that grows faster
+/// than its client draws) makes the drawn quad larger than the surface. The
+/// buffer keeps its own size in that quad, as the client drew it, and its
+/// edge texels fill the rest until a buffer of the new size arrives: mapping
+/// the quad's coordinates straight onto the buffer would stretch it.
+fn compute_sample_fit(
+    element: Rectangle<i32, Physical>,
+    drawn: Rectangle<i32, Physical>,
+    transform: Transform,
+) -> SampleFit {
+    let enabled = drawn != element
+        && transform == Transform::Normal
+        && element.size.w > 0
+        && element.size.h > 0;
+    if !enabled {
+        return SampleFit {
+            scale: [1.0, 1.0],
+            offset: [0.0, 0.0],
+            enabled: false,
+        };
+    }
+    let (width, height) = (element.size.w as f32, element.size.h as f32);
+    SampleFit {
+        scale: [drawn.size.w as f32 / width, drawn.size.h as f32 / height],
+        offset: [
+            (element.loc.x - drawn.loc.x) as f32 / width,
+            (element.loc.y - drawn.loc.y) as f32 / height,
+        ],
+        enabled: true,
+    }
+}
+
 fn union_physical_rect(
     a: Rectangle<i32, Physical>,
     b: Rectangle<i32, Physical>,
@@ -146,6 +187,7 @@ pub struct ClippedSurfaceElement {
     sample_buffer_size: [f32; 2],
     sample_uv_snap_axes: [f32; 2],
     sample_uv_compensation_enabled: f32,
+    sample_fit: SampleFit,
     /// Per-surface color management, resolved once at element construction.
     /// `src_transfer == 0.0` is the untagged fast path and makes the shader
     /// skip the conversion entirely, so nothing changes for sRGB clients.
@@ -374,6 +416,18 @@ impl ClippedSurfaceElement {
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
                     UniformName::new(
+                        "sample_fit_scale",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "sample_fit_offset",
+                        smithay::backend::renderer::gles::UniformType::_2f,
+                    ),
+                    UniformName::new(
+                        "sample_fit_enabled",
+                        smithay::backend::renderer::gles::UniformType::_1f,
+                    ),
+                    UniformName::new(
                         "src_transfer",
                         smithay::backend::renderer::gles::UniformType::_1f,
                     ),
@@ -590,13 +644,21 @@ impl ClippedSurfaceElement {
             view.dst.w.max(0) as f32 * output_scale_x,
             view.dst.h.max(0) as f32 * output_scale_y,
         );
-        // Use the actual draw-quad size as the projection target. When
-        // forced_geometry expands the quad by 1 px beyond the viewport
-        // destination, the UV compensation must account for that extra pixel;
-        // otherwise the texture is bilinearly stretched to fill the larger
-        // quad and the surface appears blurry.
-        let projected_pixels =
-            Vector2::new(render_geometry.size.w as f32, render_geometry.size.h as f32);
+        // A quad larger than the surface keeps the buffer at the surface's own
+        // geometry (see `compute_sample_fit`): the compensation then only
+        // corrects the rounding between the buffer and that geometry. Without
+        // the fit (a transformed buffer), it projects onto the whole quad so
+        // that a quad 1 px larger repeats the last texel rather than blurring.
+        let sample_fit = compute_sample_fit(element_geometry, render_geometry, inner.transform());
+        let projected_geometry = if sample_fit.enabled {
+            element_geometry
+        } else {
+            render_geometry
+        };
+        let projected_pixels = Vector2::new(
+            projected_geometry.size.w as f32,
+            projected_geometry.size.h as f32,
+        );
         let sample_uv_compensation = compute_sample_uv_compensation(
             src_loc,
             src_size,
@@ -699,6 +761,7 @@ impl ClippedSurfaceElement {
             } else {
                 0.0
             },
+            sample_fit,
             color,
         })
     }
@@ -741,6 +804,7 @@ impl ClippedSurfaceElement {
             sample_buffer_size: [1.0; 2],
             sample_uv_snap_axes: [0.0; 2],
             sample_uv_compensation_enabled: 0.0,
+            sample_fit: compute_sample_fit(geometry, geometry, Transform::Normal),
             color,
         })
     }
@@ -889,6 +953,12 @@ impl ClippedSurfaceElement {
             Uniform::new(
                 "sample_uv_compensation_enabled",
                 self.sample_uv_compensation_enabled,
+            ),
+            Uniform::new("sample_fit_scale", self.sample_fit.scale),
+            Uniform::new("sample_fit_offset", self.sample_fit.offset),
+            Uniform::new(
+                "sample_fit_enabled",
+                if self.sample_fit.enabled { 1.0 } else { 0.0 },
             ),
         ]
         .into_iter()
@@ -1066,9 +1136,11 @@ impl RenderElement<GlesRenderer> for ClippedSurfaceElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{color_uniforms, compute_sample_uv_compensation};
+    use super::{
+        color_uniforms, compute_sample_fit, compute_sample_uv_compensation, union_physical_rect,
+    };
     use cgmath::Vector2;
-    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Transform};
 
     use crate::backend::visual::{
         PreciseLogicalRect, snapped_precise_logical_rect_for_element,
@@ -1158,6 +1230,55 @@ mod tests {
         assert_eq!(compensation.snap_axes, [1.0, 1.0]);
         assert!(compensation.adjusted_uv_br[0] > compensation.uv_br[0]);
         assert!(compensation.adjusted_uv_br[1] > compensation.uv_br[1]);
+    }
+
+    #[test]
+    fn no_fit_when_the_quad_is_the_surface() {
+        let geometry = Rectangle::<i32, Physical>::new(Point::from((10, 20)), (800, 600).into());
+        let fit = compute_sample_fit(geometry, geometry, Transform::Normal);
+
+        assert!(!fit.enabled);
+        assert_eq!(fit.scale, [1.0, 1.0]);
+        assert_eq!(fit.offset, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_grown_slot_keeps_the_buffer_at_its_size() {
+        // The slot grew to 1000x750 before the client drew more than 800x600:
+        // the buffer covers the top left 0.8 x 0.8 of the quad, not all of it.
+        let element = Rectangle::<i32, Physical>::new(Point::from((10, 20)), (800, 600).into());
+        let slot = Rectangle::<i32, Physical>::new(Point::from((10, 20)), (1000, 750).into());
+        let drawn = union_physical_rect(element, slot);
+        let fit = compute_sample_fit(element, drawn, Transform::Normal);
+
+        assert!(fit.enabled);
+        assert_eq!(fit.scale, [1.25, 1.25]);
+        assert_eq!(fit.offset, [0.0, 0.0]);
+        let buffer_at = |quad: f32, axis: usize| quad * fit.scale[axis] - fit.offset[axis];
+        assert!((buffer_at(0.8, 0) - 1.0).abs() < 1e-6);
+        assert!((buffer_at(0.8, 1) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_slot_grown_up_and_left_offsets_the_buffer() {
+        // Resized from the top left edge: the slot starts 200 px before the surface.
+        let element = Rectangle::<i32, Physical>::new(Point::from((200, 100)), (800, 600).into());
+        let drawn = Rectangle::<i32, Physical>::new(Point::from((0, 0)), (1000, 700).into());
+        let fit = compute_sample_fit(element, drawn, Transform::Normal);
+
+        assert!(fit.enabled);
+        let buffer_at = |quad: f32, axis: usize| quad * fit.scale[axis] - fit.offset[axis];
+        assert!(buffer_at(0.2, 0).abs() < 1e-6);
+        assert!((buffer_at(1.0, 0) - 1.0).abs() < 1e-6);
+        assert!(buffer_at(100.0 / 700.0, 1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_transformed_buffer_is_not_fitted() {
+        let element = Rectangle::<i32, Physical>::new(Point::from((0, 0)), (800, 600).into());
+        let drawn = Rectangle::<i32, Physical>::new(Point::from((0, 0)), (1000, 750).into());
+
+        assert!(!compute_sample_fit(element, drawn, Transform::_90).enabled);
     }
 
     #[test]
