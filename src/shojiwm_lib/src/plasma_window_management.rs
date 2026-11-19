@@ -303,8 +303,9 @@ fn send_changes(resources: &[OrgKdePlasmaWindow], old: &PlasmaWindowInfo, new: &
 
 pub struct PlasmaWindowManagementState {
     managers: Vec<OrgKdePlasmaWindowManagement>,
-    /// Live windows, oldest first. This is also the stacking order the
-    /// clients get: ShojiWM's real stacking lives in the TypeScript config.
+    /// Live windows in stacking order, bottom to top: the order windows are
+    /// drawn in (`ShojiWM::windows_top_to_bottom`, reversed). A window not
+    /// in the space yet stays on top. Clients get this as the stacking order.
     handles: Vec<PlasmaWindowHandle>,
     next_internal_id: u32,
 }
@@ -378,8 +379,40 @@ impl ShojiWM {
         for manager in &state.managers {
             PlasmaWindowManagementState::announce(manager, &handle);
         }
-        state.windows_changed();
         window.user_data().insert_if_missing(|| handle);
+        // (a new window always changes the list, even where it stacks last)
+        if !self.restack_plasma_windows() {
+            self.plasma_window_management_state.windows_changed();
+        }
+    }
+
+    /// Put the handles in the order the windows are drawn in, and tell the
+    /// clients when that changed (focus raises a window; the config's
+    /// z-index moves one). True: it changed and the clients were told.
+    fn restack_plasma_windows(&mut self) -> bool {
+        let mut order: Vec<PlasmaWindowHandle> = self
+            .windows_top_to_bottom()
+            .into_iter()
+            .rev()
+            .filter_map(|window| window.user_data().get::<PlasmaWindowHandle>().cloned())
+            .collect();
+        let state = &mut self.plasma_window_management_state;
+        for handle in &state.handles {
+            if !order.iter().any(|candidate| candidate.same_as(handle)) {
+                order.push(handle.clone());
+            }
+        }
+        let same = order.len() == state.handles.len()
+            && order
+                .iter()
+                .zip(&state.handles)
+                .all(|(new, old)| new.same_as(old));
+        if same {
+            return false;
+        }
+        state.handles = order;
+        state.windows_changed();
+        true
     }
 
     /// Send the window's current title, state and geometry to the clients
@@ -394,8 +427,8 @@ impl ShojiWM {
         handle.update(self.plasma_window_info(window));
     }
 
-    /// [`Self::sync_plasma_window`] for every window: focus, minimize and
-    /// geometry changes land here.
+    /// [`Self::sync_plasma_window`] for every window: focus, minimize,
+    /// geometry and stacking changes land here.
     pub fn sync_plasma_window_states(&mut self) {
         if self.plasma_window_management_state.handles.is_empty() {
             return;
@@ -404,6 +437,7 @@ impl ShojiWM {
         for window in windows {
             self.sync_plasma_window(&window);
         }
+        self.restack_plasma_windows();
     }
 
     /// Send `unmapped` and forget the window.
