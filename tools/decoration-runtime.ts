@@ -1088,6 +1088,7 @@ interface WindowStateRequestSuccess {
   workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
+  inputConfig?: { config: InputConfigDraft };
   eventConfig?: RuntimeEventConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
@@ -1121,6 +1122,7 @@ interface StartCloseSuccess {
   workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
+  inputConfig?: { config: InputConfigDraft };
   eventConfig?: RuntimeEventConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
@@ -1178,6 +1180,7 @@ interface EvaluateLayerEffectsSuccess {
   workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
+  inputConfig?: { config: InputConfigDraft };
   eventConfig?: RuntimeEventConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
@@ -1207,6 +1210,7 @@ interface LifecycleEnableSuccess {
   workspaceConfig?: WorkspaceConfigPayload;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
+  inputConfig?: { config: InputConfigDraft };
   eventConfig?: RuntimeEventConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
@@ -1656,7 +1660,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
   for await (const request of readEmbeddedMessages(embeddedBridge)) {
     activeRequest = ++requestSerial;
     try {
-      if ("displayState" in request) {
+      if ("displayState" in request && request.displayState) {
         updateOutputState(request.displayState);
       }
       if ("inputState" in request) {
@@ -2093,7 +2097,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
             const inputConfig = pendingInputConfigPayload();
             const processConfig = pendingProcessConfigPayload();
             const processActions = pendingProcessActionsPayload();
-            const response: EvaluateSuccess = {
+            const response: StartCloseSuccess = {
               requestId: request.requestId,
               ok: true,
               kind: "startClose",
@@ -2565,10 +2569,15 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               processActions,
             });
           } else {
+            // The pointerMove and gestureSwipe requests each carry two kinds,
+            // and narrowing on `kind === a || kind === b` cannot drop a
+            // union member whose kind is itself a union, so only
+            // invokeHandler is left here at runtime but not to the checker.
+            const handlerRequest = request as InvokeHandlerRequest;
             const result = invokeHandler(
               effectConfig,
-              request.windowId,
-              request.handlerId,
+              handlerRequest.windowId,
+              handlerRequest.handlerId,
             );
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
@@ -2580,7 +2589,7 @@ async function main(configPath: string, embeddedBridge: EmbeddedRuntimeBridge) {
               ok: true,
               kind: "invokeHandler",
               ...result,
-              effectTargetId: request.windowId,
+              effectTargetId: handlerRequest.windowId,
               displayConfig: pendingDisplayConfigPayload(),
               workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
@@ -3191,7 +3200,7 @@ function numericUniformSnapshot(
     }
     const flattened: number[] = [];
     for (const element of value.values) {
-      const entries = width === 1 ? [element] : element;
+      const entries: unknown = width === 1 ? [element] : element;
       if (
         !Array.isArray(entries) ||
         entries.length !== width ||
@@ -3569,6 +3578,7 @@ function evaluateWindowDecorationPolicy(
       fullscreen: unsupportedAction,
       unfullscreen: unsupportedAction,
       focus: unsupportedAction,
+      unfocus: unsupportedAction,
       scheduleAnimation: unsupportedAction,
       cancelAnimation: unsupportedAction,
       setCloseAnimationDuration: unsupportedAction,
@@ -3978,7 +3988,9 @@ function layerUsableAreaChanged(
     read(layer.outputName) !== snapshot.outputName ||
     read(layer.exclusiveEdge) !== snapshot.exclusiveEdge ||
     currentExclusiveZone.mode !== nextExclusiveZone.mode ||
-    currentExclusiveZone.size !== nextExclusiveZone.size ||
+    (currentExclusiveZone.mode === "exclusive" &&
+      nextExclusiveZone.mode === "exclusive" &&
+      currentExclusiveZone.size !== nextExclusiveZone.size) ||
     currentAnchor.top !== nextAnchor.top ||
     currentAnchor.right !== nextAnchor.right ||
     currentAnchor.bottom !== nextAnchor.bottom ||
@@ -4075,6 +4087,7 @@ function identityManagedWindow(): ManagedWindowState {
     idle: false,
     interactive: true,
     forceRectSize: false,
+    tiled: false,
     zIndex: 0,
     transform: identityTransform(),
   };
@@ -4511,6 +4524,7 @@ function processSchedulerTick(tickOutput: string | undefined): {
   dirtyWindowIds: string[];
   dirtyManagedWindowIds?: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerIds?: string[];
   dirtyLayerNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
@@ -5112,7 +5126,7 @@ function countSerializedNodes(node: unknown): number {
   const record = node as { children?: unknown[] };
   return (
     1 +
-    (record.children ?? []).reduce(
+    (record.children ?? []).reduce<number>(
       (sum, child) => sum + countSerializedNodes(child),
       0,
     )
@@ -5327,7 +5341,7 @@ const nativeCachedResponseView = new DataView(
 
 function tryWriteNativeCachedResponse(
   output: EmbeddedRuntimeBridge,
-  response: EvaluateSuccess,
+  response: EvaluateSuccess | StartCloseSuccess,
   updates: PendingRuntimeResponseUpdates,
   windowId: string,
 ): boolean {
@@ -5383,12 +5397,13 @@ function tryWriteNativeCachedResponse(
   if (managedWindow.confinePointer) flags |= 1 << 13;
 
   const rect = managedWindow.rect;
+  const origin = read(transform.origin);
   const fields = [
     response.requestId,
     response.nextPollInMs ?? -1,
     flags,
-    transform.origin.x,
-    transform.origin.y,
+    origin.x,
+    origin.y,
     transform.translateX,
     transform.translateY,
     transform.scaleX,
@@ -5400,7 +5415,14 @@ function tryWriteNativeCachedResponse(
     rect?.height ?? 0,
     managedWindow.zIndex ?? 0,
   ];
-  if (fields.some((value) => !Number.isFinite(value))) {
+  // The transform is a snapshot of plain numbers; anything else (a signal
+  // that was never read) falls back to the JSON response.
+  if (
+    !fields.every(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value),
+    )
+  ) {
     return false;
   }
   for (let index = 0; index < fields.length; index++) {
