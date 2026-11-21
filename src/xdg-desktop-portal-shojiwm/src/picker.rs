@@ -11,7 +11,7 @@
 //! - the receiver is parked in a `OnceLock` and pulled out by the iced
 //!   subscription on first poll
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use iced::widget::{button, column, container, image, row, scrollable, space, text};
 use iced::window;
@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 
+use crate::external_picker;
 use crate::i18n;
 use crate::sources::{SourceInfo, SourceKind, SourceUpdate};
 
@@ -47,16 +48,24 @@ enum PickerCommand {
 #[derive(Clone)]
 pub struct PickerHandle {
     tx: mpsc::UnboundedSender<PickerCommand>,
+    /// `SHOJIWM_PORTAL_PICKER`, read once at startup. If set, picks go to
+    /// this command instead of the iced window.
+    external: Option<Arc<str>>,
 }
 
 impl PickerHandle {
     pub async fn pick(
         &self,
         session_key: String,
+        app_id: &str,
         sources: Vec<SourceInfo>,
         cancelled: watch::Receiver<bool>,
         prefer_windows: bool,
     ) -> PickResult {
+        if let Some(command) = &self.external {
+            return external_picker::pick(command, app_id, sources, cancelled, prefer_windows)
+                .await;
+        }
         let (responder, rx) = oneshot::channel();
         let request = PickRequest {
             session_key,
@@ -88,7 +97,11 @@ pub fn setup() -> (PickerHandle, mpsc::Sender<SourceUpdate>) {
     let _ = PICKER_RX.set(Mutex::new(Some(rx)));
     let (thumb_tx, thumb_rx) = mpsc::channel(2);
     let _ = THUMBNAIL_RX.set(Mutex::new(Some(thumb_rx)));
-    (PickerHandle { tx }, thumb_tx)
+    let external = external_picker::command_from_env().map(Arc::from);
+    if let Some(command) = &external {
+        tracing::info!(command = &**command, "using external source picker");
+    }
+    (PickerHandle { tx, external }, thumb_tx)
 }
 
 pub fn run_on_main_thread() -> iced::Result {

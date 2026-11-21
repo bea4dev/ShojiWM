@@ -42,7 +42,7 @@ impl Screenshot {
     }
 
     /// Let the user choose an output in the picker. `None` when cancelled.
-    async fn pick_output(&self, request_key: String) -> Option<String> {
+    async fn pick_output(&self, request_key: String, app_id: &str) -> Option<String> {
         let (init_tx, init_rx) = tokio::sync::oneshot::channel();
         let stream_guard = sources::start_thumbnail_stream(
             request_key.clone(),
@@ -56,7 +56,7 @@ impl Screenshot {
         let (_keep_open, cancelled) = tokio::sync::watch::channel(false);
         let picked = self
             .picker
-            .pick(request_key.clone(), sources, cancelled, false)
+            .pick(request_key.clone(), app_id, sources, cancelled, false)
             .await;
         self.picker.cancel(&request_key);
         let _ = tokio::task::spawn_blocking(move || drop(stream_guard)).await;
@@ -102,7 +102,7 @@ impl Screenshot {
             }
         };
         let capture = if interactive {
-            let Some(name) = self.pick_output(handle.to_string()).await else {
+            let Some(name) = self.pick_output(handle.to_string(), &app_id).await else {
                 tracing::info!(%handle, "Screenshot: picker cancelled");
                 return Ok((response::CANCELLED, HashMap::new()));
             };
