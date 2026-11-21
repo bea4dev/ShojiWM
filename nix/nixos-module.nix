@@ -188,18 +188,9 @@ in
         };
     };
 
-    systemd.user.services.xdg-desktop-portal-shojiwm = lib.mkIf cfg.portal.enable {
-      description = "Portal service (ShojiWM implementation)";
-      partOf = [ "graphical-session.target" ];
-      after = [ "graphical-session.target" ];
-      serviceConfig = {
-        Type = "dbus";
-        BusName = "org.freedesktop.impl.portal.desktop.shojiwm";
-        ExecStart = "${shojiPackage}/bin/xdg-desktop-portal-shojiwm";
-        Restart = "always";
-        RestartSec = "500ms";
-        TimeoutStopSec = "10";
-      };
-    };
+    # Do not redefine xdg-desktop-portal-shojiwm under systemd.user.services:
+    # shojiPackage already installs share/systemd/user/xdg-desktop-portal-shojiwm.service,
+    # and a NixOS service definition overrides PATH with its minimal default
+    # (which lacks sh and session tools).
   };
 }
