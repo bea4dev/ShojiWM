@@ -45,6 +45,14 @@ pub fn command_from_env() -> Option<String> {
         .filter(|cmd| !cmd.trim().is_empty())
 }
 
+// `/bin/sh`, not `sh`: a systemd user service can run with a minimal PATH that
+// does not include a shell.
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
 pub async fn pick(
     command: &str,
     app_id: &str,
@@ -56,9 +64,7 @@ pub async fn pick(
 
     // kill_on_drop: SelectSources drops this future when the session closes,
     // and an orphaned chooser left on screen would answer nobody.
-    let mut child = match Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    let mut child = match shell_command(command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -243,5 +249,16 @@ mod tests {
             run("exec sleep 30", true).await,
             PickResult::Cancelled
         ));
+    }
+
+    #[tokio::test]
+    async fn shell_command_runs_without_path() {
+        let output = shell_command("echo DP-1")
+            .env_remove("PATH")
+            .output()
+            .await
+            .expect("/bin/sh spawns even with no PATH");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "DP-1");
     }
 }
