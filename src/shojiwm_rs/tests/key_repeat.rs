@@ -3,7 +3,10 @@
 
 mod common;
 
-use std::{cell::RefCell, time::Duration};
+use std::{
+    cell::RefCell,
+    time::{Duration, Instant},
+};
 
 use common::keyboard::{Key, Keyboard};
 use shojiwm_rs::prelude::*;
@@ -43,8 +46,9 @@ fn a_held_binding_tells_its_repeats_from_the_press() {
     session.state.keyboard_repeat_info = (100, 10);
 
     key(&mut session, KeyState::Pressed);
-    for _ in 0..3 {
-        std::thread::sleep(Duration::from_millis(30));
+    // Wait on the runs rather than a fixed time so a slow machine still sees repeats.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while SEEN.with_borrow(Vec::len) < 3 && Instant::now() < deadline {
         session.roundtrip();
     }
     key(&mut session, KeyState::Released);
