@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod keyboard;
 pub mod mouse;
 
 use std::{

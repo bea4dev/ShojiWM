@@ -16,7 +16,8 @@
     "test:clear-color": "node --import tsx --test tests/clear-color.test.ts",
     "test:output-direct-scanout": "node --import tsx --test tests/output-direct-scanout.test.ts",
     "test:session-is-locked": "node --import tsx --test tests/session-is-locked.test.ts",
-    "test:cursor-transform": "node --import tsx --test tests/cursor-transform.test.ts"
+    "test:cursor-transform": "node --import tsx --test tests/cursor-transform.test.ts",
+    "test:key-is-repeat": "node --import tsx --test tests/key-is-repeat.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

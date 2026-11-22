@@ -16,6 +16,14 @@ interface RuntimeKeyBindingConfigEntry {
 
 type KeyBindingHandler = () => void;
 
+interface KeyBridge {
+  isKeyRepeat(): boolean;
+}
+
+let bridge: KeyBridge | undefined;
+
+export function installKeyBridge(value: KeyBridge): void { bridge = value; }
+
 let desiredKeyBindingEntries = new Map<string, RuntimeKeyBindingConfigEntry>();
 let desiredKeyBindingHandlers = new Map<string, KeyBindingHandler>();
 let stagedKeyBindingEntries: Map<string, RuntimeKeyBindingConfigEntry> | null = null;
@@ -82,6 +90,10 @@ export const KEY_BINDING_CONTROLLER: KeyBindingController = {
     if (!stagedKeyBindingEntries) {
       pendingKeyBindingConfig = true;
     }
+  },
+  isRepeat() {
+    if (!bridge) throw new Error("Read key repeat after embedded runtime initialization");
+    return bridge.isKeyRepeat();
   },
 };
 
