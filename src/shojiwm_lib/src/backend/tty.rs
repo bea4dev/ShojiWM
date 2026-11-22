@@ -1169,6 +1169,9 @@ struct SurfaceData {
     /// client commit must not be parked behind the estimated-vblank timer (see
     /// `queue_tty_redraws`).
     tearing_active: bool,
+    /// Whether the flip in flight is an async (tearing) one. Its completion event carries
+    /// the timestamp of the vblank before it, not the moment it reached the screen.
+    async_flip_in_flight: bool,
     /// Whether the last real render assigned the cursor to the DRM cursor
     /// plane. Gates the cursor fast path: a position-only plane commit is
     /// meaningless while the cursor is composited into the primary plane.
@@ -2116,6 +2119,7 @@ impl SurfaceData {
             last_frame_callback_at: None,
             supports_async_flip,
             tearing_active: false,
+            async_flip_in_flight: false,
             cursor_on_plane: false,
             last_cursor_hotspot: Point::default(),
             cursor_move_pending: false,
@@ -2455,6 +2459,7 @@ fn reset_surface_after_tty_pause(surface: &mut SurfaceData) {
     surface.commit_timing_timer_armed = false;
     surface.next_frame_target = None;
     surface.tearing_active = false;
+    surface.async_flip_in_flight = false;
     surface.redraw_state = TtyRedrawState::Idle;
 }
 
@@ -2526,6 +2531,7 @@ fn power_off_surface(surface: &mut SurfaceData, session_active: bool) {
     surface.cursor_on_plane = false;
     surface.cursor_move_pending = false;
     surface.tearing_active = false;
+    surface.async_flip_in_flight = false;
     surface.queued_at = None;
     surface.next_frame_target = None;
     surface.power_cleared = false;
@@ -3680,18 +3686,32 @@ fn frame_finish(
             "latency trace: pointer input to photon"
         );
     }
+    let async_flip = std::mem::take(&mut surface.async_flip_in_flight);
     if let Some(mut feedback) = submitted_feedback {
-        let clock = presentation_clock;
         let sequence = present_sequence;
-        let flags = if metadata
+        // amdgpu stamps an async flip with the vblank before it, so a game tearing
+        // at 180 fps on 120 Hz was told its frames came in pairs, 0 and 8.33 ms
+        // apart, while each reached the screen ~0.1 ms after its commit. The
+        // flip took effect when its completion event arrived; report that,
+        // as not vsynced. `presentation_clock` stays on the vblank grid for
+        // our own frame timing.
+        let (clock, flags) = if async_flip {
+            (
+                Duration::from(state.clock.now()),
+                wp_presentation_feedback::Kind::HwCompletion,
+            )
+        } else if metadata
             .as_ref()
             .is_some_and(|metadata| matches!(metadata.time, DrmEventTime::Monotonic(_)))
         {
-            wp_presentation_feedback::Kind::Vsync
-                | wp_presentation_feedback::Kind::HwClock
-                | wp_presentation_feedback::Kind::HwCompletion
+            (
+                presentation_clock,
+                wp_presentation_feedback::Kind::Vsync
+                    | wp_presentation_feedback::Kind::HwClock
+                    | wp_presentation_feedback::Kind::HwCompletion,
+            )
         } else {
-            wp_presentation_feedback::Kind::Vsync
+            (presentation_clock, wp_presentation_feedback::Kind::Vsync)
         };
 
         let refresh = if surface.vrr {
@@ -5987,7 +6007,14 @@ fn render_surface(
         // to collapse the frame to one scanout-capable element, and HDR outputs
         // set `FrameFlags::empty()` before `render_frame` (nothing may bypass
         // the PQ encode pass), so plane promotion cannot happen on them at all.
-        let fullscreen_window = if composition_plan.has_default_windows() && !output_encoded {
+        //
+        // The stacking stays, though: the window still hides Top, the lower
+        // layers and the windows under it, it is just drawn through the normal
+        // path instead of as a bare surface. Input hit-testing follows the
+        // same stacking on every output (`output_has_topmost_fullscreen_window`);
+        // without it the bar showed over a fullscreen game while clicks went to
+        // the game.
+        let fullscreen_stack_window = if composition_plan.has_default_windows() {
             fullscreen_scanout_window(
                 space,
                 window_decorations,
@@ -6000,6 +6027,7 @@ fn render_surface(
         } else {
             None
         };
+        let fullscreen_window = fullscreen_stack_window.clone().filter(|_| !output_encoded);
         note_fullscreen_fast_path_transition(output.name().as_str(), fullscreen_window.is_some());
 
         let close_debug = crate::env_flag!("SHOJI_CLOSE_DEBUG");
@@ -6048,6 +6076,7 @@ fn render_surface(
             windows_top_to_bottom: &windows_top_to_bottom,
             all_windows_top_to_bottom: &composition_all_windows,
             fullscreen_window: fullscreen_window.as_ref(),
+            fullscreen_stack_window: fullscreen_stack_window.as_ref(),
             extra_damage: &mut extra_damage,
             newly_ready_initial_focus_window_ids: &mut newly_ready_initial_focus_window_ids,
             composition_windows: &mut composition_windows,
@@ -7299,6 +7328,9 @@ fn render_surface(
                     });
                 }
                 surface.queued_at = Some(queue_started_at);
+                // smithay retries a rejected async flip as a synced one; that rare
+                // frame then reports its event's arrival instead of the vblank.
+                surface.async_flip_in_flight = should_tear;
                 surface.queued_cpu_duration = total_cpu_elapsed;
             }
             surface.cross_gpu_staging = None;
@@ -15096,7 +15128,12 @@ struct TtyScene<'a> {
     windows_top_to_bottom: &'a [smithay::desktop::Window],
     /// Every window, top to bottom, for plans that pick windows by id.
     all_windows_top_to_bottom: &'a [(smithay::desktop::Window, Option<crate::ssd::LogicalRect>)],
+    /// The window of the fullscreen fast path (drawn as a bare surface tree).
     fullscreen_window: Option<&'a smithay::desktop::Window>,
+    /// The fullscreen window that hides Top, the lower layers and the windows
+    /// below it; the fast path's one, or one on an encoded output drawn
+    /// through the normal path.
+    fullscreen_stack_window: Option<&'a smithay::desktop::Window>,
     extra_damage: &'a mut Vec<crate::ssd::LogicalRect>,
     newly_ready_initial_focus_window_ids: &'a mut Vec<String>,
     /// Windows a plan picked by id this frame; they get frame callbacks.
@@ -15118,7 +15155,7 @@ impl TtyScene<'_> {
     ) -> Vec<smithay::desktop::Window> {
         use crate::backend::composition::WindowSelection;
         match selection {
-            WindowSelection::Output => match self.fullscreen_window {
+            WindowSelection::Output => match self.fullscreen_stack_window {
                 Some(window) => vec![window.clone()],
                 None => self.windows_top_to_bottom.to_vec(),
             },
@@ -15246,8 +15283,11 @@ impl crate::backend::composition::CompositionScene for TtyScene<'_> {
         match selection {
             WindowSelection::None => {}
             WindowSelection::Output => {
-                let windows = self.windows_top_to_bottom;
-                if self.fullscreen_window.is_none() {
+                let windows = match self.fullscreen_stack_window {
+                    Some(window) => std::slice::from_ref(window),
+                    None => self.windows_top_to_bottom,
+                };
+                if self.fullscreen_stack_window.is_none() {
                     timescope::scope!("tty ssd popups");
                     let started_at = Instant::now();
                     elements.extend(ssd_popup_scene_elements(
@@ -15314,7 +15354,7 @@ impl crate::backend::composition::CompositionScene for TtyScene<'_> {
     }
 
     fn fullscreen_active(&self) -> bool {
-        self.fullscreen_window.is_some()
+        self.fullscreen_stack_window.is_some()
     }
 
     fn offscreen_damage(

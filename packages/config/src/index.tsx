@@ -534,9 +534,7 @@ COMPOSITOR.output.configure((context) => {
     position: "auto",
     scale: 1.8,
     transform: "normal",
-    hdr: {
-      
-    },
+    hdr: false,
     vrr: false,
   };
   display["eDP-2"] = {

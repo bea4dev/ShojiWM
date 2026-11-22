@@ -674,7 +674,8 @@ pub trait CompositionScene {
         below: &[BelowNode<'_>],
     ) -> Result<Vec<Self::Element>, Box<dyn std::error::Error>>;
 
-    /// Whether the output's fullscreen fast path is active this frame.
+    /// Whether a fullscreen window owns the output's stack this frame, hiding
+    /// Top, the lower layers and the windows below it.
     fn fullscreen_active(&self) -> bool {
         false
     }
@@ -906,7 +907,7 @@ impl<'p> Builder<'p> {
         nodes: &[CompositionNode],
         path: &str,
     ) -> Result<BuiltScene<S::Element>, Box<dyn std::error::Error>> {
-        // Only the output's own stack has a fullscreen fast path. Like the
+        // Only the output's own stack has a fullscreen window. Like the
         // default stacking always did, it hides Top layers and everything
         // below the window stack.
         let fullscreen_stack = (ctx.primary && scene.fullscreen_active())
