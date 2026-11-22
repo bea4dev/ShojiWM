@@ -44,6 +44,10 @@ function cloneOutputState(
         detectedSubpixel: snapshot.detectedSubpixel,
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
         hdrSupported: snapshot.hdrSupported,
+        hdrCapabilities: snapshot.hdrCapabilities
+          ? { ...snapshot.hdrCapabilities }
+          : undefined,
+        hdr: snapshot.hdr ? { ...snapshot.hdr } : undefined,
         hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),
@@ -78,6 +82,10 @@ function normalizeOutputState(
         detectedSubpixel: snapshot.detectedSubpixel ?? "unknown",
         availableModes: snapshot.availableModes.map((mode) => ({ ...mode })),
         hdrSupported: snapshot.hdrSupported,
+        hdrCapabilities: snapshot.hdrCapabilities
+          ? { ...snapshot.hdrCapabilities }
+          : undefined,
+        hdr: snapshot.hdr ? { ...snapshot.hdr } : undefined,
         hdmi: snapshot.hdmi ? { ...snapshot.hdmi } : undefined,
       },
     ]),

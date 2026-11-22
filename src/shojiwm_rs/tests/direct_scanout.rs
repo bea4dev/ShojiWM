@@ -43,6 +43,8 @@ fn output(name: &str) -> WaylandOutputSnapshot {
         subpixel: Default::default(),
         detected_subpixel: Default::default(),
         hdr_supported: false,
+        hdr_capabilities: None,
+        hdr: None,
         hdmi: None,
     }
 }

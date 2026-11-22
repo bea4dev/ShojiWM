@@ -698,6 +698,8 @@ export type {
   LayerEffectRegion,
   OutputConfigEntry,
   OutputHdrConfig,
+  HdrCapabilitiesInfo,
+  HdrStateInfo,
   OutputConfigureContext,
   OutputConfigureFactory,
   OutputController,

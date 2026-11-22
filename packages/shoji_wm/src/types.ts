@@ -1352,6 +1352,56 @@ export interface HdmiLinkInfo {
   maxBandwidthGbps?: number;
 }
 
+/**
+ * HDR capabilities from the EDID (CTA-861 HDR static metadata, DisplayID).
+ * Luminances are in cd/m² and absent when the display leaves them out, which
+ * many do.
+ * EDID（CTA-861 の HDR 静的メタデータ、DisplayID）が示す HDR の能力。輝度は
+ * cd/m² で、ディスプレイが示さない場合（よくあります）は存在しません。
+ */
+export interface HdrCapabilitiesInfo {
+  /**
+   * Accepts SMPTE ST 2084 (PQ), which the `hdr` config needs.
+   * SMPTE ST 2084（PQ）に対応しているか。`hdr` の設定にはこれが必要です。
+   */
+  pq: boolean;
+  /** Accepts Hybrid Log-Gamma. / HLG に対応しているか。 */
+  hlg: boolean;
+  /** Desired peak luminance. / 推奨される最大輝度。 */
+  maxLuminance?: number;
+  /** Desired peak frame-average luminance. / 推奨されるフレーム平均の最大輝度。 */
+  maxFrameAverageLuminance?: number;
+  /** Desired black level. / 推奨される最小輝度（黒レベル）。 */
+  minLuminance?: number;
+  /**
+   * Suggested maximum for full-screen SDR content.
+   * 全画面の SDR の内容に推奨される最大輝度。
+   */
+  maxSdrLuminance?: number;
+}
+
+/**
+ * The luminances an HDR10 output is driven with, in cd/m², after the config
+ * overrides and the backlight are applied.
+ * HDR10 の出力で実際に使っている輝度（cd/m²）。設定による上書きと
+ * バックライトを反映した値です。
+ */
+export interface HdrStateInfo {
+  /**
+   * Peak luminance: the EDID's, `hdr.maxLuminance`, or 1000 when neither gives
+   * one.
+   * 最大輝度。EDID の値か `hdr.maxLuminance`、どちらも無ければ 1000。
+   */
+  maxLuminance: number;
+  /** Black level. / 最小輝度（黒レベル）。 */
+  minLuminance: number;
+  /**
+   * What SDR white (ordinary windows) is shown at.
+   * SDR の白（通常のウィンドウ）を表示している明るさ。
+   */
+  sdrLuminance: number;
+}
+
 /** Panel power for `COMPOSITOR.output.setPower`. / `COMPOSITOR.output.setPower` で指定する電源状態。 */
 export type OutputPower = "on" | "off" | "toggle";
 
@@ -1629,6 +1679,23 @@ export interface OutputStateSnapshot {
   availableModes: OutputMode[];
   /** EDID advertises HDR (CTA-861 static metadata block). */
   hdrSupported: boolean;
+  /**
+   * What the EDID's HDR static metadata says, luminances included. Absent when
+   * `hdrSupported` is false.
+   * EDID の HDR 静的メタデータの内容（輝度を含む）。`hdrSupported` が false の
+   * ときは存在しません。
+   */
+  hdrCapabilities?: HdrCapabilitiesInfo;
+  /**
+   * The HDR10 signal this output is driven with right now. Absent while it
+   * runs SDR, including when `hdr` is configured but the display cannot take
+   * it. Updates when the display config or, for `sdrLuminance: "backlight"`,
+   * the brightness changes.
+   * この出力を今駆動している HDR10 の状態。SDR で動作している間は存在せず、
+   * `hdr` を設定してもディスプレイが対応していない場合も同様です。表示設定や、
+   * `sdrLuminance: "backlight"` のときは明るさが変わると更新されます。
+   */
+  hdr?: HdrStateInfo;
   /**
    * Link capability for HDMI connectors. Absent for non-HDMI outputs and for
    * sinks publishing no vendor block.

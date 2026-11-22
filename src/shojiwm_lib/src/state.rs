@@ -3658,6 +3658,34 @@ impl ShojiWM {
                             .output_color
                             .get(&name)
                             .is_some_and(|color| color.edid_hdr.is_some()),
+                        hdr_capabilities: self
+                            .output_color
+                            .get(&name)
+                            .and_then(|color| color.edid_hdr)
+                            .map(|edid| crate::ssd::HdrCapabilitiesSnapshot {
+                                pq: edid.supports_pq,
+                                hlg: edid.supports_hlg,
+                                max_luminance: edid.max_luminance,
+                                max_frame_average_luminance: edid.max_frame_avg_luminance,
+                                min_luminance: edid.min_luminance,
+                                max_sdr_luminance: edid.max_sdr_luminance,
+                            }),
+                        hdr: self
+                            .output_color
+                            .get(&name)
+                            .and_then(|color| match color.mode {
+                                crate::color::OutputColorMode::Hdr10 {
+                                    max_display_luminance,
+                                    min_display_luminance,
+                                    sdr_white_luminance,
+                                    ..
+                                } => Some(crate::ssd::HdrStateSnapshot {
+                                    max_luminance: max_display_luminance,
+                                    min_luminance: min_display_luminance,
+                                    sdr_luminance: sdr_white_luminance,
+                                }),
+                                crate::color::OutputColorMode::Sdr => None,
+                            }),
                         hdmi: self
                             .output_color
                             .get(&name)
@@ -4081,14 +4109,15 @@ impl ShojiWM {
     }
 
     /// A panel backlight changed. HDR10 outputs whose SDR white follows the
-    /// backlight re-resolve it (see `crate::backlight`); nothing else cares.
+    /// backlight re-resolve it (see `crate::backlight`), and the config sees
+    /// the new SDR white in the output state.
     pub fn backlight_changed(&mut self) {
         let any_hdr = self
             .output_color
             .values()
             .any(|color| matches!(color.mode, crate::color::OutputColorMode::Hdr10 { .. }));
-        if any_hdr {
-            crate::backend::tty::refresh_tty_output_color_modes(self);
+        if any_hdr && crate::backend::tty::refresh_tty_output_color_modes(self) {
+            self.sync_runtime_display_state();
         }
     }
 

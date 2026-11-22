@@ -617,10 +617,53 @@ pub struct WaylandOutputSnapshot {
     /// EDID advertises HDR (CTA-861 static metadata). Can
     /// be used to check display capabilities.
     pub hdr_supported: bool,
+    /// What the EDID's HDR static metadata says, luminances included. `None`
+    /// when `hdr_supported` is false.
+    pub hdr_capabilities: Option<HdrCapabilitiesSnapshot>,
+    /// The HDR10 signal the output is driven with right now. `None` while it
+    /// runs SDR, which includes an `hdr` config the display cannot honour.
+    pub hdr: Option<HdrStateSnapshot>,
     /// Link capability for HDMI connectors, so a config UI can tell which
     /// modes are actually reachable at a given bit depth. `None` for non-HDMI
     /// outputs and for sinks that publish no vendor block.
     pub hdmi: Option<HdmiLinkSnapshot>,
+}
+
+/// HDR capabilities from the EDID (CTA-861 HDR static metadata, DisplayID).
+/// Luminances are in cd/m² and absent when the display leaves them out, which
+/// many do.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HdrCapabilitiesSnapshot {
+    /// Accepts SMPTE ST 2084 (PQ), which `hdr` needs.
+    pub pq: bool,
+    /// Accepts Hybrid Log-Gamma.
+    pub hlg: bool,
+    /// Desired peak luminance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_luminance: Option<f32>,
+    /// Desired peak frame-average luminance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_frame_average_luminance: Option<f32>,
+    /// Desired black level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_luminance: Option<f32>,
+    /// Suggested maximum for full-screen SDR content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sdr_luminance: Option<f32>,
+}
+
+/// The luminances an HDR10 output is driven with, in cd/m², after the config
+/// overrides and the backlight are applied.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HdrStateSnapshot {
+    /// Peak luminance: the EDID's, `hdr.maxLuminance`, or 1000 when neither
+    /// gives one.
+    pub max_luminance: f32,
+    pub min_luminance: f32,
+    /// What SDR white (ordinary windows) is shown at.
+    pub sdr_luminance: f32,
 }
 
 /// What the HDMI sink says its link can carry.

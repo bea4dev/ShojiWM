@@ -1399,6 +1399,8 @@ mod tests {
             subpixel: Default::default(),
             detected_subpixel: Default::default(),
             hdr_supported: false,
+            hdr_capabilities: None,
+            hdr: None,
             hdmi: None,
         }
     }

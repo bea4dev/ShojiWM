@@ -14415,8 +14415,9 @@ fn hdr_render_supports_fp16(state: &crate::state::ShojiWM, node: DrmNode) -> boo
 /// so this is where a config-side HDR request actually takes effect. It is
 /// a live switch: the connector properties persist across smithay's
 /// commits (legacy SET_PROPERTY), and the render path re-reads
-/// `output_color` every frame to engage or drop the PQ encode pass.
-pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
+/// `output_color` every frame to engage or drop the PQ encode pass. Returns
+/// whether any output's color mode changed.
+pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) -> bool {
     let mut changed_outputs = Vec::new();
     let icc_changed = refresh_output_icc_profiles(state);
     for (&node, backend) in state.tty_backends.iter() {
@@ -14555,6 +14556,7 @@ pub fn refresh_tty_output_color_modes(state: &mut crate::state::ShojiWM) {
         }
         state.schedule_redraw();
     }
+    !changed_outputs.is_empty()
 }
 
 /// Load the monitor ICC profiles the display config names (`icc`) into

@@ -227,7 +227,24 @@ How it looks:
 
 Notes:
 
-- Whether the display supports HDR is in `OutputInfo.hdrSupported`.
+- Whether the display supports HDR is in `OutputInfo.hdrSupported`, and what
+  its EDID says in `OutputInfo.hdrCapabilities`: `pq`, `hlg`, and, when the
+  display reports them, `maxLuminance`, `maxFrameAverageLuminance`,
+  `minLuminance` and `maxSdrLuminance` (cd/m²).
+- `OutputInfo.hdr` is present while the output actually runs HDR, with the
+  luminances in use: `maxLuminance`, `minLuminance` and `sdrLuminance` (the
+  latter follows the brightness under `"backlight"`). It is absent in SDR,
+  including when `hdr` is set but the display cannot take it.
+
+  ```ts
+  COMPOSITOR.event.onOutputChange(({outputs}) => {
+    for (const output of outputs) {
+      if (output.hdr) {
+        console.log(output.name, output.hdr.maxLuminance, output.hdr.sdrLuminance);
+      }
+    }
+  });
+  ```
 - On HDMI, the link has to carry 10 bits per color at the chosen mode;
   `OutputInfo.hdmi` and `availableModes[].clockKhz` let a config check that.
 - `SHOJI_HDR_OUTPUTS=eDP-1` (or `all`) turns HDR on without a config, and

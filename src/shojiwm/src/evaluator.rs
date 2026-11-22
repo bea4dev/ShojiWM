@@ -8796,6 +8796,8 @@ COMPOSITOR.window.composition = () => <Box />;
             subpixel: Default::default(),
             detected_subpixel: Default::default(),
             hdr_supported: false,
+            hdr_capabilities: None,
+            hdr: None,
             hdmi: None,
             position: OutputPositionSnapshot { x: 0, y: 0 },
             scale: 1.0,
@@ -8985,7 +8987,8 @@ COMPOSITOR.event.onPointerMove(() => {{}});
     // The runtime copies output snapshots and config entries field by field
     // (packages/shoji_wm/src/output.ts), so a field missing there vanishes
     // without an error: `hdmi` never reached MinkaConf and the HDR luminance
-    // override never reached the compositor, until 11/9/2026.
+    // override never reached the compositor, until 11/9/2026. The HDR
+    // capabilities and state ride the same copy.
     #[test]
     fn runtime_keeps_hdmi_and_hdr_luminance_through_output_state_and_config() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -9028,6 +9031,20 @@ COMPOSITOR.output.configure(() => ({{
             max_tmds_khz: Some(600_000),
             max_bandwidth_gbps: Some(18.0),
         });
+        output.hdr_supported = true;
+        output.hdr_capabilities = Some(shojiwm_lib::ssd::HdrCapabilitiesSnapshot {
+            pq: true,
+            hlg: false,
+            max_luminance: Some(616.0),
+            max_frame_average_luminance: None,
+            min_luminance: Some(0.5),
+            max_sdr_luminance: None,
+        });
+        output.hdr = Some(shojiwm_lib::ssd::HdrStateSnapshot {
+            max_luminance: 420.0,
+            min_luminance: 0.05,
+            sdr_luminance: 203.0,
+        });
         evaluator.set_display_state(std::collections::BTreeMap::from([(
             "TEST-1".to_string(),
             output,
@@ -9067,6 +9084,14 @@ COMPOSITOR.output.configure(() => ({{
         let hdmi = &parsed["result"]["TEST-1"]["hdmi"];
         assert_eq!(hdmi["standard"], "HDMI 2.0");
         assert_eq!(hdmi["maxTmdsKhz"], 600_000);
+        let capabilities = &parsed["result"]["TEST-1"]["hdrCapabilities"];
+        assert_eq!(capabilities["pq"], true);
+        assert_eq!(capabilities["maxLuminance"], 616.0);
+        assert_eq!(capabilities["minLuminance"], 0.5);
+        assert!(capabilities.get("maxFrameAverageLuminance").is_none());
+        let hdr = &parsed["result"]["TEST-1"]["hdr"];
+        assert_eq!(hdr["maxLuminance"], 420.0);
+        assert_eq!(hdr["sdrLuminance"], 203.0);
 
         evaluator
             .lifecycle_disable("test")

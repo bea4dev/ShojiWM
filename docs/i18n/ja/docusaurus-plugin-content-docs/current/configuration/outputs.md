@@ -224,7 +224,24 @@ display['DP-1'] = {
 
 補足:
 
-- ディスプレイが HDR に対応しているかは `OutputInfo.hdrSupported` で分かります。
+- ディスプレイが HDR に対応しているかは `OutputInfo.hdrSupported` で、EDID の
+  内容は `OutputInfo.hdrCapabilities` で分かります。`pq`・`hlg` と、ディスプレイが
+  示していれば `maxLuminance`・`maxFrameAverageLuminance`・`minLuminance`・
+  `maxSdrLuminance`（cd/m²）が入ります。
+- `OutputInfo.hdr` は出力が実際に HDR で動作している間だけ存在し、使用中の
+  輝度 `maxLuminance`・`minLuminance`・`sdrLuminance` を持ちます（`"backlight"` の
+  ときは `sdrLuminance` が明るさに連動します）。SDR のときは存在せず、`hdr` を
+  設定してもディスプレイが対応していない場合も同様です。
+
+  ```ts
+  COMPOSITOR.event.onOutputChange(({outputs}) => {
+    for (const output of outputs) {
+      if (output.hdr) {
+        console.log(output.name, output.hdr.maxLuminance, output.hdr.sdrLuminance);
+      }
+    }
+  });
+  ```
 - HDMI では、選んだモードで 1 色 10 ビットを伝送できる帯域が必要です。
   `OutputInfo.hdmi` と `availableModes[].clockKhz` で設定から確認できます。
 - `SHOJI_HDR_OUTPUTS=eDP-1`（または `all`）で設定なしに HDR を有効にでき、

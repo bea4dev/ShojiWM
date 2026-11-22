@@ -51,8 +51,8 @@ pub use popup::{
 pub(crate) use popup_input::PopupInputState;
 pub use window_model::{
     GesturePinchEventSnapshot, GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot,
-    HdmiLinkSnapshot, LayerKindSnapshot, LayerPositionSnapshot,
-    ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
+    HdmiLinkSnapshot, HdrCapabilitiesSnapshot, HdrStateSnapshot, LayerKindSnapshot,
+    LayerPositionSnapshot, ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
     ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
     ManagedWindowPointSnapshot, ManagedWindowRectAnimationSnapshot, ManagedWindowRectSnapshot,
     ManagedWindowScalarAnimationSnapshot, ManagedWindowState, OutputModeSnapshot,
