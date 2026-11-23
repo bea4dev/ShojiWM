@@ -32,6 +32,7 @@ impl ShojiWM {
             caps_lock: modifiers.caps_lock,
             num_lock: modifiers.num_lock,
         };
+        self.num_lock_observed(locks.num_lock);
         let layout = keyboard.with_xkb_state(self, |context| {
             let xkb = context.xkb().lock().unwrap();
             let layout = xkb.active_layout();
