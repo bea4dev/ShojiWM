@@ -281,6 +281,7 @@ impl ShojiWM {
     fn request_redraw_for_pointer_motion(&mut self) {
         self.last_pointer_motion_at = Some(std::time::Instant::now());
         self.sync_drag_state();
+        self.update_cursor_capture_sessions();
         // A drag view following the pointer is drawn with the scene, not on
         // the cursor plane: moving it takes a full frame.
         if self.dnd.has_pointer_anchored_views() {
@@ -516,6 +517,7 @@ impl ShojiWM {
             },
         );
         pointer.frame(self);
+        self.update_cursor_capture_sessions();
         self.schedule_redraw();
     }
 
