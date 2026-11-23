@@ -836,6 +836,7 @@ impl CompositorHandler for ShojiWM {
         xdg_shell::handle_commit(self, surface);
         layer_shell::handle_commit(self, surface, layer_commit_damage);
         resize_grab::handle_commit(&mut self.space, surface);
+        self.toplevel_drag_commit(surface);
 
         if !self.idle_inhibited_surfaces.is_empty() {
             self.refresh_idle_inhibit_state();

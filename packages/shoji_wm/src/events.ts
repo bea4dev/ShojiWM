@@ -138,7 +138,12 @@ export interface WindowMoveRect {
   height: number;
 }
 
-export type WindowMoveSource = "ssd" | "modifier" | "client-csd" | "xwayland";
+export type WindowMoveSource =
+  | "ssd"
+  | "modifier"
+  | "client-csd"
+  | "xwayland"
+  | "toplevel-drag";
 export type WindowMovePhase = "start" | "update" | "end" | "cancel";
 
 export interface WindowMoveEvent {
