@@ -680,6 +680,15 @@ pub trait CompositionScene {
         false
     }
 
+    /// Whether the topmost window of the output is fullscreen, which hides
+    /// the Top layers in front of the window stack. It holds whenever
+    /// [`Self::fullscreen_active`] does, and also while the window does not
+    /// own the stack (it does not cover the output, it animates, a window
+    /// closes): input then still treats Top as behind it.
+    fn fullscreen_above_top(&self) -> bool {
+        false
+    }
+
     /// Damage-only elements for changes the content elements do not carry
     /// themselves (decoration updates), for a render texture.
     fn offscreen_damage(&mut self, _ctx: &SceneContext) -> Vec<Self::Element> {
@@ -907,16 +916,20 @@ impl<'p> Builder<'p> {
         nodes: &[CompositionNode],
         path: &str,
     ) -> Result<BuiltScene<S::Element>, Box<dyn std::error::Error>> {
-        // Only the output's own stack has a fullscreen window. Like the
-        // default stacking always did, it hides Top layers and everything
-        // below the window stack.
-        let fullscreen_stack = (ctx.primary && scene.fullscreen_active())
+        // Only the output's own stack has a fullscreen window. It hides the
+        // Top layers in front of it, and, when it owns the stack, everything
+        // below the window stack too.
+        let output_stack = ctx
+            .primary
             .then(|| {
                 nodes.iter().rposition(|node| {
                     matches!(node, CompositionNode::Windows { windows: None, .. })
                 })
             })
             .flatten();
+        let fullscreen_stack = output_stack.filter(|_| scene.fullscreen_active());
+        let above_top =
+            output_stack.filter(|_| scene.fullscreen_active() || scene.fullscreen_above_top());
         let fullscreen = fullscreen_stack.is_some();
         let first = fullscreen_stack.unwrap_or(0);
         // Back to front first: what the plan draws itself, so the layers and
@@ -936,7 +949,7 @@ impl<'p> Builder<'p> {
                     let below = below_nodes(&nodes[..index], &made[..index]);
                     // Front to back: the plan lists layers back to front.
                     let mut kinds: Vec<LayerKind> = layers.iter().rev().copied().collect();
-                    if fullscreen {
+                    if above_top.is_some_and(|stack| index > stack) {
                         kinds.retain(|kind| *kind == LayerKind::Overlay);
                     }
                     // Upper and lower layers come from separate passes; keep
@@ -963,7 +976,8 @@ impl<'p> Builder<'p> {
                     }
                 }
                 CompositionNode::LayerPopups => {
-                    elements.extend(scene.layer_popups(ctx, fullscreen)?);
+                    let overlay_only = above_top.is_some_and(|stack| index > stack);
+                    elements.extend(scene.layer_popups(ctx, overlay_only)?);
                 }
                 CompositionNode::Windows {
                     windows,
@@ -1536,6 +1550,7 @@ mod tests {
     /// what produced it (its id is unused).
     struct FakeScene {
         fullscreen: bool,
+        above_top: bool,
         log: Vec<String>,
     }
 
@@ -1589,6 +1604,10 @@ mod tests {
             self.fullscreen
         }
 
+        fn fullscreen_above_top(&self) -> bool {
+            self.above_top
+        }
+
         fn texture(&self, _: TextureRenderElement<GlesTexture>) -> Self::Element {
             unreachable!()
         }
@@ -1614,8 +1633,17 @@ mod tests {
     }
 
     fn walk(plan: &OutputComposition, fullscreen: bool) -> (Vec<String>, usize, bool) {
+        walk_with(plan, fullscreen, fullscreen)
+    }
+
+    fn walk_with(
+        plan: &OutputComposition,
+        fullscreen: bool,
+        above_top: bool,
+    ) -> (Vec<String>, usize, bool) {
         let mut scene = FakeScene {
             fullscreen,
+            above_top,
             log: Vec::new(),
         };
         let ctx = SceneContext {
@@ -1662,6 +1690,53 @@ mod tests {
         assert!(
             covers,
             "anything in front of the fullscreen window forces compositing"
+        );
+    }
+
+    #[test]
+    fn a_fullscreen_window_that_does_not_own_the_stack_still_hides_top() {
+        // The window is fullscreen but cannot take the fast path (it does not
+        // cover the output, or it animates): the scene below it is drawn,
+        // but the bar must not be drawn over it.
+        let (log, _, covers) = walk_with(&OutputComposition::default_plan(), false, true);
+        assert_eq!(
+            log,
+            [
+                "popups overlay_only=true",
+                "layers[Overlay] over [Output, [Bottom, Background]]",
+                "windows Output over [[Bottom, Background]]",
+                "layers[Bottom, Background] over []",
+            ]
+        );
+        assert!(!covers, "only a stack the window owns is covered");
+    }
+
+    #[test]
+    fn top_below_the_window_stack_stays_when_the_window_is_fullscreen() {
+        let plan = OutputComposition {
+            nodes: vec![
+                CompositionNode::Layers {
+                    layers: vec![LayerKind::Top],
+                },
+                CompositionNode::Windows {
+                    windows: None,
+                    offset_x: 0,
+                    offset_y: 0,
+                },
+                CompositionNode::Layers {
+                    layers: vec![LayerKind::Top, LayerKind::Overlay],
+                },
+            ],
+            textures: vec![],
+        };
+        let (log, _, _) = walk_with(&plan, false, true);
+        assert_eq!(
+            log,
+            [
+                "layers[Overlay] over [Output, [Top]]",
+                "windows Output over [[Top]]",
+                "layers[Top] over []",
+            ]
         );
     }
 

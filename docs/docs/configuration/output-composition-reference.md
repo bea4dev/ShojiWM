@@ -46,6 +46,12 @@ closing windows and decoration popups. That stack is the one the fullscreen fast
 and direct scanout apply to, and only at the root of the composition. With `windows`,
 windows outside the composition's area are skipped.
 
+When the topmost window of that stack is fullscreen, `"top"` layers listed after
+the node are not drawn: a bar stays behind the window, as it does for the pointer.
+Only `"overlay"` stays in front. An X11 window (through xwayland-satellite) whose
+rectangle covers the whole output counts as fullscreen too, as in KWin and Mutter:
+that is how many games make "borderless fullscreen".
+
 ### `<LayerPopups>`
 
 Popups of layer-shell surfaces (bar menus and tooltips), all layers. No props.
