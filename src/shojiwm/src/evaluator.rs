@@ -7449,6 +7449,86 @@ COMPOSITOR.event.onDisable((event) => {
     }
 
     #[test]
+    fn embedded_runtime_ipc_names_clients_and_reports_disconnects() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let test_dir =
+            std::env::temp_dir().join(format!("shojiwm-ipc-clients-test-{}", std::process::id()));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let socket_path = test_dir.join("ipc.sock");
+        let socket_literal = serde_json::to_string(&socket_path.to_string_lossy()).unwrap();
+        let config_path = test_dir.join("config.tsx");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+import {{ Box, COMPOSITOR }} from "shoji_wm";
+import {{ createIpcServer }} from "shoji_wm/ipc";
+
+const ipc = createIpcServer({socket_literal});
+const gone = [];
+ipc.handle("who", (_params, client) => client.id);
+ipc.handle("gone", () => gone);
+ipc.onDisconnect((client) => gone.push(client.id));
+COMPOSITOR.window.composition = () => <Box />;
+"#
+            ),
+        )
+        .unwrap();
+        let evaluator = EmbeddedDecorationEvaluator::for_paths(
+            repository_root.join("tools/decoration-runtime.ts"),
+            &config_path,
+        )
+        .with_working_dir(&repository_root);
+        evaluator.lifecycle_enable("test", None).unwrap();
+
+        fn call(reader: &mut BufReader<UnixStream>, id: u64, method: &str) -> serde_json::Value {
+            let request = serde_json::json!({ "id": id, "method": method });
+            reader
+                .get_mut()
+                .write_all(format!("{request}\n").as_bytes())
+                .unwrap();
+            let mut response = String::new();
+            reader.read_line(&mut response).unwrap();
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(response["id"], id);
+            response["result"].clone()
+        }
+        let connect = || {
+            let socket = UnixStream::connect(&socket_path).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            BufReader::new(socket)
+        };
+
+        let mut first = connect();
+        assert_eq!(call(&mut first, 1, "who"), 0);
+        assert_eq!(call(&mut first, 2, "who"), 0, "one connection, one id");
+        let mut second = connect();
+        assert_eq!(call(&mut second, 1, "who"), 1);
+        drop(first);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut id = 2;
+        let gone = loop {
+            let gone = call(&mut second, id, "gone");
+            if gone != serde_json::json!([]) || std::time::Instant::now() > deadline {
+                break gone;
+            }
+            id += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(gone, serde_json::json!([0]));
+
+        evaluator.lifecycle_disable("test").unwrap();
+        drop(evaluator);
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
     fn embedded_runtime_returns_native_composition_patches_for_signal_updates() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

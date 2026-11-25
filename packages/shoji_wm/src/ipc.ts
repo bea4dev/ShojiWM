@@ -121,6 +121,13 @@ export function wakeRust(): void {
  */
 export interface IpcClient {
   /**
+   * The connection, for as long as the server runs: no later connection gets
+   * the same id, and every request on one connection gets the same handle.
+   * 接続の ID。サーバーの稼働中、後の接続が同じ ID を得ることはなく、同じ接続の
+   * リクエストには同じハンドルが渡されます。
+   */
+  readonly id: number;
+  /**
    * Send an unsolicited event to this single client only (not a broadcast).
    * このクライアントのみに非同期イベントを送信します（ブロードキャストではありません）。
    */
@@ -169,6 +176,16 @@ export interface IpcServer {
    * 現在接続中のすべてのクライアントにイベントをプッシュします。
    */
   broadcast(event: string, payload: unknown): void;
+  /**
+   * Run `listener` when a connection is gone, closed by its client or lost,
+   * after the handlers of the requests it sent have finished. Returns a
+   * function that removes the listener. Not called for the connections
+   * `close` ends.
+   * 接続がなくなったとき（クライアントが閉じた、または切断された）、その接続が
+   * 送ったリクエストのハンドラーが終わった後に `listener` を実行します。リスナーを
+   * 外す関数を返します。`close` が終了させた接続では呼ばれません。
+   */
+  onDisconnect(listener: (client: IpcClient) => void): () => void;
   /** Number of currently connected clients. / 現在接続中のクライアント数。 */
   clientCount(): number;
   /**
@@ -267,12 +284,17 @@ export function createIpcServer(
   }
 
   const handlers = new Map<string, IpcHandler>();
+  const disconnectListeners = new Set<(client: IpcClient) => void>();
   const listener = nativeListen(socketPath);
   let closed = false;
+  let nextClientId = 0;
 
   interface ClientState {
     connection: ShojiIpcConnection;
     writeChain: Promise<void>;
+    handle: IpcClient;
+    /** Requests whose handlers have not finished. */
+    pending: Set<Promise<void>>;
   }
 
   const clients = new Set<ClientState>();
@@ -303,9 +325,7 @@ export function createIpcServer(
     }
 
     const handler = handlers.get(request.method);
-    const client: IpcClient = {
-      send: (event, payload) => writeFrame(clientState, { event, payload }),
-    };
+    const client = clientState.handle;
 
     if (!handler) {
       if (request.id != null) {
@@ -341,7 +361,9 @@ export function createIpcServer(
         if (line.length === 0) break;
         const trimmed = line.trim();
         if (trimmed.length > 0) {
-          void dispatch(client, trimmed);
+          const request = dispatch(client, trimmed);
+          client.pending.add(request);
+          void request.finally(() => client.pending.delete(request));
         }
       }
     } catch (error) {
@@ -354,6 +376,17 @@ export function createIpcServer(
         client.connection.close();
       } catch {
         // Connection is already closed.
+      }
+      if (!closed) {
+        await Promise.allSettled([...client.pending]);
+        for (const listener of [...disconnectListeners]) {
+          try {
+            listener(client.handle);
+          } catch (error) {
+            console.error("[shoji-ipc] disconnect listener error:", String(error));
+          }
+        }
+        wakeRust();
       }
     }
   };
@@ -370,6 +403,11 @@ export function createIpcServer(
         const client: ClientState = {
           connection,
           writeChain: Promise.resolve(),
+          handle: {
+            id: nextClientId++,
+            send: (event, payload) => writeFrame(client, { event, payload }),
+          },
+          pending: new Set(),
         };
         clients.add(client);
         void serveClient(client);
@@ -389,6 +427,10 @@ export function createIpcServer(
       for (const client of [...clients]) {
         writeFrame(client, { event, payload });
       }
+    },
+    onDisconnect(listener) {
+      disconnectListeners.add(listener);
+      return () => disconnectListeners.delete(listener);
     },
     clientCount() {
       return clients.size;

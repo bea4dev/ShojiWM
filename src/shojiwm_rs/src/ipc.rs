@@ -18,6 +18,10 @@
 //! ipc.handle("ping", |_params| Ok(serde_json::json!("pong")));
 //! ipc.broadcast("hello", serde_json::json!({ "from": "config" }));
 //! ```
+//!
+//! What a client asked for can be held for as long as it stays connected:
+//! [`IpcServer::handle_from`] says which connection a request came on and
+//! [`IpcServer::on_disconnect`] when one is gone.
 
 use std::{
     cell::RefCell,
@@ -37,16 +41,28 @@ use serde_json::{Value, json};
 
 use crate::compositor::COMPOSITOR;
 
-type Handler = Rc<dyn Fn(&Value) -> Result<Value, String>>;
+/// One connection, for as long as the server runs: no later connection gets
+/// the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClientId(u64);
 
-struct Request {
-    client: Arc<Client>,
-    id: Option<Value>,
-    method: String,
-    params: Value,
+type Handler = Rc<dyn Fn(ClientId, &Value) -> Result<Value, String>>;
+type Gone = Rc<dyn Fn(ClientId)>;
+
+/// What a client's reader thread hands the compositor thread. One channel
+/// carries both, so a connection is reported gone after its last request.
+enum Message {
+    Request {
+        client: Arc<Client>,
+        id: Option<Value>,
+        method: String,
+        params: Value,
+    },
+    Gone(ClientId),
 }
 
 struct Client {
+    id: ClientId,
     stream: Mutex<UnixStream>,
     alive: AtomicBool,
 }
@@ -87,6 +103,7 @@ pub fn default_socket_path() -> PathBuf {
 #[derive(Clone)]
 pub struct IpcServer {
     handlers: Rc<RefCell<HashMap<String, Handler>>>,
+    gone: Rc<RefCell<Vec<Gone>>>,
     clients: Arc<Mutex<Vec<Arc<Client>>>>,
     closed: Arc<AtomicBool>,
     path: PathBuf,
@@ -101,24 +118,41 @@ impl IpcServer {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         let handlers: Rc<RefCell<HashMap<String, Handler>>> = Rc::default();
+        let gone: Rc<RefCell<Vec<Gone>>> = Rc::default();
         let clients: Arc<Mutex<Vec<Arc<Client>>>> = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
 
         let sender = {
             let handlers = handlers.clone();
-            COMPOSITOR.channel(move |request: Request| {
-                let handler = handlers.borrow().get(&request.method).cloned();
+            let gone = gone.clone();
+            COMPOSITOR.channel(move |message: Message| {
+                let (client, id, method, params) = match message {
+                    Message::Request {
+                        client,
+                        id,
+                        method,
+                        params,
+                    } => (client, id, method, params),
+                    Message::Gone(client) => {
+                        let listeners = gone.borrow().clone();
+                        for listener in listeners {
+                            listener(client);
+                        }
+                        return;
+                    }
+                };
+                let handler = handlers.borrow().get(&method).cloned();
                 let response = match handler {
-                    Some(handler) => match handler(&request.params) {
+                    Some(handler) => match handler(client.id, &params) {
                         Ok(result) => json!({ "result": result }),
                         Err(error) => json!({ "error": error }),
                     },
-                    None => json!({ "error": format!("unknown method: {}", request.method) }),
+                    None => json!({ "error": format!("unknown method: {method}") }),
                 };
-                if let Some(id) = request.id {
+                if let Some(id) = id {
                     let mut response = response;
                     response["id"] = id;
-                    request.client.write(&response);
+                    client.write(&response);
                 }
             })
         };
@@ -126,6 +160,7 @@ impl IpcServer {
         {
             let clients = clients.clone();
             let closed = closed.clone();
+            let mut next_id = 0;
             std::thread::Builder::new()
                 .name("shoji-ipc-accept".into())
                 .spawn(move || {
@@ -141,9 +176,11 @@ impl IpcServer {
                             continue;
                         };
                         let client = Arc::new(Client {
+                            id: ClientId(next_id),
                             stream: Mutex::new(stream),
                             alive: AtomicBool::new(true),
                         });
+                        next_id += 1;
                         if let Ok(mut clients) = clients.lock() {
                             clients.push(client.clone());
                         }
@@ -164,7 +201,7 @@ impl IpcServer {
                                     else {
                                         continue;
                                     };
-                                    sender.send(Request {
+                                    sender.send(Message::Request {
                                         client: client.clone(),
                                         id: message.get("id").filter(|id| !id.is_null()).cloned(),
                                         method: method.to_owned(),
@@ -175,6 +212,7 @@ impl IpcServer {
                                     });
                                 }
                                 client.alive.store(false, Ordering::Relaxed);
+                                sender.send(Message::Gone(client.id));
                             });
                     }
                 })?;
@@ -182,6 +220,7 @@ impl IpcServer {
 
         Ok(Self {
             handlers,
+            gone,
             clients,
             closed,
             path,
@@ -195,9 +234,25 @@ impl IpcServer {
         method: &str,
         handler: impl Fn(&Value) -> Result<Value, String> + 'static,
     ) {
+        self.handle_from(method, move |_, params| handler(params));
+    }
+
+    /// [`handle`](Self::handle), told which connection asked.
+    pub fn handle_from(
+        &self,
+        method: &str,
+        handler: impl Fn(ClientId, &Value) -> Result<Value, String> + 'static,
+    ) {
         self.handlers
             .borrow_mut()
             .insert(method.to_owned(), Rc::new(handler));
+    }
+
+    /// Run `listener` when a connection is gone: closed by its client, or
+    /// lost. It runs after the handler of the last request the connection
+    /// sent.
+    pub fn on_disconnect(&self, listener: impl Fn(ClientId) + 'static) {
+        self.gone.borrow_mut().push(Rc::new(listener));
     }
 
     /// Push `{ event, payload }` to every connected client.
