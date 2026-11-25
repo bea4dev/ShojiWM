@@ -1,5 +1,5 @@
-//! Outputs with no connector behind them, made and removed by the config
-//! (`COMPOSITOR.output.create` / `remove`).
+//! Outputs with no connector behind them, made, resized and removed by the
+//! config (`COMPOSITOR.output.create` / `resize` / `remove`).
 //!
 //! Once made, a headless output is an ordinary output: it has wl_output and
 //! xdg-output globals, layer surfaces and windows can go on it, it is in the
@@ -8,7 +8,10 @@
 //! TTY backend runs it in the same render loop as its real outputs (see
 //! `backend::tty::headless`); a nested session has no headless outputs.
 
-use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::{
+    desktop::layer_map_for_output,
+    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
+};
 use tracing::{info, warn};
 
 use crate::state::ShojiWM;
@@ -30,6 +33,11 @@ pub enum RuntimeHeadlessOutputRequest {
     Remove {
         name: String,
     },
+    Resize {
+        name: String,
+        width: i32,
+        height: i32,
+    },
 }
 
 impl ShojiWM {
@@ -42,6 +50,11 @@ impl ShojiWM {
                 scale,
             } => self.create_headless_output(name, *width, *height, *scale),
             RuntimeHeadlessOutputRequest::Remove { name } => self.remove_headless_output(name),
+            RuntimeHeadlessOutputRequest::Resize {
+                name,
+                width,
+                height,
+            } => self.resize_headless_output(name, *width, *height),
         };
         if let Err(error) = result {
             warn!(?request, %error, "headless output request failed");
@@ -138,6 +151,43 @@ impl ShojiWM {
         crate::backend::tty::detach_headless_output(self, &output);
         crate::backend::tty::forget_output(self, &output);
         info!(output = name, "removed headless output");
+        Ok(())
+    }
+
+    pub fn resize_headless_output(
+        &mut self,
+        name: &str,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
+        let Some(index) = self.headless_output_index(name) else {
+            return Err(format!("{name} is not a headless output"));
+        };
+        if !(1..=MAX_SIZE).contains(&width) || !(1..=MAX_SIZE).contains(&height) {
+            return Err(format!(
+                "a headless output is 1 to {MAX_SIZE} pixels wide and high, not {width}x{height}"
+            ));
+        }
+        let output = self.headless_outputs[index].clone();
+        let mode = Mode {
+            size: (width, height).into(),
+            refresh: REFRESH,
+        };
+        let previous = output.current_mode();
+        if previous == Some(mode) {
+            return Ok(());
+        }
+        output.set_preferred(mode);
+        output.change_current_state(Some(mode), None, None, None);
+        if let Some(previous) = previous {
+            output.delete_mode(previous);
+        }
+        info!(output = name, width, height, "resized headless output");
+        self.apply_runtime_display_configuration();
+        // Layer surfaces are only arranged on their own commits otherwise.
+        layer_map_for_output(&output).arrange();
+        self.notify_runtime_outputs_changed();
+        self.schedule_redraw();
         Ok(())
     }
 }

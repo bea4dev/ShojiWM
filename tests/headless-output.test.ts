@@ -46,3 +46,10 @@ test("a bad size or scale throws instead of reaching the compositor", () => {
   assert.throws(() => COMPOSITOR.output.create({ width: 800, height: 600, scale: -1 }), TypeError);
   assert.deepEqual(calls, []);
 });
+
+test("resize keeps the name and sends the new size", () => {
+  const calls = installNative();
+  COMPOSITOR.output.resize("corner", { width: 64, height: 48 });
+  assert.throws(() => COMPOSITOR.output.resize("corner", { width: 64, height: 0 }), TypeError);
+  assert.deepEqual(calls, [["resize", "corner", 64, 48, 0]]);
+});
