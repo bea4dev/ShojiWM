@@ -148,7 +148,9 @@ ipc.onDisconnect((client) => {
 ```
 
 `onDisconnect` returns a function that removes the listener, and is not called
-for the connections `ipc.close()` ends. In a Rust config the same is
+for the connections `ipc.close()` ends. A handler that never settles holds the
+call back for good, so a handler that waits for something should resolve or
+reject once that can no longer come. In a Rust config the same is
 `IpcServer::handle_from(method, |client, params| ...)` with a `ClientId`, and
 `IpcServer::on_disconnect(|client| ...)`.
 

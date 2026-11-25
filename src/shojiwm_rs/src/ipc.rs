@@ -46,6 +46,14 @@ use crate::compositor::COMPOSITOR;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientId(u64);
 
+impl ClientId {
+    /// The number naming the connection, counting up from 0 in the order
+    /// connections came, like `IpcClient.id` in TypeScript.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 type Handler = Rc<dyn Fn(ClientId, &Value) -> Result<Value, String>>;
 type Gone = Rc<dyn Fn(ClientId)>;
 
@@ -58,7 +66,7 @@ enum Message {
         method: String,
         params: Value,
     },
-    Gone(ClientId),
+    Gone(Arc<Client>),
 }
 
 struct Client {
@@ -125,6 +133,7 @@ impl IpcServer {
         let sender = {
             let handlers = handlers.clone();
             let gone = gone.clone();
+            let closed = closed.clone();
             COMPOSITOR.channel(move |message: Message| {
                 let (client, id, method, params) = match message {
                     Message::Request {
@@ -134,9 +143,16 @@ impl IpcServer {
                         params,
                     } => (client, id, method, params),
                     Message::Gone(client) => {
+                        // Only now: a client that closed just its end for
+                        // writing still reads the answers to what it asked.
+                        client.alive.store(false, Ordering::Relaxed);
+                        // The connections `close` ends are not reported.
+                        if closed.load(Ordering::Relaxed) {
+                            return;
+                        }
                         let listeners = gone.borrow().clone();
                         for listener in listeners {
-                            listener(client);
+                            listener(client.id);
                         }
                         return;
                     }
@@ -211,8 +227,7 @@ impl IpcServer {
                                             .unwrap_or(Value::Null),
                                     });
                                 }
-                                client.alive.store(false, Ordering::Relaxed);
-                                sender.send(Message::Gone(client.id));
+                                sender.send(Message::Gone(client));
                             });
                     }
                 })?;
@@ -250,7 +265,7 @@ impl IpcServer {
 
     /// Run `listener` when a connection is gone: closed by its client, or
     /// lost. It runs after the handler of the last request the connection
-    /// sent.
+    /// sent, and not for the connections [`close`](Self::close) ends.
     pub fn on_disconnect(&self, listener: impl Fn(ClientId) + 'static) {
         self.gone.borrow_mut().push(Rc::new(listener));
     }

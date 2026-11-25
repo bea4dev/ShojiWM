@@ -180,10 +180,13 @@ export interface IpcServer {
    * Run `listener` when a connection is gone, closed by its client or lost,
    * after the handlers of the requests it sent have finished. Returns a
    * function that removes the listener. Not called for the connections
-   * `close` ends.
+   * `close` ends. A handler that never settles holds it back for good, so one
+   * that waits for something should settle once that can no longer come.
    * 接続がなくなったとき（クライアントが閉じた、または切断された）、その接続が
    * 送ったリクエストのハンドラーが終わった後に `listener` を実行します。リスナーを
-   * 外す関数を返します。`close` が終了させた接続では呼ばれません。
+   * 外す関数を返します。`close` が終了させた接続では呼ばれません。終わらない
+   * ハンドラーがあるといつまでも呼ばれないため、何かを待つハンドラーは、それが
+   * 来なくなった時点で resolve か reject してください。
    */
   onDisconnect(listener: (client: IpcClient) => void): () => void;
   /** Number of currently connected clients. / 現在接続中のクライアント数。 */
@@ -372,13 +375,16 @@ export function createIpcServer(
       }
     } finally {
       clients.delete(client);
+      // A client may only have closed its end for writing and still be
+      // reading, so answer what it asked before closing the connection.
+      await Promise.allSettled([...client.pending]);
+      await client.writeChain;
       try {
         client.connection.close();
       } catch {
         // Connection is already closed.
       }
       if (!closed) {
-        await Promise.allSettled([...client.pending]);
         for (const listener of [...disconnectListeners]) {
           try {
             listener(client.handle);

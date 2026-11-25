@@ -7471,6 +7471,7 @@ const ipc = createIpcServer({socket_literal});
 const gone = [];
 ipc.handle("who", (_params, client) => client.id);
 ipc.handle("gone", () => gone);
+ipc.handle("slow", () => new Promise((resolve) => setTimeout(() => resolve(7), 50)));
 ipc.onDisconnect((client) => gone.push(client.id));
 COMPOSITOR.window.composition = () => <Box />;
 "#
@@ -7522,6 +7523,19 @@ COMPOSITOR.window.composition = () => <Box />;
             std::thread::sleep(Duration::from_millis(20));
         };
         assert_eq!(gone, serde_json::json!([0]));
+
+        // A client that closes its end for writing, as `socat` does at the
+        // end of its input, still gets the answer a handler gives later.
+        let mut half = connect();
+        half.get_mut()
+            .write_all(b"{\"id\":1,\"method\":\"slow\"}\n")
+            .unwrap();
+        half.get_ref().shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        half.read_line(&mut response).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("the answer was lost");
+        assert_eq!(response["result"], 7);
 
         evaluator.lifecycle_disable("test").unwrap();
         drop(evaluator);

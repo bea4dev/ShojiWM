@@ -142,7 +142,8 @@ ipc.onDisconnect((client) => {
 ```
 
 `onDisconnect` はリスナーを外す関数を返し、`ipc.close()` が終了させた接続では
-呼ばれません。Rust の設定では `IpcServer::handle_from(method, |client, params| ...)`
+呼ばれません。終わらないハンドラーがあるといつまでも呼ばれないため、何かを待つ
+ハンドラーは、それが来なくなった時点で resolve か reject してください。Rust の設定では `IpcServer::handle_from(method, |client, params| ...)`
 （`ClientId` を受け取る）と `IpcServer::on_disconnect(|client| ...)` が同じ役割です。
 
 ## 環境変数
