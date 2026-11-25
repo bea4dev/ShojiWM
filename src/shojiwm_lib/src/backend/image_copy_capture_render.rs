@@ -117,8 +117,38 @@ pub fn process_image_copy_capture_for_output<E: RenderElement<GlesRenderer>>(
         }
         let entry = pending.remove(i);
         let PendingCapture {
-            frame, draw_cursor, ..
+            frame,
+            draw_cursor,
+            session,
+            ..
         } = entry;
+        // The output changed size since the session's constraints (a new mode,
+        // or a headless output resized): push the new size and fail the frame
+        // so the client allocates a fresh buffer, as for a toplevel.
+        if let Some(mode) = output.current_mode() {
+            let size = output.current_transform().transform_size(mode.size);
+            let buffer_dims =
+                shm::with_buffer_contents(&frame.buffer(), |_, _, data| (data.width, data.height));
+            if let Ok((bw, bh)) = buffer_dims
+                && (bw, bh) != (size.w, size.h)
+            {
+                tracing::debug!(
+                    output = %output.name(),
+                    bw,
+                    bh,
+                    width = size.w,
+                    height = size.h,
+                    "output resized; pushing new capture constraints"
+                );
+                session.update_constraints(BufferConstraints {
+                    size: (size.w, size.h).into(),
+                    shm: vec![wl_shm::Format::Xrgb8888],
+                    dma: None,
+                });
+                frame.fail(CaptureFailureReason::BufferConstraints);
+                continue;
+            }
+        }
         // Compose cursor only when the session asked for it (paint_cursors).
         // Reference slices to avoid cloning non-Clone render elements.
         let composed_refs: Vec<&E> = if draw_cursor {
