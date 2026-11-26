@@ -25,44 +25,62 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-pub struct MoveSurfaceGrab {
-    pub start_data: PointerGrabStartData<ShojiWM>,
+/// A window that follows the pointer: the part of a move that does not
+/// depend on what drives it, a [`MoveSurfaceGrab`] or a toplevel drag
+/// (`crate::toplevel_drag`).
+#[derive(Debug)]
+pub struct WindowMove {
     pub window: Window,
-    pub initial_window_location: Point<i32, Logical>,
-    pub initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
-    pub source: WindowMoveSourceSnapshot,
-    pub runtime_managed: bool,
-    pub last_pointer: Point<f64, Logical>,
+    start_pointer: Point<f64, Logical>,
+    initial_window_location: Point<i32, Logical>,
+    initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
+    source: WindowMoveSourceSnapshot,
+    runtime_managed: bool,
+    last_pointer: Point<f64, Logical>,
 }
 
-impl MoveSurfaceGrab {
-    pub fn start(
-        start_data: PointerGrabStartData<ShojiWM>,
+impl WindowMove {
+    /// A move of `window`, which sits at `initial_window_location` (and
+    /// `initial_event_rect` for the config) while the pointer is at
+    /// `start_pointer`.
+    pub fn new(
         window: Window,
+        start_pointer: Point<f64, Logical>,
         initial_window_location: Point<i32, Logical>,
         initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
         source: WindowMoveSourceSnapshot,
     ) -> Self {
-        let last_pointer = start_data.location;
         Self {
-            start_data,
             window,
+            start_pointer,
             initial_window_location,
             initial_event_rect,
             source,
             runtime_managed: false,
-            last_pointer,
+            last_pointer: start_pointer,
         }
     }
 
+    pub fn last_pointer(&self) -> Point<f64, Logical> {
+        self.last_pointer
+    }
+
+    /// Tell the config the move starts. The config answers at once, so this
+    /// must not run inside a pointer grab: what it asks for in reply takes the
+    /// pointer's lock.
     pub fn notify_start(&mut self, data: &mut ShojiWM) {
-        data.cursor_override = Some(CursorIcon::Grabbing);
-        data.schedule_redraw();
-        self.runtime_managed = self.invoke_runtime_event(
-            data,
-            WindowMovePhaseSnapshot::Start,
-            self.start_data.location,
-        );
+        self.runtime_managed =
+            self.invoke_runtime_event(data, WindowMovePhaseSnapshot::Start, self.start_pointer);
+    }
+
+    /// Tell the config the move ended, once the caller has returned (see
+    /// `queue_grab_end_dispatch`).
+    pub fn finish(&self, data: &mut ShojiWM) {
+        if self.runtime_managed {
+            let window_id = data.snapshot_window(&self.window).id;
+            let event = self.runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
+            data.queue_grab_end_dispatch(PendingGrabMotion::WindowMove { window_id, event });
+        }
     }
 
     fn invoke_runtime_event(
@@ -83,7 +101,7 @@ impl MoveSurfaceGrab {
         phase: WindowMovePhaseSnapshot,
         current_pointer: Point<f64, Logical>,
     ) -> WindowMoveEventSnapshot {
-        let start_pointer = self.start_data.location;
+        let start_pointer = self.start_pointer;
         let delta = current_pointer - start_pointer;
         let current_rect = move_rect_for_delta(self.initial_event_rect, delta);
         let output_name = data
@@ -114,28 +132,20 @@ impl MoveSurfaceGrab {
             timestamp: std::time::Duration::from(data.clock.now()).as_millis() as u64,
         }
     }
-}
 
-impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
-    fn motion(
-        &mut self,
-        data: &mut ShojiWM,
-        handle: &mut PointerInnerHandle<'_, ShojiWM>,
-        _focus: Option<(WlSurface, Point<f64, Logical>)>,
-        event: &MotionEvent,
-    ) {
-        // While the grab is active, no client has pointer focus
-        handle.motion(data, None, event);
-        self.last_pointer = event.location;
+    /// The pointer moved to `location`: move the window with it. Safe inside
+    /// a pointer grab, since the config hears about it later.
+    pub fn motion(&mut self, data: &mut ShojiWM, location: Point<f64, Logical>) {
+        self.last_pointer = location;
 
         if self.runtime_managed {
             let window_id = data.snapshot_window(&self.window).id;
-            let event = self.runtime_event(data, WindowMovePhaseSnapshot::Update, event.location);
+            let event = self.runtime_event(data, WindowMovePhaseSnapshot::Update, location);
             data.queue_grab_motion_dispatch(PendingGrabMotion::WindowMove { window_id, event });
             return;
         }
 
-        let delta = event.location - self.start_data.location;
+        let delta = location - self.start_pointer;
         let new_location = self.initial_window_location.to_f64() + delta;
         // Unlike the runtime-managed path above, this fallback places the
         // window directly in the `Space`, whose element locations are whole
@@ -221,6 +231,53 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
             data.schedule_redraw();
         }
     }
+}
+
+pub struct MoveSurfaceGrab {
+    pub start_data: PointerGrabStartData<ShojiWM>,
+    pub window_move: WindowMove,
+}
+
+impl MoveSurfaceGrab {
+    pub fn start(
+        start_data: PointerGrabStartData<ShojiWM>,
+        window: Window,
+        initial_window_location: Point<i32, Logical>,
+        initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
+        source: WindowMoveSourceSnapshot,
+    ) -> Self {
+        let window_move = WindowMove::new(
+            window,
+            start_data.location,
+            initial_window_location,
+            initial_event_rect,
+            source,
+        );
+        Self {
+            start_data,
+            window_move,
+        }
+    }
+
+    pub fn notify_start(&mut self, data: &mut ShojiWM) {
+        data.cursor_override = Some(CursorIcon::Grabbing);
+        data.schedule_redraw();
+        self.window_move.notify_start(data);
+    }
+}
+
+impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
+    fn motion(
+        &mut self,
+        data: &mut ShojiWM,
+        handle: &mut PointerInnerHandle<'_, ShojiWM>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        // While the grab is active, no client has pointer focus
+        handle.motion(data, None, event);
+        self.window_move.motion(data, event.location);
+    }
 
     fn relative_motion(
         &mut self,
@@ -247,13 +304,8 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
         if !handle.current_pressed().contains(&BTN_LEFT) {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
-            if self.runtime_managed {
-                let window_id = data.snapshot_window(&self.window).id;
-                let event =
-                    self.runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
-                data.queue_grab_end_dispatch(PendingGrabMotion::WindowMove { window_id, event });
-            }
-            data.update_decoration_cursor_icon(self.last_pointer);
+            self.window_move.finish(data);
+            data.update_decoration_cursor_icon(self.window_move.last_pointer());
         }
     }
 
@@ -348,7 +400,7 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
 
     fn unset(&mut self, data: &mut ShojiWM) {
         data.pointer_dispatch.discard_grab_motion();
-        data.update_decoration_cursor_icon(self.last_pointer);
+        data.update_decoration_cursor_icon(self.window_move.last_pointer());
     }
 }
 

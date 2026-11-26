@@ -345,6 +345,8 @@ pub enum WindowMoveSourceSnapshot {
     Modifier,
     ClientCsd,
     Xwayland,
+    /// A window attached to a drag and drop (xdg-toplevel-drag-v1).
+    ToplevelDrag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

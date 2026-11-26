@@ -266,3 +266,15 @@ COMPOSITOR.dnd.event.onStart((drag) => {
 
 Remember to give the cursor back with `overrideKind(null)` when the drag
 ends.
+
+
+## Dragging a window with the data
+
+A browser or toolkit can tear a tab off into a new window and dock it back by
+dragging the window itself along with the data
+([xdg-toplevel-drag-v1](https://wayland.app/protocols/xdg-toplevel-drag-v1)).
+ShojiWM moves that window with the pointer as an interactive move, so your
+config gets `onWindowMove` events with `source: "toplevel-drag"` and its usual
+snapping and workspace rules apply. The window is never the drop target: the
+drop lands on what is under it. When the drag ends, the window stays where
+the move left it.

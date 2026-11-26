@@ -195,6 +195,7 @@ impl XdgShellHandler for ShojiWM {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface();
+        self.toplevel_drag_toplevel_destroyed(surface.xdg_toplevel());
         let Some(window) = self
             .space
             .elements()

@@ -14,6 +14,9 @@
 //! of the negotiated action, the target window or the icon, end). A config
 //! that does not listen gets the built-in view: the icon at the pointer,
 //! gone when the drag ends.
+//!
+//! A drag can also carry a window (xdg-toplevel-drag-v1, see
+//! `crate::toplevel_drag`).
 
 use std::{
     any::Any,
@@ -32,7 +35,7 @@ use smithay::{
         dnd::{DnDGrab, DndAction, GrabType, Source, SourceMetadata},
         pointer::Focus,
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::wayland_server::protocol::{wl_data_source::WlDataSource, wl_surface::WlSurface},
     utils::{IsAlive, Logical, Point, Rectangle, Serial},
 };
 use tracing::{debug, warn};
@@ -40,6 +43,7 @@ use tracing::{debug, warn};
 use crate::{
     ssd::{DecorationNode, DecorationTree, StandaloneDecoration, window_model::WindowIconSnapshot},
     state::ShojiWM,
+    toplevel_drag::ToplevelDragGrab,
 };
 
 /// How long a view may stay after its drag ended without the config
@@ -639,6 +643,11 @@ impl ShojiWM {
         };
 
         let metadata = source.metadata();
+        // A `wl_data_device` drag hands over its `wl_data_source`, which may
+        // carry a toplevel (xdg-toplevel-drag-v1).
+        let data_source = (&source as &dyn Any)
+            .downcast_ref::<WlDataSource>()
+            .cloned();
         let source_window = start_data
             .focus
             .as_ref()
@@ -660,7 +669,10 @@ impl ShojiWM {
             self.end_drag(previous, DragEndKind::Cancelled, false, position);
         }
         let grab = DnDGrab::new_pointer(&self.display_handle, start_data, tracked, seat);
-        pointer.set_grab(self, grab, serial, Focus::Keep);
+        pointer.set_grab(self, ToplevelDragGrab { inner: grab }, serial, Focus::Keep);
+        if let Some(data_source) = data_source {
+            self.begin_toplevel_drag(&data_source);
+        }
 
         let now = Instant::now();
         let drag = ActiveDrag {
@@ -717,6 +729,7 @@ impl ShojiWM {
         accepted: bool,
         position: Point<f64, Logical>,
     ) {
+        self.mark_toplevel_drag_ended();
         let Some(drag_id) = self.dnd.active.as_ref().map(|active| active.id) else {
             return;
         };
@@ -742,6 +755,7 @@ impl ShojiWM {
             return;
         }
         self.sync_drag_state();
+        self.end_toplevel_drag();
         let Some(active) = self.dnd.end(Instant::now()) else {
             return;
         };

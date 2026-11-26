@@ -6,5 +6,6 @@ pub mod output_power;
 pub mod plasma_shell;
 pub mod screencopy;
 pub mod tearing_control;
+pub mod toplevel_drag;
 pub mod virtual_keyboard;
 pub mod virtual_pointer;
