@@ -147,7 +147,7 @@ COMPOSITOR.key.bind_with(
 バインドは通常、そのキーやボタンを奪い、フォーカス中のクライアントには届きません。
 `nonConsuming: true` を付けると、ハンドラーを実行したうえで、キーやボタンを本来の
 クライアントにも届けます。表示しているメニューを `Escape` で閉じつつ後ろのウィンドウにも
-`Escape` を渡す、左クリックをすべて記録する、といった使い方ができます。
+`Escape` を渡す、左クリックを記録する、といった使い方ができます。
 
 ```ts
 COMPOSITOR.key.bind('dismiss-menu', 'Escape', () => menu.close(), {nonConsuming: true});
@@ -157,6 +157,13 @@ COMPOSITOR.key.bind('note-click', 'MouseLeft', () => idle.reset(), {nonConsuming
 キー（押下・リリースのどちらでも）とマウスボタンに使えます。修飾キー単体のタップと
 ホイール方向にはクライアントへ渡すイベントがないため拒否されます。Rust では
 `KeyBindOptions::new().non_consuming()` です。
+
+ほかのバインドと同じく、押している修飾キーがショートカットと完全に一致するときだけ
+発火します。`MouseLeft` は修飾キーなしのクリックだけに反応し、Shift+クリックや
+Ctrl+クリックには別のバインドが必要です。キーはハンドラーの実行前に、マウスボタンは
+実行後にクライアントへ届きます。`Auto` の SSD `<Popup>` が開いている間は、どの
+バインドよりも先に `Escape` がそれを閉じるため、`Escape` のバインドは実行されず、
+クライアントにもキーは届きません。
 
 ### 終了とリロード
 

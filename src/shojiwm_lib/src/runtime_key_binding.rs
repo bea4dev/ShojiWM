@@ -287,7 +287,7 @@ pub enum RuntimeKeyBindingParseError {
     TransparentRequiresModifier(String),
     #[error("`transparent` on `{0}` fires on every release, so `within` does not apply")]
     TransparentWithin(String),
-    #[error("`non_consuming` on `{0}` only applies to a key or a mouse button")]
+    #[error("`nonConsuming` on `{0}` only applies to a key or a mouse button")]
     NonConsumingRequiresKeyOrButton(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
     UnknownModifier { shortcut: String, modifier: String },

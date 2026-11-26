@@ -150,7 +150,7 @@ A binding takes its key or button: the focused client never sees it.
 `nonConsuming: true` runs the handler and still delivers the key or the button
 to the client it was meant for, so a config can watch a press without
 taking it, for example close a menu it shows on `Escape` while the window
-behind still gets `Escape`, or note every left click:
+behind still gets `Escape`, or note left clicks:
 
 ```ts
 COMPOSITOR.key.bind('dismiss-menu', 'Escape', () => menu.close(), {nonConsuming: true});
@@ -160,6 +160,13 @@ COMPOSITOR.key.bind('note-click', 'MouseLeft', () => idle.reset(), {nonConsuming
 It applies to keys, on press or release, and to mouse buttons. A bare modifier
 tap and a wheel direction have no client event to leave and are rejected. In
 Rust it is `KeyBindOptions::new().non_consuming()`.
+
+Like every binding, it fires only when the modifiers held are exactly the
+shortcut's: `MouseLeft` hears clicks with no modifier held, not Shift+click or
+Ctrl+click, which need bindings of their own. A key reaches the client before
+the handler runs, a mouse button after it. While an `Auto` SSD `<Popup>` is
+open, `Escape` closes it before any binding sees the key, so an `Escape`
+binding does not run and the client does not get the key.
 
 ### Quit and reload
 
