@@ -99,6 +99,9 @@ COMPOSITOR.event.onLidSwitch(({closed}) => {
 受け取る先を示します。
 
 ```ts
+import { createIpcServer } from 'shoji_wm/ipc';
+
+const ipc = createIpcServer();
 COMPOSITOR.event.onKeyboardFocusChange(({windowId}) => {
   ipc.broadcast('keyboard-focus', windowId ?? null);
 });
@@ -110,7 +113,7 @@ Rust の設定では `COMPOSITOR.event.on_keyboard_focus_change(|focus| ...)` �
 `COMPOSITOR.input.keyboard_focus()` が最後の通知を持つシグナルです（`focus.window_id`）。
 Rust ではこの通知に、キーボードの宛先であるウィンドウ（`is_focused` が真のウィンドウ）も
 含まれます（`focus.focused_window_id`）。ウィンドウ自身のシグナルは次のフレームで変わりますが、
-こちらはその時点の値です。
+こちらはその時点の値です。Rust のリスナーは、このウィンドウだけが変わったときにも呼ばれます。
 
 ## ポインター（マウス）設定
 

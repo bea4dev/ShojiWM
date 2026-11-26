@@ -1,6 +1,11 @@
 //! The window that has the seat's keyboard and the one it is meant for,
 //! reported to the config.
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::{
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    wayland::{
+        compositor::get_role, shell::xdg::XDG_TOPLEVEL_ROLE, xwayland_shell::XWAYLAND_SHELL_ROLE,
+    },
+};
 
 use crate::state::ShojiWM;
 
@@ -34,10 +39,11 @@ impl ShojiWM {
     pub(crate) fn keyboard_focus_moved(&mut self, focused: Option<&WlSurface>) {
         let meant_for = self.activated_window_surface();
         let known = &self.keyboard_focus;
-        // A surface that is not a window's may be one the next time: a
-        // toplevel the space does not hold yet.
+        // A toplevel the space does not hold yet is a window's the next
+        // time; a layer or lock surface never is, so it is not looked up
+        // again on every tick it holds the keyboard.
         let same = known.surface.as_ref() == focused
-            && (focused.is_none() || known.snapshot.window_id.is_some())
+            && (known.snapshot.window_id.is_some() || !focused.is_some_and(may_become_window))
             && known.meant_for == meant_for
             && (meant_for.is_none() || known.snapshot.focused_window_id.is_some());
         if !same {
@@ -46,12 +52,12 @@ impl ShojiWM {
                     self.space
                         .elements()
                         .find(|window| self.surface_belongs_to_window(window, surface))
-                        .map(|window| self.snapshot_window(window).id)
+                        .map(|window| self.window_runtime_id(window))
                 }),
                 focused_window_id: meant_for
                     .as_ref()
                     .and_then(|root| self.window_for_root_surface(root))
-                    .map(|window| self.snapshot_window(window).id),
+                    .map(|window| self.window_runtime_id(window)),
             };
             self.keyboard_focus = KeyboardFocus {
                 surface: focused.cloned(),
@@ -79,4 +85,13 @@ impl ShojiWM {
             .and_then(|keyboard| keyboard.current_focus());
         self.keyboard_focus_moved(surface.as_ref());
     }
+}
+
+/// Whether `surface` is, or is a subsurface of, a surface that a window is
+/// made of once the space holds it.
+fn may_become_window(surface: &WlSurface) -> bool {
+    matches!(
+        get_role(&ShojiWM::keyboard_focus_surface_root(surface)),
+        Some(XDG_TOPLEVEL_ROLE | XWAYLAND_SHELL_ROLE)
+    )
 }

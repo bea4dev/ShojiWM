@@ -126,6 +126,9 @@ the lock screen or nothing has the keyboard. A window stays `isFocused` while a
 panel borrows the keyboard; this event says who actually gets the keys:
 
 ```ts
+import { createIpcServer } from 'shoji_wm/ipc';
+
+const ipc = createIpcServer();
 COMPOSITOR.event.onKeyboardFocusChange(({windowId}) => {
   ipc.broadcast('keyboard-focus', windowId ?? null);
 });
@@ -138,7 +141,8 @@ ticks coalesced. In a Rust config it is
 `COMPOSITOR.input.keyboard_focus()` is a signal holding the last report
 (`focus.window_id`). There the report also names the window the keyboard is
 meant for (`focus.focused_window_id`), the one whose `is_focused` is true, as
-of now where the windows' own signals change with the next frame.
+of now where the windows' own signals change with the next frame, and the
+listener also runs when only that window changes.
 
 ## Pointer (mouse) settings
 

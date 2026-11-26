@@ -861,13 +861,6 @@ impl ShojiWM {
             .cloned()
     }
 
-    fn window_runtime_id(&self, window: &smithay::desktop::Window) -> String {
-        self.window_decorations
-            .get(window)
-            .map(|decoration| decoration.snapshot.id.clone())
-            .unwrap_or_else(|| self.snapshot_window(window).id)
-    }
-
     /// Before each frame: drop expired views, report drag changes and lay
     /// out view contents at the scales they are drawn at.
     pub(crate) fn refresh_drag_views(&mut self) {

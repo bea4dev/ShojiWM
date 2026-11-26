@@ -1075,7 +1075,7 @@ impl ShojiWM {
         window.x11_surface().and_then(|x11| x11.wl_surface())
     }
 
-    fn keyboard_focus_surface_root(surface: &WlSurface) -> WlSurface {
+    pub(crate) fn keyboard_focus_surface_root(surface: &WlSurface) -> WlSurface {
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;

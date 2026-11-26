@@ -69,6 +69,21 @@ fn the_window_with_the_keyboard_reaches_the_config() {
     session.roundtrip();
     assert_eq!(held(), Some(b.id()));
 
+    // A launcher that borrows the keyboard on demand: the keys go to it,
+    // and the keyboard is still meant for the window.
+    let (launcher, layer) = session.map_keyboard_layer("launcher", KeyboardInteractivity::OnDemand);
+    session.roundtrip();
+    session.state.refresh_window_decorations().unwrap();
+    session.roundtrip();
+    assert_eq!(held(), None);
+    for _ in 0..5 {
+        session.roundtrip();
+    }
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    launcher.commit();
+    session.roundtrip();
+    assert_eq!(held(), Some(b.id()));
+
     // Every change was heard once, and nothing in between.
     let moves: Vec<Focus> = heard()
         .into_iter()
@@ -81,6 +96,8 @@ fn the_window_with_the_keyboard_reaches_the_config() {
             (a.clone(), a),
             (b.clone(), b.clone()),
             (None, None),
+            (b.clone(), b.clone()),
+            (None, b.clone()),
             (b.clone(), b)
         ]
     );

@@ -1581,8 +1581,9 @@ listeners! {
     on_keyboard_locks_change => keyboard_locks: &KeyboardLocksSnapshot;
     /// The laptop lid was closed or opened.
     on_lid_switch => lid_switch: &LidSwitchSnapshot;
-    /// The keyboard moved to another window, or to none of them: to a
-    /// layer surface, the lock screen or nothing.
+    /// The keyboard moved to another window, or to none of them (to a
+    /// layer surface, the lock screen or nothing), or the window it is meant
+    /// for is another.
     on_keyboard_focus_change => keyboard_focus: &KeyboardFocusSnapshot;
     on_create_layer => create_layer: &WaylandLayerSnapshot;
     on_update_layer => update_layer: &WaylandLayerSnapshot;

@@ -1162,6 +1162,15 @@ impl ShojiWM {
             .collect()
     }
 
+    /// The id [`Self::snapshot_window`] gives `window`, without building
+    /// the rest of the snapshot.
+    pub(crate) fn window_runtime_id(&self, window: &Window) -> String {
+        self.window_decorations
+            .get(window)
+            .map(|decoration| decoration.snapshot.id.clone())
+            .unwrap_or_else(|| runtime_id_for_window(window))
+    }
+
     fn runtime_id_for_toplevel_surface(&self, surface: &WlSurface) -> Option<String> {
         self.space.elements().find_map(|window| {
             let toplevel = window.toplevel()?;

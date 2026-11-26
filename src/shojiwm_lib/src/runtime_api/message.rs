@@ -223,7 +223,8 @@ pub enum RuntimeEvent {
     PowerState(PowerStateSnapshot),
     /// The system came back from a suspend or hibernation.
     Resume(ResumeSnapshot),
-    /// The seat's keyboard moved to another window, or off the windows.
+    /// The seat's keyboard moved to another window, or off the windows, or
+    /// the window it is meant for is another.
     KeyboardFocus(KeyboardFocusSnapshot),
     /// Pointer hook the config asked to receive asynchronously. A result, if
     /// any, comes back as `HostMessage::PointerHookResult`.
