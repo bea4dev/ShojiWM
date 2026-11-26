@@ -230,6 +230,7 @@ configure response required by that protocol.
 | `fullscreen()` / `unfullscreen()` | Toggle fullscreen                                  |
 | `focus()`                         | Give keyboard focus and raise                      |
 | `unfocus()`                       | Take keyboard focus away, giving it to no window   |
+| `focusOnRequest()`                | `focus()` for a window asked for by name (a dock or switcher pick); never refused for having opened earlier |
 | `scheduleAnimation(options)`      | Animate managed-window geometry                    |
 | `cancelAnimation(channel?)`       | Cancel a running animation                         |
 | `setCloseAnimationDuration(ms)`   | Delay surface destruction to fit a close animation |

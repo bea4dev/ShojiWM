@@ -922,6 +922,9 @@ pub enum WaylandWindowAction {
     /// Take the keyboard from the window if it has it. No window has it
     /// then, until one is focused.
     Unfocus,
+    /// Focus the window because it was asked for by name. Unlike `Focus`,
+    /// it is not refused in favour of a window that opened later.
+    FocusOnRequest,
     ScheduleAnimation,
     CancelAnimation,
 }
@@ -1543,6 +1546,8 @@ mod tests {
         let focus = serde_json::to_string(&WaylandWindowAction::Focus).expect("serialize focus");
         let unfocus =
             serde_json::to_string(&WaylandWindowAction::Unfocus).expect("serialize unfocus");
+        let focus_on_request = serde_json::to_string(&WaylandWindowAction::FocusOnRequest)
+            .expect("serialize focus on request");
         let schedule_animation = serde_json::to_string(&WaylandWindowAction::ScheduleAnimation)
             .expect("serialize schedule animation");
         let cancel_animation = serde_json::to_string(&WaylandWindowAction::CancelAnimation)
@@ -1555,6 +1560,7 @@ mod tests {
         assert_eq!(minimize, "\"minimize\"");
         assert_eq!(focus, "\"focus\"");
         assert_eq!(unfocus, "\"unfocus\"");
+        assert_eq!(focus_on_request, "\"focusOnRequest\"");
         assert_eq!(schedule_animation, "\"scheduleAnimation\"");
         assert_eq!(cancel_animation, "\"cancelAnimation\"");
     }
