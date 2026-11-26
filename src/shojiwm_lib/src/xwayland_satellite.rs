@@ -430,21 +430,20 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
     for display_number in start..start + 50 {
         let lock_path = PathBuf::from(format!("/tmp/.X{display_number}-lock"));
         let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
-        let lock_fd = match open(&lock_path, flags, 0o444.into()) {
-            Ok(fd) => fd,
+        let (lock_fd, lock_taken_back) = match open(&lock_path, flags, 0o444.into()) {
+            Ok(fd) => (fd, false),
             // A lock left by a server that is gone (killed, crashed) holds the display for no
-            // one: take it back with its socket, as Xorg and Xwayland do, and try again.
+            // one: take it back, as Xorg and Xwayland do, and try again.
             Err(_) if lock_is_stale(&lock_path) => {
                 info!(
                     display = %format_args!(":{display_number}"),
                     "removing a stale X11 display lock"
                 );
                 let _ = fs::remove_file(&lock_path);
-                let _ = fs::remove_file(format!("/tmp/.X11-unix/X{display_number}"));
                 let Ok(fd) = open(&lock_path, flags, 0o444.into()) else {
                     continue;
                 };
-                fd
+                (fd, true)
             }
             Err(_) => continue,
         };
@@ -453,7 +452,7 @@ fn reserve_x11_display(start: u32) -> Result<ReservedX11Display, Box<dyn std::er
         let pid_string = format!("{:>10}\n", getpid().as_raw_nonzero());
         rustix::io::write(&lock_fd, pid_string.as_bytes())?;
 
-        match open_display_sockets(display_number) {
+        match open_display_sockets(display_number, lock_taken_back) {
             Ok((abstract_listener, unix_listener, unix_guard)) => {
                 return Ok((
                     display_number,
@@ -530,13 +529,22 @@ fn bind_to_unix_socket(
     Ok((listener, UnlinkGuard(path)))
 }
 
+/// `lock_taken_back`: the display's lock was left by a process that is gone, which leaves its
+/// socket file behind too.
 fn open_display_sockets(
     display_number: u32,
+    lock_taken_back: bool,
 ) -> Result<(Option<UnixListener>, UnixListener, UnlinkGuard), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     let abstract_listener = Some(bind_to_abstract_socket(display_number)?);
     #[cfg(not(target_os = "linux"))]
     let abstract_listener = None;
+
+    // Only once the abstract socket is ours: the lock names the compositor, and a process it
+    // handed the sockets to (Xwayland, an external satellite) may still serve the display.
+    if lock_taken_back {
+        let _ = fs::remove_file(format!("/tmp/.X11-unix/X{display_number}"));
+    }
 
     let (unix_listener, unix_guard) = bind_to_unix_socket(display_number)?;
     Ok((abstract_listener, unix_listener, unix_guard))
@@ -739,6 +747,53 @@ mod tests {
         std::fs::write(&lock, "").unwrap();
         assert!(!lock_is_stale(&lock));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Leaves a lock on the first display of `paths` as a process that is gone would.
+    fn leave_stale_lock(paths: &TestDisplayPaths) {
+        // No process has this number (above pid_max).
+        fs::write(
+            format!("/tmp/.X{}-lock", paths.start()),
+            format!("{:>10}\n", 4_194_305),
+        )
+        .expect("write stale lock");
+    }
+
+    #[test]
+    fn takes_back_a_display_whose_lock_is_stale() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        leave_stale_lock(&paths);
+        // The socket file the gone process left: closed, and never unlinked.
+        let (left, left_guard) = bind_to_unix_socket(paths.start()).expect("leave socket file");
+        drop(left);
+        std::mem::forget(left_guard);
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve display");
+
+        assert_eq!(reservation.0, paths.start());
+        drop(reservation);
+    }
+
+    #[test]
+    fn a_stale_lock_does_not_unlink_the_socket_of_a_server_still_running() {
+        ensure_x11_unix_dir().expect("prepare X11 socket directory");
+        let paths = TestDisplayPaths::new();
+        // The compositor that took the lock is gone; Xwayland, which it handed the sockets
+        // to, still serves the display.
+        leave_stale_lock(&paths);
+        let occupied = bind_to_abstract_socket(paths.start()).expect("occupy abstract socket");
+        let (occupied_path, occupied_guard) =
+            bind_to_unix_socket(paths.start()).expect("occupy pathname socket");
+
+        let reservation = reserve_x11_display(paths.start()).expect("reserve next display");
+
+        assert_eq!(reservation.0, paths.start() + 1);
+        assert!(PathBuf::from(format!("{X11_TMP_UNIX_DIR}/X{}", paths.start())).exists());
+        drop(reservation);
+        drop(occupied);
+        drop(occupied_path);
+        drop(occupied_guard);
     }
 
     #[test]
