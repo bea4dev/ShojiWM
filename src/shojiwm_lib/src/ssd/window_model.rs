@@ -922,8 +922,9 @@ pub enum WaylandWindowAction {
     /// Take the keyboard from the window if it has it. No window has it
     /// then, until one is focused.
     Unfocus,
-    /// Focus the window because it was asked for by name. Unlike `Focus`,
-    /// it is not refused in favour of a window that opened later.
+    /// Focus the window because the user picked it. Unlike `Focus`, it is
+    /// not refused in favour of a window that opened later, and the window
+    /// counts as used.
     FocusOnRequest,
     ScheduleAnimation,
     CancelAnimation,

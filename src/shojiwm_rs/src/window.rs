@@ -321,10 +321,12 @@ impl Window {
         self.act(WaylandWindowAction::Unfocus);
     }
 
-    /// Focus the window because it was asked for by name: a pick in a dock
-    /// or a switcher the config serves, a request over its socket, a layout
-    /// that decides the focus itself. Never refused the way [`Self::focus`]
-    /// is.
+    /// Focus the window because the user picked it, when the pick reaches
+    /// the config outside an input event: over its socket, after a timer.
+    /// Never refused the way [`Self::focus`] is, and the window counts as
+    /// used, as a taskbar pick does. A key binding, a decoration click or an
+    /// input grab runs inside the input event, where `focus` is already the
+    /// user's.
     pub fn focus_on_request(&self) {
         self.act(WaylandWindowAction::FocusOnRequest);
     }

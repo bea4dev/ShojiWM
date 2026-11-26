@@ -47,4 +47,13 @@ fn a_pick_is_not_refused_for_a_window_that_opened_later() {
     older.focus_on_request();
     session.roundtrip();
     assert_eq!(focused(&mut session), Some(older.id()));
+
+    // The pick counts as the user's use of the older one, as a taskbar pick
+    // does: its own `focus()` is not refused any more.
+    newer.focus();
+    session.roundtrip();
+    assert_eq!(focused(&mut session), Some(newer.id()));
+    older.focus();
+    session.roundtrip();
+    assert_eq!(focused(&mut session), Some(older.id()));
 }

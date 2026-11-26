@@ -399,14 +399,20 @@ export interface WaylandWindow {
    */
   unfocus(): void;
   /**
-   * Like `focus()`, for a window the user asked for by name: a pick in a dock
-   * or a switcher the config serves, a request over its socket. `focus()` is
-   * refused for a window that opened before the one that has the keyboard
-   * while the user has used neither; this is not.
-   * `focus()` と同じですが、ユーザーが名指しで求めたウィンドウ用です（設定が
-   * 提供するドックやスイッチャーでの選択、ソケット経由の要求など）。どちらの
-   * ウィンドウもまだ使われていない間、キーボードを持つウィンドウより先に開いた
-   * ウィンドウへの `focus()` は拒否されますが、こちらは拒否されません。
+   * Like `focus()`, for a window the user picked, when the pick reaches the
+   * config outside an input event: over its socket, after a timer or an
+   * `await`. `focus()` from there is refused for a window that opened before
+   * the one that has the keyboard while the user has used neither; this is
+   * not, and the window counts as used, as a taskbar pick does. A key binding,
+   * a decoration click or an input grab runs inside the input event, where
+   * `focus()` is already the user's.
+   * `focus()` と同じですが、ユーザーが選んだウィンドウを、入力イベントの外
+   * （ソケット経由の要求、タイマー、`await` の後など）でフォーカスするときに使います。
+   * そこからの `focus()` は、どちらのウィンドウもまだ使われていない間、キーボードを
+   * 持つウィンドウより先に開いたウィンドウに対して拒否されますが、こちらは拒否されず、
+   * タスクバーでの選択と同じくそのウィンドウを使われたものとして扱います。
+   * キーバインド、装飾のクリック、入力グラブは入力イベントの中で動くので、そこでは
+   * `focus()` で足ります。
    */
   focusOnRequest(): void;
   /** Schedule a managed-window animation (position, size, etc.) via the SSD pipeline. / SSD パイプライン経由でマネージドウィンドウのアニメーション（位置・サイズ等）をスケジュールします。 */

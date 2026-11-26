@@ -2855,8 +2855,10 @@ impl ShojiWM {
                 crate::ssd::WaylandWindowAction::Unfocus => self.unfocus_window(&window),
                 crate::ssd::WaylandWindowAction::FocusOnRequest => {
                     // The config answers for the pick, as a taskbar's client
-                    // does for its own, so the ordering of windows nobody
-                    // has used yet does not refuse it.
+                    // does for its own: the window counts as used, and the
+                    // ordering of windows nobody has used yet does not
+                    // refuse it.
+                    self.note_window_user_input(&window);
                     let previous = std::mem::replace(&mut self.user_input_in_flight, true);
                     self.focus_window(&window, SERIAL_COUNTER.next_serial());
                     self.user_input_in_flight = previous;
