@@ -414,6 +414,8 @@ export {
   type KeyboardLayoutChangeListener,
   type LidSwitchEvent,
   type LidSwitchListener,
+  type KeyboardFocusChangeEvent,
+  type KeyboardFocusChangeListener,
   type PointerMoveEvent,
   type PointerMovePoint,
   type PointerRegionEvent,

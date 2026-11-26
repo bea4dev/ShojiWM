@@ -301,6 +301,7 @@ pub struct NativeSchedulerRequest {
     pub gpus: Option<Vec<shojiwm_lib::gpu::GpuSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<shojiwm_lib::power::ResumeSnapshot>,
+    pub keyboard_focus: Option<shojiwm_lib::keyboard_focus::KeyboardFocusSnapshot>,
 }
 
 enum BridgeRequest {

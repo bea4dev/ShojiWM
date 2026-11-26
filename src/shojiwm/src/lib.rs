@@ -227,6 +227,7 @@ impl ConfigRuntime for TypeScriptRuntime {
             RuntimeEvent::PowerState(state) => self.evaluator.set_power_state(state),
             RuntimeEvent::GpuState(gpus) => self.evaluator.set_gpu_state(gpus),
             RuntimeEvent::Resume(resume) => self.evaluator.push_resume(resume),
+            RuntimeEvent::KeyboardFocus(focus) => self.evaluator.set_keyboard_focus(focus),
             // The TypeScript API has no lock key state.
             RuntimeEvent::KeyboardLocks(_) => {}
             RuntimeEvent::PointerMove(event) => self.evaluator.pointer_move_async(event, now),

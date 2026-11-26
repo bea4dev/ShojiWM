@@ -118,6 +118,28 @@ These events only report the lid: systemd-logind still suspends on it as
 `logind.conf` says, in no defined order with the config. To decide what the lid
 does, take it from logind; see [Power and the lid](power.md).
 
+## Which window has the keyboard
+
+`COMPOSITOR.event.onKeyboardFocusChange` reports the window the keys go to, by
+its own surface or a popup, and `windowId: undefined` while a layer surface,
+the lock screen or nothing has the keyboard. A window stays `isFocused` while a
+panel borrows the keyboard; this event says who actually gets the keys:
+
+```ts
+COMPOSITOR.event.onKeyboardFocusChange(({windowId}) => {
+  ipc.broadcast('keyboard-focus', windowId ?? null);
+});
+```
+
+Like the layout above, it arrives on a scheduler tick: the current window on
+the first tick after enable or a reload, then each move, with moves between two
+ticks coalesced. In a Rust config it is
+`COMPOSITOR.event.on_keyboard_focus_change(|focus| ...)`, and
+`COMPOSITOR.input.keyboard_focus()` is a signal holding the last report
+(`focus.window_id`). There the report also names the window the keyboard is
+meant for (`focus.focused_window_id`), the one whose `is_focused` is true, as
+of now where the windows' own signals change with the next frame.
+
 ## Pointer (mouse) settings
 
 `pointer` — an `InputDeviceConfig.pointer` object.

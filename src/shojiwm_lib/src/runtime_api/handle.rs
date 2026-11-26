@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     gpu::{GpuSnapshot, RenderGpuChoice},
+    keyboard_focus::KeyboardFocusSnapshot,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
     power::{PowerStateSnapshot, ResumeSnapshot},
@@ -46,6 +47,7 @@ pub struct RuntimeHandle {
     lid_switch: Option<LidSwitchSnapshot>,
     power_state: Option<PowerStateSnapshot>,
     gpu_state: Option<Vec<GpuSnapshot>>,
+    keyboard_focus: Option<KeyboardFocusSnapshot>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -79,6 +81,7 @@ impl RuntimeHandle {
             lid_switch: None,
             power_state: None,
             gpu_state: None,
+            keyboard_focus: None,
         }
     }
 
@@ -205,6 +208,17 @@ impl RuntimeHandle {
         self.post(0.0, RuntimeEvent::Resume(resume));
     }
 
+    /// Returns whether the window that has the keyboard differs from the
+    /// last one sent.
+    pub fn sync_keyboard_focus(&mut self, focus: &KeyboardFocusSnapshot) -> bool {
+        if self.keyboard_focus.as_ref() == Some(focus) {
+            return false;
+        }
+        self.keyboard_focus = Some(focus.clone());
+        self.post(0.0, RuntimeEvent::KeyboardFocus(focus.clone()));
+        true
+    }
+
     /// Forget what was sent, so the next sync re-sends everything. Used after
     /// a reload, whose fresh config has not seen any state yet.
     pub fn reset_synced_state(&mut self) {
@@ -215,6 +229,7 @@ impl RuntimeHandle {
         self.lid_switch = None;
         self.power_state = None;
         self.gpu_state = None;
+        self.keyboard_focus = None;
     }
 
     pub fn evaluate_window(

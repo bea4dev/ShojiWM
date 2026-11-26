@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     gpu::{GpuSnapshot, RenderGpuChoice},
+    keyboard_focus::KeyboardFocusSnapshot,
     keyboard_layout::{KeyboardLayoutSnapshot, KeyboardLocksSnapshot},
     lid_switch::LidSwitchSnapshot,
     power::{PowerStateSnapshot, ResumeSnapshot},
@@ -222,6 +223,8 @@ pub enum RuntimeEvent {
     PowerState(PowerStateSnapshot),
     /// The system came back from a suspend or hibernation.
     Resume(ResumeSnapshot),
+    /// The seat's keyboard moved to another window, or off the windows.
+    KeyboardFocus(KeyboardFocusSnapshot),
     /// Pointer hook the config asked to receive asynchronously. A result, if
     /// any, comes back as `HostMessage::PointerHookResult`.
     PointerMove(PointerMoveEventSnapshot),

@@ -621,6 +621,8 @@ pub struct ShojiWM {
     pub pending_layer_surfaces: Vec<PendingLayerSurface>,
     pub pending_initial_focus_window_ids: HashSet<String>,
     pub window_keyboard_focus_owner: Option<WlSurface>,
+    /// Where the seat's keyboard was last seen, for the config.
+    pub(crate) keyboard_focus: crate::keyboard_focus::KeyboardFocus,
     /// The window that held the focus-owner slot immediately before the
     /// current one. Consulted by `elect_focus_successor` when the current
     /// owner disappears: short-lived helper toplevels (fcitx5-configtool maps
@@ -1602,6 +1604,7 @@ impl ShojiWM {
                 self.schedule_redraw();
             }
         }
+        self.sync_keyboard_focus();
     }
 
     /// [`Self::update_keyboard_focus`] for when the role object of `surface` has just been
@@ -2082,6 +2085,7 @@ impl ShojiWM {
             pending_layer_surfaces: Vec::new(),
             pending_initial_focus_window_ids: HashSet::new(),
             window_keyboard_focus_owner: None,
+            keyboard_focus: Default::default(),
             previous_window_keyboard_focus_owner: None,
             session_lock_focus_owner: None,
             window_keyboard_focus_released: false,
@@ -2941,6 +2945,7 @@ impl ShojiWM {
         self.sync_keyboard_state();
         self.sync_lid_switch();
         self.sync_gpu_state();
+        self.sync_keyboard_focus();
         self.refresh_runtime_processes();
         let managed_window_animation_active = !self.managed_window_animations.is_empty();
         if !force

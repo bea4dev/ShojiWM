@@ -42,6 +42,7 @@ pub mod grabs;
 pub mod handlers;
 pub mod headless_output;
 pub mod input;
+pub mod keyboard_focus;
 pub mod keyboard_layout;
 pub mod lid_switch;
 pub mod log_rate_limit;
