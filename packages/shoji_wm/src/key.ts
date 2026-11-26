@@ -12,6 +12,7 @@ interface RuntimeKeyBindingConfigEntry {
   locked?: boolean;
   repeat?: boolean;
   transparent?: boolean;
+  non_consuming?: boolean;
 }
 
 type KeyBindingHandler = () => void;
@@ -82,6 +83,7 @@ export const KEY_BINDING_CONTROLLER: KeyBindingController = {
       ...(options?.locked ? { locked: true } : {}),
       ...(options?.repeat ? { repeat: true } : {}),
       ...(options?.transparent ? { transparent: true } : {}),
+      ...(options?.nonConsuming ? { non_consuming: true } : {}),
     };
 
     registrationEntriesTarget().set(id, entry);

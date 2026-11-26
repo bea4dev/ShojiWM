@@ -43,6 +43,10 @@ pub struct RuntimeKeyBindingEntry {
     /// such as Alt+Tab, not only after a bare tap.
     #[serde(default)]
     pub transparent: bool,
+    /// Keys and mouse buttons: the binding runs and the event still reaches
+    /// the client it was meant for (Hyprland's `n` flag).
+    #[serde(default)]
+    pub non_consuming: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Default)]
@@ -97,6 +101,14 @@ impl RuntimeKeyBindingEntry {
                 self.shortcut.clone(),
             ));
         }
+        // A tap never takes its modifier from the client, and a wheel step
+        // has no client event to leave.
+        if self.non_consuming && (shortcut.is_modifier_only() || shortcut.wheel_direction.is_some())
+        {
+            return Err(
+                RuntimeKeyBindingParseError::NonConsumingRequiresKeyOrButton(self.shortcut.clone()),
+            );
+        }
         // While locked the pointer belongs to the lock screen, and a tap of a
         // bare modifier is how a locker is usually typed into.
         if self.locked && !is_key {
@@ -112,6 +124,7 @@ impl RuntimeKeyBindingEntry {
             locked: self.locked,
             repeat: self.repeat,
             transparent: self.transparent,
+            non_consuming: self.non_consuming,
         })
     }
 }
@@ -144,6 +157,8 @@ pub struct CompiledRuntimeKeyBinding {
     pub repeat: bool,
     /// Fires on every release of its modifier, not only a bare tap.
     pub transparent: bool,
+    /// Runs without taking the key or the button from the client.
+    pub non_consuming: bool,
 }
 
 impl CompiledRuntimeKeyBinding {
@@ -272,6 +287,8 @@ pub enum RuntimeKeyBindingParseError {
     TransparentRequiresModifier(String),
     #[error("`transparent` on `{0}` fires on every release, so `within` does not apply")]
     TransparentWithin(String),
+    #[error("`non_consuming` on `{0}` only applies to a key or a mouse button")]
+    NonConsumingRequiresKeyOrButton(String),
     #[error("shortcut `{shortcut}` contains unknown modifier `{modifier}`")]
     UnknownModifier { shortcut: String, modifier: String },
     #[error("shortcut `{shortcut}` contains duplicate modifier `{modifier}`")]
@@ -447,6 +464,9 @@ fn parse_runtime_key_shortcut(
 
 fn parse_mouse_button(name: &str) -> Option<u32> {
     match name.to_ascii_lowercase().as_str() {
+        "mouseleft" => Some(0x110),
+        "mouseright" => Some(0x111),
+        "mousemiddle" => Some(0x112),
         "mouseback" => Some(0x113),
         "mouseforward" => Some(0x114),
         _ => None,
@@ -502,6 +522,7 @@ mod tests {
             locked: false,
             repeat: false,
             transparent: false,
+            non_consuming: false,
         }
     }
 
@@ -529,6 +550,42 @@ mod tests {
                 .compile()
                 .unwrap()
                 .transparent
+        );
+    }
+
+    #[test]
+    fn non_consuming_needs_a_key_or_a_mouse_button() {
+        let non_consuming = |shortcut: &str, on| RuntimeKeyBindingEntry {
+            non_consuming: true,
+            ..entry(shortcut, on)
+        };
+        for shortcut in ["Escape", "Super+code:10", "MouseLeft"] {
+            let compiled = non_consuming(shortcut, RuntimeKeyBindingPhase::Press).compile();
+            assert!(compiled.unwrap().non_consuming, "{shortcut}");
+        }
+        assert!(
+            non_consuming("Escape", RuntimeKeyBindingPhase::Release)
+                .compile()
+                .unwrap()
+                .non_consuming
+        );
+        for (shortcut, on) in [
+            ("Alt", RuntimeKeyBindingPhase::Release),
+            ("Super+WheelScrollUp", RuntimeKeyBindingPhase::Press),
+        ] {
+            assert!(
+                matches!(
+                    non_consuming(shortcut, on).compile(),
+                    Err(RuntimeKeyBindingParseError::NonConsumingRequiresKeyOrButton(_)),
+                ),
+                "{shortcut}"
+            );
+        }
+        assert!(
+            !entry("Escape", RuntimeKeyBindingPhase::Press)
+                .compile()
+                .unwrap()
+                .non_consuming
         );
     }
 

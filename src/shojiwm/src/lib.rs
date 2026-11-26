@@ -534,7 +534,7 @@ COMPOSITOR.window.composition = (window) => (
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
-    /// `locked`, `repeat` and `transparent` reach the compositor with the
+    /// `locked`, `repeat`, `transparent` and `nonConsuming` reach the compositor with the
     /// binding, and are left off when not asked for.
     #[test]
     fn typescript_runtime_sends_key_binding_options() {
@@ -553,6 +553,7 @@ import { COMPOSITOR, Label } from "shoji_wm";
 COMPOSITOR.key.bind("louder", "XF86AudioRaiseVolume", () => {}, { locked: true, repeat: true });
 COMPOSITOR.key.bind("plain", "Super+T", () => {});
 COMPOSITOR.key.bind("commit", "Alt", () => {}, { on: "release", transparent: true });
+COMPOSITOR.key.bind("peek", "MouseLeft", () => {}, { nonConsuming: true });
 COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
 "#,
         )
@@ -589,15 +590,17 @@ COMPOSITOR.window.composition = (window) => <Label text={window.title} />;
                     entry.locked,
                     entry.repeat,
                     entry.transparent,
+                    entry.non_consuming,
                 )
             })
             .collect::<Vec<_>>();
         assert_eq!(
             flags,
             [
-                ("commit", false, false, true),
-                ("louder", true, true, false),
-                ("plain", false, false, false),
+                ("commit", false, false, true, false),
+                ("louder", true, true, false, false),
+                ("peek", false, false, false, true),
+                ("plain", false, false, false, false),
             ]
         );
 
