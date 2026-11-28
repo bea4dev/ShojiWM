@@ -1164,6 +1164,15 @@ pub fn init_winit(
                             output.name().as_str(),
                             fullscreen_scanout.is_some(),
                         );
+                        let fullscreen_above_top = composition_plan.has_default_windows()
+                            && crate::backend::tty::fullscreen_window_above_top(
+                                &state.space,
+                                &state.window_decorations,
+                                &windows_top_to_bottom,
+                                output.name().as_str(),
+                                output_geo,
+                            )
+                            .is_some();
                         let mut composition_windows = std::collections::HashSet::new();
                         let mut composition_targets = state
                             .composition_targets
@@ -1183,6 +1192,7 @@ pub fn init_winit(
                                 windows_top_to_bottom: &windows_top_to_bottom,
                                 all_windows_top_to_bottom: &composition_all_windows,
                                 fullscreen_window: fullscreen_scanout.as_ref(),
+                                fullscreen_above_top,
                                 extra_damage: &mut extra_damage,
                                 composition_windows: &mut composition_windows,
                             };
@@ -5092,6 +5102,8 @@ struct WinitScene<'a> {
     /// Every window, top to bottom, for plans that pick windows by id.
     all_windows_top_to_bottom: &'a [(smithay::desktop::Window, Option<crate::ssd::LogicalRect>)],
     fullscreen_window: Option<&'a smithay::desktop::Window>,
+    /// See `TtyScene::fullscreen_above_top`.
+    fullscreen_above_top: bool,
     extra_damage: &'a mut Vec<crate::ssd::LogicalRect>,
     /// Windows a plan picked by id this frame; they get frame callbacks.
     composition_windows: &'a mut std::collections::HashSet<String>,
@@ -5301,6 +5313,10 @@ impl crate::backend::composition::CompositionScene for WinitScene<'_> {
 
     fn fullscreen_active(&self) -> bool {
         self.fullscreen_window.is_some()
+    }
+
+    fn fullscreen_above_top(&self) -> bool {
+        self.fullscreen_above_top
     }
 
     fn offscreen_damage(

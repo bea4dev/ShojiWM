@@ -818,6 +818,98 @@ fn note_tearing_transition(output_name: &str, active: bool, forced: bool) {
     }
 }
 
+/// The topmost window that renders on `output` (its decoration lets it,
+/// and it reaches into `output_geo`).
+pub(crate) fn topmost_window_on_output<'a>(
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
+    windows_top_to_bottom: impl IntoIterator<Item = &'a smithay::desktop::Window>,
+    output_name: &str,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+) -> Option<&'a smithay::desktop::Window> {
+    windows_top_to_bottom.into_iter().find(|window| {
+        let Some(decoration) = window_decorations.get(*window) else {
+            return false;
+        };
+        if !decoration.managed_window_allows_render_on_output(output_name) {
+            return false;
+        }
+        space
+            .element_geometry(window)
+            .is_some_and(|geometry| geometry.intersection(output_geo).is_some())
+    })
+}
+
+/// The client acked and committed the xdg Fullscreen state.
+pub(crate) fn is_committed_fullscreen(window: &smithay::desktop::Window) -> bool {
+    window.toplevel().is_some_and(|toplevel| {
+        toplevel.with_committed_state(|state| {
+            state.is_some_and(|state| {
+                state.states.contains(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                )
+            })
+        })
+    })
+}
+
+/// An X11 window (from the Xwayland bridge) whose geometry covers the whole
+/// output. X11 games and players often go "borderless fullscreen" this way,
+/// without `_NET_WM_STATE_FULLSCREEN`; KWin and Mutter treat such a window
+/// as fullscreen too. Wayland clients have `set_fullscreen` and are not
+/// guessed about.
+fn is_legacy_fullscreen(
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    window: &smithay::desktop::Window,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+) -> bool {
+    let from_xwayland = window
+        .toplevel()
+        .and_then(|toplevel| toplevel.wl_surface().client())
+        .and_then(|client| {
+            client
+                .get_data::<crate::state::ClientState>()
+                .map(|data| data.xwayland_refresh_override)
+        })
+        .unwrap_or(false);
+    from_xwayland
+        && space
+            .element_geometry(window)
+            .is_some_and(|geometry| geometry.intersection(output_geo) == Some(output_geo))
+}
+
+/// The fullscreen window that stacks above the Top layers of `output`: the
+/// topmost window there, once it committed the Fullscreen state or when it
+/// is an X11 window that covers the output ([`is_legacy_fullscreen`]).
+/// Rendering and hit testing both follow it, so the bar is never drawn over
+/// a window that takes its clicks. A Fullscreen window does not need to
+/// cover the output or to be still: that is only asked of the fast path
+/// ([`fullscreen_scanout_window`]).
+pub(crate) fn fullscreen_window_above_top<'a>(
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    window_decorations: &std::collections::HashMap<
+        smithay::desktop::Window,
+        crate::ssd::WindowDecorationState,
+    >,
+    windows_top_to_bottom: impl IntoIterator<Item = &'a smithay::desktop::Window>,
+    output_name: &str,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+) -> Option<&'a smithay::desktop::Window> {
+    topmost_window_on_output(
+        space,
+        window_decorations,
+        windows_top_to_bottom,
+        output_name,
+        output_geo,
+    )
+    .filter(|window| {
+        is_committed_fullscreen(window) || is_legacy_fullscreen(space, window, output_geo)
+    })
+}
+
 /// Detects the window that should take the fullscreen fast path on this
 /// output: the topmost rendered window carries the client-acked xdg
 /// Fullscreen state, its committed geometry covers the whole output, and no
@@ -859,17 +951,13 @@ pub(crate) fn fullscreen_scanout_window(
     // Topmost window that actually renders on this output. If that is not
     // the fullscreen window (e.g. a floating window stacked above it), the
     // fast path must stay off so the upper window remains visible.
-    let Some(window) = windows_top_to_bottom.iter().find(|window| {
-        let Some(decoration) = window_decorations.get(window) else {
-            return false;
-        };
-        if !decoration.managed_window_allows_render_on_output(output_name.as_str()) {
-            return false;
-        }
-        space
-            .element_geometry(window)
-            .is_some_and(|geometry| geometry.intersection(output_geo).is_some())
-    }) else {
+    let Some(window) = topmost_window_on_output(
+        space,
+        window_decorations,
+        windows_top_to_bottom,
+        output_name.as_str(),
+        output_geo,
+    ) else {
         return reject("no-window", "no renderable window on output".to_string());
     };
     let describe = |window: &smithay::desktop::Window| {
@@ -902,13 +990,7 @@ pub(crate) fn fullscreen_scanout_window(
         );
     };
     let (fullscreen, pending_fullscreen) = {
-        let committed = toplevel.with_committed_state(|state| {
-            state.is_some_and(|state| {
-                state
-                    .states
-                    .contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
-            })
-        });
+        let committed = is_committed_fullscreen(window);
         let pending = toplevel.with_pending_state(|state| {
             state
                 .states
@@ -6027,6 +6109,15 @@ fn render_surface(
         } else {
             None
         };
+        let fullscreen_above_top = composition_plan.has_default_windows()
+            && fullscreen_window_above_top(
+                space,
+                window_decorations,
+                &windows_top_to_bottom,
+                output.name().as_str(),
+                output_geo,
+            )
+            .is_some();
         let fullscreen_window = fullscreen_stack_window.clone().filter(|_| !output_encoded);
         note_fullscreen_fast_path_transition(output.name().as_str(), fullscreen_window.is_some());
 
@@ -6077,6 +6168,7 @@ fn render_surface(
             all_windows_top_to_bottom: &composition_all_windows,
             fullscreen_window: fullscreen_window.as_ref(),
             fullscreen_stack_window: fullscreen_stack_window.as_ref(),
+            fullscreen_above_top,
             extra_damage: &mut extra_damage,
             newly_ready_initial_focus_window_ids: &mut newly_ready_initial_focus_window_ids,
             composition_windows: &mut composition_windows,
@@ -15136,6 +15228,9 @@ struct TtyScene<'a> {
     /// below it; the fast path's one, or one on an encoded output drawn
     /// through the normal path.
     fullscreen_stack_window: Option<&'a smithay::desktop::Window>,
+    /// The topmost window is fullscreen (`fullscreen_window_above_top`), even
+    /// when it does not own the stack: Top layers stay behind it.
+    fullscreen_above_top: bool,
     extra_damage: &'a mut Vec<crate::ssd::LogicalRect>,
     newly_ready_initial_focus_window_ids: &'a mut Vec<String>,
     /// Windows a plan picked by id this frame; they get frame callbacks.
@@ -15357,6 +15452,10 @@ impl crate::backend::composition::CompositionScene for TtyScene<'_> {
 
     fn fullscreen_active(&self) -> bool {
         self.fullscreen_stack_window.is_some()
+    }
+
+    fn fullscreen_above_top(&self) -> bool {
+        self.fullscreen_above_top
     }
 
     fn offscreen_damage(

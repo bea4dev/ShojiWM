@@ -2419,8 +2419,9 @@ impl ShojiWM {
 
     /// Insert the compositor's end of the embedded satellite's connection as a
     /// client. Peer credentials would name ShojiWM itself here, so the client
-    /// is marked as the Xwayland bridge directly.
-    fn insert_embedded_satellite_client(&mut self, stream: UnixStream) {
+    /// is marked as the Xwayland bridge directly. Public so tests can stand in
+    /// for the bridge.
+    pub fn insert_embedded_satellite_client(&mut self, stream: UnixStream) {
         self.update_xwayland_refresh_override_from_pointer_or_first("xwayland-bridge-connect");
         let identity = WaylandClientIdentity::embedded_satellite(&stream);
         if let Err(error) = self.display_handle.insert_client(
@@ -4734,24 +4735,28 @@ impl ShojiWM {
     }
 
     /// True when the topmost window on `output` is in the committed xdg
-    /// Fullscreen state. Mirrors the renderer's fullscreen fast path so
-    /// hit-testing follows the same stacking: a fullscreen window sits above
-    /// the Top layer (only Overlay stays in front of it). `with_committed_state`
-    /// (client-acked) means this flips on only once the client has actually
-    /// committed its fullscreen buffer, matching what is on screen.
+    /// Fullscreen state. The renderer uses the same predicate, so hit-testing
+    /// follows the drawn stacking: a fullscreen window sits above the Top
+    /// layer (only Overlay stays in front of it). The committed (client-acked)
+    /// state means this flips on only once the client has actually committed
+    /// its fullscreen buffer, matching what is on screen.
     pub(crate) fn output_has_topmost_fullscreen_window(&self, output: &Output) -> bool {
-        self.windows_for_output_top_to_bottom(output)
-            .first()
-            .and_then(|window| window.toplevel())
-            .is_some_and(|toplevel| {
-                toplevel.with_committed_state(|state| {
-                    state.is_some_and(|state| {
-                        state.states.contains(
-                            smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-                        )
-                    })
-                })
-            })
+        self.fullscreen_window_above_top(output).is_some()
+    }
+
+    /// The fullscreen window that stacks above the Top layers of `output`,
+    /// for rendering and hit testing alike
+    /// (`backend::tty::fullscreen_window_above_top`).
+    pub fn fullscreen_window_above_top(&self, output: &Output) -> Option<Window> {
+        let output_geo = self.space.output_geometry(output)?;
+        crate::backend::tty::fullscreen_window_above_top(
+            &self.space,
+            &self.window_decorations,
+            self.windows_top_to_bottom(),
+            output.name().as_str(),
+            output_geo,
+        )
+        .cloned()
     }
 
     pub fn surface_under(
